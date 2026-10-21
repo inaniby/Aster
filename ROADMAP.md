@@ -1,6 +1,6 @@
 # Aster — Roadmap
 
-**Status as of v0.23.44-dev.** This roadmap is the forward-looking companion to
+**Status as of v0.23.45-dev.** This roadmap is the forward-looking companion to
 `VERSION_HISTORY.md` (what shipped) and `FEATURE_STATUS.md` (what exists today).
 Every version listed here is a plan, not a promise; the history file is the only
 record of what actually landed.
