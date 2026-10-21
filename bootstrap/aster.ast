@@ -370,11 +370,33 @@ let rs_kind: i32 = 0;
 let rs_fnsym: i32 = 0;
 // intrinsic-call scratch: when find_call matches a host intrinsic (read /
 // write / load_u8 / store_u8 — declared nowhere in source, SEMANTIC-SPEC.md
-// §3), rs_fnsym is set to -1, rcall_intrinsic to 1, and rcall_rtyp to the
-// intrinsic's known return tag. tc_combine's E_Call branch then skips the
-// signature checks (S9/S10) that have nothing to bind against.
+// §3), rs_fnsym is set to -1, rcall_intrinsic to the intrinsic's id (the
+// IC_* family below), and rcall_rtyp to the intrinsic's known return tag.
+// tc_combine's E_Call branch then skips the signature checks (S9/S10) that
+// have nothing to bind against. The ids double as the M3d lowering selector
+// (CODEGEN-SPEC.md §7.2): which argument marshalling and which syscall
+// sequence each call lowers to.
 let rcall_intrinsic: i32 = 0;
 let rcall_rtyp: i32 = 0;
+// Host intrinsic ids (PARSER-SPEC.md §12.5 freezes the 15-name vocabulary;
+// the memory family 1-9 and read/write 10-11 predate M3d, exit/openat/
+// close/fstat 12-15 arrive with it — examples/copy.ast needs close()).
+// Order matters only in that it is shared verbatim with the twin.
+let IC_LOAD_PTR: i32 = 1;
+let IC_MMAP: i32 = 2;
+let IC_BRK: i32 = 3;
+let IC_LOAD_I64: i32 = 4;
+let IC_STORE_I64: i32 = 5;
+let IC_LOAD_U8: i32 = 6;
+let IC_STORE_U8: i32 = 7;
+let IC_LOAD_U16: i32 = 8;
+let IC_STORE_U16: i32 = 9;
+let IC_READ: i32 = 10;
+let IC_WRITE: i32 = 11;
+let IC_EXIT: i32 = 12;
+let IC_OPENAT: i32 = 13;
+let IC_CLOSE: i32 = 14;
+let IC_FSTAT: i32 = 15;
 // current-function scratch (for S16 / S22)
 let cur_ret_ty: i32 = 0;
 let cur_fn_name: i32 = 0;
@@ -2629,20 +2651,24 @@ fn find_call(t: i32) -> i32 {
     // (src/aster.cpp:2773-2783 and 3169-3360 — the whole family, not just the
     // four the bootstrap itself calls; examples/arena.ast uses mmap). A real
     // declared function above wins; absent that these are always callable and
-    // never S6. rs_fnsym = -1 marks "intrinsic, no symbol row" and rcall_rtyp
-    // carries its return type. load_u8/store_u8 return i32 (the byte is
-    // zero-extended), per the host.
-    if (tok_is(t, "load_ptr") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_PTR; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "mmap") == 1)      { rcall_intrinsic = 1; rcall_rtyp = TY_PTR; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "brk") == 1)       { rcall_intrinsic = 1; rcall_rtyp = TY_PTR; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "load_i64") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_I64; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "store_i64") == 1) { rcall_intrinsic = 1; rcall_rtyp = TY_I64; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "load_u8") == 1)   { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "store_u8") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "load_u16") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "store_u16") == 1) { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "read") == 1)      { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "write") == 1)     { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    // never S6. rs_fnsym = -1 marks "intrinsic, no symbol row", rcall_intrinsic
+    // the id, and rcall_rtyp carries its return type. load_u8/store_u8 return
+    // i32 (the byte is zero-extended), per the host.
+    if (tok_is(t, "load_ptr") == 1)  { rcall_intrinsic = IC_LOAD_PTR;  rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "mmap") == 1)      { rcall_intrinsic = IC_MMAP;      rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "brk") == 1)       { rcall_intrinsic = IC_BRK;       rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "load_i64") == 1)  { rcall_intrinsic = IC_LOAD_I64;  rcall_rtyp = TY_I64;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "store_i64") == 1) { rcall_intrinsic = IC_STORE_I64; rcall_rtyp = TY_I64;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "load_u8") == 1)   { rcall_intrinsic = IC_LOAD_U8;   rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "store_u8") == 1)  { rcall_intrinsic = IC_STORE_U8;  rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "load_u16") == 1)  { rcall_intrinsic = IC_LOAD_U16;  rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "store_u16") == 1) { rcall_intrinsic = IC_STORE_U16; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "read") == 1)      { rcall_intrinsic = IC_READ;      rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "write") == 1)     { rcall_intrinsic = IC_WRITE;     rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "exit") == 1)      { rcall_intrinsic = IC_EXIT;      rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "openat") == 1)    { rcall_intrinsic = IC_OPENAT;    rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "close") == 1)     { rcall_intrinsic = IC_CLOSE;     rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "fstat") == 1)     { rcall_intrinsic = IC_FSTAT;     rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
     if (find_var(t) == 1) { return 2; }
     return 0;
 }
@@ -3358,6 +3384,220 @@ fn emit_mem(is_store: i32, scale: i32, rt: i32, rn: i32, off: i32) -> i32 {
     let imm: i32 = off >> scale;
     if (imm < 0 || imm > 4095) { return cg_die("internal compiler error: frame offset out of range"); }
     return emit_word(base | ((imm << 10) | (rn << 5) | rt));
+}
+
+// ---------------------------------------------------------------------------
+// §9: address allocation. cg_collect walks the program once and fixes every
+// address the later passes need: each string literal's absolute address in
+// .rodata (0x600000+), each global's in .data (0x800000+) or .bss, one label
+// per function (plus __aster_init when any global needs a runtime
+// initialiser), and main's symbol row. Nothing here emits an instruction —
+// gen_function consumes these tables, elf_emit the sizes.
+// ---------------------------------------------------------------------------
+let str_addr: i64[65536] = 0;   // per E_String node handle -> absolute address
+let g_addr: i64[4096] = 0;      // per global symbol row -> absolute address
+let g_sec: i32[4096] = 0;       // 1 = .data, 0 = .bss
+let g_init: i32[4096] = 0;      // runtime-init global symbol rows, declaration order
+let ninit: i32 = 0;
+let fn_lab: i32[4096] = 0;      // per function symbol row -> label id
+let init_lab: i32 = 0;          // __aster_init's label (0 when there is none)
+let main_sym: i32 = -1;         // main's symbol row (-1 = absent, C10)
+let has_stub: i32 = 0;
+let rodata_size: i32 = 0;
+let data_size: i32 = 0;
+let bss_size: i32 = 0;
+let bss_base: i64 = 0;
+let sstk: i32[65536] = 0;       // the string walk's pending siblings
+let pstk: i32[65536] = 0;       // the ptr-yield walk's pending children
+
+fn ty_width(t: i32) -> i32 {
+    if (t == TY_I32) { return 4; }
+    if (t == TY_I64) { return 8; }
+    if (t == TY_U8) { return 1; }
+    return 8;   // every pointer is 8 bytes
+}
+fn align_up(v: i64, a: i32) -> i64 {
+    return (v + a - 1) / a * a;
+}
+
+// The string walk is the dump's walk — the same iterative pre-order over the
+// same sibling chains (emit, §6). The .rodata order is therefore a property
+// of the tree, not of this implementation's node-allocation order, which is
+// what lets the twin reproduce it byte for byte from the same spec.
+fn cg_strings(root: i32) -> i32 {
+    let esp: i32 = 0;
+    let h: i32 = root;
+    while (1 == 1) {
+        while (h != 0) {
+            if (nkind[h - 1] == E_String) {
+                let t: i32 = ntok[h - 1];
+                str_addr[h - 1] = 0x600000 + rodata_size;
+                rodata_size = rodata_size + tlen[t] + 1;
+            }
+            let nx: i32 = nnext[h - 1];
+            if (nx != 0) {
+                if (esp >= 65536) { return cg_die("internal compiler error: walk stack overflow"); }
+                sstk[esp] = nx;
+                esp = esp + 1;
+            }
+            h = nfirst[h - 1];
+        }
+        if (esp == 0) { break; }
+        esp = esp - 1;
+        h = sstk[esp];
+    }
+    return 0;
+}
+
+// The host's exprYieldsPtr over the M3d subset (src/aster.cpp:5195): a string
+// literal, an array global's decayed name, a call to a pointer-returning
+// function (load_ptr/mmap/brk among them), or pointer arithmetic over any of
+// those. A pointer-typed *variable* is deliberately not "ptr" here — the
+// host routes that case through the assignment rule instead, and so does the
+// C14 gate below. Iterative: a left-associative chain is 30k+ nodes deep.
+fn expr_yields_ptr(h: i32) -> i32 {
+    let esp: i32 = 0;
+    pstk[0] = h;
+    esp = 1;
+    while (esp > 0) {
+        esp = esp - 1;
+        let n: i32 = pstk[esp];
+        let k: i32 = nkind[n - 1];
+        if (k == E_String) { return 1; }
+        if (k == E_Var) {
+            if (find_var(ntok[n - 1]) == 1 && rs_cnt > 1) { return 1; }
+            continue;
+        }
+        if (k == E_Call) {
+            if (find_call(ntok[n - 1]) == 1) {
+                if (rs_fnsym == -1) {
+                    if (rcall_rtyp == TY_PTR) { return 1; }
+                } else if (is_ptr_tag(stag[rs_fnsym]) == 1) { return 1; }
+            }
+            continue;
+        }
+        if (k == E_Add || k == E_Sub) {
+            let l: i32 = nfirst[n - 1];
+            if (esp + 2 > 65536) { cg_die("internal compiler error: walk stack overflow"); return 0; }
+            pstk[esp] = nnext[l - 1];
+            esp = esp + 1;
+            pstk[esp] = l;
+            esp = esp + 1;
+            continue;
+        }
+    }
+    return 0;
+}
+
+// Globals, in program order. A constant initialiser folds to the value the
+// section holds (an array's single constant fills every element, as in the
+// host); zero lands in .bss, anything else in .data. A non-constant scalar
+// initialiser is the host's runtimeInit: the global sits in .bss and
+// __aster_init assigns it before main. M3c left those expressions untyped
+// (they live in no function), so the host's synthetic-initialiser checks
+// land here: the type walk (its sema.check), the ptr-into-non-ptr rejection
+// (its exprYieldsPtr gate, C14) and the assignment rule.
+fn cg_globals(prog: i32) -> i32 {
+    let s: i32 = 0;   // the symbol-table cursor: SK_GLOBAL rows appear in
+                      // program order (M3c registered them walking this same
+                      // chain), so the cursor only moves forward
+    let c: i32 = nfirst[prog - 1];
+    while (c != 0) {
+        if (nkind[c - 1] == N_Global) {
+            while (s < nsym && skind[s] != SK_GLOBAL) { s = s + 1; }
+            if (s >= nsym || name_eq(sname[s], ntok[c - 1]) == 0) {
+                return cg_die("internal compiler error: global symbol mismatch");
+            }
+            let init: i32 = nfirst[c - 1];
+            if (init != 0) {
+                let w: i32 = ty_width(stag[s]);
+                let total: i32 = w * scnt[s];
+                let sec: i32 = 0;   // 0 = .bss, 1 = .data
+                if (is_const(init) == 1) {
+                    let val: i64 = fold(init);
+                    if (perr != 0) { return 1; }
+                    if (val != 0) { sec = 1; }
+                } else {
+                    if (tc_expr(init) != 0) { return 1; }
+                    cg_l = tok_line(ntok[c - 1]);
+                    cg_c = tok_col(ntok[c - 1]);
+                    if (is_ptr_tag(stag[s]) == 0 && expr_yields_ptr(init) == 1) {
+                        die_open();
+                        bputs("type mismatch initializing global '");
+                        bputname(ntok[c - 1]);
+                        bputs("': expected ");
+                        bputtybase(stag[s]);
+                        bputs(", got ptr");
+                        return die_close(cg_l, cg_c);
+                    }
+                    if (assign_ok(stag[s], ex_ty[init - 1], ex_arr[init - 1], init) == 0) {
+                        return die_name_at("type mismatch assigning variable: ", ntok[c - 1]);
+                    }
+                    g_init[ninit] = s;
+                    ninit = ninit + 1;
+                }
+                if (sec == 1) {
+                    data_size = align_up(data_size, w);
+                    g_addr[s] = 0x800000 + data_size;
+                    g_sec[s] = 1;
+                    data_size = data_size + total;
+                } else {
+                    bss_size = align_up(bss_size, w);
+                    g_addr[s] = bss_size;   // .bss's base is not known until
+                                            // .data's size is final; fixed up
+                                            // in cg_collect once the walk ends
+                    g_sec[s] = 0;
+                    bss_size = bss_size + total;
+                }
+            }
+            s = s + 1;
+        }
+        c = nnext[c - 1];
+    }
+    return 0;
+}
+
+// One label per defined function, plus __aster_init when the runtime-init
+// list is non-empty, and main's row for the entry stub. An extern function
+// gets no label: calling one is C9, reported where the BL would be emitted.
+fn cg_functions() -> i32 {
+    let s: i32 = 0;
+    while (s < nsym) {
+        if (skind[s] == SK_FN) {
+            fn_lab[s] = new_label();
+            if (fn_lab[s] < 0) { return 1; }
+            if (tok_is(sname[s], "main") == 1) { main_sym = s; }
+        }
+        s = s + 1;
+    }
+    if (ninit > 0) {
+        init_lab = new_label();
+        if (init_lab < 0) { return 1; }
+        has_stub = 1;
+    }
+    if (main_sym < 0) {
+        cg_l = 1;
+        cg_c = 1;
+        return cg_die("no main function: this backend emits a standalone ELF and needs an entry point");
+    }
+    return 0;
+}
+
+fn cg_collect(prog: i32) -> i32 {
+    if (cg_strings(prog) != 0) { return 1; }
+    if (cg_globals(prog) != 0) { return 1; }
+    // Capacity guards before any address is derived from the sizes (C13).
+    if (rodata_size > 2097152) { return cg_die(".rodata exceeds its 2 MiB window"); }
+    if (data_size > 1069547519 || bss_size > 1069547519) { return cg_die("global data exceeds the address space"); }
+    // .bss starts after .data, 8-aligned; the walk recorded .bss offsets from
+    // zero, so every .bss global's address is fixed up here.
+    bss_base = align_up(0x800000 + data_size, 8);
+    let s: i32 = 0;
+    while (s < nsym) {
+        if (skind[s] == SK_GLOBAL && g_sec[s] == 0) { g_addr[s] = g_addr[s] + bss_base; }
+        s = s + 1;
+    }
+    return cg_functions();
 }
 
 fn main() -> i32 {

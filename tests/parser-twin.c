@@ -1666,18 +1666,23 @@ static int sym_find_call(int t) {
     }
     /* Host intrinsics (§3): declared nowhere in source, known to the compiler;
      * a real declared function above wins, else these are always callable.
-     * load_u8/store_u8 return i32 (the byte is zero-extended). */
-    if (tok_eq_tok(t, "load_ptr"))  { rcall_intrinsic = 1; rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "mmap"))      { rcall_intrinsic = 1; rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "brk"))       { rcall_intrinsic = 1; rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "load_i64"))  { rcall_intrinsic = 1; rcall_rtyp = TY_I64;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "store_i64")) { rcall_intrinsic = 1; rcall_rtyp = TY_I64;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "load_u8"))   { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "store_u8"))  { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "load_u16"))  { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "store_u16")) { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "read"))      { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
-    if (tok_eq_tok(t, "write"))     { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+     * load_u8/store_u8 return i32 (the byte is zero-extended).
+     * The ids mirror bootstrap/aster.ast's IC_* block exactly. */
+    if (tok_eq_tok(t, "load_ptr"))  { rcall_intrinsic = 1;  rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "mmap"))      { rcall_intrinsic = 2;  rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "brk"))       { rcall_intrinsic = 3;  rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "load_i64"))  { rcall_intrinsic = 4;  rcall_rtyp = TY_I64;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "store_i64")) { rcall_intrinsic = 5;  rcall_rtyp = TY_I64;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "load_u8"))   { rcall_intrinsic = 6;  rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "store_u8"))  { rcall_intrinsic = 7;  rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "load_u16"))  { rcall_intrinsic = 8;  rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "store_u16")) { rcall_intrinsic = 9;  rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "read"))      { rcall_intrinsic = 10; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "write"))     { rcall_intrinsic = 11; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "exit"))      { rcall_intrinsic = 12; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "openat"))    { rcall_intrinsic = 13; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "close"))     { rcall_intrinsic = 14; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "fstat"))     { rcall_intrinsic = 15; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
     if (sym_find_var(t)) return 2;
     return 0;
 }

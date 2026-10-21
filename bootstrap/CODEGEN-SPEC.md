@@ -372,7 +372,7 @@ park 活临时（`tmp_top←0`）→ 逐参 `gen_expr(参i, 形参型i)` 落网�
 | 镜像基址 | `0x400000` |
 | `.text` 虚址/文件偏移 | `0x401000` / `0x1000` |
 | `.rodata` 虚址 | `0x600000`（固定；`.text` 上限 1 MiB → 0x501000 之下不重叠） |
-| `.data` 虚址 | `0x800000`（固定；`.rodata` 上限 1 MiB → 0x700000 之下不重叠） |
+| `.data` 虚址 | `0x800000`（固定；`.rodata` 上限 2 MiB → 0x800000 之下不重叠） |
 | `.bss` 虚址 | `alignUp(.data虚址+.data尺寸, 8)` |
 
 **节存在性**：`.text`/`.symtab`/`.strtab`/`.shstrtab` 恒有；`.rodata` 有 ≥1 个
@@ -382,10 +382,16 @@ runtime-init 全局时才有。文件内顺序：`Ehdr+Phdr`（页 0）→ `.tex
 
 **`cg_collect` 分配规则**：
 
-- **`.rodata`**：按**节点句柄序**走全部 `E_String` 节点，各追加 strpool 字节
-  （`tstart/tlen`）+ 1 个 NUL；`str_addr[句柄] = 0x600000 + 偏移`。不去重。
+- **`.rodata`**：按**转储先序**走全部 `E_String` 节点——镜像 `emit()` 的
+  迭代先序走法（显式栈 + 兄弟链，与 M3b 转储同序，定义不依赖句柄分配
+  次序，孪生可从同一规格复现节布局），各追加 strpool 字节（`tstart/tlen`）
+  + 1 个 NUL；`str_addr[句柄] = 0x600000 + 偏移`。不去重。
 - **全局**（`N_Program` 孩子序）：标量尺寸 = 元素宽；数组 = `ncount × 元素宽`
   （单常量初值**填充全部元素**，宿主 `src/aster.cpp:1986`）。
+  - **节内对齐**：每个全局按自身宽度在所属节内对齐——u8=1、i32=4、
+    i64/ptr=8、数组按元素宽（u8/i32 数组按元素宽而非总尺寸对齐）。
+  - `.bss` 两段式：走查中先记节内偏移，`cg_collect` 收尾统一加
+    `bss_base = alignUp(0x800000+data_size, 8)` 得绝对虚址。
   - 数组全局：初值必为常量（M3b P27 已拒非常量）；`cg_collect` 重调 `fold()` 得值
     （解析期已成功，不会 die）；值 0 → `.bss`，否则 `.data` 按元素宽重复写值。
   - 标量常量：`fold()` 得值；0 → `.bss`，否则 `.data`。
@@ -456,7 +462,7 @@ runtime-init 全局时才有。文件内顺序：`Ehdr+Phdr`（页 0）→ `.tex
 | C10 | `no main function: this backend emits a standalone ELF and needs an entry point` | 新（宿主 `build-elf` 经链接器报 `no input object defines global _start`） |
 | C11 | `too many local declarations (limit 500, including parameters)` | 镜像 M3c S21（防御性） |
 | C12 | `internal compiler error: temporary register leak` / `...: invalid frame slot` / `...: walk stack overflow` | 宿主同款 |
-| C13 | 容量守卫：`.text exceeds the 1 MiB instruction buffer` / `fixup table overflow` / `too many labels` / `loops nested too deeply (limit 64)` / `global data exceeds the address space` | 新 |
+| C13 | 容量守卫：`.text exceeds the 1 MiB instruction buffer` / `.rodata exceeds its 2 MiB window` / `fixup table overflow` / `too many labels` / `loops nested too deeply (limit 64)` / `global data exceeds the address space` | 新 |
 | C14 | `type mismatch initializing global '<name>': expected <T>, got <U>` | 宿主 `src/aster.cpp:6527` 同款 |
 | C15 | 内建实参校验（§8 表尾消息集） | 宿主 `:3170-3210,5980-6043` |
 
