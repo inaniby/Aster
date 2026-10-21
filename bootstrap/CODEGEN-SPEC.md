@@ -257,12 +257,16 @@
 | `E_Shl/Shr` | `a=gen(左,opWant); b=gen(右,i32)` → `LSL/LSR/ASR a,a,b`（u8 左操作数 → LSR）→ `free b` |
 | `E_BitAnd/Or/Xor` | `AND/ORR/EOR a,a,b`（wideOp 定宽）→ `free b` |
 | `E_Eq..Ge` | `a=gen(左,cmpTy); b=gen(右,cmpTy); CMP a,b; free b; free a; alloc d; CSET d,cond`（cond 见 §2 符号规则） |
-| `E_And` | `alloc t; MOV t,#0; a=gen(左); CMP a,#0; B.EQ L_end(占位); b=gen(右); MOV t,b; free b; L_end:; free a` |
-| `E_Or` | 同上但 `MOV t,#1`、条件分支用 `B.NE` |
+| `E_And` | `a=gen(左); CMP a,#0; MOV a,#0(默认); B.EQ L_end(占位); b=gen(右); MOV a,b; free b; L_end:`（结果落在**左**寄存器 `a`，不设独立 `t`） |
+| `E_Or` | 同上但默认 `MOV a,#1`、条件分支 `B.NE` |
 | `E_Not` | `r=gen(操作数)（bool 物化）; CMP r,#0; CSET r,EQ` |
 
 > 注：局部标量无需地址临时（帧内偏移直接编入 imm12）；全局与数组衰变才取地址临时。
-> 二元「左结果活着求右」天然维持 LIFO。
+> 二元「左结果活着求右」天然维持 LIFO：`gx_push_bin` 先压右子后压左子，左子后出栈拿到**较旧**寄存器 `a`、右子拿到**较新** `b`，故 `free b`（较新）合法。
+
+> **一元节点必须早于二元字段返回**：`gx_dispatch` 顶部的 `l=nfirst`、`r=nnext[l]`、`lt=ex_ty[l]`、`rt=ex_ty[r]` 仅对二元节点成立；`E_Index`/`E_Neg`/`E_Not` 只有单个子（`nnext[l]` 为 0），若在此读取 `r` 再 `ex_ty[r-1]` 即 `ex_ty[-1]` 越界崩溃。故 `E_Index`/`E_Neg`/`E_Not` 在 `gx_dispatch` 顶部 `return`，不得触及 `r`/`rt`。
+
+> **`E_Index` 的 LIFO**：基址临时 `a` 在 `gen_index` 内 `alloc`（较新），下标 `i` 由子表达式先 `alloc`（较旧）。地址结果落 `i`（`ADD Xi,Xa,Wi,UXTW` → `free a`），返回 `i`；若反过来 `free i` 会触发泄漏守卫（上面压着 `a`）。`E_And`/`E_Or` 同理——结果落较旧的左寄存器、释放较新的右寄存器。
 
 ### 6.2 语句 `gen_stmt(s)`（递归，深 ≤96 安全）
 

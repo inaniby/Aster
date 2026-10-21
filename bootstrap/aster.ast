@@ -3600,6 +3600,604 @@ fn cg_collect(prog: i32) -> i32 {
     return cg_functions();
 }
 
+// ---------------------------------------------------------------------------
+// §6: lowering. gen_expr turns an expression into a sequence of instructions
+// ending with the value in a temporary register; gen_stmt (#262) drives it
+// per statement and gen_function (#262) lays out the frame. Everything here
+// is iterative or bounded: expression trees reach 30k+ nodes on dense.ast
+// corpora, and one Aster call frame is 8 KiB.
+// ---------------------------------------------------------------------------
+
+// ---- §6.0 width helpers (§2) ----
+fn ty_is64(t: i32) -> i32 {
+    if (t == TY_I64) { return 1; }
+    if (is_ptr_tag(t) == 1) { return 1; }
+    return 0;
+}
+fn ty_is_uns(t: i32) -> i32 {
+    if (t == TY_U8) { return 1; }
+    return 0;
+}
+// log2 of an element width: 1 -> 0, 4 -> 2, 8 -> 3 (the UXTW shift amount).
+fn log2w(w: i32) -> i32 {
+    if (w == 1) { return 0; }
+    if (w == 4) { return 2; }
+    return 3;
+}
+// The emit_mem scale for a width: 1 -> byte, 4 -> word, 8 -> double.
+fn mem_scale(w: i32) -> i32 {
+    if (w == 1) { return 0; }
+    if (w == 4) { return 2; }
+    return 3;
+}
+
+// ---- §6.0 the frame's local-variable table ----
+// codegen keeps its own name -> slot map rather than reading M3c's symbol
+// table: sema() has finished and popped every scope by the time lowering
+// runs, so find_var would answer with the last-registered row of a name, not
+// the one visible at this statement. The table is rebuilt per function by
+// gen_function (parameters first, then S_Let in order); N_Block pushes and
+// pops a scope exactly as M3c's sema does, so an inner shadow takes a fresh
+// slot and slot numbers never decrease (spec §5).
+let cg_loc_tok: i32[512] = 0;   // name token
+let cg_loc_slot: i32[512] = 0;  // frame slot (byte offset = slot * 8)
+let cg_loc_ty: i32[512] = 0;    // declared type tag
+let cg_loc_cnt: i32[512] = 0;   // array element count (1 = scalar)
+let cg_nlocs: i32 = 0;
+let cg_next_slot: i32 = 0;      // the next slot to hand out (32 after params)
+let cg_scope: i32[128] = 0;     // cg_nlocs at each scope entry
+let cg_sc_depth: i32 = 0;
+let cg_grid_hi: i32 = 0;        // the call scratch grid's high-water mark
+
+fn cg_reset_frame() -> i32 {
+    cg_nlocs = 0;
+    cg_next_slot = 32;
+    cg_sc_depth = 0;
+    cg_grid_hi = 0;
+    return 0;
+}
+fn cg_push_scope() -> i32 {
+    if (cg_sc_depth >= 128) { return cg_die("internal compiler error: scope stack overflow"); }
+    cg_scope[cg_sc_depth] = cg_nlocs;
+    cg_sc_depth = cg_sc_depth + 1;
+    return 0;
+}
+fn cg_pop_scope() -> i32 {
+    if (cg_sc_depth <= 0) { return cg_die("internal compiler error: scope stack underflow"); }
+    cg_sc_depth = cg_sc_depth - 1;
+    cg_nlocs = cg_scope[cg_sc_depth];
+    return 0;
+}
+// Register a local (parameter or S_Let); returns its frame slot or -1 after
+// a C11 diagnostic. The 500-entry limit mirrors M3c's S21, and 532 is the
+// end of the locals area (§5); both are defensive — M3c already enforced
+// the first.
+fn cg_add_local(tok: i32, ty: i32, cnt: i32) -> i32 {
+    if (cg_nlocs >= 500 || cg_next_slot >= 532) {
+        cg_l = tok_line(tok);
+        cg_c = tok_col(tok);
+        if (cg_die("too many local declarations (limit 500, including parameters)") != 0) { return -1; }
+    }
+    cg_loc_tok[cg_nlocs] = tok;
+    cg_loc_slot[cg_nlocs] = cg_next_slot;
+    cg_loc_ty[cg_nlocs] = ty;
+    cg_loc_cnt[cg_nlocs] = cnt;
+    cg_nlocs = cg_nlocs + 1;
+    cg_next_slot = cg_next_slot + 1;
+    return cg_loc_slot[cg_nlocs - 1];
+}
+// The visible local entry for a name token (latest first, so an inner shadow
+// wins), or -1. Tokens compare by text — two spellings of one name in
+// different scopes are different tokens that happen to match, which is
+// exactly the identity we want.
+fn cg_find_local(tok: i32) -> i32 {
+    let i: i32 = cg_nlocs - 1;
+    while (i >= 0) {
+        if (name_eq(cg_loc_tok[i], tok) == 1) { return i; }
+        i = i - 1;
+    }
+    return -1;
+}
+// A global's symbol row (SK_GLOBAL only — externs are C9 where referenced),
+// or -1. M3c guarantees every name that reaches codegen resolves, so -1 is
+// an internal error, not a user-facing one.
+fn cg_find_global(tok: i32) -> i32 {
+    let s: i32 = 0;
+    while (s < nsym) {
+        if (skind[s] == SK_GLOBAL && name_eq(sname[s], tok) == 1) { return s; }
+        s = s + 1;
+    }
+    return -1;
+}
+
+// ---- §6.0 frame-address helper ----
+// ADD Xd, SP, #off. The frame is 8192 bytes but ADD's plain imm12 stops at
+// 4095, and only multiples of 4096 have the shifted form — a slot past 511
+// (byte 4088+) therefore splits into two adds at the 4096 boundary.
+fn emit_frame_addr(d: i32, off: i32) -> i32 {
+    if (off <= 4095 || off % 4096 == 0) { return emit_addsub_imm(d, 31, off, 0, 1); }
+    if (off / 4096 > 4095) { return cg_die("internal compiler error: frame offset out of range"); }
+    if (emit_addsub_imm(d, 31, (off / 4096) * 4096, 0, 1) != 0) { return 1; }
+    return emit_addsub_imm(d, d, off % 4096, 0, 1);
+}
+
+// ---- §6.0 diagnostics at a node / token ----
+fn cg_die_at_node(msg: ptr<u8>, n: i32) -> i32 {
+    cg_l = tok_line(ntok[n - 1]);
+    cg_c = tok_col(ntok[n - 1]);
+    return cg_die(msg);
+}
+fn cg_die_name_at(msg: ptr<u8>, t: i32) -> i32 {
+    cg_l = tok_line(t);
+    cg_c = tok_col(t);
+    die_open();
+    bputs(msg);
+    bputname(t);
+    return die_close(cg_l, cg_c);
+}
+
+// ---- §6.1 gen_expr: the iterative lowering machine ----
+// The work stack holds (node, state, want); state 1 means "children done,
+// combine". A leaf computes its value into a fresh register and publishes it
+// in gx_val by node handle — a tree, so no handle is ever generated twice,
+// and the combine reads its children's registers from there. This is
+// tc_expr's shape (bootstrap/aster.ast:2696) with the per-node type results
+// swapped for registers.
+let gx_node: i32[65536] = 0;
+let gx_state: i32[65536] = 0;
+let gx_want: i32[65536] = 0;
+let gx_val: i32[65536] = 0;    // node handle -> result register
+let gx_top: i32 = 0;
+
+fn gx_push_bin(n: i32, wantL: i32, wantR: i32, wt: i32) -> i32 {
+    if (gx_top + 3 > 65536) { return cg_die_at_node("internal compiler error: expression stack overflow", n); }
+    let l: i32 = nfirst[n - 1];
+    let r: i32 = nnext[l - 1];
+    gx_node[gx_top] = n; gx_state[gx_top] = 1; gx_want[gx_top] = wt; gx_top = gx_top + 1;
+    gx_node[gx_top] = r; gx_state[gx_top] = 0; gx_want[gx_top] = wantR; gx_top = gx_top + 1;
+    gx_node[gx_top] = l; gx_state[gx_top] = 0; gx_want[gx_top] = wantL; gx_top = gx_top + 1;
+    return 0;
+}
+fn gx_push_un(n: i32, wantC: i32, wt: i32) -> i32 {
+    if (gx_top + 2 > 65536) { return cg_die_at_node("internal compiler error: expression stack overflow", n); }
+    gx_node[gx_top] = n; gx_state[gx_top] = 1; gx_want[gx_top] = wt; gx_top = gx_top + 1;
+    gx_node[gx_top] = nfirst[n - 1]; gx_state[gx_top] = 0; gx_want[gx_top] = wantC; gx_top = gx_top + 1;
+    return 0;
+}
+
+// First visit: decide each child's want (§2's width rules) and push. A
+// binary node's children may want different widths (a shift's count is
+// always i32; pointer arithmetic runs its pointer side at 64 and its integer
+// side at 32), which is why the wants are chosen per kind here rather than
+// pushed uniformly.
+fn gx_dispatch(n: i32, wt: i32) -> i32 {
+    let k: i32 = nkind[n - 1];
+    // Unary nodes have a single child (nfirst); computing the sibling (r) and
+    // its type (rt) here would read nnext of a child with no sibling (0) and
+    // then ex_ty[-1] — an out-of-bounds crash. Dispatch them before any binary
+    // field is touched.
+    if (k == E_Index) { return gx_push_un(n, TY_I32, wt); }
+    if (k == E_Neg || k == E_Not) { return gx_push_un(n, wt, wt); }
+    let l: i32 = nfirst[n - 1];
+    let r: i32 = nnext[l - 1];
+    let lt: i32 = ex_ty[l - 1];
+    let rt: i32 = ex_ty[r - 1];
+    if (k == E_Shl || k == E_Shr) {
+        // The count is a bare i32; the left side decides the width.
+        let ow: i32 = wt;
+        if (ty_is64(wt) == 1 || ty_is64(lt) == 1) { ow = TY_I64; }
+        return gx_push_bin(n, ow, TY_I32, wt);
+    }
+    if (k == E_Add || k == E_Sub) {
+        let lp: i32 = is_ptr_tag(lt);
+        let rp: i32 = is_ptr_tag(rt);
+        if (lp == 1 && rp == 0) { return gx_push_bin(n, TY_I64, TY_I32, wt); }
+        if (k == E_Add && lp == 0 && rp == 1) { return gx_push_bin(n, TY_I32, TY_I64, wt); }
+        let ow: i32 = wt;
+        if (ty_is64(wt) == 1 || ty_is64(lt) == 1 || ty_is64(rt) == 1) { ow = TY_I64; }
+        return gx_push_bin(n, ow, ow, wt);
+    }
+    if (k == E_Eq || k == E_Ne || k == E_Lt || k == E_Le || k == E_Gt || k == E_Ge) {
+        // The comparison's own width (§2): never the consumer's.
+        let cw: i32 = TY_I32;
+        if (ty_is64(lt) == 1 || ty_is64(rt) == 1) { cw = TY_I64; }
+        return gx_push_bin(n, cw, cw, wt);
+    }
+    if (k == E_And || k == E_Or) {
+        // Both sides are conditions: materialised at i32 and tested at their
+        // own static width (the §6.2 uniform rule), whatever want says.
+        return gx_push_bin(n, TY_I32, TY_I32, wt);
+    }
+    let ow: i32 = wt;
+    if (ty_is64(wt) == 1 || ty_is64(lt) == 1 || ty_is64(rt) == 1) { ow = TY_I64; }
+    return gx_push_bin(n, ow, ow, wt);
+}
+
+fn gen_expr(h: i32, want: i32) -> i32 {
+    gx_top = 0;
+    gx_node[0] = h; gx_state[0] = 0; gx_want[0] = want; gx_top = 1;
+    while (gx_top > 0) {
+        gx_top = gx_top - 1;
+        let n: i32 = gx_node[gx_top];
+        let st: i32 = gx_state[gx_top];
+        let wt: i32 = gx_want[gx_top];
+        if (st == 1) {
+            if (gen_combine(n, wt) != 0) { return -1; }
+            continue;
+        }
+        let k: i32 = nkind[n - 1];
+        if (k == E_Num || k == E_String || k == E_Var) {
+            let r: i32 = gen_leaf(n, wt);
+            if (r < 0) { return -1; }
+            gx_val[n - 1] = r;
+            continue;
+        }
+        if (k == E_Call) {
+            // A call stages its own arguments (each in its own want), so it
+            // never pushes them as children here.
+            let r: i32 = gen_call(n, wt);
+            if (r < 0) { return -1; }
+            gx_val[n - 1] = r;
+            continue;
+        }
+        if (gx_dispatch(n, wt) != 0) { return -1; }
+    }
+    return gx_val[h - 1];
+}
+
+// ---- §6.0 parameter types ----
+// The i-th N_Param's declared type of a function node (M3c's tc_combine
+// walks the same chain for S10). M3c guarantees i < the parameter count.
+fn param_type(fnode: i32, i: i32) -> i32 {
+    let p: i32 = nfirst[fnode - 1];
+    let pi: i32 = 0;
+    while (p != 0) {
+        if (nkind[p - 1] == N_Param) {
+            if (pi == i) { return nnty[p - 1]; }
+            pi = pi + 1;
+        }
+        p = nnext[p - 1];
+    }
+    return TY_I32;
+}
+
+// A comparison's AArch64 condition (§2): signed by default, the unsigned
+// spelling when either side is u8 — the host's comparisonCond
+// (src/aster.cpp:2290). Returns the user-level condition code; emit_cset
+// applies CSET's own inversion.
+fn cmp_cond(k: i32, lt: i32, rt: i32) -> i32 {
+    let uns: i32 = 0;
+    if (lt == TY_U8 || rt == TY_U8) { uns = 1; }
+    if (k == E_Eq) { return 0; }
+    if (k == E_Ne) { return 1; }
+    if (k == E_Lt) { if (uns == 1) { return 3; } return 11; }
+    if (k == E_Le) { if (uns == 1) { return 9; } return 13; }
+    if (k == E_Gt) { if (uns == 1) { return 8; } return 12; }
+    if (k == E_Ge) { if (uns == 1) { return 2; } return 10; }
+    return 0;
+}
+
+// ---- §6.1 combine: children are done, emit the node's own instructions ----
+fn gen_combine(n: i32, want: i32) -> i32 {
+    let k: i32 = nkind[n - 1];
+    if (k == E_Index) { return gen_index(n, want); }
+    if (k == E_Neg) {
+        let a: i32 = gx_val[nfirst[n - 1] - 1];
+        let is64: i32 = 0;
+        if (ty_is64(want) == 1) { is64 = 1; }
+        if (emit_neg(a, a, is64) != 0) { return 1; }
+        gx_val[n - 1] = a;
+        return 0;
+    }
+    if (k == E_Not) {
+        let op: i32 = nfirst[n - 1];
+        let a: i32 = gx_val[op - 1];
+        // CMP at the operand's static width (the §6.2 uniform rule), then
+        // CSET Wd,eq — 1 exactly when the operand was zero.
+        let is64: i32 = 0;
+        if (ty_is64(ex_ty[op - 1]) == 1) { is64 = 1; }
+        if (emit_cmp_imm(a, 0, is64) != 0) { return 1; }
+        if (emit_cset(a, 0) != 0) { return 1; }
+        gx_val[n - 1] = a;
+        return 0;
+    }
+    let l: i32 = nfirst[n - 1];
+    let r: i32 = nnext[l - 1];
+    let lt: i32 = ex_ty[l - 1];
+    let rt: i32 = ex_ty[r - 1];
+    let a: i32 = gx_val[l - 1];
+    let b: i32 = gx_val[r - 1];
+    if (k == E_Add || k == E_Sub) {
+        let lp: i32 = is_ptr_tag(lt);
+        let rp: i32 = is_ptr_tag(rt);
+        if (k == E_Add && lp == 1 && rp == 1) { return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n); }
+        if (k == E_Sub && rp == 1) { return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n); }
+        if (lp == 1 && rp == 0) {
+            // ptr - int: a byte offset, the integer side sign-extended (SXTW).
+            let sub: i32 = 0;
+            if (k == E_Sub) { sub = 1; }
+            if (emit_addsub_ext(a, a, b, sub, 6, 0) != 0) { return 1; }
+            if (free_tmp(b) != 0) { return 1; }
+            gx_val[n - 1] = a;
+            return 0;
+        }
+        if (k == E_Add && lp == 0 && rp == 1) {
+            // int + ptr: the pointer is Xn, so the result lands on the lower
+            // temporary (the offset's register) and LIFO stays intact — the
+            // host's same trick (src/aster.cpp:3643).
+            if (emit_addsub_ext(a, b, a, 0, 6, 0) != 0) { return 1; }
+            if (free_tmp(b) != 0) { return 1; }
+            gx_val[n - 1] = a;
+            return 0;
+        }
+        let is64: i32 = 0;
+        if (ty_is64(want) == 1 || ty_is64(lt) == 1 || ty_is64(rt) == 1) { is64 = 1; }
+        let sub: i32 = 0;
+        if (k == E_Sub) { sub = 1; }
+        if (emit_addsub_rr(a, a, b, sub, is64) != 0) { return 1; }
+        if (free_tmp(b) != 0) { return 1; }
+        gx_val[n - 1] = a;
+        return 0;
+    }
+    if (k == E_Mul || k == E_Div || k == E_Mod) {
+        if (is_ptr_tag(lt) == 1 || is_ptr_tag(rt) == 1) {
+            return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n);
+        }
+        let is64: i32 = 0;
+        if (ty_is64(want) == 1 || ty_is64(lt) == 1 || ty_is64(rt) == 1) { is64 = 1; }
+        if (k == E_Mul) {
+            if (emit_mul(a, a, b, is64) != 0) { return 1; }
+            if (free_tmp(b) != 0) { return 1; }
+            gx_val[n - 1] = a;
+            return 0;
+        }
+        let uns: i32 = 0;
+        if (ty_is_uns(lt) == 1 || ty_is_uns(rt) == 1) { uns = 1; }
+        if (k == E_Div) {
+            if (emit_div(a, a, b, is64, uns) != 0) { return 1; }
+            if (free_tmp(b) != 0) { return 1; }
+            gx_val[n - 1] = a;
+            return 0;
+        }
+        // a % b = a - (a/b)*b: SDIV/UDIV into a fresh quotient, then MSUB.
+        let q: i32 = alloc_tmp();
+        if (q < 0) { return -1; }
+        if (emit_div(q, a, b, is64, uns) != 0) { return 1; }
+        if (emit_msub(a, a, b, q, is64) != 0) { return 1; }
+        if (free_tmp(q) != 0) { return 1; }
+        if (free_tmp(b) != 0) { return 1; }
+        gx_val[n - 1] = a;
+        return 0;
+    }
+    if (k == E_Shl || k == E_Shr) {
+        if (is_ptr_tag(lt) == 1) {
+            return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n);
+        }
+        let is64: i32 = 0;
+        if (ty_is64(want) == 1 || ty_is64(lt) == 1) { is64 = 1; }
+        let shk: i32 = 0;   // LSL
+        if (k == E_Shr) {
+            if (ty_is_uns(lt) == 1) { shk = 1; }   // LSR
+            else { shk = 2; }                       // ASR
+        }
+        if (emit_shift(a, a, b, is64, shk) != 0) { return 1; }
+        if (free_tmp(b) != 0) { return 1; }
+        gx_val[n - 1] = a;
+        return 0;
+    }
+    if (k == E_BitAnd || k == E_BitOr || k == E_BitXor) {
+        if (is_ptr_tag(lt) == 1 || is_ptr_tag(rt) == 1) {
+            return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n);
+        }
+        let is64: i32 = 0;
+        if (ty_is64(want) == 1 || ty_is64(lt) == 1 || ty_is64(rt) == 1) { is64 = 1; }
+        let lk: i32 = 0;   // AND
+        if (k == E_BitOr) { lk = 1; }
+        if (k == E_BitXor) { lk = 2; }
+        if (emit_logic(a, a, b, is64, lk) != 0) { return 1; }
+        if (free_tmp(b) != 0) { return 1; }
+        gx_val[n - 1] = a;
+        return 0;
+    }
+    if (k == E_Eq || k == E_Ne || k == E_Lt || k == E_Le || k == E_Gt || k == E_Ge) {
+        let is64: i32 = 0;
+        if (ty_is64(lt) == 1 || ty_is64(rt) == 1) { is64 = 1; }
+        if (emit_cmp_rr(a, b, is64) != 0) { return 1; }
+        if (free_tmp(b) != 0) { return 1; }
+        if (free_tmp(a) != 0) { return 1; }
+        let d: i32 = alloc_tmp();
+        if (d < 0) { return -1; }
+        if (emit_cset(d, cmp_cond(k, lt, rt)) != 0) { return 1; }
+        gx_val[n - 1] = d;
+        return 0;
+    }
+    if (k == E_And || k == E_Or) {
+        let isAnd: i32 = 0;
+        if (k == E_And) { isAnd = 1; }
+        // Short-circuit: compare the left side first (a still holds it), then
+        // preset a to the value the operator takes when the left decides the
+        // answer (0 for &&, 1 for ||); only if the left does NOT decide do we
+        // overwrite a with the right side. a is the older temporary (the left
+        // operand), so freeing b (the newer) leaves a as the result — correct
+        // LIFO, no second register. (Allocating a fresh result on top and then
+        // freeing b would trip the leak guard, since b would sit below it.)
+        let is64: i32 = 0;
+        if (ty_is64(lt) == 1) { is64 = 1; }
+        if (emit_cmp_imm(a, 0, is64) != 0) { return 1; }
+        if (isAnd == 1) {
+            if (emit_mov_zero(a, 0) != 0) { return 1; }     // a = 0 (&& default)
+        } else {
+            if (emit_movz(a, 1, 0, 0) != 0) { return 1; }   // a = 1 (|| default)
+        }
+        let lend: i32 = new_label();
+        if (lend < 0) { return -1; }
+        if (isAnd == 1) {
+            if (emit_bcond(0, lend) != 0) { return 1; }   // B.EQ: left false -> keep 0
+        } else {
+            if (emit_bcond(1, lend) != 0) { return 1; }   // B.NE: left true  -> keep 1
+        }
+        if (emit_mov_rr(a, b, 0) != 0) { return 1; }      // a = b (left did not decide)
+        if (free_tmp(b) != 0) { return 1; }
+        if (place_label(lend) != 0) { return 1; }
+        gx_val[n - 1] = a;
+        return 0;
+    }
+    return cg_die_at_node("internal compiler error: unlowered expression", n);
+}
+
+// ---- §6.1 E_Index ----
+// base[i]: the base is an array name (its frame slot or .data/.bss address,
+// possibly via a four-word materialisation) or a pointer expression (loaded
+// from wherever it lives). The subscript scales by the element width
+// (UXTW #sh) and the load follows at the element's own width.
+fn gen_index(n: i32, want: i32) -> i32 {
+    let tok: i32 = ntok[n - 1];
+    let idx: i32 = nfirst[n - 1];
+    let i: i32 = gx_val[idx - 1];
+    let a: i32 = -1;
+    let ew: i32 = 0;
+    let e: i32 = cg_find_local(tok);
+    if (e >= 0) {
+        let cnt: i32 = cg_loc_cnt[e];
+        let ty: i32 = cg_loc_ty[e];
+        if (cnt > 1) {
+            ew = ty_width(ty);
+            a = alloc_tmp();
+            if (a < 0) { return -1; }
+            if (emit_frame_addr(a, cg_loc_slot[e] * 8) != 0) { return -1; }
+        } else if (is_ptr_tag(ty) == 1) {
+            ew = ty_width(ptr_elem(ty));
+            a = alloc_tmp();
+            if (a < 0) { return -1; }
+            if (emit_mem(0, 3, a, 31, cg_loc_slot[e] * 8) != 0) { return -1; }
+        } else {
+            if (cg_die_name_at("cannot index non-array variable: ", tok) != 0) { return -1; }
+        }
+    } else {
+        let s: i32 = cg_find_global(tok);
+        if (s < 0) { if (cg_die_name_at("unknown variable: ", tok) != 0) { return -1; } }
+        if (skind[s] == SK_EXTERN_LET) { if (cg_die_name_at("cannot reference external global: ", tok) != 0) { return -1; } }
+        if (scnt[s] > 1) {
+            ew = ty_width(stag[s]);
+            a = alloc_tmp();
+            if (a < 0) { return -1; }
+            if (emit_addr64(a, g_addr[s]) != 0) { return -1; }
+        } else if (is_ptr_tag(stag[s]) == 1) {
+            ew = ty_width(ptr_elem(stag[s]));
+            a = alloc_tmp();
+            if (a < 0) { return -1; }
+            let t: i32 = alloc_tmp();
+            if (t < 0) { return -1; }
+            if (emit_addr64(t, g_addr[s]) != 0) { return -1; }
+            if (emit_mem(0, 3, a, t, 0) != 0) { return -1; }
+            if (free_tmp(t) != 0) { return -1; }
+        } else {
+            if (cg_die_name_at("cannot index non-array variable: ", tok) != 0) { return -1; }
+        }
+    }
+    // The index register i was allocated by the child lowering that ran
+    // before this combine, so it is the OLDER entry on the temporary stack;
+    // a (the base address gen_index allocated) is the newer one. Land the
+    // address in i and free a — the host's same LIFO-preserving trick
+    // (src/aster.cpp:3643): keep the older register as the result, release
+    // the younger. (Freeing i here would trip the leak guard, since a sits
+    // above it.)
+    if (emit_addsub_ext(i, a, i, 0, 2, log2w(ew)) != 0) { return -1; }
+    if (free_tmp(a) != 0) { return -1; }
+    if (emit_mem(0, mem_scale(ew), i, i, 0) != 0) { return -1; }
+    if (ew == 4 && ty_is64(want) == 1) {
+        if (emit_sxtw(i, i) != 0) { return -1; }
+    }
+    gx_val[n - 1] = i;
+    return 0;
+}
+
+// ---- §7 calls (§8's sequence) ----
+// A direct call: park the live temporaries, stage each argument in the
+// scratch grid at its declared width, move the first eight into X0-X7 (the
+// rest into this frame's outgoing slots), BL, and read the result back.
+// M3c has already checked the count and each argument's type; the extern
+// rejection (C9) and the intrinsic dispatch (#263) live here.
+fn gen_call(n: i32, want: i32) -> i32 {
+    let callee: i32 = ntok[n - 1];
+    let r: i32 = find_call(callee);
+    if (r != 1) { if (cg_die_name_at("call to undeclared function: ", callee) != 0) { return -1; } }
+    let fsym: i32 = rs_fnsym;
+    if (fsym == -1) { if (cg_die_at_node("internal compiler error: intrinsic lowering not yet wired", n) != 0) { return -1; } }
+    if (skind[fsym] == SK_EXTERN_FN) { if (cg_die_name_at("cannot call external function: ", callee) != 0) { return -1; } }
+    let fnode: i32 = sfn[fsym];
+    let argc: i32 = 0;
+    let a0: i32 = nfirst[n - 1];
+    while (a0 != 0) { argc = argc + 1; a0 = nnext[a0 - 1]; }
+    let base: i32 = cg_grid_hi;
+    if (base + argc > 100) {
+        cg_l = tok_line(callee);
+        cg_c = tok_col(callee);
+        if (cg_die("nested function-call arguments exceed compiler limit (100 scratch slots)") != 0) { return -1; }
+    }
+    // Park every live temporary in the spill area (900+r), then reset the
+    // pool so the argument expressions start from a clean X0.
+    let parked_n: i32 = tmp_top;
+    let pr: i32 = 0;
+    while (pr < parked_n) {
+        if (emit_mem(1, 3, tmp_free[pr], 31, (900 + pr) * 8) != 0) { return -1; }
+        pr = pr + 1;
+    }
+    tmp_top = 0;
+    // Stage each argument: its own grid slot, at the parameter's declared
+    // width. The grid high-water mark moves before each argument so a nested
+    // call stages above everything this call already occupies.
+    let i: i32 = 0;
+    let arg: i32 = nfirst[n - 1];
+    while (arg != 0) {
+        let pty: i32 = param_type(fnode, i);
+        cg_grid_hi = base + i;
+        let v: i32 = gen_expr(arg, pty);
+        if (v < 0) { return -1; }
+        if (emit_mem(1, mem_scale(ty_width(pty)), v, 31, (800 + base + i) * 8) != 0) { return -1; }
+        if (free_tmp(v) != 0) { return -1; }
+        i = i + 1;
+        arg = nnext[arg - 1];
+    }
+    cg_grid_hi = base;
+    // X0-X7 from the grid; arguments nine and up are copied into this frame's
+    // outgoing slots, where the callee (whose SP is our SP) reads them at
+    // [SP+8192+8*(k-8)].
+    i = 0;
+    while (i < argc && i < 8) {
+        let pty: i32 = param_type(fnode, i);
+        if (emit_mem(0, mem_scale(ty_width(pty)), i, 31, (800 + base + i) * 8) != 0) { return -1; }
+        i = i + 1;
+    }
+    while (i < argc) {
+        if (emit_mem(0, 3, 9, 31, (800 + base + i) * 8) != 0) { return -1; }
+        if (emit_mem(1, 3, 9, 31, (i - 8) * 8) != 0) { return -1; }
+        i = i + 1;
+    }
+    if (emit_bl(fn_lab[fsym]) != 0) { return -1; }
+    // The result rides through slot 1022 so restoring the parked temporaries
+    // cannot clobber it.
+    if (emit_mem(1, 3, 0, 31, 1022 * 8) != 0) { return -1; }
+    pr = 0;
+    while (pr < parked_n) {
+        if (emit_mem(0, 3, tmp_free[pr], 31, (900 + pr) * 8) != 0) { return -1; }
+        pr = pr + 1;
+    }
+    tmp_top = parked_n;
+    let d: i32 = alloc_tmp();
+    if (d < 0) { return -1; }
+    if (emit_mem(0, mem_scale(ty_width(stag[fsym])), d, 31, 1022 * 8) != 0) { return -1; }
+    if (stag[fsym] == TY_I32 && ty_is64(want) == 1) {
+        if (emit_sxtw(d, d) != 0) { return -1; }
+    }
+    return d;
+}
+
+// ---- §8 entry point ----
+// Per the M3d contract (CODEGEN-SPEC.md §10) the driver still ends with the
+// dump until #260 wires the three codegen passes in; gen_expr/gen_combine and
+// the rest of the lowering layer are written here and consumed by gen_function
+// (the statement/structure pass, #258).
 fn main() -> i32 {
     let rc: i32 = read_source();
     if (rc != 0) { return rc; }
@@ -3612,4 +4210,77 @@ fn main() -> i32 {
     if (rc != 0) { return rc; }
     flush_out();
     return 0;
+}
+fn gen_leaf(n: i32, want: i32) -> i32 {
+    let k: i32 = nkind[n - 1];
+    if (k == E_Num) {
+        convert_num(ntok[n - 1]);
+        let d: i32 = alloc_tmp();
+        if (d < 0) { return -1; }
+        if (ty_is64(want) == 1) {
+            if (emit_imm64(d, numval) != 0) { return -1; }
+            return d;
+        }
+        // 32-bit: MOVZ Wd,#lo and, only when the top half carries bits, one
+        // MOVK — the host's two-word pattern (src/aster.cpp:3098), which
+        // covers every 32-bit value including the negative ones.
+        let lo: i32 = numval & 0xffff;
+        let hi: i32 = (numval >> 16) & 0xffff;
+        if (emit_movz(d, lo, 0, 0) != 0) { return -1; }
+        if (hi != 0) {
+            if (emit_movk(d, hi, 1, 0) != 0) { return -1; }
+        }
+        return d;
+    }
+    if (k == E_String) {
+        let d: i32 = alloc_tmp();
+        if (d < 0) { return -1; }
+        if (emit_addr64(d, str_addr[n - 1]) != 0) { return -1; }
+        return d;
+    }
+    return gen_var(n, want);
+}
+
+fn gen_var(n: i32, want: i32) -> i32 {
+    let tok: i32 = ntok[n - 1];
+    let e: i32 = cg_find_local(tok);
+    if (e >= 0) {
+        let cnt: i32 = cg_loc_cnt[e];
+        let ty: i32 = cg_loc_ty[e];
+        let slot: i32 = cg_loc_slot[e];
+        if (cnt > 1) {
+            // An array used as a value decays to its first element's address.
+            let d: i32 = alloc_tmp();
+            if (d < 0) { return -1; }
+            if (emit_frame_addr(d, slot * 8) != 0) { return -1; }
+            return d;
+        }
+        let d: i32 = alloc_tmp();
+        if (d < 0) { return -1; }
+        if (emit_mem(0, mem_scale(ty_width(ty)), d, 31, slot * 8) != 0) { return -1; }
+        if (ty == TY_I32 && ty_is64(want) == 1) {
+            if (emit_sxtw(d, d) != 0) { return -1; }
+        }
+        return d;
+    }
+    let s: i32 = cg_find_global(tok);
+    if (s < 0) { if (cg_die_name_at("unknown variable: ", tok) != 0) { return -1; } }
+    if (skind[s] == SK_EXTERN_LET) { if (cg_die_name_at("cannot reference external global: ", tok) != 0) { return -1; } }
+    if (scnt[s] > 1) {
+        let d: i32 = alloc_tmp();
+        if (d < 0) { return -1; }
+        if (emit_addr64(d, g_addr[s]) != 0) { return -1; }
+        return d;
+    }
+    let d: i32 = alloc_tmp();
+    if (d < 0) { return -1; }
+    let t: i32 = alloc_tmp();
+    if (t < 0) { return -1; }
+    if (emit_addr64(t, g_addr[s]) != 0) { return -1; }
+    if (emit_mem(0, mem_scale(ty_width(stag[s])), d, t, 0) != 0) { return -1; }
+    if (free_tmp(t) != 0) { return -1; }
+    if (stag[s] == TY_I32 && ty_is64(want) == 1) {
+        if (emit_sxtw(d, d) != 0) { return -1; }
+    }
+    return d;
 }
