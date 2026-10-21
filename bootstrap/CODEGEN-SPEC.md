@@ -41,7 +41,7 @@
 1. `cg_collect` —— 地址分配：走符号表与 AST，算 `.rodata`/`.data`/`.bss` 尺寸与每个
    字符串、每个全局的绝对虚址；登记 runtime-init 全局清单。
 2. `gen_function` —— 线性展开：把每个函数的指令按字追加进 `textw: i32[262144]`，
-   分支/调用登 fixup（§7），全局/串地址用四词 `emitMov64` 物化（绝对址，§4）。
+   分支/调用登 fixup（§7），全局/串地址用四词 `emit_addr64` 物化（绝对址，§4）。
 3. `elf_emit` —— 已知全部地址后顺序写 ELF：Ehdr/Phdr/`.text`/`.rodata`/`.data`/
    `.symtab`/`.strtab`/`.shstrtab`/Shdr，并解析全部 fixup 回填（§9）。
 
@@ -73,9 +73,10 @@
 
 - i32 值进 i64 上下文：载入后用 `SXTW`（`0x93407c00|(Rn<<5)|Rd`）——宿主同款
   （`src/aster.cpp:3130`）。u8 载入用 `LDRB`，零扩展天然正确；i64/ptr 载入即全宽。
-- `E_Num`：want 为 64 位 → `emitMov64`（§4）；否则 `MOVZ Wd,#(v&0xffff)`，
-  `v>>16` 非零再补一条 `MOVK Wd,#(v>>16),lsl#16`（宿主 `src/aster.cpp:3099` 同款，
-  两词覆盖全部 32 位 patterns，含负数）。
+- `E_Num`：want 为 64 位 → `emit_imm64`（§4.1，**省略形**：高 16 位为 0 的 chunk
+  不发 `MOVK`——与宿主 `emitMov64` 逐条同规则，`src/aster.cpp:2887`）；
+  否则 `MOVZ Wd,#(v&0xffff)`，`v>>16` 非零再补一条 `MOVK Wd,#(v>>16),lsl#16`
+  （宿主 `src/aster.cpp:3098` 同款，两词覆盖全部 32 位 patterns，含负数）。
 - 二元运算 `wideOp = tyIs64(want) || tyIs64(ta) || tyIs64(tb)`；`wide` 为真时
   `opWant = TY_I64`，否则 `opWant = want`。**宿主 `constExceedsI32` 在 bootstrap 中
   已由 M3c 蕴含**：`E_Num` 越出 i32 即 `TY_I64`、`E_Neg` 继承操作数类型
@@ -133,11 +134,12 @@
 | `MOV Wd,Wm` | `0x2a0003e0 \| (Rm<<16) \| Rd` |
 | `MOV Wd,#0` / `MOV Xd,#0` | `0x2a1f03e0\|Rd` / `0xaa1f03e0\|Rd`（WZR/XZR 源） |
 
-**`emitMov64(rd, v)`**（全局/串地址物化，四词**不省略**，供 §7 fixup 回填）：
+**`emit_addr64(rd, v)`**（全局/串地址物化，四词**不省略**）：
 `MOVZ Xd,#(v&0xffff)`；`MOVK Xd,#((v>>16)&0xffff),lsl#16`；
 `MOVK Xd,#((v>>32)&0xffff),lsl#32`；`MOVK Xd,#((v>>48)&0xffff),lsl#48`。
-宿主对**常量**用省略形（`src/aster.cpp:2948`：高 16 位为 0 的 chunk 不发），
-bootstrap 的 `E_Num` 同样省略（§2）；唯地址物化不省略。
+与常量物化 `emit_imm64`（省略形，宿主同款：高 16 位为 0 的 chunk 不发，
+`src/aster.cpp:2887`）是**两个函数**：`E_Num` 走 `emit_imm64`，地址走
+`emit_addr64`——地址流恒四词，发射序对孪生逐字可锁。
 
 ### 4.2 算术 / 逻辑 / 移位
 
@@ -240,13 +242,13 @@ bootstrap 的 `E_Num` 同样省略（§2）；唯地址物化不省略。
 
 | 节点 | lowering |
 |---|---|
-| `E_Num` | §2 宽度规则：`want` 64 位 → `emitMov64`；否则 `MOVZ Wd`（+条件 `MOVK`） |
-| `E_String` | `emitMov64(rd, 串绝对虚址)`（§9 `.rodata`，NUL 结尾） |
+| `E_Num` | §2 宽度规则：`want` 64 位 → `emit_imm64`（省略形）；否则 `MOVZ Wd`（+条件 `MOVK`） |
+| `E_String` | `emit_addr64(rd, 串绝对虚址)`（§9 `.rodata`，NUL 结尾） |
 | `E_Var` 局部/形参 | `alloc d; LDR (B/W/X) d,[SP,#槽*8]`（按声明宽度；imm12=槽*2 或 槽）；`want` 64 位且声明为 i32 → `SXTW d,d` |
-| `E_Var` 全局标量 | `alloc d; alloc t; emitMov64(t, 全局虚址); LDR (B/W/X) d,[t]`；i32+want64 → `SXTW`；`free t` |
-| `E_Var` 全局数组 | 衰变为首元素地址：`alloc d; emitMov64(d, 全局虚址)` |
+| `E_Var` 全局标量 | `alloc d; alloc t; emit_addr64(t, 全局虚址); LDR (B/W/X) d,[t]`；i32+want64 → `SXTW`；`free t` |
+| `E_Var` 全局数组 | 衰变为首元素地址：`alloc d; emit_addr64(d, 全局虚址)` |
 | `E_Call` | §7 |
-| `E_Index` | 基址（数组→`emitMov64`；ptr→`gen_expr(基, i64)`）+ 下标（i32 宽）→ `ADD Xd,Xn,Wm,UXTW #sh` → 按元素宽 `LDR (B/W/X)`；i32 元素 +want64 → `SXTW` |
+| `E_Index` | 基址（数组→`emit_addr64`；ptr→`gen_expr(基, i64)`）+ 下标（i32 宽）→ `ADD Xd,Xn,Wm,UXTW #sh` → 按元素宽 `LDR (B/W/X)`；i32 元素 +want64 → `SXTW` |
 | `E_Add/Sub`（ptr±int） | 指针侧 `gen_expr(i64)`、整数侧 `gen_expr(i32)` → `ADD/SUB Xd,Xn,Wm,SXTW`（§4.3） |
 | `E_Add/Sub/Mul`（整数） | 栈式：`a=gen(左,opWant); b=gen(右,opWant); ADD/SUB/MUL a,a,b; free b` |
 | `E_Div` | `SDIV/UDIV`（u8 操作数 → UDIV） |
@@ -267,7 +269,7 @@ bootstrap 的 `E_Num` 同样省略（§2）；唯地址物化不省略。
 | 语句 | lowering |
 |---|---|
 | `S_Let` | 取新槽（§5）→ `v=gen_expr(初值, 声明型)` → 按声明宽 `STR (B/W/X) v,[SP,#槽]` → `free v` |
-| `S_Assign` | 解析目标（局部槽 / 全局地址）：`v=gen_expr(右, 目标型)` → 存储（全局：`alloc t; emitMov64 t,址; STR`）→ `free` |
+| `S_Assign` | 解析目标（局部槽 / 全局地址）：`v=gen_expr(右, 目标型)` → 存储（全局：`alloc t; emit_addr64 t,址; STR`）→ `free` |
 | `S_IndexAssign` | 子0 是 `E_Index`（名字+下标）：算元素址入临时 a（同 `E_Index` 寻址）→ `v=gen_expr(右, 元素型)` → `STR v,[a]` → `free v; free a` |
 | `S_Return` | `v=gen_expr(表达式, 返回型)` → `v≠0` 时 `MOV (W/X)0,v` → main：`MOV X8,#93; SVC #0`；非 main：`LDR X30,[SP,#8184]; ADD SP,SP,#8192; RET` |
 | `S_If` | `r=gen_expr(cond,i32); CMP (W/X)r,#0`（cond 静态宽 64 位用 X 形）→ `B.EQ L_else`（fixup）→ gen then 块 → `B L_end` → `L_else:` → gen else（N_Block 或 else-if 的 S_If）→ `L_end:` |
@@ -394,7 +396,7 @@ runtime-init 全局时才有。文件内顺序：`Ehdr+Phdr`（页 0）→ `.tex
   `BL __aster_init; B main`（`e_entry=0x401000`）；否则 `main` 就在偏移 0
   （`e_entry=0x401000` 同）。**故 `e_entry` 恒为 `0x401000`。**
   `__aster_init`：标准帧（`SUB SP,#8192; STR X30`）+ 对每个 runtime-init 全局
-  （声明序）发 `gen_expr(初值, 声明型)` → `emitMov64(t,全局虚址); STR` + 尾声
+  （声明序）发 `gen_expr(初值, 声明型)` → `emit_addr64(t,全局虚址); STR` + 尾声
   （`LDR X30; ADD SP,#8192; RET`）。宿主对应物：合成 `__aster_init` 函数
   （`src/aster.cpp:6514`）。
 - **函数序**：`main` 先，其余按源序（宿主同款，`src/aster.cpp:6503`）；
@@ -473,7 +475,7 @@ runtime-init 全局时才有。文件内顺序：`Ehdr+Phdr`（页 0）→ `.tex
 
 | # | 宿主 | bootstrap | 影响 |
 |---|---|---|---|
-| 1 | 全局/串地址经 `X16 = SP+8192` 相对寻址（`kGlobalBase`） | 四词 `emitMov64` 绝对址（镜像免 ADRP；ET_EXEC 基址固定） | 编码更长，语义等价 |
+| 1 | 全局/串地址经 `X16 = SP+8192` 相对寻址（`kGlobalBase`） | 四词 `emit_addr64` 绝对址（镜像免 ADRP；ET_EXEC 基址固定） | 编码更长，语义等价 |
 | 2 | 比较型条件复用 flags（省一次 `CSET`） | 一律物化再 `CMP` | 多 2 条指令/条件 |
 | 3 | 活临时 park 用 `STR W`（`storeLocal`，仅存低 32 位） | `STR X`/`LDR X` 全宽 park | bootstrap 修正了宿主在 i64 活临时上的潜在截断；W 写零扩展保证两种宽都圆整 |
 | 4 | 调用结果直接 `MOV d,X0`（d=nextTemp） | 结果经帧槽 1022 中转 | 多 2 条指令/调用 |

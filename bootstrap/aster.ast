@@ -3055,6 +3055,311 @@ fn sema(prog: i32) -> i32 {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3: code generation — the machine interface (CODEGEN-SPEC.md §4/§5,
+// frozen v0.23.46-dev). textw is the instruction stream: one 32-bit word per
+// entry, appended by emit_word and by nothing else. Every encoder below is
+// an as-verified encoding — each base constant was produced by
+// aarch64-linux-gnu-as and cross-checked with objdump, not derived by hand.
+// Register numbers are 0-15 (X0-X15); the frame pointer, the callee-saved
+// registers and the link register never appear in a number here.
+//
+// Words are built in i64 arithmetic on purpose: the high-bit bases
+// (0x8b.., 0xf9.., 0xd2..) are i64 constants under the expression rules
+// (§2 — one i64 operand widens the whole expression), and an i64 narrowed
+// into the i32 slot keeps exactly its low 32 bits.
+// ---------------------------------------------------------------------------
+let textw: i32[262144] = 0;   // the instruction stream (262144 words = 1 MiB)
+let textlen: i32 = 0;         // words emitted so far
+let cg_l: i32 = 0;            // the position a codegen diagnostic reports
+let cg_c: i32 = 0;
+
+fn cg_die(msg: ptr<u8>) -> i32 {
+    return die_at(msg, cg_l, cg_c);
+}
+
+fn emit_word(w: i64) -> i32 {
+    if (textlen >= 262144) { return cg_die(".text exceeds the 1 MiB instruction buffer"); }
+    textw[textlen] = w;
+    textlen = textlen + 1;
+    return 0;
+}
+
+// Per-pass state reset. The pools are zero-initialised globals, but the
+// temporary register free list has to hold 0..15 and the counters have to
+// start at zero on every run (one process compiles one program).
+fn cg_init() -> i32 {
+    let i: i32 = 0;
+    while (i < 16) {
+        tmp_free[i] = i;
+        i = i + 1;
+    }
+    tmp_top = 0;
+    textlen = 0;
+    nlabels = 0;
+    nfix = 0;
+    return 0;
+}
+
+// ---- §5: the temporary register pool ----
+// X0-X15 as a strict LIFO free list. alloc_tmp hands out the top; free_tmp
+// takes a register back and refuses anything but the top — a leak or an
+// out-of-order release is an internal error (C12), never silently tolerated.
+let tmp_free: i32[16] = 0;
+let tmp_top: i32 = 0;
+
+fn alloc_tmp() -> i32 {
+    if (tmp_top >= 16) { cg_die("expression too complex: temporary register limit exceeded"); return -1; }
+    let r: i32 = tmp_free[tmp_top];
+    tmp_top = tmp_top + 1;
+    return r;
+}
+fn free_tmp(r: i32) -> i32 {
+    if (tmp_top <= 0 || tmp_free[tmp_top - 1] != r) {
+        cg_die("internal compiler error: temporary register leak");
+        return 1;
+    }
+    tmp_top = tmp_top - 1;
+    return 0;
+}
+
+// ---- §7: labels and fixups ----
+// A forward target is unknown when the branch is emitted, so the emitter
+// leaves a placeholder word and records a fixup; elf_emit resolves them all
+// once every label is placed. Function labels are allocated by cg_collect
+// (one per non-extern function symbol, plus __aster_init), so a BL's target
+// is a label id like any other. push_fix records the word just emitted.
+let labels: i32[65536] = 0;   // label id -> word offset
+let nlabels: i32 = 0;
+let fx_pos: i32[65536] = 0;   // the placeholder's word index
+let fx_kind: i32[65536] = 0;  // 0 B.cond, 1 B, 2 BL
+let fx_label: i32[65536] = 0; // the target label id
+let fx_cond: i32[65536] = 0;  // a B.cond's condition code
+let nfix: i32 = 0;
+
+fn new_label() -> i32 {
+    if (nlabels >= 65536) { cg_die("too many labels"); return -1; }
+    let l: i32 = nlabels;
+    nlabels = nlabels + 1;
+    return l;
+}
+fn place_label(l: i32) -> i32 {
+    labels[l] = textlen;
+    return 0;
+}
+fn push_fix(kind: i32, label: i32, cond: i32) -> i32 {
+    if (nfix >= 65536) { return cg_die("fixup table overflow"); }
+    fx_pos[nfix] = textlen - 1;
+    fx_kind[nfix] = kind;
+    fx_label[nfix] = label;
+    fx_cond[nfix] = cond;
+    nfix = nfix + 1;
+    return 0;
+}
+
+// ---- §4.1 immediate moves ----
+fn emit_movz(rd: i32, imm: i32, hw: i32, is64: i32) -> i32 {
+    let base: i64 = 0x52800000;
+    if (is64 == 1) { base = 0xd2800000; }
+    return emit_word(base | ((hw << 21) | (imm << 5) | rd));
+}
+fn emit_movk(rd: i32, imm: i32, hw: i32, is64: i32) -> i32 {
+    let base: i64 = 0x72800000;
+    if (is64 == 1) { base = 0xf2800000; }
+    return emit_word(base | ((hw << 21) | (imm << 5) | rd));
+}
+fn emit_mov_rr(rd: i32, rm: i32, is64: i32) -> i32 {
+    let base: i64 = 0x2a0003e0;
+    if (is64 == 1) { base = 0xaa0003e0; }
+    return emit_word(base | ((rm << 16) | rd));
+}
+fn emit_mov_zero(rd: i32, is64: i32) -> i32 {
+    let base: i64 = 0x2a1f03e0;
+    if (is64 == 1) { base = 0xaa1f03e0; }
+    return emit_word(base | rd);
+}
+// A 64-bit constant: MOVZ plus one MOVK per non-zero higher chunk — the
+// host's emitMov64 rule (src/aster.cpp:2887), mirrored chunk for chunk.
+fn emit_imm64(rd: i32, v: i64) -> i32 {
+    let c0: i32 = v & 0xffff;
+    let c1: i32 = (v >> 16) & 0xffff;
+    let c2: i32 = (v >> 32) & 0xffff;
+    let c3: i32 = (v >> 48) & 0xffff;
+    let rc: i32 = emit_movz(rd, c0, 0, 1);
+    if (rc != 0) { return rc; }
+    if ((v >> 16) != 0) {
+        rc = emit_movk(rd, c1, 1, 1);
+        if (rc != 0) { return rc; }
+    }
+    if ((v >> 32) != 0) {
+        rc = emit_movk(rd, c2, 2, 1);
+        if (rc != 0) { return rc; }
+    }
+    if ((v >> 48) != 0) {
+        rc = emit_movk(rd, c3, 3, 1);
+        if (rc != 0) { return rc; }
+    }
+    return 0;
+}
+// A global's or a string's absolute address: always the full four words.
+// Unlike a constant, an address is never elided — the stream stays uniform
+// so the twin's matches word for word.
+fn emit_addr64(rd: i32, v: i64) -> i32 {
+    let c0: i32 = v & 0xffff;
+    let c1: i32 = (v >> 16) & 0xffff;
+    let c2: i32 = (v >> 32) & 0xffff;
+    let c3: i32 = (v >> 48) & 0xffff;
+    let rc: i32 = emit_movz(rd, c0, 0, 1);
+    if (rc != 0) { return rc; }
+    rc = emit_movk(rd, c1, 1, 1);
+    if (rc != 0) { return rc; }
+    rc = emit_movk(rd, c2, 2, 1);
+    if (rc != 0) { return rc; }
+    return emit_movk(rd, c3, 3, 1);
+}
+
+// ---- §4.2 arithmetic / logic / shift ----
+fn emit_addsub_imm(rd: i32, rn: i32, imm: i32, is_sub: i32, is64: i32) -> i32 {
+    let base: i64 = 0x11000000;
+    if (is64 == 1) {
+        if (is_sub == 1) { base = 0xd1000000; } else { base = 0x91000000; }
+    } else {
+        if (is_sub == 1) { base = 0x51000000; } else { base = 0x11000000; }
+    }
+    // The 12-bit immediate field has a shifted form (bit 22, imm12 << 12);
+    // the 8192-byte frame only the shifted form reaches.
+    let sh: i32 = 0;
+    let im: i32 = imm;
+    if (imm > 4095) {
+        if (imm % 4096 != 0 || imm / 4096 > 4095) {
+            return cg_die("internal compiler error: immediate out of range");
+        }
+        im = imm / 4096;
+        sh = 1;
+    }
+    return emit_word(base | ((sh << 22) | (im << 10) | (rn << 5) | rd));
+}
+fn emit_addsub_rr(rd: i32, rn: i32, rm: i32, is_sub: i32, is64: i32) -> i32 {
+    let base: i64 = 0x0b000000;
+    if (is64 == 1) {
+        if (is_sub == 1) { base = 0xcb000000; } else { base = 0x8b000000; }
+    } else {
+        if (is_sub == 1) { base = 0x4b000000; } else { base = 0x0b000000; }
+    }
+    return emit_word(base | ((rm << 16) | (rn << 5) | rd));
+}
+fn emit_mul(rd: i32, rn: i32, rm: i32, is64: i32) -> i32 {
+    let base: i64 = 0x1b007c00;   // MADD with Ra = 31 (the zero register)
+    if (is64 == 1) { base = 0x9b007c00; }
+    return emit_word(base | ((rm << 16) | (rn << 5) | rd));
+}
+fn emit_div(rd: i32, rn: i32, rm: i32, is64: i32, uns: i32) -> i32 {
+    let base: i64 = 0x1ac00c00;   // SDIV W
+    if (is64 == 1) { base = 0x9ac00c00; }   // SDIV X
+    if (uns == 1) { base = base - 1024; }   // UDIV: the o2 field drops to 0
+    return emit_word(base | ((rm << 16) | (rn << 5) | rd));
+}
+fn emit_msub(rd: i32, rn: i32, rm: i32, ra: i32, is64: i32) -> i32 {
+    let base: i64 = 0x1b008000;
+    if (is64 == 1) { base = 0x9b008000; }
+    return emit_word(base | ((rm << 16) | (ra << 10) | (rn << 5) | rd));
+}
+// kind: 0 LSL, 1 LSR, 2 ASR — the opcode field is 8/9/10, and the base
+// already carries LSL's 8.
+fn emit_shift(rd: i32, rn: i32, rm: i32, is64: i32, kind: i32) -> i32 {
+    let base: i64 = 0x1ac02000;
+    if (is64 == 1) { base = 0x9ac02000; }
+    return emit_word(base | ((kind << 10) | (rm << 16) | (rn << 5) | rd));
+}
+// kind: 0 AND, 1 ORR, 2 EOR — successive 0x20000000 steps in the opcode.
+fn emit_logic(rd: i32, rn: i32, rm: i32, is64: i32, kind: i32) -> i32 {
+    let base: i64 = 0x0a000000;
+    if (is64 == 1) { base = 0x8a000000; }
+    if (kind == 1) { base = base + 0x20000000; }
+    if (kind == 2) { base = base + 0x40000000; }
+    return emit_word(base | ((rm << 16) | (rn << 5) | rd));
+}
+fn emit_neg(rd: i32, rm: i32, is64: i32) -> i32 {
+    let base: i64 = 0x4b0003e0;   // SUB Wd, WZR, Wm
+    if (is64 == 1) { base = 0xcb0003e0; }
+    return emit_word(base | ((rm << 16) | rd));
+}
+fn emit_sxtw(rd: i32, rn: i32) -> i32 {
+    return emit_word(0x93407c00 | ((rn << 5) | rd));
+}
+
+// ---- §4.3 pointer arithmetic: the asymmetric pair ----
+// p +/- i is a BYTE offset (SXTW, option 110 = 6); p[i] scales by the
+// element width (UXTW #sh, option 010 = 2, sh = log2(width)). option is the
+// 3-bit field at bits[15:13] over the extended-register base 0x?b200000
+// (bits[28:21] = 01011001). Both forms verified against GAS.
+fn emit_addsub_ext(rd: i32, rn: i32, rm: i32, is_sub: i32, option: i32, sh: i32) -> i32 {
+    let base: i64 = 0x8b200000;
+    if (is_sub == 1) { base = 0xcb200000; }
+    return emit_word(base | ((rm << 16) | (option << 13) | (sh << 10) | (rn << 5) | rd));
+}
+
+// ---- §4.4 compare / condition / branch ----
+fn emit_cmp_rr(rn: i32, rm: i32, is64: i32) -> i32 {
+    let base: i64 = 0x6b00001f;   // CMP Wn, Wm (Rd field = 31)
+    if (is64 == 1) { base = 0xeb00001f; }
+    return emit_word(base | ((rm << 16) | (rn << 5)));
+}
+fn emit_cmp_imm(rn: i32, imm: i32, is64: i32) -> i32 {
+    let base: i64 = 0x7100001f;
+    if (is64 == 1) { base = 0xf100001f; }
+    if (imm < 0 || imm > 4095) { return cg_die("internal compiler error: compare immediate out of range"); }
+    return emit_word(base | ((imm << 10) | (rn << 5)));
+}
+// CSET Wd, cond = CSINC Wd, WZR, WZR, cond^1 — the inversion lives in bit 12.
+fn emit_cset(rd: i32, cond: i32) -> i32 {
+    return emit_word(0x1a9f07e0 | (((cond ^ 1) << 12) | rd));
+}
+fn emit_bcond(cond: i32, label: i32) -> i32 {
+    let rc: i32 = emit_word(0x54000000 | cond);
+    if (rc != 0) { return rc; }
+    return push_fix(0, label, cond);
+}
+fn emit_b(label: i32) -> i32 {
+    let rc: i32 = emit_word(0x14000000);
+    if (rc != 0) { return rc; }
+    return push_fix(1, label, 0);
+}
+fn emit_bl(label: i32) -> i32 {
+    let rc: i32 = emit_word(0x94000000);
+    if (rc != 0) { return rc; }
+    return push_fix(2, label, 0);
+}
+fn emit_ret() -> i32 {
+    return emit_word(0xd65f03c0);
+}
+fn emit_svc() -> i32 {
+    return emit_word(0xd4000001);
+}
+
+// ---- §4.5 load/store ----
+// scale: 0 byte (unscaled), 1 half, 2 word, 3 double — the imm12 field
+// carries off >> scale, which is why one slot offset reaches four different
+// ranges. The unscaled byte form tops out at 4095; every frame byte access
+// stays inside the locals area, and this is the guard that says so.
+fn emit_mem(is_store: i32, scale: i32, rt: i32, rn: i32, off: i32) -> i32 {
+    let base: i64 = 0xf9400000;
+    if (is_store == 1) {
+        if (scale == 0) { base = 0x39000000; }
+        else if (scale == 1) { base = 0x79000000; }
+        else if (scale == 2) { base = 0xb9000000; }
+        else { base = 0xf9000000; }
+    } else {
+        if (scale == 0) { base = 0x39400000; }
+        else if (scale == 1) { base = 0x79400000; }
+        else if (scale == 2) { base = 0xb9400000; }
+        else { base = 0xf9400000; }
+    }
+    let imm: i32 = off >> scale;
+    if (imm < 0 || imm > 4095) { return cg_die("internal compiler error: frame offset out of range"); }
+    return emit_word(base | ((imm << 10) | (rn << 5) | rt));
+}
+
 fn main() -> i32 {
     let rc: i32 = read_source();
     if (rc != 0) { return rc; }
