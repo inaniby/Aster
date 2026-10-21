@@ -688,12 +688,57 @@ fi
 printf 'PASS: densest E9-legal source — 65529 AST nodes, both sides identical (C3 is defensive)\n'
 
 # ---------------------------------------------------------------------------
-# [11/11] Mutation probes — break the PARSER on purpose and assert the suite
+# [11/11] Semantic corpus (M3c / SEMANTIC-SPEC §13-§16). The type-check pass
+# runs after the parse; every source here is syntactically valid. Each rejection
+# must be refused by BOTH the bootstrap and the twin with the same diagnostic
+# (diffcase), and each acceptance must pass both with byte-identical dumps
+# (okcase). This is where the twin's S5-S22 mirror earns its keep: the two sides
+# stay in lockstep on accept and on reject.
+printf '%s\n' '[11/11] Semantic corpus: S5-S22 rejections + acceptances, parser and twin agree'
+SEM="$W/sem"
+mkdir -p "$SEM"
+python3 - "$SEM" <<'PYEOF'
+import sys, os
+d = sys.argv[1]
+def f(name, data): open(os.path.join(d, name), 'wb').write(data)
+# --- rejections: both sides must refuse with the same S-diagnostic ---
+f('s5.ast',    b'fn main() -> i32 {\n  return y;\n}\n')
+f('s6.ast',    b'fn main() -> i32 {\n  f();\n  return 0;\n}\n')
+f('s7.ast',    b'let a: i32[3] = 1;\nfn main() -> i32 {\n  a();\n  return 0;\n}\n')
+f('s8.ast',    b'fn main() -> i32 {\n  let f: ptr = "x";\n  f();\n  return 0;\n}\n')
+f('s9.ast',    b'extern fn g(x: i32) -> i32;\nfn main() -> i32 {\n  g(1, 2);\n  return 0;\n}\n')
+f('s10.ast',   b'extern fn g(x: ptr<u8>) -> i32;\nfn main() -> i32 {\n  let s: ptr = "hi";\n  g(5);\n  return 0;\n}\n')
+f('s11.ast',   b'fn main() -> i32 {\n  let x: i32 = "s";\n  return 0;\n}\n')
+f('s12.ast',   b'let a: i32[3] = 1;\nfn main() -> i32 {\n  a = 5;\n  return 0;\n}\n')
+f('s13.ast',   b'fn main() -> i32 {\n  let p: ptr = "x";\n  if (p) {}\n  return 0;\n}\n')
+f('s14na.ast', b'fn main() -> i32 {\n  let x: i32 = 1;\n  return x[0];\n}\n')
+f('s14pi.ast', b'fn main() -> i32 {\n  let p: ptr<u8> = "x";\n  let q: ptr = "y";\n  return p[q];\n}\n')
+f('s16rb.ast', b'fn main() -> i32 {\n  return 1 == 2;\n}\n')
+f('s16pi.ast', b'fn f() -> ptr {\n  return 5;\n}\nfn main() -> i32 {\n  f();\n  return 0;\n}\n')
+f('s20.ast',   b'fn main() -> i32 {\n  let x: i32 = !1;\n  return 0;\n}\n')
+# --- acceptances: both sides must pass with byte-identical dumps ---
+f('ok_widen.ast',   b'extern fn g(x: i64) -> i32;\nfn main() -> i32 {\n  let v: i32 = 1;\n  g(v);\n  return 0;\n}\n')
+f('ok_nullptr.ast', b'extern fn g(x: ptr<u8>) -> i32;\nfn main() -> i32 {\n  g(0);\n  return 0;\n}\n')
+f('ok_nullret.ast', b'fn f() -> ptr {\n  return 0;\n}\nfn main() -> i32 {\n  f();\n  return 0;\n}\n')
+f('ok_i64_i32.ast', b'fn main() -> i32 {\n  let x: i64 = 1;\n  let y: i32 = x;\n  return 0;\n}\n')
+f('ok_ptr_idx.ast', b'fn main() -> i32 {\n  let p: ptr<u8> = "x";\n  let v: u8 = p[0];\n  return v;\n}\n')
+f('ok_rtinit.ast',  b'fn f() -> i32 { return 1; }\nlet g: i32 = f() + 2;\nfn main() -> i32 {\n  return g;\n}\n')
+PYEOF
+NS=0; NA=0
+for s in s5 s6 s7 s8 s9 s10 s11 s12 s13 s14na s14pi s16rb s16pi s20; do
+    diffcase "semantic $s" "$SEM/$s.ast" && NS=$((NS+1))
+done
+for s in ok_widen ok_nullptr ok_nullret ok_i64_i32 ok_ptr_idx ok_rtinit; do
+    okcase "semantic $s" "$SEM/$s.ast" && NA=$((NA+1))
+done
+printf 'PASS: semantic corpus — %d rejections + %d acceptances, parser and twin agree on every one\n' "$NS" "$NA"
+
+# [12/11] Mutation probes — break the PARSER on purpose and assert the suite
 # notices. Each probe patches a copy of bootstrap/aster.ast, rebuilds the
 # object, relinks against the pristine library, runs the targeted input, and
 # requires the output to diverge from the twin (or the build to fail). A
 # probe that still matches the twin is blind, and a blind probe is a failure.
-printf '%s\n' '[11/11] Mutation probes: every rule stays load-bearing'
+printf '%s\n' '[12/11] Mutation probes: every rule stays load-bearing'
 
 probe(){ # $1 name  $2 probe input  $3 python edit script
     n="$1"; pin="$2"; script="$3"
