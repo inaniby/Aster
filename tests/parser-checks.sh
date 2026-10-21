@@ -468,18 +468,22 @@ x('elseif', 'Program 1:1\n'
             '              Num 1:62 2\n'
             '      Return 1:74\n'
             '        Num 1:74 0\n')
-# a call statement is an Expr whose child is the full expression
-f('callstmt.ast', b'fn main() -> i32 { f(1) + 1; return 0; }\n')
+# a call statement is an Expr whose child is the full expression. f is declared
+# (extern) because M3c's S6 rejects a call to an undeclared function, which the
+# parse-only stage never did.
+f('callstmt.ast', b'extern fn f(x: i32) -> i32;\nfn main() -> i32 { f(1) + 1; return 0; }\n')
 x('callstmt', 'Program 1:1\n'
-              '  Function 1:1 main i32\n'
-              '    Block 1:18\n'
-              '      Expr 1:20\n'
-              '        Add 1:20\n'
-              '          Call 1:20 f\n'
-              '            Num 1:22 1\n'
-              '          Num 1:27 1\n'
-              '      Return 1:37\n'
-              '        Num 1:37 0\n')
+              '  Function 1:8 f i32 extern\n'
+              '    Param 1:13 x i32\n'
+              '  Function 2:1 main i32\n'
+              '    Block 2:18\n'
+              '      Expr 2:20\n'
+              '        Add 2:20\n'
+              '          Call 2:20 f\n'
+              '            Num 2:22 1\n'
+              '          Num 2:27 1\n'
+              '      Return 2:37\n'
+              '        Num 2:37 0\n')
 # two phases: an error anywhere leaves stdout byte-empty (the pinned cases in
 # [6/11] all assert this; here the input is a valid prefix followed by trash)
 f('twophase.ast', b'fn main() -> i32 { return 0; }\nfn f( -> i32 {}\n')
@@ -545,8 +549,10 @@ f('fold_shift.ast', b'let g: i64 = 1 << 62;\n')
 f('fold_div.ast', b'let g: i32 = 100 / 7;\n')
 f('fold_mod.ast', b'let g: i32 = 100 % 7;\n')
 f('fold_neg.ast', b'let g: i32 = -(2 + 3);\n')
-f('deep96.ast', b'fn main() -> i32 { return ' + b'(' * 96 + b'a' + b')' * 96 + b'; }\n')
-f('deep_bin.ast', b'fn main() -> i32 { return ' + b' + '.join([b'a'] * 200) + b'; }\n')
+# `a` is declared: M3c's S5 rejects an undeclared variable, which the parse-only
+# stage accepted, and these two cases probe nesting depth — not name resolution.
+f('deep96.ast', b'let a: i32 = 0;\nfn main() -> i32 { return ' + b'(' * 96 + b'a' + b')' * 96 + b'; }\n')
+f('deep_bin.ast', b'let a: i32 = 0;\nfn main() -> i32 { return ' + b' + '.join([b'a'] * 200) + b'; }\n')
 
 # refused shapes, one step past the accepted ones
 f('params33.ast', b'fn f(' + b', '.join(b'a%d: i32' % i for i in range(33)) + b') -> i32 { return a0; }\n')
@@ -572,12 +578,14 @@ f('dot_after.ast', b'fn main() -> i32 { let y: i32 = a.b; return y; }\n')
 f('dot_after_index.ast', b'fn main() -> i32 { a[0].b; return 0; }\n')
 # the statement-level corners
 f('main_call.ast', b'fn main() -> i32 { main(); return 0; }\n')
-f('bare_ident.ast', b'fn main() -> i32 { x; return 0; }\n')
-f('expr_stmt.ast', b'fn main() -> i32 { x + 1; return 0; }\n')
+f('bare_ident.ast', b'fn main() -> i32 { let x: i32 = 1; x; return 0; }\n')
+f('expr_stmt.ast', b'fn main() -> i32 { let x: i32 = 1; x + 1; return 0; }\n')
 f('prefix_dec.ast', b'fn main() -> i32 { --x; return 0; }\n')
 f('incdec_stmt.ast', b'fn main() -> i32 { x++; return 0; }\n')
 # `--` lexes as one token, so a prefix chain spells `-!-!`
-f('prefix_chain.ast', b'fn main() -> i32 { return -!-!-!1; }\n')
+# M3c's S20 requires a bool operand for '!', so the chain is all unary '-';
+# the spaces keep '- -' from lexing as the decrement operator.
+f('prefix_chain.ast', b'fn main() -> i32 { return - - -1; }\n')
 f('minus_minus.ast', b'fn main() -> i32 { let x: i32 = --1; return x; }\n')
 # a NUL byte in the source: whitespace to the scanner, on both sides
 f('nul.ast', b'fn main() -> i32 { let x: i32 = 1\x00 2; return x; }\n')
@@ -604,7 +612,7 @@ for f in bootstrap/aster.ast stdlib/aster_std.ast examples/*.ast; do
     n=$((n+1))
 done
 printf 'PASS: self-parsing — %d sources, parser and twin agree on every one\n' "$n"
-for pair in "bootstrap/aster.ast 7961" "stdlib/aster_std.ast 555"; do
+for pair in "bootstrap/aster.ast 10956" "stdlib/aster_std.ast 555"; do
     set -- $pair
     lines=$(run "$W/parser" <"$1" 2>/dev/null | wc -l)
     if [ "$lines" -ne "$2" ]; then
@@ -633,8 +641,8 @@ w_('c2_96.ast',  b'fn main() -> i32 {\n' + b'if (1) {\n' * 96 + b'return 0;\n' +
 # E8/E9: the source cap and the token cap, at the byte and one past
 w_('src1m.ast',  b'fn main() -> i32 { return 0; }\n' + b'// ' + b'x' * 1048560 + b'\n')   # 1048576 exactly
 w_('src1m1.ast', b'fn main() -> i32 { return 0; }\n' + b'// ' + b'x' * 1048561 + b'\n')   # one past
-w_('tok64k.ast', b'fn main() -> i32 {\n' + b'f();\n' * 16382 + b'}\n')   # 8 + 4*16382 = 65536
-w_('tok64k1.ast', b'fn main() -> i32 {\n' + b'f();\n' * 16383 + b'}\n')  # 65540, one past
+w_('tok64k.ast',  b'fn f() -> i32 { return 0; }\nfn main() -> i32 {\n' + b'f();\n' * 16379 + b'}\n')   # 11 + 7 + 1 + 4*16379 = 65536
+w_('tok64k1.ast', b'fn f() -> i32 { return 0; }\nfn main() -> i32 {\n' + b'f();\n' * 16380 + b'}\n')  # 65540, one past
 open(w + '/c1.exp', 'w').write('aster: error: expression nests too deeply (limit 96)\n')
 open(w + '/c2.exp', 'w').write('aster: error: statements nest too deeply (limit 96)\n')
 open(w + '/e8.exp', 'w').write('aster: error: source exceeds 1048576 bytes\n')
@@ -665,7 +673,7 @@ python3 - "$W" <<'PYEOF'
 import sys
 w = sys.argv[1]
 k = 32763   # 2k + 9 tokens = 65535; 2k + 3 nodes = 65529 — under the C3 cap
-open(w + '/dense.ast', 'wb').write(b'fn main() -> i32 { return ' + b' + '.join([b'a'] * k) + b'; }\n')
+open(w + '/dense.ast', 'wb').write(b'fn main() -> i32 { return ' + b' + '.join([b'0'] * k) + b'; }\n')
 PYEOF
 for side in parser twin; do
     rc=0; run "$W/$side" <"$W/dense.ast" >"$W/$side.out" 2>"$W/$side.err" || rc=$?

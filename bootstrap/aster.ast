@@ -2468,6 +2468,24 @@ fn is_ptr_tag(t: i32) -> i32 {
     if (t == TY_PTR || t == TY_PTR_U8 || t == TY_PTR_I32 || t == TY_PTR_I64) { return 1; }
     return 0;
 }
+// The pointer to an element type — what an array decays to when it is used as
+// a value (§7). A pointer element has no ptr<ptr<T>> spelling in the subset, so
+// it falls back to the bare ptr.
+fn ptr_to(elem: i32) -> i32 {
+    if (elem == TY_I32) { return TY_PTR_I32; }
+    if (elem == TY_I64) { return TY_PTR_I64; }
+    if (elem == TY_U8) { return TY_PTR_U8; }
+    return TY_PTR;
+}
+// The element type of a pointer tag — what `p[i]` loads (host typeOf,
+// src/aster.cpp:5809): ptr<i32> -> i32, ptr<i64> -> i64, ptr<u8> -> u8, and a
+// bare ptr (no element) answers the array element default i32.
+fn ptr_elem(t: i32) -> i32 {
+    if (t == TY_PTR_I32) { return TY_I32; }
+    if (t == TY_PTR_I64) { return TY_I64; }
+    if (t == TY_PTR_U8) { return TY_U8; }
+    return TY_I32;
+}
 // Type compatibility for assignment / argument / return (§7): integer tags must
 // match exactly; any pointer is mutually compatible with any other pointer
 // (the host accepts ptr<u8> where ptr is written, e.g. `let s: ptr = "..."`);
@@ -2509,6 +2527,24 @@ fn ty_assignable(to_tag: i32, to_arr: i32, from_tag: i32, from_arr: i32, is_cons
     if (from_tag == TY_I64) { wf = 8; } else if (from_tag == TY_U8) { wf = 1; } else { wf = 4; }
     if (wt >= wf) { return 1; }
     return 0;
+}
+// S11's own rule — the host's local-let and assignment checks
+// (src/aster.cpp:4701 and :4740) are *category* checks, not tyAssignable's:
+// an integer slot accepts any integer value with no narrowing test at all, so
+// `let d: i32 = v % 10;` with v an i64 — narrowing the library does on purpose —
+// is accepted; a ptr slot accepts a pointer or the null constant; and a
+// bool-valued expression is rejected into an integer slot. tyAssignable above
+// stays the S10 (argument) rule, which does narrow.
+fn assign_ok(to_tag: i32, from_tag: i32, from_arr: i32, e: i32) -> i32 {
+    if (from_arr != 0) { return 0; }
+    if (is_ptr_tag(to_tag) == 1) {
+        if (is_ptr_tag(from_tag) == 1) { return 1; }
+        if (expr_const_int(e) == 1 && rc_val == 0) { return 1; }
+        return 0;
+    }
+    if (is_ptr_tag(from_tag) == 1) { return 0; }
+    if (from_tag == -2) { return 0; }
+    return 1;
 }
 // A constant integer expression's value, for the narrow-slot fit test above.
 // The host folds a broad set (src/aster.cpp:2183); the self-host source and the
@@ -2589,13 +2625,24 @@ fn find_call(t: i32) -> i32 {
         }
         s = s + 1;
     }
-    // Host intrinsics (§3): declared nowhere in source, known to the compiler.
-    // A real declared function above wins; absent that, these four are always
-    // callable and never S6. rs_fnsym = -1 marks "intrinsic, no symbol row".
-    if (tok_is(t, "load_u8") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_U8;  rs_fnsym = -1; return 1; }
-    if (tok_is(t, "store_u8") == 1) { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "read") == 1)     { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
-    if (tok_is(t, "write") == 1)    { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    // Host intrinsics (§3): declared nowhere in source, known to the compiler
+    // (src/aster.cpp:2773-2783 and 3169-3360 — the whole family, not just the
+    // four the bootstrap itself calls; examples/arena.ast uses mmap). A real
+    // declared function above wins; absent that these are always callable and
+    // never S6. rs_fnsym = -1 marks "intrinsic, no symbol row" and rcall_rtyp
+    // carries its return type. load_u8/store_u8 return i32 (the byte is
+    // zero-extended), per the host.
+    if (tok_is(t, "load_ptr") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_PTR; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "mmap") == 1)      { rcall_intrinsic = 1; rcall_rtyp = TY_PTR; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "brk") == 1)       { rcall_intrinsic = 1; rcall_rtyp = TY_PTR; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "load_i64") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_I64; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "store_i64") == 1) { rcall_intrinsic = 1; rcall_rtyp = TY_I64; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "load_u8") == 1)   { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "store_u8") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "load_u16") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "store_u16") == 1) { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "read") == 1)      { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "write") == 1)     { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
     if (find_var(t) == 1) { return 2; }
     return 0;
 }
@@ -2662,8 +2709,17 @@ fn tc_combine(n: i32) -> i32 {
     if (k == E_String) { ex_ty[n - 1] = TY_PTR_U8; ex_arr[n - 1] = 0; return 0; }
     if (k == E_Var) {
         if (find_var(ntok[n - 1]) == 0) { die_name_at("unknown variable: ", ntok[n - 1]); return 1; }
+        if (rs_cnt > 1) {
+            // An array used as a value decays to a pointer to its first element
+            // (C's array-to-pointer conversion): `utoa(v, nbuf)` hands a u8[24]
+            // to a ptr<u8> parameter, and the host accepts it. Indexing does not
+            // go through here — E_Index reads the symbol's own rs_cnt.
+            ex_ty[n - 1] = ptr_to(rs_tag);
+            ex_arr[n - 1] = 0;
+            return 0;
+        }
         ex_ty[n - 1] = rs_tag;
-        if (rs_cnt > 1) { ex_arr[n - 1] = 1; } else { ex_arr[n - 1] = 0; }
+        ex_arr[n - 1] = 0;
         return 0;
     }
     if (k == E_Call) {
@@ -2722,8 +2778,19 @@ fn tc_combine(n: i32) -> i32 {
         let base: i32 = ntok[n - 1];
         if (find_var(base) == 0) { die_name_at("unknown variable: ", base); return 1; }
         if (rs_cnt > 1) { ex_ty[n - 1] = rs_tag; ex_arr[n - 1] = 0; return 0; }
+        // v0.23.34-dev: a pointer variable indexes at the width its own type
+        // names — p[i] on ptr<i32> loads an i32, on ptr<u8> a u8, on ptr<i64>
+        // an i64, on a bare ptr an i32 (the array element default). The index
+        // itself must not be a pointer (the only thing "pointer indexing is not
+        // supported yet" refuses here — src/aster.cpp:5748).
         if (is_ptr_tag(rs_tag) == 1) {
-            die_at("pointer indexing is not supported yet", tok_line(base), tok_col(base)); return 1;
+            let etag: i32 = ptr_elem(rs_tag);
+            let idxexpr: i32 = nfirst[n - 1];
+            if (tc_expr(idxexpr) != 0) { return 1; }
+            if (is_ptr_tag(ex_ty[idxexpr - 1]) == 1) {
+                die_at("pointer indexing is not supported yet", tok_line(base), tok_col(base)); return 1;
+            }
+            ex_ty[n - 1] = etag; ex_arr[n - 1] = 0; return 0;
         }
         die_name_at("cannot index non-array variable: ", base); return 1;
     }
@@ -2750,6 +2817,13 @@ fn tc_combine(n: i32) -> i32 {
     if (k == E_Shl || k == E_Shr) {
         ex_ty[n - 1] = lt; ex_arr[n - 1] = ex_arr[l - 1]; return 0;
     }
+    // Pointer arithmetic: ptr +/- integer keeps the pointer type (§7). The lexer
+    // hands a substring to a ptr<u8> parameter as `srcbuf + start`, and the host
+    // accepts it; folding that to i32 here would make the call a spurious S10.
+    if (k == E_Add || k == E_Sub) {
+        if (is_ptr_tag(lt) == 1 && is_ptr_tag(rt) == 0) { ex_ty[n - 1] = lt; ex_arr[n - 1] = 0; return 0; }
+        if (is_ptr_tag(rt) == 1 && is_ptr_tag(lt) == 0) { ex_ty[n - 1] = rt; ex_arr[n - 1] = 0; return 0; }
+    }
     // + - * / % & | ^ : result is the wider integer (i64 if either is i64, else
     // i32; u8 widens to i32). Non-integer operands fall back to i32 — no pinned
     // S-error fires for them (§6 lists none), so the program is accepted.
@@ -2767,8 +2841,7 @@ fn sema_stmt(s: i32) -> i32 {
         let e: i32 = nfirst[s - 1];
         if (e != 0) {
             if (tc_expr(e) != 0) { return 1; }
-            let c0: i32 = expr_const_int(e);
-            if (ty_assignable(nnty[s - 1], 0, ex_ty[e - 1], ex_arr[e - 1], c0, rc_val) == 0) {
+            if (assign_ok(nnty[s - 1], ex_ty[e - 1], ex_arr[e - 1], e) == 0) {
                 die_name_at("type mismatch assigning variable: ", ntok[s - 1]); return 1;
             }
         }
@@ -2778,10 +2851,14 @@ fn sema_stmt(s: i32) -> i32 {
     if (k == S_Assign) {
         if (find_var(ntok[s - 1]) == 0) { die_name_at("unknown variable: ", ntok[s - 1]); return 1; }
         if (rs_cnt > 1) { die_name_at("cannot assign to an array as a whole: ", ntok[s - 1]); return 1; }
+        // tc_expr re-resolves every E_Var it walks, so it overwrites the shared
+        // rs_* scratch: the target's type has to be copied out before the walk,
+        // or the check compares against the last variable the right-hand side
+        // happened to name.
+        let vtag: i32 = rs_tag;
         let e: i32 = nfirst[s - 1];
         if (tc_expr(e) != 0) { return 1; }
-        let c0: i32 = expr_const_int(e);
-        if (ty_assignable(rs_tag, 0, ex_ty[e - 1], ex_arr[e - 1], c0, rc_val) == 0) {
+        if (assign_ok(vtag, ex_ty[e - 1], ex_arr[e - 1], e) == 0) {
             die_name_at("type mismatch assigning variable: ", ntok[s - 1]); return 1;
         }
         return 0;
@@ -2791,19 +2868,24 @@ fn sema_stmt(s: i32) -> i32 {
         let rhs: i32 = nnext[idxnode - 1];
         let arrname: i32 = ntok[idxnode - 1];
         if (find_var(arrname) == 0) { die_name_at("unknown variable: ", arrname); return 1; }
-        if (rs_cnt > 1) {
-            if (tc_expr(nfirst[idxnode - 1]) != 0) { return 1; }
-            if (tc_expr(rhs) != 0) { return 1; }
-            let c0: i32 = expr_const_int(rhs);
-            if (ty_assignable(rs_tag, 0, ex_ty[rhs - 1], ex_arr[rhs - 1], c0, rc_val) == 0) {
-                die_name_at("type mismatch assigning variable: ", arrname); return 1;
-            }
-            return 0;
-        }
-        if (is_ptr_tag(rs_tag) == 1) {
+        // v0.23.34-dev: a pointer base indexes exactly like an array base — the
+        // element type is this pointer's element (ptr<i32> -> i32, ...), and the
+        // write checks the rhs against that element. A bare array base keeps its
+        // element type; anything else is not indexable.
+        let vtag: i32 = 0;
+        if (rs_cnt > 1) { vtag = rs_tag; }
+        else if (is_ptr_tag(rs_tag) == 1) { vtag = ptr_elem(rs_tag); }
+        else { die_name_at("cannot index non-array variable: ", arrname); return 1; }
+        let idxexpr: i32 = nfirst[idxnode - 1];
+        if (tc_expr(idxexpr) != 0) { return 1; }
+        if (is_ptr_tag(ex_ty[idxexpr - 1]) == 1) {
             die_at("pointer indexing is not supported yet", tok_line(ntok[idxnode - 1]), tok_col(ntok[idxnode - 1])); return 1;
         }
-        die_name_at("cannot index non-array variable: ", arrname); return 1;
+        if (tc_expr(rhs) != 0) { return 1; }
+        if (assign_ok(vtag, ex_ty[rhs - 1], ex_arr[rhs - 1], rhs) == 0) {
+            die_name_at("type mismatch assigning variable: ", arrname); return 1;
+        }
+        return 0;
     }
     if (k == S_Return) {
         let e: i32 = nfirst[s - 1];
@@ -2950,19 +3032,16 @@ fn sema(prog: i32) -> i32 {
             if (nfirst[c - 1] == 0) { skind[s] = SK_EXTERN_LET; }
             stag[s] = nnty[c - 1];
             scnt[s] = ncount[c - 1];
-            // S19: a scalar global's initializer must be a constant expression
-            // (S17 / S18 — array initializer type and range — are gated by the
-            // parser: it folds the constant and range-checks it with fits, so
-            // M3c does not re-report them). A string literal is itself a
-            // compile-time constant, accepted even though is_const (the
-            // parser's folding walker) does not treat E_String as a constant
-            // family.
-            if (nfirst[c - 1] != 0 && scnt[s] <= 1) {
-                let init: i32 = nfirst[c - 1];
-                if (is_const(init) == 0 && nkind[init - 1] != E_String) {
-                    die_name_at("global variable initializer must be a constant expression", ntok[c - 1]); return 1;
-                }
-            }
+            // v0.23.34-dev / runtime-init: the host does NOT require a scalar
+            // global's initializer to be a constant expression — a non-constant
+            // init (e.g. `let g: i32 = f(x) + y;`) is carried as `runtimeInit`
+            // and materialised before main (src/aster.cpp:1995). S19 therefore
+            // never fires in the host and M3c must not invent it: a non-constant
+            // scalar global initializer is accepted. Array globals keep their
+            // constant-init gate, but that is the parser's fold at M3b (the
+            // array-init constant/range checks at src/aster.cpp:1986), which
+            // M3c does not re-report. A string literal is a compile-time
+            // constant and needs no special handling here either.
         }
         c = nnext[c - 1];
     }
