@@ -1,0 +1,6 @@
+let shared: i32 = 40;
+
+fn bump(v: i32) -> i32 {
+    shared = shared + v;
+    return shared;
+}

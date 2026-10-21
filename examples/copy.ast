@@ -1,0 +1,18 @@
+// copy.ast — cat: copy stdin to stdout in 256-byte chunks until EOF.
+// Exercises the v0.23.40-dev syscall intrinsics read(2)/write(2)/close(2).
+// These are built in (no `extern fn` declaration); declaring them would shadow
+// the intrinsic and break codegen. Run: aster build-elf examples/copy.ast -o cp
+// && ./cp < in > out   (or: echo hi | ./cp)
+let buf: u8[256] = 0;
+
+fn main() -> i32 {
+    let n: i32 = 0;
+    n = read(0, &buf, 256);
+    while (n > 0) {
+        write(1, &buf, n);
+        n = read(0, &buf, 256);
+    }
+    close(0);
+    close(1);
+    return 0;
+}

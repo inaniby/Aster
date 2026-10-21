@@ -1,0 +1,14 @@
+let counter: i32 = 5;
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+fn mul(a: i32, b: i32) -> i32 {
+    return a * b;
+}
+fn bump() -> i32 {
+    counter = counter + 1;
+    return counter;
+}
+fn value() -> i32 {
+    return counter;
+}

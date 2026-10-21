@@ -1,0 +1,6 @@
+let bias: i32 = 9;
+
+fn main() -> i32 {
+    let message: ptr = "Aster executable read-only data";
+    return load_u8(message) + bias;
+}

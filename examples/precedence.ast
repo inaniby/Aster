@@ -1,0 +1,61 @@
+// v0.23.27-dev: four places where Aster read an expression differently from C.
+//
+// Writing the language reference down is what found them: every claim in
+// docs/language-reference.md was run against the binary, and four of them came
+// back false. All four are fixed here, and this file is the proof — each of the
+// seven checks below either did not compile or gave the wrong answer before.
+//
+//   1. `&&` and `||` shared one precedence level, so `a || b && c` was
+//      `(a || b) && c`. They are two levels now, `&&` the tighter.
+//   2. `-` `!` `~` `*` took a primary() operand, so `-s.v` was `(-s).v` and
+//      `*s.p` was `(*s).p`. They take a unary() operand now: `-(s.v)` and
+//      `*(s.p)`, which is what C has always meant.
+//   3. `a < b == c` was rejected by the anti-chaining check, though the comment
+//      above relational() promised `(a < b) == c`. Chaining is refused within a
+//      level now, not across the two.
+//   4. A local `let` skipped the range check a global applies, so
+//      `let b: u8 = 300;` stored 44 in silence. Both check now.
+//
+// Every check that survives adds its own bit, so the exit status says which of
+// the seven held: 1+2+4+8+16+32+64 = 127.
+// tests/precedence-example-twin.c is the same program in C, and must agree.
+
+struct S { p: ptr, v: i32, ok: bool }
+
+let buf: i32[4] = 9;
+
+fn main() -> i32 {
+    let r: i32 = 0;
+
+    // (1) `true || (true && false)` — true, because && binds tighter.
+    //     Before this release it was `(true || true) && false` — false.
+    if (1 == 1 || 1 == 1 && 1 == 2) { r = r + 1; }
+
+    let s: S = S { buf, 5, true };
+
+    // (2) `*(s.p)`, not `(*s).p`: the field is read first, then dereferenced.
+    //     This line did not compile before — `(*s).p` is a dereference of a
+    //     struct value.
+    if (*s.p == 9) { r = r + 2; }
+
+    // (2) `-(s.v)`, not `(-s).v`. Also did not compile before.
+    if (-s.v == 0 - 5) { r = r + 4; }
+
+    // (2) `!(s.ok)`. s.ok is true, so the else arm is the one that runs.
+    if (!s.ok) { r = r + 100; } else { r = r + 8; }
+
+    // (3) `(a < b) == 1` — a level crossing, not a chain. Rejected before.
+    let a: i32 = 1;
+    let b: i32 = 2;
+    if (a < b == 1) { r = r + 16; }
+
+    // (4) A narrow local at the top of its range — still fine, and now
+    //     checked the same way a global is.
+    let u: u8 = 255;
+    if (u == 255) { r = r + 32; }
+
+    let arr: u8[2] = 200;
+    if (arr[0] == 200) { r = r + 64; }
+
+    return r;                       // 127
+}

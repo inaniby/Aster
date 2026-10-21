@@ -1,0 +1,39 @@
+// v0.23.26-dev: null — the null pointer constant and pointer equality.
+//
+// `0` is Aster's null pointer constant (as in C): it may initialize a ptr, be
+// assigned to one, be passed to one and be returned from one — and it is the
+// only integer a ptr may be compared with. `==` and `!=` answer whether two
+// addresses are the same, or whether an address is "nothing here"; ordering
+// two addresses is still not a question the language answers.
+//
+// The shape below is what the null constant exists for: a search that finds
+// nothing. tests/null-ptr-checks.sh runs this program against its C twin.
+
+let buf: i32[8] = 0;
+
+// The address of `needle` inside buf, or null when it is not there.
+fn find(needle: i32) -> ptr {
+    let base: ptr = buf;
+    let i: i32 = 0;
+    while (i < 8) {
+        if (buf[i] == needle) { return base + i * 4; }
+        i = i + 1;
+    }
+    return 0;                       // not found
+}
+
+fn main() -> i32 {
+    buf[2] = 7;
+    buf[5] = 42;
+    let r: i32 = 0;
+    let hit: ptr = find(42);        // present
+    let miss: ptr = find(99);       // absent -> null
+    if (hit != 0) { r = r + 1; }    // +1   found
+    if (hit == 0) { r = r + 100; }  // not taken
+    if (miss == 0) { r = r + 10; }  // +10  not found
+    if (miss != 0) { r = r + 1000; }
+    if (hit != miss) { r = r + 2; } // +2   one of them is null
+    let both: ptr = 0;              // a null local
+    if (both == miss) { r = r + 20; }   // +20  two nulls are equal
+    return r;                       // 33
+}

@@ -1,0 +1,7 @@
+extern fn strlen(s: ptr) -> i32;
+extern fn aster_multi_rodata_helper() -> i32;
+extern let multi_shared: i32;
+
+fn aster_multi_rodata_a() -> i32 {
+    return aster_multi_rodata_helper() + strlen("object-A") + multi_shared;
+}

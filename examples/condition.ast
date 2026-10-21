@@ -1,0 +1,32 @@
+// v0.23.25-dev: conditions — the true/false literals and integer truthiness.
+//
+// An if / while / for condition is one of three things: a comparison, a bool
+// expression (the literals included), or any integer — zero is false and any
+// non-zero value is true, tested at the integer's own width. Every branch and
+// loop in this file rides that one rule; tests/condition-checks.sh compares
+// the same program differentially against the C twin.
+
+// Walk n toward zero one step at a time. The loop condition is the integer
+// itself: before this round `while (n)` was a compile error, because a bare
+// integer was not a condition at all.
+fn steps(n: i32) -> i32 {
+    let c: i32 = 0;
+    while (n) {
+        if (n < 0) { n = n + 1; } else { n = n - 1; }
+        c = c + 1;
+    }
+    return c;
+}
+
+fn main() -> i32 {
+    let on: bool = true;    // the first bool literals the language has had
+    let off: bool = false;
+    let r: i32 = 0;
+    if (on) { r = r + steps(9); }                          // 9
+    if (off) { r = r + 100; } else { r = r + steps(-4); }  // +4  -> 13
+    for (let i: i32 = 0; i < 3; i = i + 1) { r = r + 1; } // +3  -> 16
+    let zero: i32 = 0;
+    if (zero) { r = r + 1000; }     // a zero integer is false
+    if (r - 16) { return 1; }       // 16 - 16 == 0: false, so fall through
+    return r;                       // 16
+}

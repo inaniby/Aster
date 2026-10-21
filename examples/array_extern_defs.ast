@@ -1,0 +1,3 @@
+let table: i32[4] = 5;
+
+fn array_defs_marker() -> i32 { return 0; }

@@ -1,0 +1,8 @@
+let t: i32[10] = 0;
+
+fn main() -> i32 {
+    let i: i32 = 0;
+    while (i < 10) { t[i] = i; i = i + 1; }
+    let k: i32 = 4;
+    return t[k * 2 + 1] + t[k - 1];
+}

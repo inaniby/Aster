@@ -1,0 +1,48 @@
+// A function that returns a function pointer.
+//
+// v0.23.38-dev lets the return type be a function type:
+//
+//     fn pick(which: i32) -> fn(i32) -> i32 { ... }
+//
+// What comes back is still an address — there is no first-class function
+// value — but the signature travels with it, in the return slot, exactly as
+// it travels beside a ptr parameter. Two things follow:
+//
+//   - `return inc;` inside pick is checked: inc has to *be* `fn(i32) -> i32`,
+//     so a `fn(i64) -> i64` here is a compile error and not a silent
+//     mismatch discovered at the first call;
+//   - `let f: fn(i32) -> i32 = pick(0);` knows what it is holding, so `f(20)`
+//     stages its argument and reads its result by that signature.
+//
+// The address a call hands back cannot itself be called on the spot
+// (`pick(0)(20)` is refused); assign it first, which is what this program
+// does — and what makes the signature worth carrying at all.
+//
+// Its C twin is tests/function-return-fn-twin.c; the two agree on the exit
+// status.
+
+fn inc(x: i32) -> i32 { return x + 1; }
+fn dbl(x: i32) -> i32 { return x + x; }
+
+// Two getters, each with the signature written on the return type.
+fn pick(which: i32) -> fn(i32) -> i32 {
+    if (which == 0) { return inc; }
+    return dbl;
+}
+fn always() -> fn() -> i32 { return answer; }
+fn answer() -> i32 { return 7; }
+
+fn apply(op: fn(i32) -> i32, v: i32) -> i32 { return op(v); }
+
+fn main() -> i32 {
+    let f: fn(i32) -> i32 = pick(0);
+    let g: fn(i32) -> i32 = pick(1);
+
+    // A returned fn-pointer is a value like any other: it can be handed
+    // straight to something that asks for one, and checked there.
+    let h: i32 = apply(pick(1), 20);
+
+    let z: fn() -> i32 = always();
+    let s: i32 = f(20) + g(20) + h + z();       // 21 + 40 + 40 + 7 = 108
+    return s % 251;
+}

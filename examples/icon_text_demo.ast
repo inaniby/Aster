@@ -1,0 +1,283 @@
+// icon_text_demo.ast — v0.23.7-dev: an app that shows where its resources live.
+//
+// Two things are on screen, and neither of them is compiled into the code:
+//
+//   * the icon  — a 48x48 RGBA bitmap, read at compile time by @embed
+//   * the text  — drawn with an 8x8 bitmap font, also @embed'd, from three
+//                 @embed'd text files
+//
+// The app's *name* under the launcher icon is not in this file at all: it is
+// string/app_name in resources.arsc, written as a TYPE_REFERENCE by build-apk.
+// That is the split this demo exists to show — the framework's resources go
+// through the resource table, the program's own resources go in the .so.
+//
+// Every path below is relative to THIS file's directory, which is what @embed
+// resolves against (C #include rules), so the demo builds from any cwd.
+
+extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32;
+extern fn ANativeWindow_setBuffersGeometry(window: ptr, width: i32, height: i32, format: i32) -> i32;
+extern fn ANativeWindow_lock(window: ptr, outBuffer: ptr, inOutDirty: ptr) -> i32;
+extern fn ANativeWindow_unlockAndPost(window: ptr) -> i32;
+
+let g_winbuf: i32[32] = 0;
+let g_dirty: i32[4] = 0;
+
+// ---------------------------------------------------------------------------
+// Embedded resources. Each one is read by the compiler and its bytes are put
+// in .rodata; @embed yields the address, @embed_len the byte count. The same
+// file embedded twice would be embedded once — here each appears once.
+// ---------------------------------------------------------------------------
+let g_icon: ptr = @embed("demo_assets/icon48.bin");
+let g_font: ptr = @embed("demo_assets/font8x8.bin");
+let g_line1: ptr = @embed("demo_assets/title.txt");
+let g_line2: ptr = @embed("demo_assets/line2.txt");
+let g_line3: ptr = @embed("demo_assets/line3.txt");
+
+// @embed_len folds to a literal at parse time, so these are compile-time
+// constants: they can be global initializers and array bounds.
+let g_line1_len: i32 = @embed_len("demo_assets/title.txt");
+let g_line2_len: i32 = @embed_len("demo_assets/line2.txt");
+let g_line3_len: i32 = @embed_len("demo_assets/line3.txt");
+
+// ---------------------------------------------------------------------------
+// One glyph row is 8 bytes; bit 7 is the leftmost pixel. Aster has no shifts
+// and no bitwise operators, so "is bit col set" is done with division:
+// p = 128 / 2^col, then (byte / p) mod 2.
+// ---------------------------------------------------------------------------
+fn glyph_bit(byte: i32, col: i32) -> i32 {
+    let p: i32 = 128;
+    let k: i32 = 0;
+    while (k < col) {
+        p = p / 2;
+        k = k + 1;
+    }
+    let t: i32 = byte / p;
+    return t - (t / 2) * 2;
+}
+
+// Draw n characters of txt, 8x8 cells scaled by ts, left edge at x0, top at y0.
+// colour is packed as r*65536 + g*256 + b, because a helper cannot take nine
+// arguments.
+fn draw_text(pixels: ptr, stride: i32, txt: ptr, n: i32, x0: i32, y0: i32, ts: i32, colour: i32) -> i32 {
+    let b: i32 = colour - (colour / 256) * 256;
+    let q: i32 = colour / 256;
+    let g: i32 = q - (q / 256) * 256;
+    let r: i32 = q / 256;
+    let ci: i32 = 0;
+    while (ci < n) {
+        let c: i32 = load_u8(txt + ci);
+        let gi: i32 = c - 32;
+        if (gi < 0) {
+            gi = 0;
+        } else {
+            if (gi > 94) {
+                gi = 94;
+            } else {
+            }
+        }
+        let row: i32 = 0;
+        while (row < 8) {
+            let bits: i32 = load_u8(g_font + gi * 8 + row);
+            let col: i32 = 0;
+            while (col < 8) {
+                if (glyph_bit(bits, col) == 1) {
+                    let by: i32 = 0;
+                    while (by < ts) {
+                        let bx: i32 = 0;
+                        while (bx < ts) {
+                            let xx: i32 = x0 + (ci * 8 + col) * ts + bx;
+                            let yy: i32 = y0 + row * ts + by;
+                            let px: i32 = (yy * stride + xx) * 4;
+                            let u0: i32 = store_u8(pixels + px + 0, r);
+                            let u1: i32 = store_u8(pixels + px + 1, g);
+                            let u2: i32 = store_u8(pixels + px + 2, b);
+                            let u3: i32 = store_u8(pixels + px + 3, 255);
+                            bx = bx + 1;
+                        }
+                        by = by + 1;
+                    }
+                } else {
+                }
+                col = col + 1;
+            }
+            row = row + 1;
+        }
+        ci = ci + 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The whole picture, into any RGBA8888 buffer. This is the function the
+// preview harness calls directly: the pixels below are the pixels the app
+// draws on a phone, with no Android involved.
+// ---------------------------------------------------------------------------
+fn render_rgba(pixels: ptr, w: i32, h: i32, stride: i32) -> i32 {
+    if (w < 8) {
+        return 0;
+    } else {
+        if (h < 8) {
+            return 0;
+        } else {
+        }
+    }
+
+    // Background: a near-black to indigo vertical gradient.
+    let y: i32 = 0;
+    while (y < h) {
+        let br: i32 = (y * 40) / h;
+        let bg: i32 = (y * 64) / h;
+        let bb: i32 = 16 + (y * 96) / h;
+        let x: i32 = 0;
+        while (x < w) {
+            let px: i32 = (y * stride + x) * 4;
+            let s0: i32 = store_u8(pixels + px + 0, br);
+            let s1: i32 = store_u8(pixels + px + 1, bg);
+            let s2: i32 = store_u8(pixels + px + 2, bb);
+            let s3: i32 = store_u8(pixels + px + 3, 255);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+
+    // Icon scale: about 45% of the width, clamped so it never disappears and
+    // never swallows the screen.
+    let s: i32 = w / 110;
+    if (s < 2) {
+        s = 2;
+    } else {
+        if (s > 8) {
+            s = 8;
+        } else {
+        }
+    }
+    // Text scale: the longest line decides it, so no line can overflow. The
+    // lengths are @embed_len constants, not guesses.
+    let maxlen: i32 = g_line1_len;
+    if (g_line2_len > maxlen) {
+        maxlen = g_line2_len;
+    } else {
+    }
+    if (g_line3_len > maxlen) {
+        maxlen = g_line3_len;
+    } else {
+    }
+    let ts: i32 = w / (maxlen * 8);
+    if (ts < 1) {
+        ts = 1;
+    } else {
+        if (ts > 3) {
+            ts = 3;
+        } else {
+        }
+    }
+
+    // Centre the whole block vertically: icon, a gap, then three lines.
+    let iw: i32 = 48 * s;
+    let block: i32 = iw + ts * 12 + 3 * (8 * ts + ts * 4);
+    let top: i32 = (h - block) / 2;
+    if (top < 8) {
+        top = 8;
+    } else {
+    }
+    let ix0: i32 = (w - iw) / 2;
+
+    // The icon, nearest-neighbour scaled. Transparent pixels are skipped, so
+    // the rounded corners stay rounded.
+    let iy: i32 = 0;
+    while (iy < 48) {
+        let ix: i32 = 0;
+        while (ix < 48) {
+            let o: i32 = (iy * 48 + ix) * 4;
+            let a: i32 = load_u8(g_icon + o + 3);
+            if (a > 128) {
+                let r: i32 = load_u8(g_icon + o + 0);
+                let g: i32 = load_u8(g_icon + o + 1);
+                let b: i32 = load_u8(g_icon + o + 2);
+                let by: i32 = 0;
+                while (by < s) {
+                    let bx: i32 = 0;
+                    while (bx < s) {
+                        let xx: i32 = ix0 + ix * s + bx;
+                        let yy: i32 = top + iy * s + by;
+                        let px: i32 = (yy * stride + xx) * 4;
+                        let t0: i32 = store_u8(pixels + px + 0, r);
+                        let t1: i32 = store_u8(pixels + px + 1, g);
+                        let t2: i32 = store_u8(pixels + px + 2, b);
+                        let t3: i32 = store_u8(pixels + px + 3, 255);
+                        bx = bx + 1;
+                    }
+                    by = by + 1;
+                }
+            } else {
+            }
+            ix = ix + 1;
+        }
+        iy = iy + 1;
+    }
+
+    // Three lines of text, each centred against the screen width.
+    let ty: i32 = top + iw + ts * 12;
+    let x1: i32 = (w - g_line1_len * 8 * ts) / 2;
+    let x2: i32 = (w - g_line2_len * 8 * ts) / 2;
+    let x3: i32 = (w - g_line3_len * 8 * ts) / 2;
+    let d1: i32 = draw_text(pixels, stride, g_line1, g_line1_len, x1, ty, ts, 16777215);
+    let d2: i32 = draw_text(pixels, stride, g_line2, g_line2_len, x2, ty + 8 * ts + ts * 4, ts, 10921638);
+    let d3: i32 = draw_text(pixels, stride, g_line3, g_line3_len, x3, ty + 2 * (8 * ts + ts * 4), ts, 10921638);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Android glue: ask for RGBA_8888 up front, lock, draw, post.
+// ---------------------------------------------------------------------------
+fn draw_frame(window: ptr) -> i32 {
+    let geom: i32 = ANativeWindow_setBuffersGeometry(window, 0, 0, 1);
+    let locked: i32 = ANativeWindow_lock(window, g_winbuf, g_dirty);
+    if (locked != 0) {
+        // lock failed: the buffer fields are not valid, do not touch them.
+        let l: i32 = __android_log_print(6, "Aster", "lock failed");
+        return 0;
+    } else {
+        let w: i32 = g_winbuf[0];
+        let h: i32 = g_winbuf[1];
+        if (w < 8) {
+            return 0;
+        } else {
+            let stride: i32 = g_winbuf[2];
+            let fmt: i32 = g_winbuf[3];
+            let bits: ptr = load_ptr(g_winbuf + 16);
+            if (fmt == 1) {
+                let drawn: i32 = render_rgba(bits, w, h, stride);
+            } else {
+                let l2: i32 = __android_log_print(6, "Aster", "not RGBA_8888");
+                return 0;
+            }
+            let posted: i32 = ANativeWindow_unlockAndPost(window);
+            return 0;
+        }
+    }
+}
+
+fn on_native_window_created(activity: ptr, window: ptr) -> i32 {
+    let logged: i32 = __android_log_print(3, "Aster", "window created");
+    return draw_frame(window);
+}
+
+fn on_native_window_resized(activity: ptr, window: ptr) -> i32 {
+    return draw_frame(window);
+}
+
+fn on_native_window_redraw_needed(activity: ptr, window: ptr) -> i32 {
+    return draw_frame(window);
+}
+
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+    // ANativeActivity layout: callbacks@0 — offset 48 is sdkVersion, not a
+    // pointer, and reading it as callbacks crashes on the first store.
+    let cb: ptr = load_ptr(activity);
+    // ANativeActivityCallbacks: created@56, resized@64, redrawNeeded@72
+    *(cb + 56) = on_native_window_created;
+    *(cb + 64) = on_native_window_resized;
+    *(cb + 72) = on_native_window_redraw_needed;
+    return 0;
+}

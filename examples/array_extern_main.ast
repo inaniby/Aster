@@ -1,0 +1,5 @@
+extern let table: i32[4];
+
+fn main() -> i32 {
+    return table[0] + table[1] + table[2] + table[3];
+}

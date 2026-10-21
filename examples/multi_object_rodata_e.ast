@@ -1,0 +1,6 @@
+extern let multi_shared: i32;
+
+fn aster_multi_rodata_e() -> i32 {
+    multi_shared = multi_shared + 5;
+    return multi_shared;
+}

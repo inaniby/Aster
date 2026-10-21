@@ -1,0 +1,16 @@
+fn main() -> i32 {
+    let i: i32 = 0;
+    while (i < 3) {
+        let j: i32 = 0;
+        while (j < 5) {
+            j = j + 1;
+            if (j == 2) {
+                break;
+            } else {
+                let marker: i32 = 0;
+            }
+        }
+        i = i + 1;
+    }
+    return i;
+}

@@ -1,0 +1,7 @@
+extern let second: i32;
+
+fn first_value() -> i32 { return 1; }
+
+let first: i32 = first_value();
+
+fn main() -> i32 { return first + second; }

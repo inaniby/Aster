@@ -1,0 +1,10 @@
+extern fn strlen(s: ptr) -> i32;
+extern fn aster_multi_rodata_chain_helper() -> i32;
+
+fn aster_multi_rodata_helper() -> i32 {
+    return aster_multi_rodata_chain_helper() + strlen("B\0tail");
+}
+
+fn aster_multi_rodata_b() -> i32 {
+    return strlen("object-B");
+}

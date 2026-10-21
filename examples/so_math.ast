@@ -1,0 +1,18 @@
+let accumulator: i32 = 7;
+let untouched: i32 = 0;
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+fn mul(a: i32, b: i32) -> i32 {
+    return a * b;
+}
+fn accumulate(delta: i32) -> i32 {
+    accumulator = accumulator + delta;
+    return accumulator;
+}
+fn current() -> i32 {
+    return accumulator;
+}
+fn untouched_value() -> i32 {
+    return untouched;
+}

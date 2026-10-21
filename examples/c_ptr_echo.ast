@@ -1,0 +1,4 @@
+fn aster_ptr_echo(p: ptr) -> ptr {
+    let q: ptr = p;
+    return q;
+}

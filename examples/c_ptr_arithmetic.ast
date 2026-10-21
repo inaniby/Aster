@@ -1,0 +1,11 @@
+fn aster_ptr_add(p: ptr, offset: i32) -> ptr {
+    return p + offset;
+}
+
+fn aster_ptr_sub(p: ptr, offset: i32) -> ptr {
+    return p - offset;
+}
+
+fn aster_ptr_add_reversed(offset: i32, p: ptr) -> ptr {
+    return offset + p;
+}

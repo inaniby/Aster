@@ -1,0 +1,3 @@
+extern let first: i32;
+
+let second: i32 = first + 10;

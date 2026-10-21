@@ -1,0 +1,5 @@
+extern fn aster_c_sum32_mixed(p0: ptr, a1: i32, p2: ptr, a3: i32, p4: ptr, a5: i32, p6: ptr, a7: i32, p8: ptr, a9: i32, p10: ptr, a11: i32, p12: ptr, a13: i32, p14: ptr, a15: i32, p16: ptr, a17: i32, p18: ptr, a19: i32, p20: ptr, a21: i32, p22: ptr, a23: i32, p24: ptr, a25: i32, p26: ptr, a27: i32, p28: ptr, a29: i32, p30: ptr, a31: i32) -> i32;
+
+fn aster_call_c_sum32_mixed(p0: ptr, a1: i32, p2: ptr, a3: i32, p4: ptr, a5: i32, p6: ptr, a7: i32, p8: ptr, a9: i32, p10: ptr, a11: i32, p12: ptr, a13: i32, p14: ptr, a15: i32, p16: ptr, a17: i32, p18: ptr, a19: i32, p20: ptr, a21: i32, p22: ptr, a23: i32, p24: ptr, a25: i32, p26: ptr, a27: i32, p28: ptr, a29: i32, p30: ptr, a31: i32) -> i32 {
+    return aster_c_sum32_mixed(p0, a1, p2, a3, p4, a5, p6, a7, p8, a9, p10, a11, p12, a13, p14, a15, p16, a17, p18, a19, p20, a21, p22, a23, p24, a25, p26, a27, p28, a29, p30, a31);
+}

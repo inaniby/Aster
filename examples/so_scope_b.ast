@@ -1,0 +1,8 @@
+let scope_state: i32 = 100;
+fn scope_get() -> i32 {
+    return scope_state;
+}
+fn scope_bump() -> i32 {
+    scope_state = scope_state + 10;
+    return scope_state;
+}

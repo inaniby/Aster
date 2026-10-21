@@ -1,0 +1,14 @@
+let counter: i32 = 30;
+let zero: i32 = 0;
+fn bump(n: i32) -> i32 {
+    counter = counter + n;
+    return counter;
+}
+fn main() -> i32 {
+    if (counter == 30) {
+        zero = bump(5);
+    } else {
+        zero = 0;
+    }
+    return zero + bump(7) - 35;
+}

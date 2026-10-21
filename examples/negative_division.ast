@@ -1,0 +1,5 @@
+fn main() -> i32 {
+    let numerator: i32 = -84;
+    let denominator: i32 = 2;
+    return numerator / denominator;
+}

@@ -1,0 +1,8 @@
+fn aster_ptr_load(p: ptr) -> i32 {
+    return *p;
+}
+
+fn aster_ptr_store(p: ptr, value: i32) -> i32 {
+    *p = value;
+    return *p;
+}

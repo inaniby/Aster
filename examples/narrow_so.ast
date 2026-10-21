@@ -1,0 +1,14 @@
+// narrow_so.ast — a shared object exporting functions with narrow (u8/u16/i64)
+// parameters and narrow returns, for cross-language (C) calls. Recorded in the
+// A/B baseline in build-so/build-obj --pic (no main, so build-elf FAILED, like
+// the other .so examples). The real dlopen/dlsym witness that Aster's narrow-
+// argument stack layout matches aarch64 gcc lives in tests/narrow-value-
+// coverage.sh; this example pins the emitted object byte for byte.
+fn add_u8(a: u8, b: u8) -> u8 { return a + b; }
+fn add_u16(a: u16, b: u16) -> u16 { return a + b; }
+fn scale_i64(a: i64, b: i64) -> i64 { return a * b; }
+fn ninth_u8(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: u8) -> u8 {
+    return i;
+}
+fn ret_u8() -> u8 { return 200; }
+fn ret_u16() -> u16 { return 40000; }

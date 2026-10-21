@@ -1,0 +1,6 @@
+extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32;
+
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+    let logged: i32 = __android_log_print(3, "Aster", "Hello from Aster");
+    return logged;
+}

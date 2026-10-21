@@ -1,0 +1,24 @@
+// v0.23.39-dev: a bare call statement discards its result — `h.onClick(41);`
+// for fire-and-forget callbacks whose side effect is all that matters. The same
+// handlers are also called for their value, to show the two forms coexist.
+
+struct Handlers { onClick: fn(i32) -> i32, onMove: fn(i32, i32) -> i32 }
+
+let fired: i32 = 0;
+
+fn onClickImpl(x: i32) -> i32 { fired = fired + 1; return x + 1; }
+fn onMoveImpl(x: i32, y: i32) -> i32 { fired = fired + 1; return x + y; }
+
+fn main() -> i32 {
+    let h: Handlers = Handlers { onClickImpl, onMoveImpl };
+    // fire-and-forget: the return value is dropped, only the side effect
+    // (incrementing `fired`) matters.
+    h.onClick(41);
+    h.onClick(1);
+    h.onMove(10, 20);
+    // the same handlers, called for their value:
+    let s: i32 = h.onClick(100) + h.onMove(2, 3);
+    // `fired` is 5 (three fire-and-forget calls + two value calls); `s` is 106.
+    // Return a value under 256 so the two facts survive the exit-code window.
+    return fired * 10 + (s % 10);
+}

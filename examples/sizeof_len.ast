@@ -1,0 +1,62 @@
+// v0.23.35-dev — sizeof and len: two compile-time answers about storage.
+//
+// A program has always been able to ask how wide an i32 is by reading it off
+// the ABI (4), and how many elements a T[4] holds by reading the declaration
+// (4) — but never by asking. This round adds the two questions as operators:
+//
+//   * sizeof answers bytes. `sizeof(i32)` is 4, `sizeof(i32[4])` is 16,
+//     `sizeof(ptr)` is 8, `sizeof(S)` is the struct's laid-out size. Both
+//     spellings work: a type (`sizeof(i32[4])`) or an expression
+//     (`sizeof(w)`, `sizeof(row)`, `sizeof(row.cells)`).
+//   * len answers the element count — the product of the dimensions for a
+//     multi-dimensional array, not the row count. `len(i64[2][3])` is 6.
+//
+// An array *parameter* now carries its length into the body. Before this
+// round `fn f(a: i32[4])` decayed `a` to a bare pointer and threw the length
+// away, so `len(a)` inside `f` had nothing to answer from; the binding keeps
+// the dimensions now, and sizeof/len read them. (C's own sizeof on such a
+// parameter is still the pointer's 8 — Aster answers the array's 16, which is
+// what the caller actually passed; the C twin spells that out by measuring a
+// real array type rather than the decayed parameter.)
+//
+// Both fold to an i32 constant at compile time — the type spelling while
+// parsing, the expression spelling during sema — so a program that used to
+// hard-code these numbers now derives them, and every downstream site sees an
+// ordinary integer. No existing program's bytes move: it is new syntax only.
+struct Row { cells: i32[4] }
+
+let ggrid: i32[3][4] = 0;               // a global 3x4 grid: 48 bytes, 12 elements
+
+// An array parameter remembers its extent, so sizeof/len see the length the
+// caller's array carries — 16 bytes / 4 elements, and 48 / 6 for a 2x3 i64 grid.
+fn paramBytes(a: i32[4]) -> i32 { return sizeof(a); }
+fn paramCount(a: i32[4]) -> i32 { return len(a); }
+fn gridBytes(a: i64[2][3]) -> i32 { return sizeof(a); }
+fn gridCount(a: i64[2][3]) -> i32 { return len(a); }
+
+fn main() -> i32 {
+    let r: i32 = 0;
+
+    // 1: the type spelling — a scalar, a wider scalar, and an array literal.
+    if (sizeof(i32) == 4 && sizeof(i64) == 8 && sizeof(i32[4]) == 16) { r = r + 1; }
+    if (len(i32[4]) == 4 && len(i64[2][3]) == 6 && sizeof(i64[2][3]) == 48) { r = r + 2; }
+
+    // 2: the expression spelling on a local, one and two dimensions.
+    let w: i32[4] = 0;
+    let g: i64[2][3] = 0;
+    if (sizeof(w) == 16 && len(w) == 4) { r = r + 4; }
+    if (sizeof(g) == 48 && len(g) == 6) { r = r + 8; }
+
+    // 3: an array parameter carries its length through the call.
+    if (paramBytes(w) == 16 && paramCount(w) == 4) { r = r + 16; }
+    if (gridBytes(g) == 48 && gridCount(g) == 6) { r = r + 32; }
+
+    // 4: a global array, both spellings.
+    if (sizeof(ggrid) == 48 && len(ggrid) == 12) { r = r + 64; }
+
+    // 5: a struct's own size, and its array field's, in one check.
+    let row: Row;
+    if (sizeof(Row) == 16 && sizeof(row) == 16 && sizeof(row.cells) == 16 && len(row.cells) == 4) { r = r + 128; }
+
+    return r;                               // 255: every spelling, every scope
+}

@@ -1,0 +1,59 @@
+// array_elem_types.ast — an array's element type is the type written before
+// the `[N]` — v0.23.28-dev.
+//
+// Until this release the grammar accepted a length only after an integer
+// type, so `bool[4]`, a struct `Point[4]` and a local `ptr[4]` were not
+// declarations Aster could parse at all. And the type checker answered i32
+// for every subscript whatever the element really was, which is why
+// `let q: Point = a[1];` — a Point initialized from an element that really is
+// a Point — was a type error against itself.
+//
+// Seven checks, each worth its own bit: 1+2+4+8+16+32+64 = 127.
+// tests/array-elem-types-example-twin.c is the same program in C, and must
+// agree — the point being that in C none of this was ever in question.
+
+struct Point { x: i32, y: i32 }
+struct Triple { a: i32, b: i32, c: i32 }
+
+let flags: bool[4] = true;
+let pts: Point[3] = Point { 7, 8 };
+let tri: Triple[2] = Triple { 1, 2, 3 };
+let cell: Point = Point { 42, 43 };
+
+fn main() -> i32 {
+    let r: i32 = 0;
+
+    // (1) A global bool[4], every element true.
+    if (flags[2]) { r = r + 1; }
+
+    // (2) A local bool[3]: filled with false, then set element by element.
+    let seen: bool[3] = false;
+    seen[1] = true;
+    if (seen[1] && !seen[0]) { r = r + 2; }
+
+    // (4) A local ptr[3]: null-filled, then one slot holds an address.
+    let slots: ptr[3] = 0;
+    slots[1] = &cell;
+    if (slots[0] == 0 && slots[1] == &cell) { r = r + 4; }
+
+    // (8) A global Point[3]: every element is a copy of the initializer.
+    if (pts[2].x == 7 && pts[2].y == 8) { r = r + 8; }
+
+    // (16) A local Point[3], written through a subscript's field.
+    let local_pts: Point[3] = Point { 0, 0 };
+    local_pts[2].x = 9;
+    if (local_pts[2].x == 9 && local_pts[0].x == 0) { r = r + 16; }
+
+    // (32) A 12-byte element — no shift reaches it, so the address is a
+    //      multiply. Both scopes are checked: a global and a local.
+    let local_tri: Triple[3] = Triple { 1, 2, 3 };
+    if (tri[1].c == 3 && local_tri[2].b == 2) { r = r + 32; }
+
+    // (64) An element is a value of its own type: &a[i] is a ptr<Point>, and
+    //      a[1] initializes a Point. Both were type errors before.
+    let p: ptr<Point> = &local_pts[1];
+    let q: Point = local_pts[1];
+    if (p == &local_pts[1] && q.y == 0) { r = r + 64; }
+
+    return r;                       // 127
+}

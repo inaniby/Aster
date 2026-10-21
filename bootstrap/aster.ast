@@ -1,0 +1,2991 @@
+// bootstrap/aster.ast — the bootstrap compiler, stage by stage.
+//
+// M3b (v0.23.44-dev): the parser. Reads one Aster source from stdin, writes
+// the AST to stdout, one node per line. The contract is
+// bootstrap/PARSER-SPEC.md; the differential oracle is tests/parser-twin.c;
+// the suite is tests/parser-checks.sh. The M3a lexer it is built on is
+// bootstrap/LEXER-SPEC.md; the M3a token dump is retired with it (PARSER-SPEC
+// §12.1), and the packed token name table it printed from went with it.
+//
+// Built by the host compiler and linked against the M2 standard library:
+//   aster build-obj bootstrap/aster.ast -o bootstrap.o
+//   aster build-obj stdlib/aster_std.ast -o std.o
+//   aster link-obj bootstrap.o std.o -o aster.bin
+//   aster.bin < source.ast > ast.txt
+//
+// The GENERATED regions below are owned by the bootstrap generators: the
+// token kinds and the keyword chain by gen_lexer_names.py, the node kinds,
+// type tags and node name tables by gen_parser_names.py. Each comes from one
+// list there, shared with its C twin. Edit those, not this.
+//
+// Shape of the program: read_source fills srcbuf and checks the size limit;
+// lex scans it into the parallel token arrays; the parser walks those tokens
+// into the AST pool (two phases, so an error leaves stdout empty); the
+// emitter writes the dump through outbuf. Lexer state — cursor, line, column
+// — lives in globals because the scanner is one long decision chain and
+// Aster has no structs to bundle it in yet. The parser's expression machine
+// keeps its work stacks in fixed arrays for the same reason, and because a
+// recursive-descent expression parser would spend one 8 KiB frame per
+// precedence level (PARSER-SPEC.md §7).
+
+// The standard-library routines this stage consumes. Everything else it
+// needs is a compiler intrinsic (read/write/load_u8/store_u8).
+extern fn strlen(s: ptr<u8>) -> i32;
+extern fn utoa(v: i64, buf: ptr<u8>) -> i32;
+extern fn itoa(v: i64, buf: ptr<u8>) -> i32;
+extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
+
+// ---- BEGIN GENERATED: lexer names (bootstrap/gen_lexer_names.py) ----
+// The 72 token kinds, numbered exactly as `enum class TK`
+// in src/aster.cpp. Regenerate: python3 bootstrap/gen_lexer_names.py
+let K_End: i32 = 0;
+let K_Ident: i32 = 1;
+let K_Number: i32 = 2;
+let K_String: i32 = 3;
+let K_Fn: i32 = 4;
+let K_Extern: i32 = 5;
+let K_Main: i32 = 6;
+let K_Let: i32 = 7;
+let K_Return: i32 = 8;
+let K_If: i32 = 9;
+let K_Else: i32 = 10;
+let K_While: i32 = 11;
+let K_For: i32 = 12;
+let K_Break: i32 = 13;
+let K_Continue: i32 = 14;
+let K_I32: i32 = 15;
+let K_Ptr: i32 = 16;
+let K_Bool: i32 = 17;
+let K_I64: i32 = 18;
+let K_U8: i32 = 19;
+let K_U16: i32 = 20;
+let K_U32: i32 = 21;
+let K_True: i32 = 22;
+let K_False: i32 = 23;
+let K_Struct: i32 = 24;
+let K_Include: i32 = 25;
+let K_LParen: i32 = 26;
+let K_RParen: i32 = 27;
+let K_LBrace: i32 = 28;
+let K_RBrace: i32 = 29;
+let K_Colon: i32 = 30;
+let K_Semi: i32 = 31;
+let K_Comma: i32 = 32;
+let K_Arrow: i32 = 33;
+let K_Eq: i32 = 34;
+let K_EqEq: i32 = 35;
+let K_Ne: i32 = 36;
+let K_Lt: i32 = 37;
+let K_Le: i32 = 38;
+let K_Gt: i32 = 39;
+let K_Ge: i32 = 40;
+let K_Plus: i32 = 41;
+let K_Minus: i32 = 42;
+let K_Star: i32 = 43;
+let K_Slash: i32 = 44;
+let K_LBracket: i32 = 45;
+let K_RBracket: i32 = 46;
+let K_At: i32 = 47;
+let K_And: i32 = 48;
+let K_Or: i32 = 49;
+let K_Not: i32 = 50;
+let K_Percent: i32 = 51;
+let K_Shl: i32 = 52;
+let K_Shr: i32 = 53;
+let K_BitXor: i32 = 54;
+let K_BitOr: i32 = 55;
+let K_Tilde: i32 = 56;
+let K_Question: i32 = 57;
+let K_PlusEq: i32 = 58;
+let K_MinusEq: i32 = 59;
+let K_StarEq: i32 = 60;
+let K_SlashEq: i32 = 61;
+let K_PercentEq: i32 = 62;
+let K_ShlEq: i32 = 63;
+let K_ShrEq: i32 = 64;
+let K_AndEq: i32 = 65;
+let K_OrEq: i32 = 66;
+let K_XorEq: i32 = 67;
+let K_PlusPlus: i32 = 68;
+let K_MinusMinus: i32 = 69;
+let K_Dot: i32 = 70;
+let K_Amp: i32 = 71;
+
+// Byte-wise equality of n bytes at id against the
+// NUL-terminated literal lit; the terminator must sit
+// exactly at n, so unequal lengths answer 0 as well.
+fn ident_is(lit: ptr<u8>, id: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        if (load_u8(lit + i) != load_u8(id + i)) { return 0; }
+        i = i + 1;
+    }
+    if (load_u8(lit + n) != 0) { return 0; }
+    return 1;
+}
+
+// Keyword recognition — the 22 reserved words, one branch
+// each, from the same list as the C twin's table
+// (tests/lexer_names.h). No match is K_Ident.
+fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
+    if (ident_is("fn", id, n)) { return K_Fn; }
+    if (ident_is("extern", id, n)) { return K_Extern; }
+    if (ident_is("main", id, n)) { return K_Main; }
+    if (ident_is("let", id, n)) { return K_Let; }
+    if (ident_is("return", id, n)) { return K_Return; }
+    if (ident_is("if", id, n)) { return K_If; }
+    if (ident_is("else", id, n)) { return K_Else; }
+    if (ident_is("while", id, n)) { return K_While; }
+    if (ident_is("for", id, n)) { return K_For; }
+    if (ident_is("break", id, n)) { return K_Break; }
+    if (ident_is("continue", id, n)) { return K_Continue; }
+    if (ident_is("i32", id, n)) { return K_I32; }
+    if (ident_is("ptr", id, n)) { return K_Ptr; }
+    if (ident_is("bool", id, n)) { return K_Bool; }
+    if (ident_is("i64", id, n)) { return K_I64; }
+    if (ident_is("u8", id, n)) { return K_U8; }
+    if (ident_is("u16", id, n)) { return K_U16; }
+    if (ident_is("u32", id, n)) { return K_U32; }
+    if (ident_is("struct", id, n)) { return K_Struct; }
+    if (ident_is("include", id, n)) { return K_Include; }
+    if (ident_is("true", id, n)) { return K_True; }
+    if (ident_is("false", id, n)) { return K_False; }
+    return K_Ident;
+}
+// ---- END GENERATED: lexer names ----
+
+// ---- BEGIN GENERATED: parser names (bootstrap/gen_parser_names.py) ----
+// The 25 expression node kinds this parser builds
+// (PARSER-SPEC.md §2.1), at the host's `enum Kind` numbers
+// inside struct Expr: the subset keeps the numbering, the
+// ten excluded kinds (§12.2) are simply absent, so a kind's
+// number means the same thing in both implementations. The
+// full 35-record entab below still carries every host name.
+// Regenerate: python3 bootstrap/gen_parser_names.py
+let E_Num: i32 = 0;
+let E_Var: i32 = 1;
+let E_String: i32 = 2;
+let E_Call: i32 = 3;
+let E_Index: i32 = 4;
+let E_Add: i32 = 6;
+let E_Sub: i32 = 7;
+let E_Mul: i32 = 8;
+let E_Div: i32 = 9;
+let E_Neg: i32 = 10;
+let E_Eq: i32 = 11;
+let E_Ne: i32 = 12;
+let E_Lt: i32 = 13;
+let E_Le: i32 = 14;
+let E_Gt: i32 = 15;
+let E_Ge: i32 = 16;
+let E_And: i32 = 17;
+let E_Or: i32 = 18;
+let E_Not: i32 = 19;
+let E_Mod: i32 = 24;
+let E_Shl: i32 = 25;
+let E_Shr: i32 = 26;
+let E_BitAnd: i32 = 27;
+let E_BitOr: i32 = 28;
+let E_BitXor: i32 = 29;
+
+// The 9 statement kinds (§2.2), the host's Stmt::Kind
+// numbers + 64; FieldAssign, DerefAssign and For are
+// excluded (§12.2), their numbers skipped.
+let S_Let: i32 = 64;
+let S_Assign: i32 = 65;
+let S_IndexAssign: i32 = 67;
+let S_Return: i32 = 69;
+let S_If: i32 = 70;
+let S_While: i32 = 71;
+let S_Break: i32 = 73;
+let S_Continue: i32 = 74;
+let S_Expr: i32 = 75;
+
+// The 5 structural kinds (§2.3) — no host counterpart; the
+// dump makes the host's side vectors nodes so every line
+// has one shape.
+let N_Program: i32 = 128;
+let N_Function: i32 = 129;
+let N_Global: i32 = 130;
+let N_Param: i32 = 131;
+let N_Block: i32 = 132;
+
+// The 7 type tags (§2.4).
+let TY_I32: i32 = 1;
+let TY_I64: i32 = 2;
+let TY_U8: i32 = 3;
+let TY_PTR: i32 = 4;
+let TY_PTR_U8: i32 = 5;
+let TY_PTR_I32: i32 = 6;
+let TY_PTR_I64: i32 = 7;
+
+// The kind names, four packed tables of 16-byte records: a
+// record is the name's bytes, NUL-padded. entab is the
+// host's full Expr::Kind list (35 records, so a kind's
+// record sits at its own number); sntab is Stmt::Kind (12);
+// nntab the structural kinds (5); tytab the type spellings
+// (7, tag 1 at record 0). The dump picks the table by the
+// kind's space (§9): < 64 entab, < 128 sntab, else nntab.
+let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0";
+let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0";
+let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0";
+let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0";
+// ---- END GENERATED: parser names ----
+
+// ---------------------------------------------------------------------------
+// Buffers and scanner state. Fixed sizes, no allocator: the source is capped
+// at 1 MiB (LEXER-SPEC.md §3), which also caps the decoded string pool,
+// because every pool byte costs at least one source byte.
+// ---------------------------------------------------------------------------
+let srcbuf: u8[1048576] = 0;      // the source text
+let strpool: u8[1048576] = 0;     // decoded string-literal values
+let tkind: i32[65536] = 0;        // the tokens, five parallel arrays
+let tstart: i32[65536] = 0;       //   text offset: srcbuf, or strpool for String
+let tlen: i32[65536] = 0;         //   text length in bytes
+let tline: i32[65536] = 0;
+let tcol: i32[65536] = 0;
+let outbuf: u8[65536] = 0;        // the dump, flushed when full
+let nbuf: u8[24] = 0;             // scratch for decimal rendering
+// One diagnostic line's staging buffer. It flushes when full rather than
+// trusting a bound: the messages that interpolate names (P6, P7, P16-P18,
+// P21, P25, P27-P29, P59, P61) can carry two source-sized names, and the
+// global-array cap is 1 MiB, so no fixed size covers the worst case while
+// the source cap allows it. Flushing keeps the byte stream identical — a
+// long line simply reaches stderr in several writes — and the array small.
+let ebuf: u8[4096] = 0;           // scratch for one diagnostic line
+
+let srclen: i32 = 0;              // bytes read from stdin
+let spool: i32 = 0;               // strpool fill level
+let ntoks: i32 = 0;               // tokens stored (End excluded)
+let pos: i32 = 0;                 // cursor into srcbuf
+let line: i32 = 1;                // position of the byte at pos
+let col: i32 = 1;
+let eline: i32 = 1;               // the End token's position
+let ecol: i32 = 1;
+let outlen: i32 = 0;              // outbuf fill level
+let elen: i32 = 0;                // ebuf fill level
+
+// ---------------------------------------------------------------------------
+// The AST pool (PARSER-SPEC.md §3): seven parallel i32 arrays of 65536
+// entries, indexed by handle (handle = array index + 1; 0 means "no node").
+// Every child of every node lives in one sibling chain — nfirst heads it,
+// nnext links it, nlast tails it so an append is O(1). Nothing else is
+// stored per node: a Num's value is converted from its token's text at emit
+// time, a name is the token's bytes, a String's value the pool's.
+// ---------------------------------------------------------------------------
+let nkind: i32[65536] = 0;        // the node's kind (§2: 0-63 expr, 64-127 stmt, 128+ structural)
+let ntok: i32[65536] = 0;         // the introducing token's index; -1 means the End token
+let nfirst: i32[65536] = 0;       // first child of the sibling chain (0 = none)
+let nlast: i32[65536] = 0;        // last child of that chain
+let nnext: i32[65536] = 0;        // next sibling in the chain
+let nnty: i32[65536] = 0;         // the type tag — Param, Global, Function (return), Let
+let ncount: i32[65536] = 0;       // a Global's array element count (1 for a scalar)
+let nnodes: i32 = 0;              // nodes allocated (C3 caps this at 65536)
+
+// The expression machine's work stacks (§7): values, operators (token kind
+// plus precedence), and the marker stack. §10 proves the caps bound them all:
+// at most 96 markers+prefixes are open at once, the operator stack holds the
+// open prefixes plus at most two binaries per marker level, and the value
+// stack at most the left spine.
+let vstack: i32[256] = 0;         // value handles
+let ostacl: i32[256] = 0;         // operator token kinds
+let oprec: i32[256] = 0;          // operator precedences (1-10 binary, 11 prefix)
+let vsp: i32 = 0;                 // value stack pointer
+let osp: i32 = 0;                 // operator stack pointer
+let mkind: i32[128] = 0;          // marker kinds: 1 group, 2 call, 3 index
+let mvdepth: i32[128] = 0;        // the vstack depth at the marker's entry
+let modepth: i32[128] = 0;        // the ostacl depth at the marker's entry
+let maux: i32[128] = 0;           // a call marker's node handle, an index marker's name token
+let msp: i32 = 0;                 // marker stack pointer
+let exdepth: i32 = 0;             // C1: markers + prefixes open at once
+let sdepth: i32 = 0;              // C2: blocks entered + else-if links taken
+
+// The declared names, for the duplicate checks (P17, P21, P18). A name is a
+// token index: two names are equal when their token spans are. Both tables
+// are sized past the tightest bound the caps allow — the token cap (E9) lets
+// at most 8192 items of the smallest item shape through, so neither can
+// overrun before E9 or C3 fires.
+let fntok: i32[16384] = 0;        // declared function name tokens
+let gltok: i32[16384] = 0;        // declared global name tokens
+let ptok: i32[34] = 0;            // one function's parameter name tokens (P7 fires at 33)
+let nfuncs: i32 = 0;
+let nglobs: i32 = 0;
+
+let ppos: i32 = 0;                // the parser's cursor: index of the current token
+let perr: i32 = 0;                // the first-error flag; every die_* sets it
+let numval: i64 = 0;              // the converted number (§6.2)
+let numflag: i32 = 0;             // 0 fits, 1 too large (P52/P53), 2 saturated above i64max (P51)
+let numcnt: i32 = 0;              // the same value as an i32 count, saturated at 1048577
+let nparams: i32 = 0;             // the parameters of the function being parsed (P6, P7)
+
+// The dump's traversal and the folder's walk are iterative, not recursive:
+// one Aster call costs a fixed 8 KiB frame (docs/language-spec.md §4), qemu's
+// stack holds about a thousand of them, and the deepest tree the token cap
+// allows — a left-associative binary chain — is far deeper than that. Every
+// stack entry stands for a distinct node, so the node cap bounds them all;
+// the checks below are the guards that keep a handle inside the arrays.
+let estk: i32[65536] = 0;         // the dump's pending siblings
+let edep: i32[65536] = 0;         //   their depths
+let wstk: i32[65536] = 0;         // the folder's walk: node handles
+let wmark: i32[65536] = 0;        //   0 enter, 1 combine
+let wval: i64[65536] = 0;         //   the folded values
+
+// ---------------------------------------------------------------------------
+// M3c semantic pass — symbol table and scratch (SEMANTIC-SPEC.md, frozen
+// v0.23.45-dev). Parallel fixed i32 arrays, handle-indexed, exactly the shape
+// of the AST arrays: no allocator, no struct (M3c-PLAN §4). The cross-function
+// name space (functions + globals + externs) is global; per-function locals are
+// scoped during the walk and reuse the same arrays between functions. Aster has
+// no local arrays, so all scratch arrays live here at module scope.
+// ---------------------------------------------------------------------------
+// symbol kinds
+let SK_FN: i32 = 0;
+let SK_GLOBAL: i32 = 1;
+let SK_PARAM: i32 = 2;
+let SK_LOCAL: i32 = 3;
+let SK_EXTERN_FN: i32 = 4;
+let SK_EXTERN_LET: i32 = 5;
+// cross-function symbol table (functions + globals + externs) — S23 cap 4096
+let sname: i32[4096] = 0;       // name token index
+let skind: i32[4096] = 0;       // SK_*
+let stag: i32[4096] = 0;        // type tag
+let scnt: i32[4096] = 0;        // array element count (1 = scalar)
+let sfn: i32[4096] = 0;         // the N_Function node handle (re-walk params/return)
+let nsym: i32 = 0;
+// per-function locals (reused between functions) — S21 cap 500
+let ln_name: i32[4096] = 0;
+let ln_kind: i32[4096] = 0;
+let ln_tag: i32[4096] = 0;
+let ln_cnt: i32[4096] = 0;
+let nlocs: i32 = 0;
+let sc_start: i32[128] = 0;     // scope stack: nlocs recorded at each scope entry
+let sc_depth: i32 = 0;
+// per-expression type results, indexed by node handle
+let ex_ty: i32[65536] = 0;       // type tag, or -2 for a bool-valued expression
+let ex_arr: i32[65536] = 0;      // 1 if the type is an array (element = ex_ty)
+// resolved-symbol scratch (fillers for find_var / find_call)
+let rs_tag: i32 = 0;
+let rs_cnt: i32 = 0;
+let rs_kind: i32 = 0;
+let rs_fnsym: i32 = 0;
+// intrinsic-call scratch: when find_call matches a host intrinsic (read /
+// write / load_u8 / store_u8 — declared nowhere in source, SEMANTIC-SPEC.md
+// §3), rs_fnsym is set to -1, rcall_intrinsic to 1, and rcall_rtyp to the
+// intrinsic's known return tag. tc_combine's E_Call branch then skips the
+// signature checks (S9/S10) that have nothing to bind against.
+let rcall_intrinsic: i32 = 0;
+let rcall_rtyp: i32 = 0;
+// current-function scratch (for S16 / S22)
+let cur_ret_ty: i32 = 0;
+let cur_fn_name: i32 = 0;
+// tc_expr's child-collection scratch (max children = 32 call args)
+let kids: i32[64] = 0;
+
+// ---------------------------------------------------------------------------
+// Character classes — the C locale's, as exact byte ranges (spec §4).
+// ---------------------------------------------------------------------------
+fn is_space(c: i32) -> i32 {
+    if (c == 32 || c == 9 || c == 10 || c == 11 || c == 12 || c == 13) { return 1; }
+    return 0;
+}
+fn is_digit(c: i32) -> i32 {
+    if (c >= 48 && c <= 57) { return 1; }
+    return 0;
+}
+fn is_alpha(c: i32) -> i32 {
+    if (c >= 65 && c <= 90) { return 1; }
+    if (c >= 97 && c <= 122) { return 1; }
+    return 0;
+}
+fn is_alnum(c: i32) -> i32 {
+    if (is_alpha(c) == 1) { return 1; }
+    return is_digit(c);
+}
+fn is_xdigit(c: i32) -> i32 {
+    if (is_digit(c) == 1) { return 1; }
+    if (c >= 65 && c <= 70) { return 1; }
+    if (c >= 97 && c <= 102) { return 1; }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Cursor. peek answers 0 at end-of-input by comparing against srclen — there
+// is no sentinel byte, because an array may not be declared larger than 1 MiB
+// and the buffer is exactly that. An embedded NUL in the text reads as 0 and
+// so ends the scan, exactly as the host compiler's peek() does.
+// ---------------------------------------------------------------------------
+fn peek() -> i32 {
+    if (pos >= srclen) { return 0; }
+    return load_u8(srcbuf + pos);
+}
+fn peek2() -> i32 {
+    if (pos + 1 >= srclen) { return 0; }
+    return load_u8(srcbuf + pos + 1);
+}
+fn take() -> i32 {
+    let c: i32 = peek();
+    if (c != 0) {
+        pos = pos + 1;
+        if (c == 10) { line = line + 1; col = 1; } else { col = col + 1; }
+    }
+    return c;
+}
+
+// ---------------------------------------------------------------------------
+// Token store. Returns 0, or 1 when the token cap (E9) aborts the run — the
+// callers all `return push(...)`, so the abort propagates to main unchanged.
+// The position is passed in: it was captured before the token's first byte.
+// ---------------------------------------------------------------------------
+fn push(k: i32, start: i32, length: i32, tl: i32, tc: i32) -> i32 {
+    if (ntoks >= 65536) { return die_np("too many tokens (limit 65536)"); }
+    tkind[ntoks] = k;
+    tstart[ntoks] = start;
+    tlen[ntoks] = length;
+    tline[ntoks] = tl;
+    tcol[ntoks] = tc;
+    ntoks = ntoks + 1;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics: one line on stderr, `aster: error: <message>`, exit 1. Built
+// in ebuf and written whole, so a diagnostic is never interleaved with
+// anything else. die_np is the two messages without a position (E8, E9);
+// die_at appends " at L:C"; die_e6 is E6, whose suffix follows the position.
+// Each returns 1, the exit status, and sets perr so the parser's own error
+// paths can bail through one flag instead of threading a status through every
+// helper. The open/close pair builds the messages that interpolate a name, a
+// type spelling or a folded value (P6, P7, P16-P18, P21, P25, P28, P29, P31,
+// P59, P61): die_open writes the prefix, the caller appends its parts,
+// die_close appends the position and the newline, die_close_np just the
+// newline for the bare ones.
+// ---------------------------------------------------------------------------
+fn bput(c: i32) -> i32 {
+    // Flush when full, as outbuf does: the longest diagnostic is bounded by
+    // the source, not by this array, and a flush keeps the emitted bytes
+    // identical (stderr simply sees one line in several writes).
+    if (elen >= 4096) {
+        write(2, ebuf, elen);
+        elen = 0;
+    }
+    store_u8(ebuf + elen, c);
+    elen = elen + 1;
+    return 0;
+}
+fn bputs(p: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (load_u8(p + i) != 0) {
+        bput(load_u8(p + i));
+        i = i + 1;
+    }
+    return 0;
+}
+fn bputraw(p: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        bput(load_u8(p + i));
+        i = i + 1;
+    }
+    return 0;
+}
+fn bputn(v: i32) -> i32 {
+    let n: i32 = utoa(v, nbuf);
+    let i: i32 = 0;
+    while (i < n) {
+        bput(load_u8(nbuf + i));
+        i = i + 1;
+    }
+    return 0;
+}
+fn bputn64(v: i64) -> i32 {
+    // i64's most negative value is the one input itoa's contract excludes —
+    // its magnitude is not representable — so it is spelled out here.
+    if (v == 0 - 9223372036854775807 - 1) { return bputs("-9223372036854775808"); }
+    let n: i32 = itoa(v, nbuf);
+    let i: i32 = 0;
+    while (i < n) {
+        bput(load_u8(nbuf + i));
+        i = i + 1;
+    }
+    return 0;
+}
+fn die_open() -> i32 {
+    elen = 0;
+    bputs("aster: error: ");
+    perr = 1;
+    return 0;
+}
+fn die_close(l: i32, c: i32) -> i32 {
+    bputs(" at ");
+    bputn(l);
+    bput(58);
+    bputn(c);
+    bput(10);
+    write(2, ebuf, elen);
+    return 1;
+}
+fn die_close_np() -> i32 {
+    bput(10);
+    write(2, ebuf, elen);
+    return 1;
+}
+fn die_np(msg: ptr<u8>) -> i32 {
+    elen = 0;
+    bputs("aster: error: ");
+    bputs(msg);
+    bput(10);
+    write(2, ebuf, elen);
+    perr = 1;
+    return 1;
+}
+fn die_at(msg: ptr<u8>, l: i32, c: i32) -> i32 {
+    elen = 0;
+    bputs("aster: error: ");
+    bputs(msg);
+    bputs(" at ");
+    bputn(l);
+    bput(58);
+    bputn(c);
+    bput(10);
+    write(2, ebuf, elen);
+    perr = 1;
+    return 1;
+}
+fn die_e6(l: i32, c: i32) -> i32 {
+    elen = 0;
+    bputs("aster: error: non-ASCII character at ");
+    bputn(l);
+    bput(58);
+    bputn(c);
+    bputs(" (Aster source must be ASCII)");
+    bput(10);
+    write(2, ebuf, elen);
+    perr = 1;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1a: stdin into srcbuf. Short reads are looped over; when the buffer
+// fills, one further single-byte read decides between "exactly 1 MiB" and
+// E8. A read error ends input, as EOF does.
+// ---------------------------------------------------------------------------
+fn read_source() -> i32 {
+    srclen = 0;
+    while (srclen < 1048576) {
+        let n: i32 = read(0, srcbuf + srclen, 1048576 - srclen);
+        if (n <= 0) { return 0; }
+        srclen = srclen + n;
+    }
+    if (read(0, nbuf, 1) > 0) { return die_np("source exceeds 1048576 bytes"); }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1b: the scanner. lex runs the loop — skip whitespace and comments,
+// stop at end-of-input, otherwise scan exactly one token — and scan_one is
+// that one token, ending in `return push(...)` because a scanned token is the
+// end of the branch. Both return 0, or 1 when a diagnostic aborted the run;
+// main propagates the 1 and writes nothing to stdout.
+// ---------------------------------------------------------------------------
+fn scan_one() -> i32 {
+    let l: i32 = line;
+    let c: i32 = col;
+    let ch: i32 = peek();
+    // --- identifier or keyword ---
+    if (is_alpha(ch) == 1 || ch == 95) {
+        let start: i32 = pos;
+        while (is_alnum(peek()) == 1 || peek() == 95) { take(); }
+        let length: i32 = pos - start;
+        return push(keyword_kind(srcbuf + start, length), start, length, l, c);
+    }
+        // --- number (decimal, or 0x/0X hexadecimal) ---
+        if (is_digit(ch) == 1) {
+            let start: i32 = pos;
+            while (is_digit(peek()) == 1) { take(); }
+            if (pos - start == 1 && load_u8(srcbuf + start) == 48) {
+                if (peek() == 120 || peek() == 88) {
+                    take();
+                    if (is_xdigit(peek()) == 0) {
+                        return die_at("hexadecimal literal has no digits", l, c);
+                    }
+                    while (is_xdigit(peek()) == 1) { take(); }
+                }
+            }
+            return push(K_Number, start, pos - start, l, c);
+        }
+        // --- string literal: decode into strpool ---
+        if (ch == 34) {
+            let vstart: i32 = spool;
+            take();
+            let closed: i32 = 0;
+            while (peek() != 0) {
+                let q: i32 = take();
+                if (q == 34) { closed = 1; break; }
+                if (q == 10 || q == 13) {
+                    return die_at("newline in string literal", l, c);
+                }
+                if (q == 92) {
+                    let e: i32 = take();
+                    if (e == 0) { break; }
+                    if (e == 110) { store_u8(strpool + spool, 10); spool = spool + 1; }
+                    else if (e == 114) { store_u8(strpool + spool, 13); spool = spool + 1; }
+                    else if (e == 116) { store_u8(strpool + spool, 9); spool = spool + 1; }
+                    else if (e == 48) { store_u8(strpool + spool, 0); spool = spool + 1; }
+                    else if (e == 92) { store_u8(strpool + spool, 92); spool = spool + 1; }
+                    else if (e == 34) { store_u8(strpool + spool, 34); spool = spool + 1; }
+                    else { return die_at("unsupported string escape", line, col); }
+                } else {
+                    store_u8(strpool + spool, q);
+                    spool = spool + 1;
+                }
+            }
+            if (closed == 0) {
+                return die_at("unterminated string literal", l, c);
+            }
+            return push(K_String, vstart, spool - vstart, l, c);
+        }
+        // --- anything above ASCII is refused before the operator table ---
+        if (ch > 127) { return die_e6(l, c); }
+        // --- operators and punctuation: one byte consumed, then lookahead ---
+        let start: i32 = pos;
+        take();
+        if (ch == 40) { return push(K_LParen, start, pos - start, l, c); }
+        if (ch == 41) { return push(K_RParen, start, pos - start, l, c); }
+        if (ch == 123) { return push(K_LBrace, start, pos - start, l, c); }
+        if (ch == 125) { return push(K_RBrace, start, pos - start, l, c); }
+        if (ch == 58) { return push(K_Colon, start, pos - start, l, c); }
+        if (ch == 59) { return push(K_Semi, start, pos - start, l, c); }
+        if (ch == 44) { return push(K_Comma, start, pos - start, l, c); }
+        if (ch == 91) { return push(K_LBracket, start, pos - start, l, c); }
+        if (ch == 93) { return push(K_RBracket, start, pos - start, l, c); }
+        if (ch == 64) { return push(K_At, start, pos - start, l, c); }
+        if (ch == 126) { return push(K_Tilde, start, pos - start, l, c); }
+        if (ch == 63) { return push(K_Question, start, pos - start, l, c); }
+        if (ch == 46) { return push(K_Dot, start, pos - start, l, c); }
+        if (ch == 61) {
+            if (peek() == 61) { take(); return push(K_EqEq, start, pos - start, l, c); }
+            return push(K_Eq, start, pos - start, l, c);
+        }
+        if (ch == 33) {
+            if (peek() == 61) { take(); return push(K_Ne, start, pos - start, l, c); }
+            return push(K_Not, start, pos - start, l, c);
+        }
+        if (ch == 43) {
+            if (peek() == 43) { take(); return push(K_PlusPlus, start, pos - start, l, c); }
+            if (peek() == 61) { take(); return push(K_PlusEq, start, pos - start, l, c); }
+            return push(K_Plus, start, pos - start, l, c);
+        }
+        if (ch == 45) {
+            if (peek() == 62) { take(); return push(K_Arrow, start, pos - start, l, c); }
+            if (peek() == 45) { take(); return push(K_MinusMinus, start, pos - start, l, c); }
+            if (peek() == 61) { take(); return push(K_MinusEq, start, pos - start, l, c); }
+            return push(K_Minus, start, pos - start, l, c);
+        }
+        if (ch == 42) {
+            if (peek() == 61) { take(); return push(K_StarEq, start, pos - start, l, c); }
+            return push(K_Star, start, pos - start, l, c);
+        }
+        if (ch == 47) {
+            if (peek() == 61) { take(); return push(K_SlashEq, start, pos - start, l, c); }
+            return push(K_Slash, start, pos - start, l, c);
+        }
+        if (ch == 37) {
+            if (peek() == 61) { take(); return push(K_PercentEq, start, pos - start, l, c); }
+            return push(K_Percent, start, pos - start, l, c);
+        }
+        if (ch == 94) {
+            if (peek() == 61) { take(); return push(K_XorEq, start, pos - start, l, c); }
+            return push(K_BitXor, start, pos - start, l, c);
+        }
+        if (ch == 38) {
+            if (peek() == 38) { take(); return push(K_And, start, pos - start, l, c); }
+            if (peek() == 61) { take(); return push(K_AndEq, start, pos - start, l, c); }
+            return push(K_Amp, start, pos - start, l, c);
+        }
+        if (ch == 124) {
+            if (peek() == 124) { take(); return push(K_Or, start, pos - start, l, c); }
+            if (peek() == 61) { take(); return push(K_OrEq, start, pos - start, l, c); }
+            return push(K_BitOr, start, pos - start, l, c);
+        }
+        if (ch == 60) {
+            if (peek() == 61) { take(); return push(K_Le, start, pos - start, l, c); }
+            if (peek() == 60) {
+                take();
+                if (peek() == 61) { take(); return push(K_ShlEq, start, pos - start, l, c); }
+                return push(K_Shl, start, pos - start, l, c);
+            }
+            return push(K_Lt, start, pos - start, l, c);
+        }
+        if (ch == 62) {
+            if (peek() == 61) { take(); return push(K_Ge, start, pos - start, l, c); }
+            if (peek() == 62) {
+                take();
+                if (peek() == 61) { take(); return push(K_ShrEq, start, pos - start, l, c); }
+                return push(K_Shr, start, pos - start, l, c);
+            }
+            return push(K_Gt, start, pos - start, l, c);
+        }
+        return die_at("unexpected character", l, c);
+}
+
+fn lex() -> i32 {
+    while (1 == 1) {
+        // --- whitespace and comments ---
+        while (1 == 1) {
+            while (is_space(peek()) == 1) { take(); }
+            if (peek() == 47 && peek2() == 47) {
+                while (peek() != 0 && peek() != 10) { take(); }
+                continue;
+            }
+            if (peek() == 47 && peek2() == 42) {
+                let bl: i32 = line;
+                let bc: i32 = col;
+                take();
+                take();
+                let closed: i32 = 0;
+                while (peek() != 0) {
+                    if (peek() == 42 && peek2() == 47) {
+                        take();
+                        take();
+                        closed = 1;
+                        break;
+                    }
+                    take();
+                }
+                if (closed == 0) {
+                    return die_at("unterminated block comment", bl, bc);
+                }
+                continue;
+            }
+            break;
+        }
+        if (peek() == 0) {
+            eline = line;
+            ecol = col;
+            return 0;
+        }
+        let r: i32 = scan_one();
+        if (r != 0) { return r; }
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: the dump. putb/putn feed outbuf and flush it through write(1, …)
+// when full — a single token may outrun the buffer (a string value can be
+// almost 1 MiB), so putn copies in buffer-sized chunks.
+// ---------------------------------------------------------------------------
+fn flush_out() -> i32 {
+    if (outlen > 0) {
+        write(1, outbuf, outlen);
+        outlen = 0;
+    }
+    return 0;
+}
+fn putb(c: i32) -> i32 {
+    if (outlen >= 65536) { flush_out(); }
+    store_u8(outbuf + outlen, c);
+    outlen = outlen + 1;
+    return 0;
+}
+fn putn(p: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        if (outlen >= 65536) { flush_out(); }
+        let space: i32 = 65536 - outlen;
+        let chunk: i32 = n - i;
+        if (chunk > space) { chunk = space; }
+        let j: i32 = 0;
+        while (j < chunk) {
+            store_u8(outbuf + outlen + j, load_u8(p + i + j));
+            j = j + 1;
+        }
+        outlen = outlen + chunk;
+        i = i + chunk;
+    }
+    return 0;
+}
+fn putdec(v: i32) -> i32 {
+    let n: i32 = utoa(v, nbuf);
+    return putn(nbuf, n);
+}
+fn putdec64(v: i64) -> i32 {
+    // Only ever called on values the parser proved are in [0, i64max] — a Num
+    // node's converted value (§6.2) — so utoa's contract holds.
+    let n: i32 = utoa(v, nbuf);
+    return putn(nbuf, n);
+}
+fn put_escaped(start: i32, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let b: i32 = load_u8(strpool + start + i);
+        if (b == 34) { putb(92); putb(34); }
+        else if (b == 92) { putb(92); putb(92); }
+        else if (b == 10) { putb(92); putb(110); }
+        else if (b == 13) { putb(92); putb(114); }
+        else if (b == 9) { putb(92); putb(116); }
+        else if (b == 0) { putb(92); putb(48); }
+        else { putb(b); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: the parser (PARSER-SPEC.md §7-§8, §11). It walks the token arrays
+// into the AST pool and reports the first thing wrong, and nothing else: one
+// global flag, perr, is set by every diagnostic, and every function below
+// tests it after a call that can fail and bails — so the first error wins,
+// and because the dump is a later phase, stdout stays empty (§10).
+//
+// A function returning a node handle answers 0 for "no node", which is both
+// the failure answer and the pool's own "no node" value; a function
+// returning a status answers 0 for done, 1 for aborted. Callers test perr,
+// never the returned value, to tell the two apart.
+// ---------------------------------------------------------------------------
+
+// The pool. A handle is the array index plus one, so 0 means "no node" and
+// every access is arr[h-1]. C3 caps the pool at 65536 — a guard rather than
+// a reachable path, since every node is introduced by a token that consumes
+// one and E9 caps those first, but it is the guard that keeps a handle
+// inside the arrays, so it stays.
+fn newnode(k: i32, t: i32) -> i32 {
+    if (nnodes >= 65536) { return die_np("too many AST nodes (limit 65536)"); }
+    nkind[nnodes] = k;
+    ntok[nnodes] = t;
+    nfirst[nnodes] = 0;
+    nlast[nnodes] = 0;
+    nnext[nnodes] = 0;
+    nnty[nnodes] = 0;
+    ncount[nnodes] = 0;
+    nnodes = nnodes + 1;
+    return nnodes;
+}
+
+// O(1) append to a node's child chain — the one list operation the AST has,
+// and the reason nlast exists beside nfirst.
+fn append(parent: i32, child: i32) -> i32 {
+    if (nlast[parent - 1] == 0) {
+        nfirst[parent - 1] = child;
+    } else {
+        nnext[nlast[parent - 1] - 1] = child;
+    }
+    nlast[parent - 1] = child;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The token cursor. curk answers K_End past the last token and advance
+// refuses to move past it, so the parser never indexes outside the token
+// arrays; tok_line/tok_col fold both the virtual End (a negative index, the
+// Program of an empty input) and a cursor sitting past the last token onto
+// the End token's line and column.
+// ---------------------------------------------------------------------------
+fn curk() -> i32 {
+    if (ppos >= ntoks) { return K_End; }
+    return tkind[ppos];
+}
+fn nextk() -> i32 {
+    if (ppos + 1 >= ntoks) { return K_End; }
+    return tkind[ppos + 1];
+}
+fn advance() -> i32 {
+    if (ppos < ntoks) { ppos = ppos + 1; }
+    return 0;
+}
+fn tok_line(t: i32) -> i32 {
+    if (t < 0 || t >= ntoks) { return eline; }
+    return tline[t];
+}
+fn tok_col(t: i32) -> i32 {
+    if (t < 0 || t >= ntoks) { return ecol; }
+    return tcol[t];
+}
+
+// ---------------------------------------------------------------------------
+// Names and spellings. A name is the text of its token, so two names are
+// equal when their texts are — the host compares strings, and a name written
+// at two positions is a duplicate there too, not only the same token twice.
+// ---------------------------------------------------------------------------
+fn name_eq(a: i32, b: i32) -> i32 {
+    if (tlen[a] != tlen[b]) { return 0; }
+    if (memcmp(srcbuf + tstart[a], srcbuf + tstart[b], tlen[a]) == 0) { return 1; }
+    return 0;
+}
+
+// The current token's text against a literal — the sizeof/len test (§12.5).
+fn name_is(lit: ptr<u8>) -> i32 {
+    let start: i32 = tstart[ppos];
+    let n: i32 = tlen[ppos];
+    let i: i32 = 0;
+    while (load_u8(lit + i) != 0) {
+        if (i >= n) { return 0; }
+        if (load_u8(lit + i) != load_u8(srcbuf + start + i)) { return 0; }
+        i = i + 1;
+    }
+    if (i != n) { return 0; }
+    return 1;
+}
+
+fn bputname(t: i32) -> i32 {
+    return bputraw(srcbuf + tstart[t], tlen[t]);
+}
+
+// A type spelling for a diagnostic: the host's tyNameFull, which prints every
+// pointer — bare, ptr<u8>, ptr<i32>, ptr<i64> — as plain `ptr`. The dump's
+// own spelling (putty) keeps the element type, because there it is contract.
+fn bputtybase(t: i32) -> i32 {
+    if (t == TY_I32) { return bputs("i32"); }
+    if (t == TY_I64) { return bputs("i64"); }
+    if (t == TY_U8) { return bputs("u8"); }
+    return bputs("ptr");
+}
+
+// The two diagnostics that interpolate a name: bare (P6, P7, P16-P18, P21,
+// P25, P27-P29) and positioned (P59, P61).
+fn die_name_np(msg: ptr<u8>, t: i32) -> i32 {
+    die_open();
+    bputs(msg);
+    bputname(t);
+    return die_close_np();
+}
+fn die_name_at(msg: ptr<u8>, t: i32) -> i32 {
+    die_open();
+    bputs(msg);
+    bputname(t);
+    return die_close(tok_line(t), tok_col(t));
+}
+
+// ---------------------------------------------------------------------------
+// The dump's spellings: a NUL-padded 16-byte table record printed up to its
+// terminator, then the three table picks (§9: a kind below 64 is an
+// expression, below 128 a statement, else structural) and the type table
+// (tag 1 at record 0).
+// ---------------------------------------------------------------------------
+fn put_tabname(p: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (i < 16) {
+        let c: i32 = load_u8(p + i);
+        if (c == 0) { break; }
+        putb(c);
+        i = i + 1;
+    }
+    return 0;
+}
+fn put_kindname(k: i32) -> i32 {
+    if (k < 64) { return put_tabname(entab + k * 16); }
+    if (k < 128) { return put_tabname(sntab + (k - 64) * 16); }
+    return put_tabname(nntab + (k - 128) * 16);
+}
+fn putty(t: i32) -> i32 {
+    return put_tabname(tytab + (t - 1) * 16);
+}
+fn putname(t: i32) -> i32 {
+    return putn(srcbuf + tstart[t], tlen[t]);
+}
+
+// Whether a Function node is external — read off the child shape rather than
+// a flag of its own: a defined function always has its body Block (an empty
+// body is P16, and the node exists either way), an external one has its
+// parameters and nothing more. The same reading tells an external global
+// (no initializer child) from a defined one. The grammar makes the two
+// shapes disjoint, so nothing is stored per node for it.
+fn fn_extern(h: i32) -> i32 {
+    let c: i32 = nfirst[h - 1];
+    while (c != 0) {
+        if (nkind[c - 1] == N_Block) { return 0; }
+        c = nnext[c - 1];
+    }
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Numbers (§6.2): the subset's own conversion, standing in for the host's
+// strtoull. It fills three results, because the two call sites read them
+// differently: numval is the i64 value, saturated at i64 max when the text is
+// wider; numflag says why it is not exact (1 too large for u64, 2 saturated
+// above i64 max); and numcnt is the same value as an i32 count saturated at
+// 1048577 — what an array length needs, and what keeps this stage free of
+// the i64-to-i32 narrowing the host refuses ("Aster has no cast
+// expressions", tyAssignable).
+// ---------------------------------------------------------------------------
+fn digit_val(c: i32) -> i32 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    if (c >= 97 && c <= 102) { return c - 87; }
+    return c - 55;
+}
+
+// Byte-wise "is the digit text at srcbuf+p greater than this literal?", for
+// equal-length texts only — which for digits is numeric order, and for hex
+// digits is safe because every hex byte is at most 'f'.
+fn gt_lit(p: i32, lit: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (load_u8(lit + i) != 0) {
+        if (load_u8(srcbuf + p + i) > load_u8(lit + i)) { return 1; }
+        if (load_u8(srcbuf + p + i) < load_u8(lit + i)) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}
+fn convert_num(t: i32) -> i32 {
+    let start: i32 = tstart[t];
+    let n: i32 = tlen[t];
+    let base: i32 = 10;
+    let i: i32 = 0;
+    if (n > 1 && load_u8(srcbuf + start) == 48) {
+        let x: i32 = load_u8(srcbuf + start + 1);
+        if (x == 120 || x == 88) { base = 16; i = 2; }
+    }
+    // leading zeros go, but one digit stays: an all-zero text is the value 0
+    while (i < n - 1 && load_u8(srcbuf + start + i) == 48) { i = i + 1; }
+    let dcount: i32 = n - i;
+    numflag = 0;
+    // too large for u64: more than 20 decimal digits, more than 16 hex ones,
+    // or a 20-digit decimal past 18446744073709551615. A 16-digit hex text is
+    // always inside u64 — its digits never exceed 'f' byte-wise — so the
+    // comparison it would need is vacuous and is not written.
+    if (base == 10) {
+        if (dcount > 20) { numflag = 1; }
+        else if (dcount == 20 && gt_lit(start + i, "18446744073709551615") == 1) { numflag = 1; }
+    } else {
+        if (dcount > 16) { numflag = 1; }
+    }
+    // accumulate both readings; the i64 one saturates the moment the running
+    // value would pass i64 max — the guard is exact, and it is what catches
+    // the 20-digit decimal and the wide hex without a second comparison —
+    // and the i32 one saturates at the array bound.
+    numval = 0;
+    numcnt = 0;
+    let j: i32 = i;
+    while (j < n) {
+        let d: i32 = digit_val(load_u8(srcbuf + start + j));
+        if (numflag == 0) {
+            if (numval > (9223372036854775807 - d) / base) {
+                numval = 9223372036854775807;
+                numflag = 2;
+            } else {
+                numval = numval * base + d;
+            }
+        }
+        if (numcnt > 1048576) { numcnt = 1048577; } else { numcnt = numcnt * base + d; }
+        j = j + 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The operator table (§6.1): a token's precedence on the work stack (0 when
+// it is not a binary operator at all), the node kind it reduces to, and the
+// compound-assignment tokens the statement dispatch refuses with B10.
+// ---------------------------------------------------------------------------
+fn binprec(k: i32) -> i32 {
+    if (k == K_Or) { return 1; }
+    if (k == K_And) { return 2; }
+    if (k == K_BitOr) { return 3; }
+    if (k == K_BitXor) { return 4; }
+    if (k == K_Amp) { return 5; }
+    if (k == K_EqEq || k == K_Ne) { return 6; }
+    if (k == K_Lt || k == K_Le || k == K_Gt || k == K_Ge) { return 7; }
+    if (k == K_Shl || k == K_Shr) { return 8; }
+    if (k == K_Plus || k == K_Minus) { return 9; }
+    if (k == K_Star || k == K_Slash || k == K_Percent) { return 10; }
+    return 0;
+}
+fn binop_kind(k: i32) -> i32 {
+    if (k == K_Or) { return E_Or; }
+    if (k == K_And) { return E_And; }
+    if (k == K_BitOr) { return E_BitOr; }
+    if (k == K_BitXor) { return E_BitXor; }
+    if (k == K_Amp) { return E_BitAnd; }
+    if (k == K_EqEq) { return E_Eq; }
+    if (k == K_Ne) { return E_Ne; }
+    if (k == K_Lt) { return E_Lt; }
+    if (k == K_Le) { return E_Le; }
+    if (k == K_Gt) { return E_Gt; }
+    if (k == K_Ge) { return E_Ge; }
+    if (k == K_Shl) { return E_Shl; }
+    if (k == K_Shr) { return E_Shr; }
+    if (k == K_Plus) { return E_Add; }
+    if (k == K_Minus) { return E_Sub; }
+    if (k == K_Star) { return E_Mul; }
+    if (k == K_Slash) { return E_Div; }
+    return E_Mod;
+}
+fn is_compound(k: i32) -> i32 {
+    if (k == K_PlusEq || k == K_MinusEq || k == K_StarEq) { return 1; }
+    if (k == K_SlashEq || k == K_PercentEq || k == K_ShlEq) { return 1; }
+    if (k == K_ShrEq || k == K_AndEq || k == K_OrEq || k == K_XorEq) { return 1; }
+    return 0;
+}
+
+// The kinds the host's isConstExpr folds: Num, Neg and the ten arithmetic
+// and bitwise binaries. The comparisons and the logical operators are
+// deliberately absent — `let g: i32 = 1 < 2;` is a runtime initializer in
+// the host, not a folded constant, and the array path's P27 turns on that
+// distinction.
+fn is_fold_binary(k: i32) -> i32 {
+    if (k == E_Add || k == E_Sub || k == E_Mul || k == E_Div || k == E_Mod) { return 1; }
+    if (k == E_Shl || k == E_Shr || k == E_BitAnd || k == E_BitOr || k == E_BitXor) { return 1; }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The expression machine (§7). Two states over three stacks: values, and
+// operators with their precedences, plus a marker stack remembering — for
+// every open group, call or subscript — the depths the two work stacks had at
+// its entry. Two rules the recursive-descent twin gets for free are stated
+// here explicitly, because the stacks make them a choice:
+//
+//   * a reduce never crosses a marker. The binary reduce below and the
+//     prefix reducer both stop at the innermost marker's operator depth, so
+//     an operator belonging to an enclosing expression is never applied to
+//     this one's operands. Without the bound, `x * f(a + 2)` would parse as
+//     `f(x*a+2)` and `-f(a)` as `f(-a)`.
+//   * a postfix is consumed as a marker, not as a node: an identifier
+//     followed by `(` or `[` opens a call or index marker instead of pushing
+//     a Var, which is what makes `-a[b]` parse as `-(a[b])` — the prefix
+//     sits below the marker's depth, and the marker closes before it can
+//     reduce.
+// ---------------------------------------------------------------------------
+fn vpush(h: i32) -> i32 {
+    if (vsp >= 256) { return die_np("internal: value stack overflow"); }
+    vstack[vsp] = h;
+    vsp = vsp + 1;
+    return 0;
+}
+fn opush(k: i32, prec: i32) -> i32 {
+    if (osp >= 256) { return die_np("internal: operator stack overflow"); }
+    ostacl[osp] = k;
+    oprec[osp] = prec;
+    osp = osp + 1;
+    return 0;
+}
+
+// A marker or a prefix operator opens one nesting level; C1 refuses the 97th.
+fn push_marker(mk: i32, aux: i32) -> i32 {
+    if (msp >= 128) { return die_np("internal: marker stack overflow"); }
+    if (exdepth >= 96) { return die_np("expression nests too deeply (limit 96)"); }
+    exdepth = exdepth + 1;
+    mkind[msp] = mk;
+    mvdepth[msp] = vsp;
+    modepth[msp] = osp;
+    maux[msp] = aux;
+    msp = msp + 1;
+    return 0;
+}
+fn push_prefix(k: i32) -> i32 {
+    if (exdepth >= 96) { return die_np("expression nests too deeply (limit 96)"); }
+    exdepth = exdepth + 1;
+    return opush(k, 11);
+}
+fn pop_marker() -> i32 {
+    msp = msp - 1;
+    exdepth = exdepth - 1;
+    return 0;
+}
+
+// One reduce: pop the operator, pop its operand or operands, push the node.
+// A binary node inherits its left operand's token and a prefix its
+// operand's (§8).
+fn reduce_one() -> i32 {
+    let k: i32 = ostacl[osp - 1];
+    let prec: i32 = oprec[osp - 1];
+    osp = osp - 1;
+    if (prec == 11) {
+        exdepth = exdepth - 1;
+        let a: i32 = vstack[vsp - 1];
+        vsp = vsp - 1;
+        let nk: i32 = E_Neg;
+        if (k == K_Not) { nk = E_Not; }
+        let z: i32 = newnode(nk, ntok[a - 1]);
+        if (z == 0) { return 1; }
+        append(z, a);
+        return vpush(z);
+    }
+    let b: i32 = vstack[vsp - 1];
+    vsp = vsp - 1;
+    let a: i32 = vstack[vsp - 1];
+    vsp = vsp - 1;
+    let z: i32 = newnode(binop_kind(k), ntok[a - 1]);
+    if (z == 0) { return 1; }
+    append(z, a);
+    append(z, b);
+    return vpush(z);
+}
+
+// The prefix reducer: it runs at every point a value could be waiting on one
+// (§7.2), and never reaches below the innermost marker's depth.
+fn reduce_prefixes() -> i32 {
+    let bottom: i32 = 0;
+    if (msp > 0) { bottom = modepth[msp - 1]; }
+    while (osp > bottom && oprec[osp - 1] == 11) {
+        if (reduce_one() != 0) { return 1; }
+    }
+    return 0;
+}
+fn reduce_above(bottom: i32) -> i32 {
+    while (osp > bottom) {
+        if (reduce_one() != 0) { return 1; }
+    }
+    return 0;
+}
+
+// The machine itself. It answers the expression's node handle and leaves the
+// cursor on the token that stopped it; the statement-level caller decides
+// what that token means.
+fn parse_expr() -> i32 {
+    vsp = 0;
+    osp = 0;
+    msp = 0;
+    exdepth = 0;
+    let state: i32 = 0;
+    while (1 == 1) {
+        if (state == 0) {
+            // ---------------- expect-operand ----------------
+            let k: i32 = curk();
+            if (k == K_Minus || k == K_Not) {
+                advance();
+                if (push_prefix(k) != 0) { return 0; }
+                continue;
+            }
+            if (k == K_Tilde) {
+                die_at("'~' is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (k == K_Star) {
+                die_at("'*' dereference is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (k == K_Amp) {
+                die_at("'&' address-of is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (k == K_At) {
+                die_at("@embed is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (k == K_True || k == K_False) {
+                die_at("true/false are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (k == K_Ident && (name_is("sizeof") == 1 || name_is("len") == 1)) {
+                die_at("sizeof/len are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (k == K_Bool) {
+                die_at("type bool is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (k == K_U16) {
+                die_at("type u16 is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (k == K_U32) {
+                die_at("type u32 is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (k == K_Ident || k == K_Main) {
+                let nt: i32 = ppos;
+                let nxt: i32 = nextk();
+                if (nxt == K_LParen) {
+                    advance();
+                    advance();
+                    let c: i32 = newnode(E_Call, nt);
+                    if (c == 0) { return 0; }
+                    if (push_marker(2, c) != 0) { return 0; }
+                    continue;
+                }
+                if (nxt == K_LBracket) {
+                    advance();
+                    advance();
+                    if (push_marker(3, nt) != 0) { return 0; }
+                    continue;
+                }
+                advance();
+                let v: i32 = newnode(E_Var, nt);
+                if (v == 0) { return 0; }
+                if (vpush(v) != 0) { return 0; }
+                state = 1;
+                continue;
+            }
+            if (k == K_Number) {
+                let nt: i32 = ppos;
+                advance();
+                convert_num(nt);
+                if (numflag == 1) {
+                    die_at("integer literal is too large", tok_line(nt), tok_col(nt));
+                    return 0;
+                }
+                if (numflag == 2) {
+                    die_at("integer literal exceeds i64 range", tok_line(nt), tok_col(nt));
+                    return 0;
+                }
+                let v: i32 = newnode(E_Num, nt);
+                if (v == 0) { return 0; }
+                if (vpush(v) != 0) { return 0; }
+                state = 1;
+                continue;
+            }
+            if (k == K_String) {
+                let nt: i32 = ppos;
+                advance();
+                let v: i32 = newnode(E_String, nt);
+                if (v == 0) { return 0; }
+                if (vpush(v) != 0) { return 0; }
+                state = 1;
+                continue;
+            }
+            if (k == K_LParen) {
+                advance();
+                if (push_marker(1, 0) != 0) { return 0; }
+                continue;
+            }
+            // The token opens no value, so one is required and missing — with
+            // one legal exception: `)` closing a call whose argument list has
+            // not begun. `f()` is an empty list, while `f(1,)` finds the Call
+            // node with a child already and so takes the P41 below; the two
+            // are told apart by the node, exactly as the host's argument loop
+            // tells them apart by where it is in its do-while.
+            if (msp > 0 && mkind[msp - 1] == 2 && k == K_RParen && nfirst[maux[msp - 1] - 1] == 0) {
+                let call: i32 = maux[msp - 1];
+                advance();
+                pop_marker();
+                if (vpush(call) != 0) { return 0; }
+                state = 1;
+                continue;
+            }
+            die_at("expected expression", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        // ---------------- have-value ----------------
+        if (reduce_prefixes() != 0) { return 0; }
+        let k: i32 = curk();
+        let p: i32 = binprec(k);
+        if (p > 0) {
+            let bottom: i32 = 0;
+            if (msp > 0) { bottom = modepth[msp - 1]; }
+            while (osp > bottom && oprec[osp - 1] < 11) {
+                let q: i32 = oprec[osp - 1];
+                if (q < p) { break; }
+                if (q == p && (p == 6 || p == 7)) {
+                    die_at("chained comparisons are not supported", tok_line(ppos), tok_col(ppos));
+                    return 0;
+                }
+                if (reduce_one() != 0) { return 0; }
+            }
+            advance();
+            if (opush(k, p) != 0) { return 0; }
+            state = 0;
+            continue;
+        }
+        if (k == K_LParen) {
+            let top: i32 = vstack[vsp - 1];
+            if (nkind[top - 1] == E_Call || nkind[top - 1] == E_Index) {
+                die_at("cannot call the result of this expression: assign it to a fn(...) variable or a fn(...) field first", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+        } else if (k == K_LBracket) {
+            let top: i32 = vstack[vsp - 1];
+            if (nkind[top - 1] == E_Index) {
+                die_at("multi-dimensional indexing is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            die_at("cannot index this expression", tok_line(ppos), tok_col(ppos));
+            return 0;
+        } else if (k == K_Dot) {
+            die_at("'.' field access is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        } else if (k == K_Question) {
+            die_at("the '?:' operator is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        // ---- the token cannot continue the expression: the stop ----
+        if (msp == 0) {
+            if (reduce_above(0) != 0) { return 0; }
+            return vstack[vsp - 1];
+        }
+        let mk: i32 = mkind[msp - 1];
+        let bottom: i32 = modepth[msp - 1];
+        let vd: i32 = mvdepth[msp - 1];
+        if (mk == 2) {
+            // ---- a call marker ----
+            let call: i32 = maux[msp - 1];
+            if (k == K_Comma) {
+                advance();
+                if (reduce_above(bottom) != 0) { return 0; }
+                if (vsp - vd != 1) {
+                    die_at("expected expression", tok_line(ppos), tok_col(ppos));
+                    return 0;
+                }
+                let v: i32 = vstack[vsp - 1];
+                vsp = vsp - 1;
+                append(call, v);
+                state = 0;
+                continue;
+            }
+            if (k == K_RParen) {
+                advance();
+                if (reduce_above(bottom) != 0) { return 0; }
+                let i: i32 = vd;
+                while (i < vsp) {
+                    append(call, vstack[i]);
+                    i = i + 1;
+                }
+                vsp = vd;
+                let cnt: i32 = 0;
+                let c: i32 = nfirst[call - 1];
+                while (c != 0) {
+                    cnt = cnt + 1;
+                    c = nnext[c - 1];
+                }
+                if (cnt > 32) {
+                    // The position is the callee token, which the Call node
+                    // carries in ntok — `call` itself is a node id, and the
+                    // token arrays are a different id space (P50).
+                    die_at("function calls support at most 32 arguments", tok_line(ntok[call - 1]), tok_col(ntok[call - 1]));
+                    return 0;
+                }
+                pop_marker();
+                if (vpush(call) != 0) { return 0; }
+                state = 1;
+                continue;
+            }
+            die_at("expected ')' after function arguments", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        if (mk == 1) {
+            // ---- a group marker: the host's (expr) returns the inner
+            //      expression unchanged, so no node is built here ----
+            if (k == K_RParen) {
+                advance();
+                if (reduce_above(bottom) != 0) { return 0; }
+                if (vsp - vd != 1) {
+                    die_at("expected expression", tok_line(ppos), tok_col(ppos));
+                    return 0;
+                }
+                pop_marker();
+                state = 1;
+                continue;
+            }
+            die_at("expected ')' ", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        // ---- an index marker ----
+        if (k == K_RBracket) {
+            advance();
+            if (reduce_above(bottom) != 0) { return 0; }
+            if (vsp - vd != 1) {
+                die_at("expected expression", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            let v: i32 = vstack[vsp - 1];
+            vsp = vsp - 1;
+            let z: i32 = newnode(E_Index, maux[msp - 1]);
+            if (z == 0) { return 0; }
+            append(z, v);
+            pop_marker();
+            if (vpush(z) != 0) { return 0; }
+            state = 1;
+            continue;
+        }
+        die_at("expected ']' after array index", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Types (§4.2). parse_type consumes one type and answers its tag; the
+// spellings the subset drops are refused here, so every type position —
+// parameter, return, local, global, ptr element — refuses them with the same
+// words at the same token. The host's parseType answers false for anything
+// it does not know and its caller's needType raises P10; with no structs in
+// the subset, every remaining spelling is that case.
+// ---------------------------------------------------------------------------
+fn bad_type_spelling(k: i32) -> i32 {
+    if (k == K_Bool) {
+        die_at("type bool is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 1;
+    }
+    if (k == K_U16) {
+        die_at("type u16 is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 1;
+    }
+    if (k == K_U32) {
+        die_at("type u32 is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 1;
+    }
+    if (k == K_Fn) {
+        die_at("fn(...) types are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 1;
+    }
+    return 0;
+}
+fn ptr_type() -> i32 {
+    advance();                                   // the 'ptr'
+    if (curk() != K_Lt) { return TY_PTR; }
+    advance();                                   // the '<'
+    let k: i32 = curk();
+    if (k == K_I32 || k == K_I64 || k == K_U8) {
+        advance();
+        let ty: i32 = TY_PTR_I32;
+        if (k == K_I64) { ty = TY_PTR_I64; }
+        if (k == K_U8) { ty = TY_PTR_U8; }
+        if (curk() != K_Gt) {
+            die_at("expected '>' after the type in a ptr<...> type", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        return ty;
+    }
+    if (k == K_Ptr) {
+        die_at("ptr<ptr<...>> is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    if (bad_type_spelling(k) == 1) { return 0; }
+    // Anything else is the host's struct-name path, and the subset has no
+    // structs: P58 when the token is not a name at all, P62 when the '>' is
+    // missing after one, P59 once a name is there — the host's three steps in
+    // the host's order, with its third step always failing.
+    if (k != K_Ident) {
+        die_at("expected a struct name after 'ptr<'", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    let idt: i32 = ppos;
+    advance();
+    if (curk() != K_Gt) {
+        die_at("expected '>' after the struct name in a ptr<...> type", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    die_open();
+    bputs("unknown struct type in ptr<");
+    bputname(idt);
+    bputs(">");
+    die_close(tok_line(idt), tok_col(idt));
+    return 0;
+}
+fn parse_type() -> i32 {
+    let k: i32 = curk();
+    if (k == K_I32) { advance(); return TY_I32; }
+    if (k == K_I64) { advance(); return TY_I64; }
+    if (k == K_U8) { advance(); return TY_U8; }
+    if (k == K_Ptr) { return ptr_type(); }
+    if (bad_type_spelling(k) == 1) { return 0; }
+    die_at("expected i32, i64, u8, u16, u32, ptr, ptr<S>, bool, or a struct name", tok_line(ppos), tok_col(ppos));
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Declarations (§4.1). The order of checks is the host's, diagnostic for
+// diagnostic: a global reads its name, its type, its optional dimension, its
+// optional @align (B20 here), then the duplicate check, then the '=' path.
+// One dimension is the subset's; a second '[' is simply not consumed, and
+// the next thing the grammar wants reports it (P22).
+// ---------------------------------------------------------------------------
+fn array_dim(g: i32) -> i32 {
+    advance();                                   // the '['
+    if (curk() != K_Number) {
+        return die_at("expected array length", tok_line(ppos), tok_col(ppos));
+    }
+    let nt: i32 = ppos;
+    advance();
+    convert_num(nt);
+    if (numflag == 1) {
+        return die_at("array length is too large", tok_line(nt), tok_col(nt));
+    }
+    if (numcnt < 1 || numcnt > 1048576) {
+        die_open();
+        bputs("array length must be between 1 and 1048576: ");
+        bputname(ntok[g - 1]);
+        return die_close(tok_line(nt), tok_col(nt));
+    }
+    if (curk() != K_RBracket) {
+        return die_at("expected ']' after array length", tok_line(ppos), tok_col(ppos));
+    }
+    advance();
+    ncount[g - 1] = numcnt;
+    return 0;
+}
+fn global_decl(external: i32) -> i32 {
+    if (curk() != K_Ident) {
+        die_at("expected global variable name", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    let nt: i32 = ppos;
+    advance();
+    if (curk() != K_Colon) {
+        die_at("expected ':'", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let ty: i32 = parse_type();
+    if (perr != 0) { return 0; }
+    let g: i32 = newnode(N_Global, nt);
+    if (g == 0) { return 0; }
+    nnty[g - 1] = ty;
+    ncount[g - 1] = 1;
+    let isarr: i32 = 0;
+    if (curk() == K_LBracket) {
+        if (array_dim(g) != 0) { return 0; }
+        isarr = 1;
+    }
+    if (curk() == K_At) {
+        die_at("global alignment is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    let i: i32 = 0;
+    while (i < nglobs) {
+        if (name_eq(gltok[i], nt) == 1) {
+            die_name_np("duplicate global variable: ", nt);
+            return 0;
+        }
+        i = i + 1;
+    }
+    gltok[nglobs] = nt;
+    nglobs = nglobs + 1;
+    if (external == 1) {
+        if (curk() != K_Semi) {
+            die_at("expected ';' after extern global declaration", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        return g;
+    }
+    if (curk() != K_Eq) {
+        die_at("expected '=' in global variable declaration", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let init: i32 = parse_expr();
+    if (perr != 0) { return 0; }
+    if (curk() != K_Semi) {
+        die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    append(g, init);
+    // An array's initializer must be a constant (P27); a scalar's may be one
+    // — folded and range-checked (P29) — or not, in which case the host keeps
+    // it as a runtime initializer and so does this stage: the expression
+    // stays the Global's child and no error is raised.
+    if (isarr == 0 && is_const(init) == 0) { return g; }
+    if (isarr == 1 && is_const(init) == 0) {
+        die_name_np("array initializer must be a constant expression: ", nt);
+        return 0;
+    }
+    let v: i64 = fold(init);
+    if (perr != 0) { return 0; }
+    if (fits(ty, v) == 0) {
+        die_open();
+        if (isarr == 1) { bputs("array initializer does not fit in "); }
+        else { bputs("global initializer does not fit in "); }
+        bputtybase(ty);
+        bputs(": ");
+        bputname(nt);
+        bputs(" (");
+        bputn64(v);
+        bputs(")");
+        die_close_np();
+        return 0;
+    }
+    return g;
+}
+
+// A function item. The caller has eaten the optional `extern`; the node's
+// token is the `fn` token, where the host puts its prologue row too (§8).
+// The parameter loop is the host's do-while: the duplicate check after the
+// type is read, the count check after the parameter is taken.
+fn function_decl(external: i32) -> i32 {
+    if (curk() != K_Fn) {
+        die_at("expected fn", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    let ft: i32 = ppos;
+    advance();
+    let f: i32 = newnode(N_Function, ft);
+    if (f == 0) { return 0; }
+    if (curk() != K_Ident && curk() != K_Main) {
+        die_at("expected function name", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    let nt: i32 = ppos;
+    advance();
+    if (curk() != K_LParen) {
+        die_at("expected '(' after function name", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    nparams = 0;
+    if (curk() != K_RParen) {
+        while (1 == 1) {
+            if (curk() != K_Ident) {
+                die_at("expected parameter name", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            let pt: i32 = ppos;
+            advance();
+            if (curk() != K_Colon) {
+                die_at("expected ':' after parameter name", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            advance();
+            let pty: i32 = parse_type();
+            if (perr != 0) { return 0; }
+            if (curk() == K_LBracket) {
+                die_at("array parameters are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            let i: i32 = 0;
+            while (i < nparams) {
+                if (name_eq(ptok[i], pt) == 1) {
+                    die_open();
+                    bputs("duplicate parameter name in function ");
+                    bputname(nt);
+                    bputs(": ");
+                    bputname(pt);
+                    die_close_np();
+                    return 0;
+                }
+                i = i + 1;
+            }
+            let p: i32 = newnode(N_Param, pt);
+            if (p == 0) { return 0; }
+            nnty[p - 1] = pty;
+            ptok[nparams] = pt;
+            nparams = nparams + 1;
+            append(f, p);
+            if (nparams > 32) {
+                die_name_np("functions support at most 32 parameters: ", nt);
+                return 0;
+            }
+            if (curk() == K_Comma) { advance(); continue; }
+            break;
+        }
+    }
+    if (curk() != K_RParen) {
+        die_at("expected ')' after parameters", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    if (curk() != K_Arrow) {
+        die_at("expected ->", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let rty: i32 = parse_type();
+    if (perr != 0) { return 0; }
+    if (curk() == K_LBracket) {
+        die_open();
+        bputs("a function cannot return an array: return ptr<");
+        bputtybase(rty);
+        bputs(">, or take the array as a parameter and let the caller's storage be written through");
+        die_close(tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    // `main` is a keyword, so the name token's kind is the whole test.
+    if (tkind[nt] == K_Main && rty != TY_I32) { return die_np("main must return i32"); }
+    nnty[f - 1] = rty;
+    if (external == 1) {
+        if (curk() != K_Semi) {
+            die_at("expected ';' after extern function declaration", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+    } else {
+        let b: i32 = parse_block();
+        if (perr != 0) { return 0; }
+        append(f, b);
+        if (nfirst[b - 1] == 0) {
+            die_name_np("function body cannot be empty: ", nt);
+            return 0;
+        }
+    }
+    let i: i32 = 0;
+    while (i < nfuncs) {
+        if (name_eq(fntok[i], nt) == 1) {
+            die_name_np("duplicate function declaration: ", nt);
+            return 0;
+        }
+        i = i + 1;
+    }
+    fntok[nfuncs] = nt;
+    nfuncs = nfuncs + 1;
+    return f;
+}
+
+// ---------------------------------------------------------------------------
+// Statements (§5). statement() is the host's dispatch, in the host's order,
+// with each excluded form replaced by its boundary diagnostic at the token
+// the host would have entered it at.
+// ---------------------------------------------------------------------------
+
+// `a[i].f` at the head of a statement: only the token after the matched
+// brackets tells it from `a[i] = v`, so the brackets are matched here (they
+// nest). Answers the '.' token's index, or 0 when the shape is not there.
+fn indexed_then_field() -> i32 {
+    if (curk() != K_Ident || nextk() != K_LBracket) { return 0; }
+    let i: i32 = ppos + 1;
+    let depth: i32 = 0;
+    while (i < ntoks) {
+        let k: i32 = tkind[i];
+        if (k == K_LBracket) {
+            depth = depth + 1;
+        } else if (k == K_RBracket) {
+            depth = depth - 1;
+            if (depth == 0) { i = i + 1; break; }
+        }
+        i = i + 1;
+    }
+    if (depth != 0) { return 0; }
+    if (i < ntoks && tkind[i] == K_Dot) { return i; }
+    return 0;
+}
+
+// A block: '{' statement* '}'. Entering costs one C2 level, released on every
+// way out, error paths included.
+fn parse_block() -> i32 {
+    if (curk() != K_LBrace) {
+        die_at("expected '{'", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    if (sdepth >= 96) {
+        die_np("statements nest too deeply (limit 96)");
+        return 0;
+    }
+    let bt: i32 = ppos;
+    advance();
+    let b: i32 = newnode(N_Block, bt);
+    if (b == 0) { return 0; }
+    sdepth = sdepth + 1;
+    while (curk() != K_RBrace && curk() != K_End) {
+        let s: i32 = statement();
+        if (perr != 0) { sdepth = sdepth - 1; return 0; }
+        append(b, s);
+    }
+    sdepth = sdepth - 1;
+    if (curk() != K_RBrace) {
+        die_at("expected '}'", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    return b;
+}
+
+// An if statement, and the else-if chain: `else if` desugars to a nested If
+// in the else position — not a Block (§9) — and each link holds one C2 level
+// while it is open.
+fn if_stmt() -> i32 {
+    if (curk() != K_LParen) {
+        die_at("expected '(' after if", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let cond: i32 = parse_expr();
+    if (perr != 0) { return 0; }
+    if (curk() != K_RParen) {
+        die_at("expected ')' after condition", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let s: i32 = newnode(S_If, ntok[cond - 1]);
+    if (s == 0) { return 0; }
+    append(s, cond);
+    let tb: i32 = parse_block();
+    if (perr != 0) { return 0; }
+    append(s, tb);
+    if (curk() == K_Else) {
+        advance();
+        if (curk() == K_If) {
+            advance();
+            if (sdepth >= 96) {
+                die_np("statements nest too deeply (limit 96)");
+                return 0;
+            }
+            sdepth = sdepth + 1;
+            let eb: i32 = if_stmt();
+            sdepth = sdepth - 1;
+            if (perr != 0) { return 0; }
+            append(s, eb);
+        } else {
+            let eb: i32 = parse_block();
+            if (perr != 0) { return 0; }
+            append(s, eb);
+        }
+    }
+    return s;
+}
+fn let_stmt() -> i32 {
+    if (curk() != K_Ident) {
+        die_at("expected variable name", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    let nt: i32 = ppos;
+    advance();
+    if (curk() != K_Colon) {
+        die_at("expected ':'", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let ty: i32 = parse_type();
+    if (perr != 0) { return 0; }
+    if (curk() == K_LBracket) {
+        die_at("local arrays are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    if (curk() == K_At) {
+        die_name_at("local alignment is not supported: ", nt);
+        return 0;
+    }
+    if (curk() != K_Eq) {
+        die_at("expected '='", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let e: i32 = parse_expr();
+    if (perr != 0) { return 0; }
+    let s: i32 = newnode(S_Let, nt);
+    if (s == 0) { return 0; }
+    nnty[s - 1] = ty;
+    append(s, e);
+    if (curk() != K_Semi) {
+        die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    return s;
+}
+
+// `a[i] = v`: one subscript — the subset has one dimension — then '='. A
+// compound token here is B10, and anything else is P37 at the name token.
+fn index_assign_stmt() -> i32 {
+    let nt: i32 = ppos;
+    advance();
+    if (curk() != K_LBracket) {
+        die_at("expected '['", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let idx: i32 = parse_expr();
+    if (perr != 0) { return 0; }
+    if (curk() != K_RBracket) {
+        die_at("expected ']' after array index", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let inode: i32 = newnode(E_Index, nt);
+    if (inode == 0) { return 0; }
+    append(inode, idx);
+    let s: i32 = newnode(S_IndexAssign, nt);
+    if (s == 0) { return 0; }
+    append(s, inode);
+    if (curk() != K_Eq) {
+        if (is_compound(curk()) == 1) {
+            die_at("compound assignment is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        // The host's assignOp throws the bare sentence at the name token —
+        // no name is interpolated (§11.1 P37).
+        die_at("expected '=' in array element assignment", tok_line(nt), tok_col(nt));
+        return 0;
+    }
+    advance();
+    let e: i32 = parse_expr();
+    if (perr != 0) { return 0; }
+    append(s, e);
+    if (curk() != K_Semi) {
+        die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    return s;
+}
+
+// `x = v`: the dispatch has already established that '=' is here — a
+// compound token took B10 instead — so P40 is the host's message for
+// anything else, at the name token.
+fn assign_stmt() -> i32 {
+    let nt: i32 = ppos;
+    advance();
+    if (curk() != K_Eq) {
+        // As above: the host's sentence, no name (§11.1 P40).
+        die_at("expected '=' after variable name", tok_line(nt), tok_col(nt));
+        return 0;
+    }
+    advance();
+    let e: i32 = parse_expr();
+    if (perr != 0) { return 0; }
+    let s: i32 = newnode(S_Assign, nt);
+    if (s == 0) { return 0; }
+    append(s, e);
+    if (curk() != K_Semi) {
+        die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    return s;
+}
+fn statement() -> i32 {
+    let k: i32 = curk();
+    if (k == K_Star) {
+        die_at("'*' dereference is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    if (k == K_Let) { advance(); return let_stmt(); }
+    if (k == K_Return) {
+        advance();
+        let e: i32 = parse_expr();
+        if (perr != 0) { return 0; }
+        let s: i32 = newnode(S_Return, ntok[e - 1]);
+        if (s == 0) { return 0; }
+        append(s, e);
+        if (curk() != K_Semi) {
+            die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        return s;
+    }
+    if (k == K_If) { advance(); return if_stmt(); }
+    if (k == K_PlusPlus || k == K_MinusMinus) {
+        die_at("'++' and '--' are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    if (k == K_While) {
+        advance();
+        if (curk() != K_LParen) {
+            die_at("expected '(' after while", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let e: i32 = parse_expr();
+        if (perr != 0) { return 0; }
+        if (curk() != K_RParen) {
+            die_at("expected ')' after condition", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let s: i32 = newnode(S_While, ntok[e - 1]);
+        if (s == 0) { return 0; }
+        append(s, e);
+        let b: i32 = parse_block();
+        if (perr != 0) { return 0; }
+        append(s, b);
+        return s;
+    }
+    if (k == K_For) {
+        die_at("the 'for' statement is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    if (k == K_Break) {
+        let bt: i32 = ppos;
+        advance();
+        let s: i32 = newnode(S_Break, bt);
+        if (s == 0) { return 0; }
+        if (curk() != K_Semi) {
+            die_at("expected ';' after break", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        return s;
+    }
+    if (k == K_Continue) {
+        let ct: i32 = ppos;
+        advance();
+        let s: i32 = newnode(S_Continue, ct);
+        if (s == 0) { return 0; }
+        if (curk() != K_Semi) {
+            die_at("expected ';' after continue", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        return s;
+    }
+    // A discarded call: an identifier followed directly by '('. `main` is a
+    // keyword, not an identifier, so `main();` falls through to P57 — the
+    // host's isCallStatement reads the same way.
+    if (k == K_Ident && nextk() == K_LParen) {
+        let lead: i32 = ppos;
+        let e: i32 = parse_expr();
+        if (perr != 0) { return 0; }
+        if (curk() != K_Semi) {
+            die_at("expected ';' after call statement", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let s: i32 = newnode(S_Expr, lead);
+        if (s == 0) { return 0; }
+        append(s, e);
+        return s;
+    }
+    if (k == K_Ident) {
+        let dot: i32 = indexed_then_field();
+        if (dot != 0) {
+            die_at("'.' field access is not in the bootstrap subset", tok_line(dot), tok_col(dot));
+            return 0;
+        }
+        if (nextk() == K_Dot) {
+            die_at("'.' field access is not in the bootstrap subset", tok_line(ppos + 1), tok_col(ppos + 1));
+            return 0;
+        }
+        if (nextk() == K_LBracket) { return index_assign_stmt(); }
+        if (nextk() == K_PlusPlus || nextk() == K_MinusMinus) {
+            die_at("'++' and '--' are not in the bootstrap subset", tok_line(ppos + 1), tok_col(ppos + 1));
+            return 0;
+        }
+        if (nextk() == K_Eq) { return assign_stmt(); }
+        if (is_compound(nextk()) == 1) {
+            die_at("compound assignment is not in the bootstrap subset", tok_line(ppos + 1), tok_col(ppos + 1));
+            return 0;
+        }
+    }
+    die_at("expected let, assignment, return, if, while, for, break, or continue", tok_line(ppos), tok_col(ppos));
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The program: item* EOF, then the host's closing pass over the two name
+// tables (P18). `struct` and `include` are refused where the host's loop
+// would enter them — at the top of an item, so `extern struct` reports P1
+// the way the host does, not B2.
+// ---------------------------------------------------------------------------
+fn parse_program() -> i32 {
+    let pt: i32 = 0;
+    if (ntoks == 0) { pt = 0 - 1; }
+    let prog: i32 = newnode(N_Program, pt);
+    if (prog == 0) { return 0; }
+    while (curk() != K_End) {
+        let k: i32 = curk();
+        if (k == K_Include) {
+            die_at("include is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        if (k == K_Struct) {
+            die_at("struct declarations are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        if (k == K_Let) {
+            advance();
+            let g: i32 = global_decl(0);
+            if (perr != 0) { return 0; }
+            append(prog, g);
+            continue;
+        }
+        if (k == K_Extern && nextk() == K_Let) {
+            advance();
+            advance();
+            let g: i32 = global_decl(1);
+            if (perr != 0) { return 0; }
+            append(prog, g);
+            continue;
+        }
+        let external: i32 = 0;
+        if (k == K_Extern) { external = 1; advance(); }
+        let f: i32 = function_decl(external);
+        if (perr != 0) { return 0; }
+        append(prog, f);
+    }
+    let gi: i32 = 0;
+    while (gi < nglobs) {
+        let fi: i32 = 0;
+        while (fi < nfuncs) {
+            if (name_eq(gltok[gi], fntok[fi]) == 1) {
+                die_name_np("global variable conflicts with function: ", gltok[gi]);
+                return 0;
+            }
+            fi = fi + 1;
+        }
+        gi = gi + 1;
+    }
+    return prog;
+}
+
+// ---------------------------------------------------------------------------
+// Constant folding: the host's isConstExpr and foldConst, walked with an
+// explicit stack for the reason the dump is (§10: a left-associative chain
+// outruns the frames). is_const answers whether every node is in the fold
+// family; fold evaluates one, and reports the initializer errors — P30 at
+// the operator, P31 with the count, P32 — at the operator node's position,
+// which is its left operand's (§8).
+// ---------------------------------------------------------------------------
+fn is_const(h: i32) -> i32 {
+    let sp: i32 = 0;
+    wstk[0] = h;
+    sp = 1;
+    while (sp > 0) {
+        sp = sp - 1;
+        let n: i32 = wstk[sp];
+        let k: i32 = nkind[n - 1];
+        if (k == E_Num) { continue; }
+        if (k == E_Neg) {
+            if (sp >= 65536) { die_np("internal: walk stack overflow"); return 0; }
+            wstk[sp] = nfirst[n - 1];
+            sp = sp + 1;
+            continue;
+        }
+        if (is_fold_binary(k) == 1) {
+            if (sp + 2 > 65536) { die_np("internal: walk stack overflow"); return 0; }
+            wstk[sp] = nnext[nfirst[n - 1] - 1];
+            sp = sp + 1;
+            wstk[sp] = nfirst[n - 1];
+            sp = sp + 1;
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+fn fold_bin(k: i32, a: i64, b: i64, n: i32) -> i64 {
+    if (k == E_Add) { return a + b; }
+    if (k == E_Sub) { return a - b; }
+    if (k == E_Mul) { return a * b; }
+    if (k == E_Div) {
+        if (b == 0) {
+            die_at("division by zero in global variable initializer", tok_line(ntok[n - 1]), tok_col(ntok[n - 1]));
+            return 0;
+        }
+        return a / b;
+    }
+    if (k == E_Mod) {
+        if (b == 0) {
+            die_at("division by zero in global variable initializer", tok_line(ntok[n - 1]), tok_col(ntok[n - 1]));
+            return 0;
+        }
+        return a % b;
+    }
+    if (k == E_Shl || k == E_Shr) {
+        if (b < 0 || b > 63) {
+            die_open();
+            bputs("shift count ");
+            bputn64(b);
+            bputs(" is out of range (0..63) in global variable initializer");
+            die_close(tok_line(ntok[n - 1]), tok_col(ntok[n - 1]));
+            return 0;
+        }
+        if (k == E_Shr) { return a >> b; }
+        // A left shift is refused when its result leaves i64. At a count of
+        // 63 the host's C++ multiply accepts exactly a ∈ {0, 1} — 0, and
+        // INT64_MIN — and the wrap-and-shift-back test below would refuse
+        // the 1, so that pair is spelled out (§12.8).
+        if (b == 63) {
+            if (a == 0) { return 0; }
+            if (a == 1) { return 0 - 9223372036854775807 - 1; }
+            die_at("left shift overflows i64 in global variable initializer", tok_line(ntok[n - 1]), tok_col(ntok[n - 1]));
+            return 0;
+        }
+        let r: i64 = a << b;
+        if ((r >> b) != a) {
+            die_at("left shift overflows i64 in global variable initializer", tok_line(ntok[n - 1]), tok_col(ntok[n - 1]));
+            return 0;
+        }
+        return r;
+    }
+    if (k == E_BitAnd) { return a & b; }
+    if (k == E_BitOr) { return a | b; }
+    if (k == E_BitXor) { return a ^ b; }
+    return 0;
+}
+fn fold(h: i32) -> i64 {
+    let sp: i32 = 0;
+    let vp: i32 = 0;
+    wstk[0] = h;
+    wmark[0] = 0;
+    sp = 1;
+    while (sp > 0) {
+        sp = sp - 1;
+        let n: i32 = wstk[sp];
+        let m: i32 = wmark[sp];
+        if (m == 1) {
+            let k: i32 = nkind[n - 1];
+            if (k == E_Neg) {
+                wval[vp - 1] = 0 - wval[vp - 1];
+                continue;
+            }
+            let b: i64 = wval[vp - 1];
+            let a: i64 = wval[vp - 2];
+            vp = vp - 2;
+            let r: i64 = fold_bin(k, a, b, n);
+            if (perr != 0) { return 0; }
+            wval[vp] = r;
+            vp = vp + 1;
+            continue;
+        }
+        let k: i32 = nkind[n - 1];
+        if (k == E_Num) {
+            // the value was validated where the node was built (§7.1), so
+            // this conversion cannot fail and the flag is provably clear
+            convert_num(ntok[n - 1]);
+            if (vp >= 65536) { die_np("internal: value stack overflow"); return 0; }
+            wval[vp] = numval;
+            vp = vp + 1;
+            continue;
+        }
+        if (k == E_Neg) {
+            if (sp + 2 > 65536) { die_np("internal: walk stack overflow"); return 0; }
+            wstk[sp] = n; wmark[sp] = 1; sp = sp + 1;
+            wstk[sp] = nfirst[n - 1]; wmark[sp] = 0; sp = sp + 1;
+            continue;
+        }
+        if (is_fold_binary(k) == 1) {
+            if (sp + 3 > 65536) { die_np("internal: walk stack overflow"); return 0; }
+            wstk[sp] = n; wmark[sp] = 1; sp = sp + 1;
+            wstk[sp] = nnext[nfirst[n - 1] - 1]; wmark[sp] = 0; sp = sp + 1;
+            wstk[sp] = nfirst[n - 1]; wmark[sp] = 0; sp = sp + 1;
+            continue;
+        }
+        // is_const has already proved every node is in the fold family
+        die_np("internal: constant folder reached a non-constant node");
+        return 0;
+    }
+    return wval[vp - 1];
+}
+
+// initializerFits: only a u8 slot has a range to check; every other tag takes
+// the value's low bits, exactly as the host does.
+fn fits(ty: i32, v: i64) -> i32 {
+    if (ty == TY_U8) {
+        if (v < 0 || v > 255) { return 0; }
+    }
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: the dump (§9). One node per line, two spaces per depth, children
+// beneath their parent in child order. The traversal is iterative for the
+// reason the folder is — the deepest tree the caps allow is a
+// left-associative binary chain, far past what the frames hold — and its
+// stack carries the siblings a descent leaves behind: one entry per level of
+// the current path, every entry a distinct node, so the node cap bounds it.
+// ---------------------------------------------------------------------------
+fn emit_node(h: i32, d: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < d) { putb(32); putb(32); i = i + 1; }
+    let k: i32 = nkind[h - 1];
+    put_kindname(k);
+    putb(32);
+    let t: i32 = ntok[h - 1];
+    putdec(tok_line(t));
+    putb(58);
+    putdec(tok_col(t));
+    if (k == N_Function) {
+        putb(32);
+        putname(t + 1);
+        putb(32);
+        putty(nnty[h - 1]);
+        if (fn_extern(h) == 1) { putn(" extern", 7); }
+    }
+    else if (k == N_Global) {
+        putb(32);
+        putname(t);
+        putb(32);
+        putty(nnty[h - 1]);
+        putb(32);
+        putdec(ncount[h - 1]);
+        if (nfirst[h - 1] == 0) { putn(" extern", 7); }
+    }
+    else if (k == N_Param || k == S_Let) {
+        putb(32);
+        putname(t);
+        putb(32);
+        putty(nnty[h - 1]);
+    }
+    else if (k == S_Assign || k == S_IndexAssign || k == E_Var || k == E_Call || k == E_Index) {
+        putb(32);
+        putname(t);
+    }
+    else if (k == E_Num) {
+        putb(32);
+        convert_num(t);
+        putdec64(numval);
+    }
+    else if (k == E_String) {
+        putb(32);
+        put_escaped(tstart[t], tlen[t]);
+    }
+    putb(10);
+    return 0;
+}
+fn emit(root: i32) -> i32 {
+    let esp: i32 = 0;
+    let h: i32 = root;
+    let d: i32 = 0;
+    while (1 == 1) {
+        while (h != 0) {
+            if (emit_node(h, d) != 0) { return 1; }
+            let nx: i32 = nnext[h - 1];
+            if (nx != 0) {
+                if (esp >= 65536) {
+                    die_np("internal: dump stack overflow");
+                    return 1;
+                }
+                estk[esp] = nx;
+                edep[esp] = d;
+                esp = esp + 1;
+            }
+            h = nfirst[h - 1];
+            d = d + 1;
+        }
+        if (esp == 0) { break; }
+        esp = esp - 1;
+        h = estk[esp];
+        d = edep[esp];
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The driver: three phases (§10). stdin and the scanner, then the parse, then
+// the dump — and nothing reaches stdout unless the parse was clean.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// M3c — the semantic / type-check pass (SEMANTIC-SPEC.md, frozen v0.23.45-dev).
+// A pure validation gate: on success it returns 0 and leaves the AST untouched
+// (emit re-emits M3b's dump byte-for-byte); on failure it reports one S-error
+// via die_at/die_name_at and returns 1. The two-phase rule holds: nothing has
+// been written to stdout yet when this runs (main gates it behind emit). The
+// walk is iterative (no deep recursion) and the 8 KiB-frame discipline is kept
+// exactly as the parser's (PARSER-SPEC.md §7).
+// ---------------------------------------------------------------------------
+
+// A token's text against a literal (like name_is, but for any token index).
+fn tok_is(t: i32, lit: ptr<u8>) -> i32 {
+    let start: i32 = tstart[t];
+    let n: i32 = tlen[t];
+    let i: i32 = 0;
+    while (load_u8(lit + i) != 0) {
+        if (i >= n) { return 0; }
+        if (load_u8(lit + i) != load_u8(srcbuf + start + i)) { return 0; }
+        i = i + 1;
+    }
+    if (i != n) { return 0; }
+    return 1;
+}
+fn is_int_tag(t: i32) -> i32 {
+    if (t == TY_I32 || t == TY_I64 || t == TY_U8) { return 1; }
+    return 0;
+}
+fn is_ptr_tag(t: i32) -> i32 {
+    if (t == TY_PTR || t == TY_PTR_U8 || t == TY_PTR_I32 || t == TY_PTR_I64) { return 1; }
+    return 0;
+}
+// Type compatibility for assignment / argument / return (§7): integer tags must
+// match exactly; any pointer is mutually compatible with any other pointer
+// (the host accepts ptr<u8> where ptr is written, e.g. `let s: ptr = "..."`);
+// arrays never appear as a value here (whole-array assignment is S12).
+fn type_eq(t1: i32, a1: i32, t2: i32, a2: i32) -> i32 {
+    if (a1 != a2) { return 0; }
+    if (is_ptr_tag(t1) == 1 && is_ptr_tag(t2) == 1) { return 1; }
+    if (t1 == t2) { return 1; }
+    return 0;
+}
+// Assignability for S11 (let/assign), S10 (argument), S16 (return) — mirrors
+// the host's tyAssignable (src/aster.cpp:2279) over the 5-type subset. Integer
+// to integer: exact match, widen (narrower -> wider, or to i64), or a constant
+// that fits the narrow slot; a non-constant narrowing is rejected. Pointers: any
+// ptr is mutually compatible with any other ptr (spec §7 — this is what lets
+// `let s: ptr = "..."` type, the string being ptr<u8>); a ptr slot accepts only
+// the null constant (0) from an integer. Arrays never arrive here as a value
+// (whole-array assignment is S12).
+fn ty_assignable(to_tag: i32, to_arr: i32, from_tag: i32, from_arr: i32, is_const: i32, cval: i64) -> i32 {
+    if (to_arr != from_arr) { return 0; }
+    if (is_ptr_tag(to_tag) == 1 && is_ptr_tag(from_tag) == 1) { return 1; }
+    if (is_ptr_tag(to_tag) == 1) {
+        if (is_const == 1 && cval == 0) { return 1; }
+        return 0;
+    }
+    if (is_ptr_tag(from_tag) == 1) { return 0; }
+    if (to_tag == from_tag) { return 1; }
+    if (to_tag == TY_I64) { return 1; }
+    if (is_const == 1) {
+        if (to_tag == TY_U8) {
+            if (cval >= 0 && cval <= 255) { return 1; }
+            return 0;
+        }
+        return 1;
+    }
+    let wt: i32 = 4;
+    if (to_tag == TY_I64) { wt = 8; } else if (to_tag == TY_U8) { wt = 1; } else { wt = 4; }
+    let wf: i32 = 4;
+    if (from_tag == TY_I64) { wf = 8; } else if (from_tag == TY_U8) { wf = 1; } else { wf = 4; }
+    if (wt >= wf) { return 1; }
+    return 0;
+}
+// A constant integer expression's value, for the narrow-slot fit test above.
+// The host folds a broad set (src/aster.cpp:2183); the self-host source and the
+// §11 corpus only need the literal case, so we detect E_Num and read numval
+// into the rc_val scratch. Returns 1 if h is a constant integer, else 0.
+let rc_val: i64 = 0;
+fn expr_const_int(h: i32) -> i32 {
+    if (nkind[h - 1] == E_Num) {
+        convert_num(ntok[h - 1]);
+        rc_val = numval;
+        return 1;
+    }
+    return 0;
+}
+// A condition is accepted iff it is integer-valued or bool-valued (§8 / S15).
+fn cond_ok(c: i32) -> i32 {
+    let t: i32 = ex_ty[c - 1];
+    if (t == -2) { return 1; }
+    if (ex_arr[c - 1] == 1) { return 0; }
+    if (is_int_tag(t) == 1) { return 1; }
+    return 0;
+}
+// Type-name rendering for an error argument (§2): the five names, with ptr<T>
+// spelled as ptr<element>; -2 (a bool-valued expr) falls back to i32.
+fn bput_ty_arg(t: i32) -> i32 {
+    if (t == TY_I32) { return bputs("i32"); }
+    if (t == TY_I64) { return bputs("i64"); }
+    if (t == TY_U8) { return bputs("u8"); }
+    if (t == TY_PTR) { return bputs("ptr"); }
+    if (t == TY_PTR_U8) { return bputs("ptr<u8>"); }
+    if (t == TY_PTR_I32) { return bputs("ptr<i32>"); }
+    if (t == TY_PTR_I64) { return bputs("ptr<i64>"); }
+    return bputs("ptr");
+}
+fn bput_ty_arg2(t: i32, a: i32) -> i32 {
+    if (t == -2) { return bputs("i32"); }
+    return bput_ty_arg(t);
+}
+
+// Resolve a variable name (token t) against the current scope chain then the
+// global table; fills rs_tag / rs_cnt / rs_kind. Returns 1 if found, else 0.
+fn find_var(t: i32) -> i32 {
+    let d: i32 = sc_depth - 1;
+    while (d >= 0) {
+        let lo: i32 = sc_start[d];
+        let hi: i32 = nlocs;
+        if (d + 1 < sc_depth) { hi = sc_start[d + 1]; }
+        let i: i32 = lo;
+        while (i < hi) {
+            if (name_eq(ln_name[i], t) == 1) {
+                rs_tag = ln_tag[i]; rs_cnt = ln_cnt[i]; rs_kind = ln_kind[i];
+                return 1;
+            }
+            i = i + 1;
+        }
+        d = d - 1;
+    }
+    let s: i32 = 0;
+    while (s < nsym) {
+        if (skind[s] == SK_GLOBAL || skind[s] == SK_EXTERN_LET) {
+            if (name_eq(sname[s], t) == 1) {
+                rs_tag = stag[s]; rs_cnt = scnt[s]; rs_kind = skind[s];
+                return 1;
+            }
+        }
+        s = s + 1;
+    }
+    return 0;
+}
+// Resolve a call callee name (token t): 1 = function (rs_fnsym set), 2 = a
+// variable (rs_* set, for S7/S8), 0 = neither (S6).
+fn find_call(t: i32) -> i32 {
+    rcall_intrinsic = 0;
+    let s: i32 = 0;
+    while (s < nsym) {
+        if (skind[s] == SK_FN || skind[s] == SK_EXTERN_FN) {
+            if (name_eq(sname[s], t) == 1) { rs_fnsym = s; return 1; }
+        }
+        s = s + 1;
+    }
+    // Host intrinsics (§3): declared nowhere in source, known to the compiler.
+    // A real declared function above wins; absent that, these four are always
+    // callable and never S6. rs_fnsym = -1 marks "intrinsic, no symbol row".
+    if (tok_is(t, "load_u8") == 1)  { rcall_intrinsic = 1; rcall_rtyp = TY_U8;  rs_fnsym = -1; return 1; }
+    if (tok_is(t, "store_u8") == 1) { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "read") == 1)     { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    if (tok_is(t, "write") == 1)    { rcall_intrinsic = 1; rcall_rtyp = TY_I32; rs_fnsym = -1; return 1; }
+    if (find_var(t) == 1) { return 2; }
+    return 0;
+}
+fn add_local(t: i32, kind: i32, tag: i32, cnt: i32) -> i32 {
+    if (nlocs > 499) { die_at("too many local declarations (limit 500, including parameters)", tok_line(t), tok_col(t)); return 1; }
+    let h: i32 = nlocs;
+    ln_name[h] = t; ln_kind[h] = kind; ln_tag[h] = tag; ln_cnt[h] = cnt;
+    nlocs = nlocs + 1;
+    return 0;
+}
+fn push_scope() -> i32 {
+    sc_start[sc_depth] = nlocs;
+    sc_depth = sc_depth + 1;
+    return 0;
+}
+fn pop_scope() -> i32 {
+    sc_depth = sc_depth - 1;
+    nlocs = sc_start[sc_depth];
+    return 0;
+}
+
+// Compute and check one expression's type (post-order, iterative). Children's
+// ex_ty/ex_arr are filled before the parent is combined. On a type error the
+// matching S-diagnostic is reported and 1 is returned.
+fn tc_expr(h: i32) -> i32 {
+    let sp: i32 = 0;
+    wstk[0] = h; wmark[0] = 0; sp = 1;
+    while (sp > 0) {
+        sp = sp - 1;
+        let n: i32 = wstk[sp];
+        let m: i32 = wmark[sp];
+        if (m == 1) {
+            if (tc_combine(n) != 0) { return 1; }
+            continue;
+        }
+        if (sp > 65535) { die_np("internal: tc stack overflow"); return 1; }
+        wstk[sp] = n; wmark[sp] = 1; sp = sp + 1;
+        let nk: i32 = 0;
+        let ch: i32 = nfirst[n - 1];
+        while (ch != 0) {
+            kids[nk] = ch; nk = nk + 1;
+            ch = nnext[ch - 1];
+        }
+        let i: i32 = nk - 1;
+        while (i >= 0) {
+            wstk[sp] = kids[i]; wmark[sp] = 0; sp = sp + 1;
+            i = i - 1;
+        }
+    }
+    return 0;
+}
+
+// Combine a node: derive its type from its children and enforce the operand
+// rules (§7). Returns 1 on the first type error.
+fn tc_combine(n: i32) -> i32 {
+    let k: i32 = nkind[n - 1];
+    if (k == E_Num) {
+        convert_num(ntok[n - 1]);
+        if (numval >= -2147483648 && numval <= 2147483647) { ex_ty[n - 1] = TY_I32; }
+        else { ex_ty[n - 1] = TY_I64; }
+        ex_arr[n - 1] = 0;
+        return 0;
+    }
+    if (k == E_String) { ex_ty[n - 1] = TY_PTR_U8; ex_arr[n - 1] = 0; return 0; }
+    if (k == E_Var) {
+        if (find_var(ntok[n - 1]) == 0) { die_name_at("unknown variable: ", ntok[n - 1]); return 1; }
+        ex_ty[n - 1] = rs_tag;
+        if (rs_cnt > 1) { ex_arr[n - 1] = 1; } else { ex_arr[n - 1] = 0; }
+        return 0;
+    }
+    if (k == E_Call) {
+        let callee: i32 = ntok[n - 1];
+        let r: i32 = find_call(callee);
+        if (r == 0) { die_name_at("call to undeclared function: ", callee); return 1; }
+        if (r == 2) {
+            if (rs_cnt > 1) {
+                die_open(); bputs("cannot call through '"); bputname(callee);
+                bputs("': it is an array");
+                die_close(tok_line(callee), tok_col(callee)); return 1;
+            }
+            die_open(); bputs("cannot call through '"); bputname(callee);
+            bputs("': expected a function pointer (ptr), got ");
+            if (is_ptr_tag(rs_tag) == 1) { bputs("ptr"); } else { bput_ty_arg(rs_tag); }
+            die_close(tok_line(callee), tok_col(callee)); return 1;
+        }
+        let fsym: i32 = rs_fnsym;
+        if (fsym == -1) { ex_ty[n - 1] = rcall_rtyp; ex_arr[n - 1] = 0; return 0; }
+        let fnode: i32 = sfn[fsym];
+        let argc: i32 = 0;
+        let a: i32 = nfirst[n - 1];
+        while (a != 0) { argc = argc + 1; a = nnext[a - 1]; }
+        let nparams: i32 = 0;
+        let p: i32 = nfirst[fnode - 1];
+        while (p != 0) { if (nkind[p - 1] == N_Param) { nparams = nparams + 1; } p = nnext[p - 1]; }
+        if (argc != nparams) {
+            die_open(); bputs("wrong argument count calling "); bputname(callee);
+            bputs(": expected "); bputn(nparams); bputs(", got "); bputn(argc);
+            die_close(tok_line(callee), tok_col(callee)); return 1;
+        }
+        let ai: i32 = 0;
+        let arg: i32 = nfirst[n - 1];
+        while (arg != 0) {
+            let pj: i32 = nfirst[fnode - 1];
+            let pi: i32 = 0;
+            while (pj != 0) {
+                if (nkind[pj - 1] == N_Param) { if (pi == ai) { break; } pi = pi + 1; }
+                pj = nnext[pj - 1];
+            }
+            let ptag: i32 = nnty[pj - 1];
+            let c0: i32 = expr_const_int(arg);
+            if (ty_assignable(ptag, 0, ex_ty[arg - 1], ex_arr[arg - 1], c0, rc_val) == 0) {
+                die_open(); bputs("argument type mismatch calling "); bputname(callee);
+                bputs(" at argument "); bputn(ai + 1); bputs(": expected "); bput_ty_arg(ptag);
+                bputs(", got "); bput_ty_arg2(ex_ty[arg - 1], ex_arr[arg - 1]);
+                die_close(tok_line(callee), tok_col(callee)); return 1;
+            }
+            ai = ai + 1;
+            arg = nnext[arg - 1];
+        }
+        ex_ty[n - 1] = stag[fsym]; ex_arr[n - 1] = 0;
+        return 0;
+    }
+    if (k == E_Index) {
+        let base: i32 = ntok[n - 1];
+        if (find_var(base) == 0) { die_name_at("unknown variable: ", base); return 1; }
+        if (rs_cnt > 1) { ex_ty[n - 1] = rs_tag; ex_arr[n - 1] = 0; return 0; }
+        if (is_ptr_tag(rs_tag) == 1) {
+            die_at("pointer indexing is not supported yet", tok_line(base), tok_col(base)); return 1;
+        }
+        die_name_at("cannot index non-array variable: ", base); return 1;
+    }
+    if (k == E_Not) {
+        let op: i32 = nfirst[n - 1];
+        if (ex_ty[op - 1] != -2) { die_at("'!' requires a bool operand", tok_line(ntok[n - 1]), tok_col(ntok[n - 1])); return 1; }
+        ex_ty[n - 1] = -2; ex_arr[n - 1] = 0; return 0;
+    }
+    if (k == E_Neg) {
+        let op: i32 = nfirst[n - 1];
+        ex_ty[n - 1] = ex_ty[op - 1]; ex_arr[n - 1] = ex_arr[op - 1]; return 0;
+    }
+    // binary: arithmetic / shift / comparison / logical / bit
+    let l: i32 = nfirst[n - 1];
+    let r: i32 = nnext[l - 1];
+    let lt: i32 = ex_ty[l - 1];
+    let rt: i32 = ex_ty[r - 1];
+    if (k == E_Eq || k == E_Ne || k == E_Lt || k == E_Le || k == E_Gt || k == E_Ge) {
+        ex_ty[n - 1] = -2; ex_arr[n - 1] = 0; return 0;
+    }
+    if (k == E_And || k == E_Or) {
+        ex_ty[n - 1] = -2; ex_arr[n - 1] = 0; return 0;
+    }
+    if (k == E_Shl || k == E_Shr) {
+        ex_ty[n - 1] = lt; ex_arr[n - 1] = ex_arr[l - 1]; return 0;
+    }
+    // + - * / % & | ^ : result is the wider integer (i64 if either is i64, else
+    // i32; u8 widens to i32). Non-integer operands fall back to i32 — no pinned
+    // S-error fires for them (§6 lists none), so the program is accepted.
+    if (lt == TY_I64 || rt == TY_I64) { ex_ty[n - 1] = TY_I64; }
+    else if (lt == TY_I32 && rt == TY_I32) { ex_ty[n - 1] = TY_I32; }
+    else { ex_ty[n - 1] = TY_I32; }
+    ex_arr[n - 1] = 0;
+    return 0;
+}
+
+// Type-check one statement; returns 1 on the first S-error.
+fn sema_stmt(s: i32) -> i32 {
+    let k: i32 = nkind[s - 1];
+    if (k == S_Let) {
+        let e: i32 = nfirst[s - 1];
+        if (e != 0) {
+            if (tc_expr(e) != 0) { return 1; }
+            let c0: i32 = expr_const_int(e);
+            if (ty_assignable(nnty[s - 1], 0, ex_ty[e - 1], ex_arr[e - 1], c0, rc_val) == 0) {
+                die_name_at("type mismatch assigning variable: ", ntok[s - 1]); return 1;
+            }
+        }
+        if (add_local(ntok[s - 1], SK_LOCAL, nnty[s - 1], 1) != 0) { return 1; }
+        return 0;
+    }
+    if (k == S_Assign) {
+        if (find_var(ntok[s - 1]) == 0) { die_name_at("unknown variable: ", ntok[s - 1]); return 1; }
+        if (rs_cnt > 1) { die_name_at("cannot assign to an array as a whole: ", ntok[s - 1]); return 1; }
+        let e: i32 = nfirst[s - 1];
+        if (tc_expr(e) != 0) { return 1; }
+        let c0: i32 = expr_const_int(e);
+        if (ty_assignable(rs_tag, 0, ex_ty[e - 1], ex_arr[e - 1], c0, rc_val) == 0) {
+            die_name_at("type mismatch assigning variable: ", ntok[s - 1]); return 1;
+        }
+        return 0;
+    }
+    if (k == S_IndexAssign) {
+        let idxnode: i32 = nfirst[s - 1];
+        let rhs: i32 = nnext[idxnode - 1];
+        let arrname: i32 = ntok[idxnode - 1];
+        if (find_var(arrname) == 0) { die_name_at("unknown variable: ", arrname); return 1; }
+        if (rs_cnt > 1) {
+            if (tc_expr(nfirst[idxnode - 1]) != 0) { return 1; }
+            if (tc_expr(rhs) != 0) { return 1; }
+            let c0: i32 = expr_const_int(rhs);
+            if (ty_assignable(rs_tag, 0, ex_ty[rhs - 1], ex_arr[rhs - 1], c0, rc_val) == 0) {
+                die_name_at("type mismatch assigning variable: ", arrname); return 1;
+            }
+            return 0;
+        }
+        if (is_ptr_tag(rs_tag) == 1) {
+            die_at("pointer indexing is not supported yet", tok_line(ntok[idxnode - 1]), tok_col(ntok[idxnode - 1])); return 1;
+        }
+        die_name_at("cannot index non-array variable: ", arrname); return 1;
+    }
+    if (k == S_Return) {
+        let e: i32 = nfirst[s - 1];
+        if (tc_expr(e) != 0) { return 1; }
+        // Category check mirroring the host's ret() (src/aster.cpp:4515): there
+        // is no bool/u8/i64 *return* distinction in the 5-type subset, so an
+        // integer return accepts any integer tag (u8 -> i32, i64 -> i32, ...),
+        // a ptr return accepts any ptr, and only a bool-valued expression into a
+        // non-bool return is rejected (with the host's literal "expected i32,
+        // got bool"). The full message set is the host's four throw sites.
+        let is_ret_ptr: i32 = 0;
+        if (is_ptr_tag(cur_ret_ty) == 1) { is_ret_ptr = 1; }
+        let is_expr_ptr: i32 = 0;
+        if (ex_arr[e - 1] == 0 && is_ptr_tag(ex_ty[e - 1]) == 1) { is_expr_ptr = 1; }
+        let is_expr_bool: i32 = 0;
+        if (ex_ty[e - 1] == -2) { is_expr_bool = 1; }
+        if (is_expr_ptr != is_ret_ptr) {
+            // A ptr return also accepts the null constant 0 (host: isNullConstant).
+            if (is_ret_ptr == 1) {
+                let c0: i32 = expr_const_int(e);
+                if (c0 == 1 && rc_val == 0) { /* null -> ok */ }
+                else {
+                    die_open(); bputs("return type mismatch in function "); bputname(cur_fn_name);
+                    die_close(tok_line(ntok[s - 1]), tok_col(ntok[s - 1])); return 1;
+                }
+            } else {
+                die_open(); bputs("return type mismatch in function "); bputname(cur_fn_name);
+                die_close(tok_line(ntok[s - 1]), tok_col(ntok[s - 1])); return 1;
+            }
+        }
+        if (is_expr_bool == 1) {
+            die_open(); bputs("return type mismatch in function "); bputname(cur_fn_name);
+            bputs(": expected i32, got bool");
+            die_close(tok_line(ntok[s - 1]), tok_col(ntok[s - 1])); return 1;
+        }
+        if (nkind[e - 1] == E_Var) {
+            if (find_var(ntok[e - 1]) == 1 && rs_kind == SK_LOCAL && rs_cnt > 1) {
+                die_name_at("cannot return a local array (its frame storage does not outlive the call): ", ntok[e - 1]); return 1;
+            }
+        }
+        return 0;
+    }
+    if (k == S_If) {
+        let cond: i32 = nfirst[s - 1];
+        if (tc_expr(cond) != 0) { return 1; }
+        if (cond_ok(cond) == 0) {
+            die_at("condition must be a comparison, a bool expression, or an integer", tok_line(ntok[s - 1]), tok_col(ntok[s - 1])); return 1;
+        }
+        let tb: i32 = nnext[cond - 1];
+        push_scope();
+        if (sema_block(tb) != 0) { return 1; }
+        pop_scope();
+        let el: i32 = nnext[tb - 1];
+        if (el != 0) {
+            push_scope();
+            if (nkind[el - 1] == N_Block) { if (sema_block(el) != 0) { return 1; } }
+            else { if (sema_stmt(el) != 0) { return 1; } }
+            pop_scope();
+        }
+        return 0;
+    }
+    if (k == S_While) {
+        let cond: i32 = nfirst[s - 1];
+        if (tc_expr(cond) != 0) { return 1; }
+        if (cond_ok(cond) == 0) {
+            die_at("condition must be a comparison, a bool expression, or an integer", tok_line(ntok[s - 1]), tok_col(ntok[s - 1])); return 1;
+        }
+        let b: i32 = nnext[cond - 1];
+        push_scope();
+        if (sema_block(b) != 0) { return 1; }
+        pop_scope();
+        return 0;
+    }
+    if (k == S_Expr) {
+        let e: i32 = nfirst[s - 1];
+        if (tc_expr(e) != 0) { return 1; }
+        return 0;
+    }
+    return 0;
+}
+
+fn sema_block(b: i32) -> i32 {
+    let s: i32 = nfirst[b - 1];
+    while (s != 0) {
+        if (sema_stmt(s) != 0) { return 1; }
+        s = nnext[s - 1];
+    }
+    return 0;
+}
+
+fn sema_function(f: i32) -> i32 {
+    nlocs = 0;
+    sc_depth = 0;
+    sc_start[0] = 0;
+    sc_depth = 1;
+    cur_ret_ty = nnty[f - 1];
+    cur_fn_name = ntok[f - 1] + 1;
+    let c: i32 = nfirst[f - 1];
+    while (c != 0) {
+        if (nkind[c - 1] == N_Param) {
+            if (add_local(ntok[c - 1], SK_PARAM, nnty[c - 1], 1) != 0) { return 1; }
+        }
+        c = nnext[c - 1];
+    }
+    if (tok_is(cur_fn_name, "main") == 1) {
+        let np: i32 = 0;
+        let pc: i32 = nfirst[f - 1];
+        while (pc != 0) { if (nkind[pc - 1] == N_Param) { np = np + 1; } pc = nnext[pc - 1]; }
+        if (np > 0) { die_at("main must not have parameters", tok_line(cur_fn_name), tok_col(cur_fn_name)); return 1; }
+    }
+    let body: i32 = 0;
+    let bc: i32 = nfirst[f - 1];
+    while (bc != 0) {
+        if (nkind[bc - 1] == N_Block) { body = bc; break; }
+        bc = nnext[bc - 1];
+    }
+    if (body != 0) {
+        if (sema_block(body) != 0) { return 1; }
+    }
+    sc_depth = 0;
+    return 0;
+}
+
+// Phase 2.5: build the cross-function symbol table (functions + globals +
+// externs), then check each function's body. Returns 1 on the first S-error.
+fn sema(prog: i32) -> i32 {
+    let c: i32 = nfirst[prog - 1];
+    while (c != 0) {
+        let k: i32 = nkind[c - 1];
+        if (k == N_Function) {
+            if (nsym > 4095) { die_at("too many symbols", tok_line(ntok[c - 1]), tok_col(ntok[c - 1])); return 1; }
+            let s: i32 = nsym; nsym = nsym + 1;
+            sname[s] = ntok[c - 1] + 1;
+            skind[s] = SK_FN;
+            if (fn_extern(c) == 1) { skind[s] = SK_EXTERN_FN; }
+            stag[s] = nnty[c - 1];
+            scnt[s] = 1;
+            sfn[s] = c;
+        } else if (k == N_Global) {
+            if (nsym > 4095) { die_at("too many symbols", tok_line(ntok[c - 1]), tok_col(ntok[c - 1])); return 1; }
+            let s: i32 = nsym; nsym = nsym + 1;
+            sname[s] = ntok[c - 1];
+            skind[s] = SK_GLOBAL;
+            if (nfirst[c - 1] == 0) { skind[s] = SK_EXTERN_LET; }
+            stag[s] = nnty[c - 1];
+            scnt[s] = ncount[c - 1];
+            // S19: a scalar global's initializer must be a constant expression
+            // (S17 / S18 — array initializer type and range — are gated by the
+            // parser: it folds the constant and range-checks it with fits, so
+            // M3c does not re-report them). A string literal is itself a
+            // compile-time constant, accepted even though is_const (the
+            // parser's folding walker) does not treat E_String as a constant
+            // family.
+            if (nfirst[c - 1] != 0 && scnt[s] <= 1) {
+                let init: i32 = nfirst[c - 1];
+                if (is_const(init) == 0 && nkind[init - 1] != E_String) {
+                    die_name_at("global variable initializer must be a constant expression", ntok[c - 1]); return 1;
+                }
+            }
+        }
+        c = nnext[c - 1];
+    }
+    c = nfirst[prog - 1];
+    while (c != 0) {
+        if (nkind[c - 1] == N_Function) {
+            if (sema_function(c) != 0) { return 1; }
+        }
+        c = nnext[c - 1];
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    let rc: i32 = read_source();
+    if (rc != 0) { return rc; }
+    rc = lex();
+    if (rc != 0) { return rc; }
+    let prog: i32 = parse_program();
+    if (prog == 0 || perr != 0) { return 1; }
+    if (sema(prog) != 0) { return 1; }
+    rc = emit(prog);
+    if (rc != 0) { return rc; }
+    flush_out();
+    return 0;
+}

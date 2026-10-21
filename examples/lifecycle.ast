@@ -1,0 +1,97 @@
+// The ANativeActivity lifecycle callbacks — the seven slots native_render.ast
+// and native_touch.ast never install.
+//
+// A NativeActivity is driven by a table of function pointers, ANativeActivity-
+// Callbacks, whose first seven entries are the activity lifecycle: onStart,
+// onResume, onPause, onStop, onDestroy, onConfigurationChanged and onLowMemory.
+// The render and touch examples fill the window and input entries below them
+// (56..96) and leave these empty, which is why an Aster activity had no way to
+// tell that it had been backgrounded or that the device was short of memory.
+// This example fills all seven and logs each one.
+//
+// Every callback also bumps a counter, and `aster_lifecycle_count` reads them
+// back by index. That is what makes the wiring checkable without a device: a
+// host process can load this as a shared object, hand it a callback table,
+// call the seven entries and read the counters — the same instructions Android
+// would run, driven from outside logcat. (See tests/lifecycle-callbacks.sh.)
+//
+// Offsets, from android/native_activity.h (every entry is a pointer):
+//   onStart 0, onResume 8, onPause 16, onStop 24, onDestroy 32,
+//   onConfigurationChanged 40, onLowMemory 48.
+
+extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32;
+
+// Cross-callback state: one counter per slot.
+let g_started: i32 = 0;
+let g_resumed: i32 = 0;
+let g_paused: i32 = 0;
+let g_stopped: i32 = 0;
+let g_destroyed: i32 = 0;
+let g_config: i32 = 0;
+let g_lowmem: i32 = 0;
+
+// Diagnostics: fixed strings only (Aster cannot format numbers).
+fn llog(msg: ptr) -> i32 {
+    return __android_log_print(4, "AsterLifecycle", msg);
+}
+
+fn on_start(activity: ptr) -> i32 {
+    g_started = g_started + 1;
+    return llog("onStart");
+}
+
+fn on_resume(activity: ptr) -> i32 {
+    g_resumed = g_resumed + 1;
+    return llog("onResume");
+}
+
+fn on_pause(activity: ptr) -> i32 {
+    g_paused = g_paused + 1;
+    return llog("onPause");
+}
+
+fn on_stop(activity: ptr) -> i32 {
+    g_stopped = g_stopped + 1;
+    return llog("onStop");
+}
+
+fn on_destroy(activity: ptr) -> i32 {
+    g_destroyed = g_destroyed + 1;
+    return llog("onDestroy");
+}
+
+fn on_configuration_changed(activity: ptr) -> i32 {
+    g_config = g_config + 1;
+    return llog("onConfigurationChanged");
+}
+
+fn on_low_memory(activity: ptr) -> i32 {
+    g_lowmem = g_lowmem + 1;
+    return llog("onLowMemory");
+}
+
+// The seven counters, by index: 0 onStart, 1 onResume, 2 onPause, 3 onStop,
+// 4 onDestroy, 5 onConfigurationChanged, 6 onLowMemory. -1 for anything else.
+fn aster_lifecycle_count(which: i32) -> i32 {
+    if (which == 0) { return g_started; }
+    if (which == 1) { return g_resumed; }
+    if (which == 2) { return g_paused; }
+    if (which == 3) { return g_stopped; }
+    if (which == 4) { return g_destroyed; }
+    if (which == 5) { return g_config; }
+    if (which == 6) { return g_lowmem; }
+    return -1;
+}
+
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+    // ANativeActivity.callbacks is the first pointer of the struct.
+    let cb: ptr = load_ptr(activity);
+    *(cb + 0) = on_start;
+    *(cb + 8) = on_resume;
+    *(cb + 16) = on_pause;
+    *(cb + 24) = on_stop;
+    *(cb + 32) = on_destroy;
+    *(cb + 40) = on_configuration_changed;
+    *(cb + 48) = on_low_memory;
+    return 0;
+}

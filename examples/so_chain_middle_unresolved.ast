@@ -1,0 +1,13 @@
+extern fn aster_missing_function(value: i32) -> i32;
+fn middle_read() -> i32 {
+    return aster_missing_function(7);
+}
+fn middle_bump() -> i32 {
+    return 0;
+}
+fn middle_add() -> i32 {
+    return 42;
+}
+fn middle_global_read() -> i32 {
+    return 0;
+}

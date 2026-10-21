@@ -1,0 +1,54 @@
+// Function types: a function pointer that carries its signature.
+//
+// Before v0.23.37-dev a function pointer was a bare `ptr`: an indirect call
+// `fp(x)` staged every scalar argument at 64-bit width and answered i32, with
+// nothing to check the call against. A *function type* `fn(P1,..,Pn) -> R`
+// rides beside that ptr, so an indirect call is now checked and code-generated
+// exactly like the direct call it stands for:
+//
+//   - the argument count and each argument's type are checked against the
+//     signature (the same check a direct call uses);
+//   - each argument is staged at the width its signature declares — an i32
+//     argument in a W register, an i64 one in a full X register (AAPCS64);
+//   - the result is read at the signature's return type.
+//
+// A bare `ptr` is unchanged: it still stages at 64 bits and answers i32, so
+// every program written before this round compiles to the same bytes.
+//
+// This example exercises every form a typed fn-pointer can take: a local, an
+// i64 argument whose upper half is read back (the width the old rule could not
+// answer), a fn-pointer *parameter* applied inside a helper, and a global.
+// Its C twin is tests/function-type-twin.c; the two agree on the exit status.
+
+fn inc(x: i32) -> i32 { return x + 1; }
+fn high32(a: i64) -> i64 { return a >> 32; }
+fn combine(a: i32, b: i32) -> i32 { return a * 3 + b; }
+fn apply(op: fn(i32) -> i32, x: i32) -> i32 { return op(x); }
+
+// A global fn-pointer, declared with its signature and left null until main.
+let gop: fn(i32, i32) -> i32;
+
+fn main() -> i32 {
+    // A local typed fn-pointer: the signature checks the call and stages the
+    // i32 argument at i32 width.
+    let fp: fn(i32) -> i32 = inc;
+    let a: i32 = fp(41);                       // 42
+
+    // The width the old rule could not answer: a 64-bit argument is staged at
+    // full width, so high32 reads the upper half back as 1, not 0.
+    let big: i64 = 0;
+    big = big + 4294967296;                    // 2^32
+    let wp: fn(i64) -> i64 = high32;
+    let hi: i64 = wp(big);                     // 1
+
+    // A fn-pointer passed as an argument and called through inside apply —
+    // the signature travels with the parameter.
+    let b: i32 = apply(fp, a);                 // inc(42) = 43
+
+    // The global, assigned then called through its signature.
+    gop = combine;
+    let c: i32 = gop(7, 8);                    // 7*3+8 = 29
+
+    let total: i32 = a + b + c + hi;           // 42+43+29+1 = 115
+    return total % 251;                        // 115
+}

@@ -1,0 +1,74 @@
+// File-backed logging runtime for Aster APKs.
+//
+// Aster's __android_log_print normally goes to logcat. On a device where adb
+// logcat is unavailable the lines are invisible, so this module redefines
+// __android_log_print to append each line to a file inside the app's own
+// directory instead. lifecycle.ast calls __android_log_print(prio, tag, fmt)
+// with a plain (unformatted) message — Aster has no varargs — so we ignore the
+// format specifiers and just write "tag: msg\n".
+//
+// The path is chosen at build time from the APK package name:
+//   external app dir : /sdcard/Android/data/<pkg>/files/aster.log   (file manager / adb pull)
+//   internal app dir : /data/data/<pkg>/files/aster.log             (needs run-as)
+// The external path is tried first; the internal path is a fallback.
+
+extern fn open(path: ptr, flags: i32, mode: i32) -> i32;
+extern fn write(fd: i32, buf: ptr, len: i32) -> i32;
+extern fn close(fd: i32) -> i32;
+extern fn mkdir(path: ptr, mode: i32) -> i32;
+
+// O_WRONLY | O_CREAT | O_APPEND = 1 | 0x40 | 0x400 = 0x441.
+let EXT_DIR:   ptr = "/sdcard/Android/data/com.aster.lifecycle";
+let EXT_FILES: ptr = "/sdcard/Android/data/com.aster.lifecycle/files";
+let EXT_PATH:  ptr = "/sdcard/Android/data/com.aster.lifecycle/files/aster.log";
+let INT_FILES: ptr = "/data/data/com.aster.lifecycle/files";
+let INT_PATH:  ptr = "/data/data/com.aster.lifecycle/files/aster.log";
+
+let g_log_fd: i32 = -1;
+let g_tried:  i32 = 0;
+
+// Byte length of a NUL-terminated C string (read one byte at a time, since a
+// ptr dereference in Aster loads four bytes and would over-run short strings).
+fn slen(s: ptr) -> i32 {
+    let n: i32 = 0;
+    let p: ptr = s;
+    while (1 == 1) {
+        let w: i32 = *p;
+        let b: i32 = w & 255;
+        if (b == 0) { return n; }
+        n = n + 1;
+        p = p + 1;
+    }
+    return n;
+}
+
+// Open the log file once, trying the external app dir first, then the internal.
+// mkdir/open results are assigned (Aster has no bare-call statements).
+fn aster_log_init() -> i32 {
+    let scratch: i32 = 0;
+    scratch = mkdir(EXT_DIR, 493);
+    scratch = mkdir(EXT_FILES, 493);
+    g_log_fd = open(EXT_PATH, 0x441, 420);
+    if (g_log_fd >= 0) { return g_log_fd; }
+    scratch = mkdir(INT_FILES, 493);
+    g_log_fd = open(INT_PATH, 0x441, 420);
+    return g_log_fd;
+}
+
+// The symbol lifecycle.ast calls. Aster routes the undefined reference here,
+// so the packaged library needs no system liblog.so — only libc.so.
+fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32 {
+    if (g_tried == 0) {
+        g_tried = 1;
+        let ig: i32 = aster_log_init();
+    }
+    if (g_log_fd < 0) { return 0; }
+    let tl: i32 = slen(tag);
+    let fl: i32 = slen(fmt);
+    let w: i32 = 0;
+    w = write(g_log_fd, tag, tl);
+    w = write(g_log_fd, ": ", 2);
+    w = write(g_log_fd, fmt, fl);
+    w = write(g_log_fd, "\n", 1);
+    return fl + tl + 3;
+}

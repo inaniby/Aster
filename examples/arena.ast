@@ -1,0 +1,70 @@
+// arena.ast — one mmap'd page as a bump arena: the shape of the memory a
+// self-hosting compiler needs (token table, AST nodes, symbol table) with no
+// libc and no external allocator. v0.23.41-dev's mmap hands back the page,
+// `heap + k` is a byte offset, and store_u8/load_u8/store_i64/load_i64 are
+// the accessors. Freeing is `cursor = 0` — the whole arena is reclaimed in one
+// step, which is exactly right for a compiler that parses, emits and exits.
+//
+// Run: aster build-elf examples/arena.ast -o arena && ./arena
+// Prints node A's 8-byte payload, then exits with (reuse ? 100 : 0) plus the
+// tag byte plus the payload's byte sum — the same arithmetic tests/arena-twin.c
+// performs, so the suite can diff the two.
+//
+// One idiom to note: the intrinsic family types its ptr arguments through
+// exprType, where a bare literal 0 is an i32 — only a declared ptr parameter
+// or a `let p: ptr = 0` binding takes the null constant — so "a null pointer"
+// is spelled with a named binding here, exactly as the suite's cases do.
+
+let heap: ptr = 0;
+let cursor: i32 = 0;
+
+fn alloc(n: i32) -> ptr {
+    let p: ptr = heap + cursor;
+    cursor = cursor + n;
+    return p;
+}
+
+fn reclaim() -> i32 {
+    cursor = 0;
+    return 0;
+}
+
+fn main() -> i32 {
+    let z: ptr = 0;
+    heap = mmap(z, 65536, 3, 34, -1, 0);
+    if (heap == z) { write(1, "MAP-FAIL\n", 10); return 1; }
+
+    // Three 16-byte nodes: a tag byte, seven pad bytes, an i64 payload. The
+    // cursor advancing between allocations is what keeps B and C off A's
+    // payload — a cursor that failed to move would alias all three.
+    let a: ptr = alloc(16);
+    let b: ptr = alloc(16);
+    let c: ptr = alloc(16);
+    store_u8(a + 0, 65);                    // 'A'
+    store_i64(a + 8, 1234605616436508552);  // 0x1122334455667788
+    store_u8(b + 0, 66);                    // 'B'
+    store_i64(b + 8, 81985529216486895);    // 0x0123456789ABCDEF
+    store_u8(c + 0, 67);                    // 'C'
+    store_i64(c + 8, 0);
+
+    // Print node A's payload, little-endian, then read it back through the
+    // arena one byte at a time.
+    write(1, a + 8, 8);
+    let sum: i32 = 0;
+    let i: i32 = 0;
+    while (i < 8) {
+        sum = sum + load_u8(a + 8 + i);
+        i = i + 1;
+    }
+
+    // Reclaim and allocate again: the arena must hand back the same address,
+    // and the reused slot must read back what was just stored through it.
+    reclaim();
+    let a2: ptr = alloc(16);
+    let same: i32 = 0;
+    if (a2 == a) { same = 1; }
+    store_u8(a2, 68);                       // 'D' lands on 'A''s old address
+    let tag: i32 = load_u8(a2);
+
+    return same * 100 + tag + sum;
+}

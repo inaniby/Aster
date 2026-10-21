@@ -1,0 +1,71 @@
+// v0.23.30-dev — an array has an address: `&buf` is a `ptr`, so a `T[N]` can
+// be handed to a function by reference instead of having to live at file scope.
+//
+// Until this round `&` was defined for a struct lvalue and nothing else, so an
+// array was the one thing in the language a function could not reach unless it
+// was a global. There is no parser change here and no new instruction: a local
+// array's frame address and a global array's static address were both already
+// materialized for `let p: ptr = buf;` (an array name decays), and `&s` fed
+// `emitStructAddr` for a struct. What was missing is the rule that lets `&` ask
+// for them — and one honest restriction that comes with it: a `ptr` indexes at
+// `*(p + i*4)`, so an array whose element is not four bytes wide cannot be
+// handed over without silently lying about the distance between elements.
+struct Row { cells: i32[4] }
+
+let gscores: i32[4] = 11;                 // a global array, also passed by reference
+
+// Reads four i32 elements through the reference.
+fn sum4(p: ptr) -> i32 {
+    let t: i32 = 0;
+    let i: i32 = 0;
+    while (i < 4) {
+        t = t + p[i];
+        i = i + 1;
+    }
+    return t;
+}
+
+// Writes through it — the caller has to see the change, not a copy of it.
+fn fill(p: ptr, v: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < 4) {
+        p[i] = v;
+        i = i + 1;
+    }
+    return p[0];
+}
+
+// A `bool[3]` stores a 4-byte 0/1 slot an element, so it travels as a ptr too.
+fn countFlags(p: ptr) -> i32 {
+    let n: i32 = 0;
+    if (p[0] != 0) { n = n + 1; }
+    if (p[1] != 0) { n = n + 1; }
+    if (p[2] != 0) { n = n + 1; }
+    return n;
+}
+
+// `&pr.cells` — the address of a struct's array field, reached through a
+// `ptr<Row>`: the field's own base plus its offset, then the ptr as a value.
+fn rowSum(pr: ptr<Row>) -> i32 {
+    let p: ptr = &pr.cells;
+    return sum4(p);
+}
+
+fn main() -> i32 {
+    let buf: i32[4] = 7;                  // four sevens
+    let flags: bool[3] = true;
+    let row: Row;                         // a struct with an array field: declared, then written
+    let r: i32 = 0;
+    row.cells[0] = 1;
+    row.cells[1] = 2;
+    row.cells[2] = 3;
+    row.cells[3] = 4;
+    if (sum4(&buf) == 28) { r = r + 1; }            // 1: a local array, read through a reference
+    if (fill(&buf, 5) == 5 && buf[3] == 5) { r = r + 2; }   // 2: written through one, seen by the caller
+    if (sum4(&gscores) == 44) { r = r + 4; }        // 3: a global array, same shape
+    if (countFlags(&flags) == 3) { r = r + 8; }     // 4: a bool array is 4 bytes an element
+    if (rowSum(&row) == 10) { r = r + 16; }         // 5: an array field, behind a ptr<Row>
+    let p: ptr = &buf;                              // 6: the address itself, kept in a variable
+    if (p[0] == 5 && p[3] == 5) { r = r + 32; }
+    return r;                                       // 63: 1 + 2 + 4 + 8 + 16 + 32
+}

@@ -1,0 +1,10 @@
+// narrow_stack_arg.ast — narrow arguments that fall on the stack (the 9th and
+// 10th parameter, past the eight AAPCS64 register slots). The scratch slot for
+// every call argument sits at 4160 + callDepth*256, which is past the 4095
+// unscaled-byte-offset limit that makes a u8/u16 access need the x16-staged
+// fallback. This is the exact path the v0.23.19-dev defect lived on; recording
+// its object in the A/B baseline is what finally lets the baseline see it.
+fn f(a: i32, b: i32, c: i32, d: i32, e: i32, g: i32, h: i32, k: i32, u: u8, v: u16) -> i32 {
+    return u + v + a + k;
+}
+fn main() -> i32 { return f(0, 0, 0, 0, 0, 0, 0, 0, 30, 40); }

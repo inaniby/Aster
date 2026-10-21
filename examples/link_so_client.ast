@@ -1,0 +1,16 @@
+extern let base: i32;
+extern fn sum_base(x: i32) -> i32;
+extern fn scaled(x: i32) -> i32;
+fn client_sum() -> i32 {
+    return sum_base(32);
+}
+fn client_scaled() -> i32 {
+    return scaled(4);
+}
+fn client_base() -> i32 {
+    return base;
+}
+fn client_bump_base() -> i32 {
+    base = base + 1;
+    return base;
+}

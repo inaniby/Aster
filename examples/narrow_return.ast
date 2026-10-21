@@ -1,0 +1,14 @@
+// narrow_return.ast — functions returning narrow values (u8/u16/i64), consumed
+// by main. Pairs with narrow_args.ast: that one covers narrow *arguments*, this
+// one covers narrow *returns*. Both are recorded in the A/B byte baseline so a
+// regression in either direction is caught. The behavioural check is in
+// tests/narrow-value-coverage.sh.
+fn hi() -> u8 { return 250; }
+fn lo() -> u16 { return 40000; }
+fn big() -> i64 { return 123456789; }
+fn main() -> i32 {
+    let a: u8 = hi();
+    let b: u16 = lo();
+    let c: i64 = big();
+    return (a + (b % 256) + (c % 1000)) % 90 + 10;
+}

@@ -1,0 +1,99 @@
+// v0.23.31-dev — a second subscript: `T[N][M]`, and the row address it yields.
+//
+// Until this round a subscript was the last thing you could do to an array:
+// `a[i]` was the element, and that was the end of the expression. C has never
+// worked that way — `a[i]` on an `int[2][3]` is a *row*, a pointer to three
+// ints, and `a[i][j]` is the element. This round makes Aster agree, and it
+// does it without a new type: an array name already decays to a ptr, so a row
+// address is just the same decay one level in. The outer subscript strides by
+// the inner length times the element size (12 for a 2x3 i32 grid), and the
+// innermost one by the element size alone — which is exactly what a
+// one-dimensional `a[i]` has always stridden by, so nothing that exists today
+// changes shape.
+struct Grid { cells: i32[2][3] }
+
+let gscores: i32[2][3] = 0;               // a global two-dimensional grid
+
+// A row is a ptr, so it travels to a function exactly as `&buf` did last
+// round: by address, with the element count spelled out.
+fn rowSum(p: ptr, n: i32) -> i32 {
+    let t: i32 = 0;
+    let i: i32 = 0;
+    while (i < n) {
+        t = t + p[i];
+        i = i + 1;
+    }
+    return t;
+}
+
+fn main() -> i32 {
+    let r: i32 = 0;
+
+    // 1: a local 2x3 grid, written and read through two subscripts with
+    // variable indexes — the outer stride is 3 elements, the inner one.
+    let a: i32[2][3] = 0;
+    let i: i32 = 0;
+    while (i < 2) {
+        let j: i32 = 0;
+        while (j < 3) {
+            a[i][j] = i * 3 + j + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    if (a[0][0] == 1 && a[0][2] == 3 && a[1][0] == 4 && a[1][2] == 6) { r = r + 1; }
+
+    // 2: the whole grid, row by row, through one function that only ever
+    // sees a ptr — a row *is* a ptr.
+    if (rowSum(a[0], 3) == 6 && rowSum(a[1], 3) == 15) { r = r + 2; }
+
+    // 3: a global two-dimensional grid, same shape, same arithmetic.
+    let gi: i32 = 0;
+    while (gi < 2) {
+        let gj: i32 = 0;
+        while (gj < 3) {
+            gscores[gi][gj] = (gi + 1) * 10 + gj;
+            gj = gj + 1;
+        }
+        gi = gi + 1;
+    }
+    if (gscores[0][1] == 11 && gscores[1][2] == 22) { r = r + 4; }
+
+    // 4: three dimensions — the middle subscript addresses a row of rows,
+    // and the stride it walks by is the product of the dimensions below it.
+    let c: i32[2][2][2] = 0;
+    c[0][0][0] = 1; c[0][0][1] = 2; c[0][1][0] = 3; c[0][1][1] = 4;
+    c[1][0][0] = 5; c[1][0][1] = 6; c[1][1][0] = 7; c[1][1][1] = 8;
+    if (c[1][1][1] == 8 && c[0][1][0] == 3) { r = r + 8; }
+    if (rowSum(c[1][0], 2) == 11) { r = r + 16; }        // a row of a 3-D grid
+
+    // 5: a struct's array field, subscripted twice — the field's own offset
+    // plus the outer stride, then the inner one.
+    let g: Grid;
+    let ei: i32 = 0;
+    while (ei < 2) {
+        let ej: i32 = 0;
+        while (ej < 3) {
+            g.cells[ei][ej] = ei * 3 + ej + 1;
+            ej = ej + 1;
+        }
+        ei = ei + 1;
+    }
+    if (g.cells[0][1] == 2 && g.cells[1][2] == 6) { r = r + 32; }
+
+    // 6: a wider element. An i64 grid's outer stride is 24 bytes — not a
+    // power of two, so the row is walked by a multiply rather than a shift.
+    let w: i64[2][3] = 0;
+    w[0][0] = 100; w[0][1] = 200; w[0][2] = 300;
+    w[1][0] = 400; w[1][1] = 500; w[1][2] = 600;
+    if (w[1][2] == 600 && w[0][0] == 100) { r = r + 64; }
+
+    // 7: a one-byte element: the inner stride is 1 and the outer one 3, so
+    // the same chain reads two different widths of the same arithmetic.
+    let n: u8[2][3] = 0;
+    n[0][0] = 1; n[0][1] = 2; n[0][2] = 3;
+    n[1][0] = 4; n[1][1] = 5; n[1][2] = 6;
+    if (n[1][1] == 5 && n[0][2] == 3) { r = r + 128; }
+
+    return r;                               // 255: every shape, every stride
+}

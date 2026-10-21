@@ -1,0 +1,19 @@
+extern let counter: i32;
+extern fn add(a: i32, b: i32) -> i32;
+extern fn mul(a: i32, b: i32) -> i32;
+fn call_add() -> i32 {
+    return add(20, 22);
+}
+fn call_mul() -> i32 {
+    return mul(6, 7);
+}
+fn read_counter() -> i32 {
+    return counter;
+}
+fn bump_counter() -> i32 {
+    counter = counter + 1;
+    return counter;
+}
+fn add_counter(x: i32) -> i32 {
+    return add(x, counter);
+}

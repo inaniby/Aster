@@ -1,0 +1,276 @@
+// native_touch.ast — the first interactive native app: a finger on the screen
+// draws a dot where it touches.
+//
+// Built on the same raw ANativeActivityCallbacks model as native_render.ast
+// (no android_native_app_glue, no own thread). Touch input arrives through
+// AInputQueue, which we attach to Android's main looper in onInputQueueCreated;
+// the looper then calls on_looper_input when input is pending, we read the
+// motion event, convert the (float) coordinates into pixels, and repaint.
+//
+// Coordinates are floats, and Aster has no float type. AMotionEvent_getX/Y are
+// declared `-> i32`, but that alone does not capture the value: a C `float`
+// return lands in s0, a different register file from the w0 Aster reads for an
+// i32 result. The capture therefore goes through the lrintf bridge — lrintf
+// takes its argument in s0 and returns a long in x0, so a zero-argument
+// `lrintf()` call issued immediately after getX/getY hands Aster the integer
+// (x0's low 32 bits, exact for screen coordinates). Aster emits no SIMD
+// instruction of its own and the PLT is eagerly bound, so nothing between the
+// two calls disturbs s0 — but no other Aster call may be inserted between
+// them. tests/touch-coord-test.ast exercises exactly this chain under qemu.
+
+extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32;
+extern fn ANativeWindow_setBuffersGeometry(window: ptr, width: i32, height: i32, format: i32) -> i32;
+extern fn ANativeWindow_lock(window: ptr, outBuffer: ptr, inOutDirty: ptr) -> i32;
+extern fn ANativeWindow_unlockAndPost(window: ptr) -> i32;
+
+// AInputQueue: attach our handler to the main looper, then drain events.
+extern fn AInputQueue_attachLooper(queue: ptr, looper: ptr, ident: i32, cb: ptr, data: ptr) -> i32;
+extern fn AInputQueue_detachLooper(queue: ptr) -> i32;
+extern fn AInputQueue_getEvent(queue: ptr, outEvent: ptr) -> i32;
+extern fn AInputQueue_preDispatchEvent(queue: ptr, event: ptr) -> i32;
+extern fn AInputQueue_finishEvent(queue: ptr, event: ptr, handled: i32) -> i32;
+extern fn AInputEvent_getType(event: ptr) -> i32;
+extern fn AMotionEvent_getAction(event: ptr) -> i32;
+// declared i32 so the call is legal; the float itself is captured by lrintf.
+extern fn AMotionEvent_getX(event: ptr, pointerIndex: i32) -> i32;
+extern fn AMotionEvent_getY(event: ptr, pointerIndex: i32) -> i32;
+extern fn ALooper_forThread() -> ptr;
+// The float bridge (libm.so): reads its argument from s0, returns a long in
+// x0. Declared `-> i32`: Aster keeps the low 32 bits of x0, which is the exact
+// integer value of any on-screen coordinate.
+extern fn lrintf() -> i32;
+
+// Diagnostics: fixed strings only (Aster cannot format numbers), but enough to
+// tell callback wiring, event delivery and coordinate capture apart in logcat.
+fn tlog(msg: ptr) -> i32 {
+    return __android_log_print(4, "AsterTouch", msg);
+}
+
+// Cross-callback state.
+let g_winbuf: i32[32] = 0;
+let g_dirty: i32[4] = 0;
+let g_win: ptr = 0;
+let g_queue: ptr = 0;
+let g_ev: ptr[1] = 0;            // AInputEvent** scratch for AInputQueue_getEvent
+let g_null: ptr = 0;             // reusable null pointer (local ptr = 0 is not allowed)
+let g_touch_x: i32 = 0;
+let g_touch_y: i32 = 0;
+let g_touch_down: i32 = 0;
+let g_has_win: i32 = 0;
+
+// Draw the gradient, plus a white square under the finger when touched.
+// ANativeWindow_Buffer layout: width@0 height@4 stride@8 format@12 bits@16.
+fn draw_frame(window: ptr) -> i32 {
+    let geom: i32 = ANativeWindow_setBuffersGeometry(window, 0, 0, 1);
+    let locked: i32 = ANativeWindow_lock(window, g_winbuf, g_dirty);
+    if (locked != 0) {
+        return 0;
+    } else {
+        let w: i32 = g_winbuf[0];
+        let h: i32 = g_winbuf[1];
+        if (w < 1) {
+            return 0;
+        } else {
+            let stride: i32 = g_winbuf[2];
+            let fmt: i32 = g_winbuf[3];
+            let bits: ptr = load_ptr(g_winbuf + 16);
+            if (fmt == 1) {
+            } else {
+                if (fmt == 2) {
+                } else {
+                    if (fmt == 4) {
+                    } else {
+                        let logged: i32 = __android_log_print(6, "Aster", "unsupported pixel format");
+                        return 0;
+                    }
+                }
+            }
+            let y: i32 = 0;
+            while (y < h) {
+                let x: i32 = 0;
+                while (x < w) {
+                    let r: i32 = (x * 255) / w;
+                    let g: i32 = (y * 255) / h;
+                    if (fmt == 4) {
+                        let px: i32 = (y * stride + x) * 2;
+                        let v: i32 = (r / 8) * 2048 + (g / 4) * 32 + 16;
+                        let lo: i32 = v - (v / 256) * 256;
+                        let hi: i32 = v / 256;
+                        let s0: i32 = store_u8(bits + px + 0, lo);
+                        let s1: i32 = store_u8(bits + px + 1, hi);
+                    } else {
+                        let px: i32 = (y * stride + x) * 4;
+                        let s0: i32 = store_u8(bits + px + 0, r);
+                        let s1: i32 = store_u8(bits + px + 1, g);
+                        let s2: i32 = store_u8(bits + px + 2, 128);
+                        let s3: i32 = store_u8(bits + px + 3, 255);
+                    }
+                    x = x + 1;
+                }
+                y = y + 1;
+            }
+            // Touch overlay: a 40x40 white square centered on the finger.
+            // Same bytes-per-pixel rule as the gradient above: 2 bytes for
+            // RGB_565 (both 0xFF), 4 bytes for RGBA_8888 / RGBX_8888.
+            if (g_touch_down != 0) {
+                let half: i32 = 20;
+                let x0: i32 = g_touch_x - half;
+                let y0: i32 = g_touch_y - half;
+                let yy: i32 = 0;
+                while (yy < 40) {
+                    let xx: i32 = 0;
+                    while (xx < 40) {
+                        let pxc: i32 = x0 + xx;
+                        let pyc: i32 = y0 + yy;
+                        if (pxc >= 0 && pxc < w && pyc >= 0 && pyc < h) {
+                            if (fmt == 4) {
+                                let pxb: i32 = (pyc * stride + pxc) * 2;
+                                let o0: i32 = store_u8(bits + pxb + 0, 255);
+                                let o1: i32 = store_u8(bits + pxb + 1, 255);
+                            } else {
+                                let pxb: i32 = (pyc * stride + pxc) * 4;
+                                let o0: i32 = store_u8(bits + pxb + 0, 255);
+                                let o1: i32 = store_u8(bits + pxb + 1, 255);
+                                let o2: i32 = store_u8(bits + pxb + 2, 255);
+                                let o3: i32 = store_u8(bits + pxb + 3, 255);
+                            }
+                        } else {
+                        }
+                        xx = xx + 1;
+                    }
+                    yy = yy + 1;
+                }
+            } else {
+            }
+            let posted: i32 = ANativeWindow_unlockAndPost(window);
+            return 0;
+        }
+    }
+}
+
+fn on_native_window_created(activity: ptr, window: ptr) -> i32 {
+    g_win = window;
+    g_has_win = 1;
+    return draw_frame(window);
+}
+
+fn on_native_window_resized(activity: ptr, window: ptr) -> i32 {
+    return draw_frame(window);
+}
+
+fn on_native_window_redraw_needed(activity: ptr, window: ptr) -> i32 {
+    return draw_frame(window);
+}
+
+// The window is going away: forget it, so a later repaint cannot touch it.
+fn on_native_window_destroyed(activity: ptr, window: ptr) -> i32 {
+    g_has_win = 0;
+    g_win = 0;
+    let l: i32 = tlog("touch: window destroyed");
+    return 0;
+}
+
+// Input queue appears: remember it and attach our handler to the main looper.
+// ANativeActivityCallbacks offsets (android/native_activity.h, all pointers):
+// onNativeWindowCreated@56, onNativeWindowResized@64, onNativeWindowRedrawNeeded@72,
+// onNativeWindowDestroyed@80, onInputQueueCreated@88, onInputQueueDestroyed@96.
+fn on_input_queue_created(activity: ptr, queue: ptr) -> i32 {
+    g_queue = queue;
+    let looper: ptr = ALooper_forThread();
+    let attached: i32 = AInputQueue_attachLooper(queue, looper, 1, on_looper_input, g_null);
+    let l: i32 = tlog("touch: input queue created, looper attached");
+    return 0;
+}
+
+fn on_input_queue_destroyed(activity: ptr, queue: ptr) -> i32 {
+    let detached: i32 = AInputQueue_detachLooper(queue);
+    g_queue = 0;
+    let l: i32 = tlog("touch: input queue destroyed");
+    return 0;
+}
+
+// Capture one motion coordinate through the lrintf bridge. getX leaves the
+// float in s0; the very next call — zero-argument lrintf — reads s0 and hands
+// back a long in x0, whose low 32 bits Aster reads as the i32 result. The two
+// calls must stay adjacent: no other Aster call may sit between them.
+fn event_x(ev: ptr) -> i32 {
+    let junk: i32 = AMotionEvent_getX(ev, 0);
+    return lrintf();
+}
+
+fn event_y(ev: ptr) -> i32 {
+    let junk: i32 = AMotionEvent_getY(ev, 0);
+    return lrintf();
+}
+
+// Looper callback: drain every pending event, repaint on each motion.
+// AInputQueue_getEvent returns 0 when it filled in an event and a negative
+// value when the queue ran dry, so the drain condition is `>= 0` (the 1/0
+// convention belongs to AInputQueue_hasEvents). A non-zero preDispatchEvent
+// result means the event is being offered to the IME: abandon it without
+// finishEvent and it will be reported again later.
+fn on_looper_input(ident: i32, events: i32, data: ptr) -> i32 {
+    let got: i32 = AInputQueue_getEvent(g_queue, g_ev);
+    while (got >= 0) {
+        let ev: ptr = load_ptr(g_ev);
+        let pre: i32 = AInputQueue_preDispatchEvent(g_queue, ev);
+        if (pre == 0) {
+            let typ: i32 = AInputEvent_getType(ev);
+            if (typ == 1) {
+                // motion: low byte of the action is DOWN(0)/UP(1)/MOVE(2)/CANCEL(3)
+                let act: i32 = AMotionEvent_getAction(ev);
+                let a: i32 = act - (act / 256) * 256;
+                if (a == 0) {
+                    g_touch_down = 1;
+                    let l0: i32 = tlog("touch: down");
+                } else {
+                    if (a == 1) {
+                        g_touch_down = 0;
+                        let l1: i32 = tlog("touch: up");
+                    } else {
+                        if (a == 2) {
+                            g_touch_down = 1;
+                            let l2: i32 = tlog("touch: move");
+                        } else {
+                            if (a == 3) {
+                                g_touch_down = 0;
+                                let l3: i32 = tlog("touch: cancel");
+                            } else {
+                                let l4: i32 = tlog("touch: other action");
+                            }
+                        }
+                    }
+                }
+                g_touch_x = event_x(ev);
+                g_touch_y = event_y(ev);
+                if (g_has_win != 0) {
+                    let d: i32 = draw_frame(g_win);
+                    let l5: i32 = tlog("touch: frame drawn");
+                } else {
+                    let l6: i32 = tlog("touch: no window yet");
+                }
+            } else {
+                let l7: i32 = tlog("touch: non-motion event");
+            }
+            let fin: i32 = AInputQueue_finishEvent(g_queue, ev, 1);
+        } else {
+            let l8: i32 = tlog("touch: event pre-dispatched, skipped");
+        }
+        got = AInputQueue_getEvent(g_queue, g_ev);
+    }
+    return 1;
+}
+
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+    // ANativeActivityCallbacks (android/native_activity.h): window callbacks at
+    // 56/64/72, then onNativeWindowDestroyed@80, onInputQueueCreated@88,
+    // onInputQueueDestroyed@96.
+    let cb: ptr = load_ptr(activity);
+    *(cb + 56) = on_native_window_created;
+    *(cb + 64) = on_native_window_resized;
+    *(cb + 72) = on_native_window_redraw_needed;
+    *(cb + 80) = on_native_window_destroyed;
+    *(cb + 88) = on_input_queue_created;
+    *(cb + 96) = on_input_queue_destroyed;
+    return 0;
+}

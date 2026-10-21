@@ -1,0 +1,13 @@
+fn main() -> i32 {
+    let i: i32 = 0;
+    let total: i32 = 0;
+    while (i < 6) {
+        i = i + 1;
+        if (i == 3) {
+            continue;
+        } else {
+            total = total + i;
+        }
+    }
+    return total;
+}

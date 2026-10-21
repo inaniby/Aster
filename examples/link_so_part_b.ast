@@ -1,0 +1,9 @@
+extern let base: i32;
+extern fn add(a: i32, b: i32) -> i32;
+fn sum_base(x: i32) -> i32 {
+    return add(x, base);
+}
+fn bump_base() -> i32 {
+    base = base + 1;
+    return base;
+}

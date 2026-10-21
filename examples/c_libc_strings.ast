@@ -1,0 +1,10 @@
+extern fn strlen(s: ptr) -> i32;
+extern fn memcmp(a: ptr, b: ptr, n: i32) -> i32;
+
+fn aster_strlen(s: ptr) -> i32 {
+    return strlen(s);
+}
+
+fn aster_memcmp(a: ptr, b: ptr, n: i32) -> i32 {
+    return memcmp(a, b, n);
+}

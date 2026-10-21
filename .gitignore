@@ -1,0 +1,24 @@
+/aster
+/build/
+/tmp-*
+*.o
+*.so
+*.elf
+*.apk
+
+# Coredumps / debug artifacts
+core
+core.*
+*.core
+qemu_deep.bin_*
+
+# Logs
+build.log
+*.log
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local keystore (RSA private key) — never commit
+/.aster/

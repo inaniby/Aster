@@ -1,0 +1,18 @@
+// narrow_args.ast — narrow (u8/u16/i64) arguments delivered in registers.
+//
+// A gap closed in v0.23.20-dev: before this example existed, no example in the
+// tree ever passed a u8/u16/i64 argument, so the 261-line A/B byte baseline was
+// blind to the narrow-argument path (the u8-parameter defect of v0.23.19-dev
+// survived five releases because nothing exercised it). This example — built in
+// build-so/build-elf/build-obj --pic and recorded in tests/baseline/.../example-
+// hashes.txt — makes any regression in narrow-argument emission visible byte
+// for byte. (The behavioural half lives in tests/narrow-value-coverage.sh.)
+fn p_u8(a: u8) -> u8 { return a; }
+fn p_u16(a: u16) -> u16 { return a; }
+fn p_i64(a: i64) -> i64 { return a; }
+fn main() -> i32 {
+    let a: u8 = p_u8(200);
+    let b: u16 = p_u16(40000);
+    let c: i64 = p_i64(123456789);
+    return (a + (b % 256) + (c % 1000)) % 90 + 10;
+}

@@ -1,0 +1,34 @@
+extern fn strlen(s: ptr) -> i32;
+extern fn memcmp(a: ptr, b: ptr, n: i32) -> i32;
+
+fn aster_literal_strlen() -> i32 {
+    return strlen("Aster v0.22.9-dev");
+}
+
+fn aster_literal_compare() -> i32 {
+    return memcmp("aster", "aster", 5);
+}
+
+fn aster_literal_escape_strlen() -> i32 {
+    return strlen("Aster\n");
+}
+
+fn aster_identity(s: ptr) -> ptr {
+    return s;
+}
+
+fn aster_literal_strlen_internal() -> i32 {
+    return strlen(aster_identity("Aster v0.22.9-dev"));
+}
+
+fn aster_literal_compare_internal() -> i32 {
+    return memcmp(aster_identity("aster"), aster_identity("aster"), 5);
+}
+
+fn aster_literal_embedded_nul_strlen() -> i32 {
+    return strlen("A\0B");
+}
+
+fn aster_literal_quote_backslash_strlen() -> i32 {
+    return strlen("A\"\\B");
+}

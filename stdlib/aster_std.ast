@@ -1,0 +1,257 @@
+// aster_std.ast — the first slice of a standard library written in Aster
+// itself: the routines a self-hosting compiler reaches for before it has a
+// compiler to build them with (SELFHOSTING-PLAN M2). No libc, no allocator,
+// no compiler change — pure Aster over the v0.23.40/41-dev syscall and byte
+// intrinsics, delivered as one relocatable object the bootstrap links:
+//
+//   aster build-obj stdlib/aster_std.ast -o std.o
+//   aster build-obj yourapp.ast -o app.o
+//   aster link-obj app.o std.o -o app
+//
+// (include only shares declarations, never bodies — v0.23.13-dev — so a
+// library ships as an object, and the consumer declares `extern fn`/`extern
+// let`. examples/stdlib_demo.ast is that consumer; tests/stdlib-checks.sh
+// diffs every routine against tests/aster-std-twin.c.)
+//
+// Two idioms carry the whole file:
+//
+//   * Every byte-buffer parameter is `ptr<u8>`, never bare `ptr`: that
+//     spelling is the one that takes BOTH a string literal (whose type is
+//     already a ptr to NUL-terminated rodata) and `&arr` of a `u8[N]` (a
+//     strided ptr<u8> since v0.23.30-dev). A bare `ptr` parameter refuses
+//     `&arr`, and a `ptr[N]` element refuses `&arr` — measured, not assumed.
+//   * There are no casts, so a narrowing arrives as an ordinary assignment
+//     (`let d: i32 = v % 10;` truncates an i64); only constant initializers
+//     are range-checked. Mixed-width arithmetic widens to the wider side, so
+//     the FNV loop below stays in i64 without any ceremony.
+//
+// Everything returns an i32 or an i64 the exit status / a buffer can show —
+// there is no void — and every negative answer is a documented sentinel
+// (-1), never a trap.
+
+// ===========================================================================
+// mem — byte primitives over load_u8/store_u8.
+// ===========================================================================
+
+// Copy n bytes, src and dst overlapping is the caller's problem (forward copy
+// only, exactly like C's memcpy). Returns n, so a wrong count is observable.
+fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(dst + i, load_u8(src + i));
+        i = i + 1;
+    }
+    return n;
+}
+
+// Fill n bytes with c's low 8 bits (store_u8 truncates, as C's unsigned char
+// conversion does). Returns n.
+fn memset(dst: ptr<u8>, c: i32, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(dst + i, c);
+        i = i + 1;
+    }
+    return n;
+}
+
+// Byte-wise unsigned comparison of the first n bytes: the first differing
+// pair's difference, 0 when equal. The unsigned reading matters — a signed
+// compare would order 0x80 below 0x7F and flip the answer for high bytes.
+fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x != y) { return x - y; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ===========================================================================
+// str — NUL-terminated text: the identifier and keyword matcher's toolkit.
+// ===========================================================================
+
+fn strlen(s: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (load_u8(s + i) != 0) { i = i + 1; }
+    return i;
+}
+
+// C's strcmp: first differing byte pair's difference, 0 when equal. Compares
+// as unsigned bytes (load_u8 zero-extends), and stops at the NUL both share.
+// The loop bound is a guard, not the terminator: every string shorter than a
+// million bytes returns from inside, and the tail return only satisfies the
+// compiler's fall-through check (while(true) returns are not seen as
+// terminating).
+fn strcmp(a: ptr<u8>, b: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (i < 1000000) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x != y) { return x - y; }
+        if (x == 0) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// C's strncpy: copy at most n bytes, NUL-pad when src is shorter, no
+// terminator when src runs to n or beyond. Returns min(strlen(src), n) — the
+// number of source characters actually copied — so a truncation shows up in
+// the return value rather than only in the buffer. (The pad loop runs after
+// the count is taken: returning its own index would answer n for every
+// short source.)
+fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let c: i32 = load_u8(src + i);
+        store_u8(dst + i, c);
+        if (c == 0) { break; }
+        i = i + 1;
+    }
+    let copied: i32 = i;
+    while (i < n) {
+        store_u8(dst + i, 0);
+        i = i + 1;
+    }
+    return copied;
+}
+
+// ===========================================================================
+// num — integers to text: ELF fields and diagnostics.
+// ===========================================================================
+
+// Reverse the i digits written at buf[0..i) in place, then NUL-terminate.
+// Shared by utoa/utohex — the digits come out least-significant first.
+fn reverse_digits(buf: ptr<u8>, i: i32) -> i32 {
+    let j: i32 = 0;
+    let k: i32 = i - 1;
+    while (j < k) {
+        let t: i32 = load_u8(buf + j);
+        store_u8(buf + j, load_u8(buf + k));
+        store_u8(buf + k, t);
+        j = j + 1;
+        k = k - 1;
+    }
+    store_u8(buf + i, 0);
+    return i;
+}
+
+// Unsigned decimal (v is read as its value; the caller keeps it >= 0 — the
+// signed case is itoa's job). Returns the digit count.
+fn utoa(v: i64, buf: ptr<u8>) -> i32 {
+    if (v == 0) {
+        store_u8(buf, 48);
+        store_u8(buf + 1, 0);
+        return 1;
+    }
+    let i: i32 = 0;
+    while (v > 0) {
+        let d: i32 = v % 10;              // narrowing: i64 -> i32, in range
+        store_u8(buf + i, 48 + d);        // '0' + digit
+        v = v / 10;
+        i = i + 1;
+    }
+    return reverse_digits(buf, i);
+}
+
+// Signed decimal: '-' then the magnitude. The magnitude of i64's most
+// negative value is not representable, so that one input is out of contract
+// (the twin asserts the same). Returns the character count, sign included.
+fn itoa(v: i64, buf: ptr<u8>) -> i32 {
+    if (v < 0) {
+        store_u8(buf, 45);                // '-'
+        return 1 + utoa(-v, buf + 1);
+    }
+    return utoa(v, buf);
+}
+
+// Lowercase hexadecimal, no prefix, no leading zeros ("0" for zero). The
+// width an ELF dump wants is the caller's business (pad in the buffer).
+// Returns the digit count.
+fn utohex(v: i64, buf: ptr<u8>) -> i32 {
+    if (v == 0) {
+        store_u8(buf, 48);
+        store_u8(buf + 1, 0);
+        return 1;
+    }
+    let i: i32 = 0;
+    while (v > 0) {
+        let d: i32 = v % 16;
+        let ch: i32 = 48 + d;             // '0'..'9'
+        if (d > 9) { ch = 87 + d; }       // 'a'..'f' (97 - 10)
+        store_u8(buf + i, ch);
+        v = v / 16;
+        i = i + 1;
+    }
+    return reverse_digits(buf, i);
+}
+
+// ===========================================================================
+// hash — open addressing over two global arrays: the symbol table / label
+// table a bootstrap compiler needs. 1024 slots (a power of two, so the mask
+// is an AND), linear probing, an empty slot is key 0, and a key that is
+// already present updates its value instead of duplicating.
+// ===========================================================================
+
+let hkeys: ptr<u8>[1024] = 0;   // key strings; 0 means empty
+let hvals: i64[1024] = 0;   // values, parallel to hkeys
+
+// FNV-1a over the bytes, 64-bit. The offset basis 0xcbf29ce484222325 does
+// not fit an i64 literal, so it enters as its two's-complement value
+// -3750763034362895579 — the same 64 bits (14695981039346656037 - 2^64).
+// Multiplication wraps (two's complement), which is what the hash wants
+// anyway.
+fn hash_str(s: ptr<u8>) -> i64 {
+    let h: i64 = -3750763034362895579;
+    let i: i32 = 0;
+    while (i < 1000000) {
+        let b: i32 = load_u8(s + i);
+        if (b == 0) { return h; }
+        h = (h ^ b) * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+// Insert or update: returns the slot index, or -1 when all 1024 slots are
+// occupied (a table that full is a bootstrap-scale bug, not a condition to
+// grow into — the caller's input was not that large).
+fn hash_put(key: ptr<u8>, val: i64) -> i32 {
+    let i: i32 = hash_str(key) & 1023;
+    let probes: i32 = 0;
+    while (probes < 1024) {
+        let k: ptr<u8> = hkeys[i];
+        if (k == 0) {
+            hkeys[i] = key;
+            hvals[i] = val;
+            return i;
+        }
+        if (strcmp(k, key) == 0) {
+            hvals[i] = val;
+            return i;
+        }
+        i = i + 1;
+        if (i == 1024) { i = 0; }
+        probes = probes + 1;
+    }
+    return -1;
+}
+
+// Look up: the value, or -1 when absent. Values are therefore non-negative
+// by contract — true for the table indices and counts a compiler stores.
+fn hash_get(key: ptr<u8>) -> i64 {
+    let i: i32 = hash_str(key) & 1023;
+    let probes: i32 = 0;
+    while (probes < 1024) {
+        let k: ptr<u8> = hkeys[i];
+        if (k == 0) { return -1; }        // empty slot ends the probe chain
+        if (strcmp(k, key) == 0) { return hvals[i]; }
+        i = i + 1;
+        if (i == 1024) { i = 0; }
+        probes = probes + 1;
+    }
+    return -1;
+}

@@ -1,0 +1,11 @@
+fn main() -> i32 {
+    return twenty() + twenty_two();
+}
+
+fn twenty() -> i32 {
+    return 20;
+}
+
+fn twenty_two() -> i32 {
+    return 22;
+}

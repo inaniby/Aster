@@ -1,0 +1,49 @@
+// narrow_mem.ast — halfword and quadword memory access — v0.23.23-dev.
+//
+// The byte intrinsics (`load_u8`/`store_u8`) made raw memory reachable one
+// byte at a time. This adds the two widths real data actually arrives in:
+// `load_u16`/`store_u16` for halfwords and `load_i64`/`store_i64` for
+// quadwords. Reading an i64 through the byte pair meant eight loads, seven
+// shifts and seven ors — and `<< 32` on an i32 silently drops the high half,
+// so the assembled value came out wrong in a way no comparison against
+// itself could see. One `load_i64` is one LDR, and it cannot be wrong that
+// way.
+//
+// The shape mirrors the byte pair exactly. `load_u16(p)` answers a
+// zero-extended i32 (0..65535); `store_u16(p, v)` writes v's low 16 bits and
+// answers v. `load_i64(p)` and `store_i64(p, v)` are i64 in and i64 out, and
+// an i32 v widens by sign-extension exactly as storing it into an i64 local
+// does — so `store_i64(blob, -1)` lands eight 0xFF bytes and reads back as
+// -1, which is the case the shift-and-or version got wrong.
+//
+// Note the `let`s: a call is an expression, and a bare expression is not a
+// statement in Aster, so every store's result is caught even when unused.
+//
+//   aster build-elf examples/narrow_mem.ast -o narrow_mem && ./narrow_mem
+
+let blob: u8[24] = 0;
+
+fn round_u16(hi: i32, lo: i32) -> i32 {
+    let r: i32 = store_u16(blob, (hi * 256) + lo);
+    return load_u16(blob) + (r % 251);
+}
+
+fn main() -> i32 {
+    // A halfword round trip, and truncation: 0x1BEEF keeps only its low
+    // 16 bits on the way to memory, so both halves read back as 0xBEEF.
+    let a: i32 = store_u16(blob, 0xBEEF);
+    let b: i32 = load_u16(blob);
+    let c: i32 = store_u16(blob + 2, 0x1BEEF);
+    let d: i32 = load_u16(blob + 2);
+
+    // A quadword round trip, then the widening case: a negative i32 stored
+    // through store_i64 sign-extends to 0xFFFFFFFFFFFFFFFF and reads back
+    // as -1. The old eight-load_u8 assembly lost the high half right here.
+    let e: i64 = store_i64(blob + 8, 0x0123456789ABCDEF);
+    let f: i64 = load_i64(blob + 8);
+    let neg: i32 = -1;
+    let g: i64 = store_i64(blob + 16, neg);
+    let h: i64 = load_i64(blob + 16);
+
+    return (a + b + c + d + round_u16(52, 18)) % 251 + (e % 251) + (f % 251) + (g % 251) + (h % 251);
+}

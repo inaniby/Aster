@@ -1,0 +1,10 @@
+fn seed() -> i32 {
+    return 40;
+}
+
+let started: i32 = seed();
+let arr: i32[3] = 1;
+
+fn main() -> i32 {
+    return started + arr[2] + 1;
+}

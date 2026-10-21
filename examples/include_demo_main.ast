@@ -1,0 +1,23 @@
+// The other half of a two-file program (v0.23.13-dev, P3.4).
+//
+// Before `include` existed, the two lines below had to be typed here by hand —
+// and nothing checked them against the definitions in include_demo_defs.ast.
+// The linker matches by name, so a retyped arity or return type linked, ran,
+// and returned garbage silently. Now the declaration comes from the file that
+// holds the body, so it cannot disagree with it.
+//
+// What crosses an include is declarations only: `add2`'s body and `total`'s
+// initializer stay in include_demo_defs.ast, which is compiled separately.
+//
+//   aster build-obj examples/include_demo_defs.ast -o defs.o
+//   aster build-obj examples/include_demo_main.ast -o main.o
+//   aster link-obj main.o defs.o -o demo && ./demo   # prints 9
+//
+// The path is relative to *this* file, not to the working directory, so the
+// three commands work from anywhere.
+
+include "include_demo_defs.ast";
+
+fn main() -> i32 {
+    return add2(total);
+}

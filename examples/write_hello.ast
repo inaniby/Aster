@@ -1,0 +1,23 @@
+// hello world, single file — v0.23.21-dev.
+//
+// The first Aster program that prints without a host. `write` is a system
+// call (x8 = 64), not a libc call, so build-elf stays static and the result
+// runs as plain `./write_hello` on any AArch64 Linux — no dlopen, no C host,
+// no DT_NEEDED. `main`'s return was already a system call (x8 = 93, exit);
+// this is the same idea on the output side.
+//
+// Before v0.23.21-dev the same sentence needed two files: a .so exporting a
+// function that called libc's `puts`, plus a C host that dlopen()ed it — see
+// the round-4 hello in tests and examples/string_literal_exec.ast for the
+// rodata read. The .so path still exists and still serves the Android
+// NativeActivity host; this is the ELF path growing its own voice.
+//
+//   aster build-elf examples/write_hello.ast -o write_hello && ./write_hello
+//
+// Note the `let`: a call is an expression, and a bare expression is not a
+// statement in Aster, so the byte count has to be caught even when unused.
+
+fn main() -> i32 {
+    let n: i32 = write(1, "Hello, World!", 14);
+    return 0;
+}

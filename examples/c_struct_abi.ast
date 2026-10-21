@@ -1,0 +1,45 @@
+// c_struct_abi.ast — a struct crossing the C boundary in both directions.
+//
+// AAPCS64 puts a composite in one of three places, and C agrees with Aster on
+// all three:
+//
+//   <= 8 bytes   one general-purpose register
+//   9..16 bytes  two consecutive general-purpose registers
+//   > 16 bytes   the caller makes a copy and passes its address; a >16-byte
+//                result comes back through the hidden pointer in X8
+//
+// The three structs below are one of each. The C side of this test is
+// tests/c-struct-host.c, which both calls these functions and supplies the
+// imports they call back into.
+//
+// Build: aster build-so examples/c_struct_abi.ast -o libc_struct_abi.so
+//        --soname libc_struct_abi.so
+
+struct P { x: i32, y: i32 }           //  8 bytes: one register
+struct T { a: i32, b: i32, c: i32 }   // 12 bytes: a register pair
+struct B { a: i64, b: i64, c: i64 }   // 24 bytes: a copy, and X8 on return
+
+// C -> Aster: a composite argument in each size class.
+fn aster_sum_p(p: P) -> i32 { return p.x + p.y; }
+fn aster_sum_t(t: T) -> i32 { return t.a + t.b + t.c; }
+fn aster_sum_b(b: B) -> i64 { return b.a + b.b + b.c; }
+
+// C -> Aster: a composite result in each size class. The 24-byte one is
+// returned through the buffer whose address C hands over in X8.
+fn aster_mk_p(v: i32) -> P { return P { v, v + 1 }; }
+fn aster_mk_t(v: i32) -> T { return T { v, v + 1, v + 2 }; }
+fn aster_mk_b(v: i64) -> B { return B { v, v + 1, v + 2 }; }
+
+// Aster -> C: the same three classes going the other way.
+extern fn c_sum_p(p: P) -> i32;
+extern fn c_sum_t(t: T) -> i32;
+extern fn c_sum_b(b: B) -> i64;
+extern fn c_mk_b(v: i64) -> B;
+
+fn aster_call_c_p() -> i32 { return c_sum_p(P { 3, 4 }); }
+fn aster_call_c_t() -> i32 { return c_sum_t(T { 5, 6, 7 }); }
+fn aster_call_c_b() -> i64 { return c_sum_b(B { 100, 200, 300 }); }
+fn aster_call_c_mk_b(v: i64) -> i64 {
+    let b: B = c_mk_b(v);
+    return b.a + b.b + b.c;
+}

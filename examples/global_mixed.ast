@@ -1,0 +1,8 @@
+let limit: i32 = 100;
+let counter: i32 = 0;
+
+fn main() -> i32 {
+    counter = counter + 30;
+    limit = limit - 88;
+    return counter + limit;
+}

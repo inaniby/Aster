@@ -1,0 +1,7 @@
+fn aster_load_u8(p: ptr) -> i32 {
+    return load_u8(p);
+}
+
+fn aster_store_u8(p: ptr, value: i32) -> i32 {
+    return store_u8(p, value);
+}

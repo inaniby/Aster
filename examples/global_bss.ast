@@ -1,0 +1,6 @@
+let zero: i32 = 0;
+
+fn main() -> i32 {
+    zero = zero + 42;
+    return zero;
+}

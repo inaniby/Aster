@@ -1,0 +1,6 @@
+let counter: i32 = 7;
+
+fn main() -> i32 {
+    counter = counter + 35;
+    return counter;
+}

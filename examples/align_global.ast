@@ -1,0 +1,9 @@
+let aligned_array: i32[8] @align(64) = 0;
+let data_array: i32[3] = 7;
+let aligned_scalar: i32 @align(32) = 21;
+
+fn main() -> i32 {
+    let i: i32 = 0;
+    while (i < 8) { aligned_array[i] = i; i = i + 1; }
+    return aligned_scalar + data_array[1] + aligned_array[7];
+}

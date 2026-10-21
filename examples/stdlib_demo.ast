@@ -1,0 +1,167 @@
+// stdlib_demo.ast — the Aster standard library's first consumer, and the
+// differential driver for it: the same case set, in the same order, that
+// tests/aster-std-twin.c performs with its own from-specification C
+// implementations. Run:
+//
+//   aster build-obj stdlib/aster_std.ast -o std.o
+//   aster build-obj examples/stdlib_demo.ast -o demo.o
+//   aster link-obj demo.o std.o -o demo && ./demo
+//
+// Every routine is declared `extern` (include shares declarations only, not
+// bodies — v0.23.13-dev), every buffer argument is `ptr<u8>` so a string
+// literal and &arr are both accepted, and the print helpers below are
+// themselves stdlib users: out_i64 formats through itoa, the num cases print
+// their converters' raw output, and the suite compares those bytes against
+// the twin — which checked its own converters against snprintf first.
+//
+// What each family is for, in the bootstrap compiler these routines exist
+// to serve: mem moves token and node bytes, str matches identifiers and
+// keywords, num renders ELF fields and diagnostics, hash is the symbol and
+// label table.
+
+extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
+extern fn memset(dst: ptr<u8>, c: i32, n: i32) -> i32;
+extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
+extern fn strlen(s: ptr<u8>) -> i32;
+extern fn strcmp(a: ptr<u8>, b: ptr<u8>) -> i32;
+extern fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
+extern fn utoa(v: i64, buf: ptr<u8>) -> i32;
+extern fn itoa(v: i64, buf: ptr<u8>) -> i32;
+extern fn utohex(v: i64, buf: ptr<u8>) -> i32;
+extern fn hash_put(key: ptr<u8>, val: i64) -> i32;
+extern fn hash_get(key: ptr<u8>) -> i64;
+
+let ob: u8[32] = 0;      // the one scratch buffer every print helper shares
+let a: u8[16] = 0;
+let b: u8[16] = 0;
+let pad: u8[8] = 63;     // '?' — the untouched bytes must stay visible
+let hi: u8[2] = 128;     // 0x80, for the unsigned memcmp reading
+let lo: u8[2] = 127;     // 0x7F
+
+fn out_s(s: ptr<u8>) -> i32 {
+    write(1, s, strlen(s));
+    return 0;
+}
+
+fn out_i64(v: i64) -> i32 {
+    let n: i32 = itoa(v, ob);
+    write(1, ob, n);
+    return 0;
+}
+
+fn out_sp() -> i32 { write(1, " ", 1); return 0; }
+fn out_nl() -> i32 { write(1, "\n", 1); return 0; }
+
+// The num cases print their converters' raw bytes with nothing in between —
+// a reformat here would launder the very routine under test.
+fn out_utoa(v: i64) -> i32 {
+    let n: i32 = utoa(v, ob);
+    write(1, ob, n);
+    return 0;
+}
+
+fn out_itoa(v: i64) -> i32 {
+    let n: i32 = itoa(v, ob);
+    write(1, ob, n);
+    return 0;
+}
+
+fn out_utohex(v: i64) -> i32 {
+    let n: i32 = utohex(v, ob);
+    write(1, ob, n);
+    return 0;
+}
+
+// Eight bytes, a NUL shown as '.', no separators — the strncpy cases share
+// this shape with the twin so a missed pad byte or a stray write shows up.
+fn dump8(p: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (i < 8) {
+        let c: i32 = load_u8(p + i);
+        if (c == 0) { c = 46; }        // '.'
+        store_u8(ob + i, c);
+        i = i + 1;
+    }
+    write(1, ob, 8);
+    return 0;
+}
+
+fn main() -> i32 {
+    // ---- mem: a[i] = i*7+3 for i in 0..11, copied and summed ----
+    let i: i32 = 0;
+    while (i < 12) {
+        a[i] = i * 7 + 3;
+        i = i + 1;
+    }
+    memcpy(b, a, 12);
+    let sum: i32 = 0;
+    i = 0;
+    while (i < 12) {
+        sum = sum + b[i];
+        i = i + 1;
+    }
+    out_s("MC "); out_i64(sum); out_sp(); out_i64(memcpy(b, a, 12)); out_nl();
+
+    memset(b, 165, 10);                 // 0xA5
+    sum = 0;
+    i = 0;
+    while (i < 10) {
+        sum = sum + b[i];
+        i = i + 1;
+    }
+    out_s("MS "); out_i64(sum); out_sp(); out_i64(10); out_nl();
+
+    memset(b, 300, 1);                  // 300 & 0xFF == 44
+    out_s("MT "); out_i64(b[0]); out_nl();
+
+    out_s("ME "); out_i64(memcmp("abc", "abc", 3)); out_nl();
+    out_s("ML "); out_i64(memcmp("abc", "abd", 3)); out_nl();
+    out_s("MH "); out_i64(memcmp(hi, lo, 1)); out_nl();
+    out_s("MN "); out_i64(memcmp("abc", "abd", 0)); out_nl();
+
+    // ---- str ----
+    out_s("SL "); out_i64(strlen("aster stdlib")); out_sp(); out_i64(strlen("")); out_nl();
+    out_s("SC "); out_i64(strcmp("same", "same")); out_sp();
+    out_i64(strcmp("abc", "abd")); out_sp();
+    out_i64(strcmp("abc", "abcd")); out_nl();
+
+    // pad is re-armed to '?' before each strncpy case, so what the routine
+    // did NOT write stays observable.
+    memset(pad, 63, 8);
+    out_s("NC "); out_i64(strncpy(pad, "abcdefgh", 4)); out_sp(); dump8(pad); out_nl();
+    memset(pad, 63, 8);
+    out_s("NP "); out_i64(strncpy(pad, "ab", 8)); out_sp(); dump8(pad); out_nl();
+    memset(pad, 63, 8);
+    out_s("N0 "); out_i64(strncpy(pad, "abcdefgh", 0)); out_sp(); dump8(pad); out_nl();
+
+    // ---- num: the converters' raw bytes, no reformatting in between ----
+    out_s("U0 "); out_utoa(0); out_nl();
+    out_s("U1 "); out_utoa(1); out_nl();
+    out_s("U2 "); out_utoa(42); out_nl();
+    out_s("U3 "); out_utoa(123456789012345); out_nl();
+    out_s("I0 "); out_itoa(0); out_nl();
+    out_s("I1 "); out_itoa(-1); out_nl();
+    out_s("I2 "); out_itoa(9223372036854775807); out_nl();
+    out_s("I3 "); out_itoa(-9223372036854775807); out_nl();
+    out_s("H0 "); out_utohex(0); out_nl();
+    out_s("H1 "); out_utohex(255); out_nl();
+    out_s("H2 "); out_utohex(4096); out_nl();
+    out_s("H3 "); out_utohex(3735928559); out_nl();
+
+    // ---- hash: the symbol table shape. Slots come from the FNV bits, so
+    // the printed indices pin the hash function's 64-bit behaviour too. ----
+    out_s("HS ");
+    out_i64(hash_put("alpha", 1)); out_sp();
+    out_i64(hash_put("beta", 2)); out_sp();
+    out_i64(hash_put("gamma", 3)); out_nl();
+    out_s("HG ");
+    out_i64(hash_get("alpha")); out_sp();
+    out_i64(hash_get("beta")); out_sp();
+    out_i64(hash_get("gamma")); out_nl();
+    out_s("HU ");
+    out_i64(hash_put("beta", 99)); out_sp();
+    out_i64(hash_get("beta")); out_nl();
+    out_s("HX "); out_i64(hash_get("delta")); out_nl();
+
+    return 0;
+}

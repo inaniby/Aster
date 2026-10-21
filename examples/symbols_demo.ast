@@ -1,0 +1,15 @@
+let counter: i32 = 5;
+let zeroed: i32 = 0;
+let table: i32[4] = 7;
+let spare: i32[2] = 0;
+
+fn main() -> i32 {
+    counter = counter + 1;
+    table[0] = counter;
+    spare[1] = 3;
+    return bump(table[0]) + zeroed + spare[1];
+}
+
+fn bump(x: i32) -> i32 {
+    return x + 36;
+}

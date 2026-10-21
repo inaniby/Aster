@@ -1,0 +1,16 @@
+extern let counter: i32;
+extern fn value() -> i32;
+extern fn bump() -> i32;
+extern fn add(a: i32, b: i32) -> i32;
+fn middle_read() -> i32 {
+    return value();
+}
+fn middle_bump() -> i32 {
+    return bump();
+}
+fn middle_add() -> i32 {
+    return add(20, 22);
+}
+fn middle_global_read() -> i32 {
+    return counter;
+}

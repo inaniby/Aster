@@ -1,0 +1,51 @@
+// Callback tables: a struct field whose type is a function type.
+//
+// v0.23.38-dev lets a *field* carry a signature. `onClick: fn(i32) -> i32`
+// is a ptr field in the layout — eight bytes, like any other pointer — with
+// the signature riding beside it, the same way a variable's, a parameter's
+// and a global's have since v0.23.37-dev. What that buys is the call itself:
+//
+//     let r: i32 = h.onClick(41);
+//
+// staged and checked by the field's declared signature — the argument count,
+// each argument's width, and the type of the result — and branched to through
+// the value the field holds. Nothing about the call is looked up by name, so
+// a field whose name happens to match a function in scope is still the field.
+//
+// A field is also *assigned* by signature: `h.onClick = dbl;` is accepted
+// because dbl is `fn(i32) -> i32`, and `h.onClick = move2;` is refused
+// because it is not. That is the difference between a callback table and
+// eight bytes that happen to hold an address.
+//
+// Its C twin is tests/callback-table-twin.c; the two agree on the exit status.
+
+struct Handlers {
+    onClick: fn(i32) -> i32,
+    onMove: fn(i32, i32) -> i32
+}
+
+fn click(x: i32) -> i32 { return x + 1; }
+fn dbl(x: i32) -> i32 { return x + x; }
+fn move2(a: i32, b: i32) -> i32 { return a * 10 + b; }
+
+// A callback table handed to a helper: the calls inside it read their
+// signature from the field, not from anything in scope here.
+fn run(h: ptr<Handlers>) -> i32 {
+    return h.onClick(41) + h.onMove(2, 3);      // 42 + 23 = 65
+}
+
+fn main() -> i32 {
+    let h: Handlers = Handlers { click, move2 };
+    let a: i32 = run(&h);                       // 65
+
+    // The field is reassigned like any other — but by signature.
+    h.onClick = dbl;
+    let b: i32 = h.onClick(10);                 // 20
+
+    // A field's value is a fn-pointer like any other: it can be read out and
+    // handed to something that asks for one.
+    let f: fn(i32) -> i32 = h.onClick;
+    let c: i32 = f(1);                          // 2
+
+    return (a + b + c) % 251;                   // 87
+}

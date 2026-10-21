@@ -1,0 +1,4 @@
+extern fn aster_missing_function(value: i32) -> i32;
+fn call_missing_function() -> i32 {
+    return aster_missing_function(7);
+}

@@ -1,0 +1,7 @@
+let base: i32 = 6;
+
+fn twice(x: i32) -> i32 { return x * 2; }
+
+let scaled: i32 = twice(base) + base;
+
+fn main() -> i32 { return scaled; }

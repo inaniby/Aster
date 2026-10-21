@@ -1,0 +1,25 @@
+extern fn abs(value: i32) -> i32;
+
+fn aster_abs(value: i32) -> i32 {
+    return abs(value);
+}
+
+fn aster_sum8(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> i32 {
+    return a + b + c + d + e + f + g + h;
+}
+
+fn aster_mix8(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> i32 {
+    return a - b + c - d + e - f + g - h;
+}
+
+fn aster_sum12(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32, k: i32, l: i32) -> i32 {
+    return a + b + c + d + e + f + g + h + i + j + k + l;
+}
+
+fn aster_mix12(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32, k: i32, l: i32) -> i32 {
+    return a - b + c - d + e - f + g - h + i - j + k - l;
+}
+
+fn aster_call_sum12() -> i32 {
+    return aster_sum12(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+}

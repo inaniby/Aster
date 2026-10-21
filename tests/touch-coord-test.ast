@@ -1,0 +1,49 @@
+// touch-coord-test.ast — qemu-runnable check of the motion-coordinate capture
+// chain that native_touch.ast uses on device.
+//
+// Aster has no float type, so native_touch.ast cannot read AMotionEvent_getX/Y
+// directly: their C `float` return lands in s0, not in the w0 Aster reads for
+// an i32 result. The capture therefore issues a zero-argument lrintf() call
+// immediately after getX/getY — lrintf takes its argument in s0 and returns a
+// long in x0, whose low 32 bits Aster reads. That exact chain is what this test
+// exercises, with strtof standing in for AMotionEvent_getX: strtof is also a C
+// function returning a float and lands it in s0 the same way.
+//
+// Extern calls need the PLT, which only build-so emits, so the test is built as
+// a shared object, dlopened by tests/touch-coord-host.c and run under
+// qemu-aarch64. coord_check() returns 0 only if every conversion is exact —
+// including the round-half-to-even cases, which is what makes a direct w0 read
+// (the v0.23.14-dev bug) fail this test.
+
+extern fn strtof(s: ptr, end: ptr) -> i32;
+extern fn lrintf() -> i32;
+
+let g_null: ptr = 0;            // reusable null pointer (local ptr = 0 is not allowed)
+
+// The capture, exactly as event_x/event_y do it in native_touch.ast: the float
+// call, then the zero-argument bridge, with no Aster call in between.
+fn capture(s: ptr) -> i32 {
+    let junk: i32 = strtof(s, g_null);
+    return lrintf();
+}
+
+fn coord_check() -> i32 {
+    let c0: i32 = capture("0.0");       //   0.0 ->   0
+    let c1: i32 = capture("1042.0");    // exact integers
+    let c2: i32 = capture("768.0");
+    let c3: i32 = capture("3000.0");
+    let c4: i32 = capture("123.0");
+    let c5: i32 = capture("1042.5");    // round-half-to-even -> 1042
+    let c6: i32 = capture("1919.5");    // round-half-to-even -> 1920
+    let c7: i32 = capture("-12.0");     // negative coordinate (no unary minus in Aster)
+    if (c0 != 0) { return 1; } else {
+    if (c1 != 1042) { return 2; } else {
+    if (c2 != 768) { return 3; } else {
+    if (c3 != 3000) { return 4; } else {
+    if (c4 != 123) { return 5; } else {
+    if (c5 != 1042) { return 6; } else {
+    if (c6 != 1920) { return 7; } else {
+    if (c7 != 0 - 12) { return 8; } else {
+        return 0;
+    }}}}}}}}
+}

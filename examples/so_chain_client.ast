@@ -1,0 +1,16 @@
+extern fn middle_read() -> i32;
+extern fn middle_bump() -> i32;
+extern fn middle_add() -> i32;
+extern fn middle_global_read() -> i32;
+fn client_read() -> i32 {
+    return middle_read();
+}
+fn client_bump() -> i32 {
+    return middle_bump();
+}
+fn client_add() -> i32 {
+    return middle_add();
+}
+fn client_global_read() -> i32 {
+    return middle_global_read();
+}

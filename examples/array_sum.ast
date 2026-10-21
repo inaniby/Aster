@@ -1,0 +1,8 @@
+let v: i32[5] = 9;
+
+fn main() -> i32 {
+    let i: i32 = 0;
+    let s: i32 = 0;
+    while (i < 5) { s = s + v[i]; i = i + 1; }
+    return s;
+}

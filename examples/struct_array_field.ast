@@ -1,0 +1,61 @@
+// struct_array_field.ast — a struct field may be a fixed-length array
+// (v0.23.29-dev). The element type is whatever the field is declared as, and
+// each element is a value of that type once indexed: a scalar reads and writes,
+// a bool tests, a ptr is taken and compared, and a struct element is addressed
+// and walked field by field.
+//
+// A struct that contains an array field cannot be set by a literal — the field
+// alone needs N separate values — so such a struct is declared without an
+// initializer and its frame slots (or .bss bytes, for a global) are zero-filled;
+// the elements are written at run time. A literal `=` for one is refused.
+//
+// Six checks, each worth its own bit: 1+2+4+8+16+32 = 63.
+// tests/struct-array-field-twin.c is the same program in C and must agree.
+
+struct Vec3 { a: i32, b: i32, c: i32 }   // 12 bytes — a non-power-of-2 element
+                                        // size, so its address scales by a multiply
+
+struct Buffers {
+    nums: i32[4],    // 4-byte elements (power-of-2 scale)
+    flags: bool[3],  // 1-byte elements (power-of-2 scale)
+    ptrs: ptr[4],    // 8-byte elements (power-of-2 scale)
+    pts: Vec3[2]     // 12-byte elements (multiply scale)
+}
+
+let gb: Buffers;     // global with array fields: zero-filled in .bss
+
+fn main() -> i32 {
+    let r: i32 = 0;
+    let b: Buffers;  // local with array fields: zero-filled frame
+
+    // (1) scalar element write/read — 4-byte elements scale by a shift.
+    b.nums[0] = 11;
+    b.nums[3] = 33;
+    if (b.nums[3] == 33 && b.nums[0] == 11) { r = r + 1; }
+
+    // (2) bool element: set, read, and confirm a never-touched slot is false.
+    b.flags[0] = true;
+    b.flags[2] = true;
+    if (b.flags[0] && b.flags[2] && !b.flags[1]) { r = r + 2; }
+
+    // (4) ptr element: one slot holds an address, the rest stay null.
+    let anchor: Vec3 = Vec3 { 1, 2, 3 };
+    b.ptrs[1] = &anchor;
+    if (b.ptrs[1] == &anchor && b.ptrs[0] == 0) { r = r + 4; }
+
+    // (8) struct element field access — 12-byte elements scale by a multiply.
+    b.pts[1].a = 100;
+    b.pts[1].c = 200;
+    if (b.pts[1].a == 100 && b.pts[1].c == 200 && b.pts[0].a == 0) { r = r + 8; }
+
+    // (16) the address of a struct element is a ptr<Vec3>; deref and read a field.
+    let pp: ptr<Vec3> = &b.pts[1];
+    if (pp == &b.pts[1] && (*pp).a == 100) { r = r + 16; }
+
+    // (32) a global struct with array fields, zero-filled then filled at runtime.
+    gb.nums[2] = 77;
+    gb.pts[0].b = 55;
+    if (gb.nums[2] == 77 && gb.pts[0].b == 55 && gb.flags[1] == false) { r = r + 32; }
+
+    return r;                       // 63
+}

@@ -1,0 +1,65 @@
+// examples/indirect_call.ast — a call through a function pointer (v0.23.24-dev).
+//
+// A function's name in a value position has been its address (a ptr) since the
+// callback-table work: the address could be stored, passed as an argument and
+// handed to C. What it could not do was be *called* — every call site the
+// compiler emitted branched through a relocated BL, and a BLR did not exist.
+// This program is the missing half: `op(x)` where `op` is a ptr variable.
+//
+// The design, and its boundaries:
+//   - the callee is a ptr variable (local, global, or parameter). A function
+//     name in call position is still a direct call: the function always wins,
+//     exactly as a user function shadows an intrinsic;
+//   - there is no function type, so there is no signature. Every scalar
+//     argument rides at 64-bit width — an i32-declaring callee reads the low
+//     half, an i64-declaring one reads a properly extended full register —
+//     and the call answers i32. A callee returning i64 has its low half
+//     delivered; wrap it if the whole value matters;
+//   - a function address may live in memory (a struct field, as a framework's
+//     callback table holds one): read it with load_ptr into a variable and
+//     call through that. That is the dlsym shape.
+//
+// Exit status: 144 — the sum below reduced mod 251, and the same under the
+// C twin this example was written against.
+
+fn inc(x: i32) -> i32 { return x + 1; }
+fn dec(x: i32) -> i32 { return x - 1; }
+fn twice(x: i32) -> i32 { return x * 2; }
+
+// The trampoline: the callee arrives as a parameter. This is the callback
+// shape — a table of operations, a dispatcher, a comparator.
+fn apply(op: ptr, x: i32) -> i32 { return op(x); }
+
+// A slot is a function address that lives in memory.
+struct Slot { op: ptr }
+
+// A global pointer, filled by the synthetic initializer before main runs —
+// the static ELF links a function's address the same way a data global's.
+let dispatched: ptr = inc;
+
+fn main() -> i32 {
+    // 1. a local pointer, called directly: 40 + 1.
+    let a: ptr = inc;
+    let r1: i32 = a(40);
+
+    // 2. reassignment: the call follows what the variable holds *now*.
+    a = twice;
+    let r2: i32 = a(20);
+
+    // 3. the trampoline: the callee crossed a call as a parameter.
+    let r3: i32 = apply(dec, 10);
+
+    // 4. the global, before and after it is reassigned.
+    let r4: i32 = dispatched(6);
+    dispatched = dec;
+    let r5: i32 = dispatched(6);
+
+    // 5. the memory-resident pointer: stored, read back with load_ptr,
+    //    called through the variable it landed in.
+    let s: Slot = Slot { "unused" };
+    s.op = twice;
+    let q: ptr = load_ptr(&s);
+    let r6: i32 = q(21);
+
+    return (r1 + r2 + r3 + r4 + r5 + r6) % 251;
+}

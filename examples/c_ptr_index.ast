@@ -1,0 +1,11 @@
+// Exported for the C ABI harness (tests/c-ptr-index-host.c): p[i] indexes a
+// C-provided int32 array through a pointer with a 4-byte element stride, in
+// both directions (read and write).
+fn aster_index_read(p: ptr, i: i32) -> i32 {
+    return p[i];
+}
+
+fn aster_index_write(p: ptr, i: i32, v: i32) -> i32 {
+    p[i] = v;
+    return v;
+}

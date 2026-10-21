@@ -1,0 +1,144 @@
+// Regression guard for pixel byte offsets (the v0.22.46 native_render bug).
+//
+// ANativeWindow_Buffer.stride counts PIXELS per row, so the byte offset of
+// pixel (x, y) in a bpp-byte-per-pixel buffer is (y * stride + x) * bpp.
+// The historical bug wrote y * stride + x * bpp instead: every row landed
+// 1/bpp of the way down, rows overlapped, padding was clobbered, and only
+// the top slice of the surface was ever covered.  On a 1216x2688 window
+// with stride 1216 that meant: content only in the top ~672 rows, and each
+// display row assembled from 4 different source rows (a 304-pixel sawtooth).
+//
+// This program writes a tagged pattern with the correct formula into a
+// simulated padded framebuffer, then reads EVERY byte back.  It also runs
+// the old formula as a negative control: the layout check must still flag
+// it.  main returns 0 on pass, nonzero on failure.
+
+let fb4: i32[64] = 0;    // 256 bytes: stride 10 px * 6 rows * 4 bpp = 240 used
+let fb2: i32[32] = 0;    // 128 bytes: stride 10 px * 6 rows * 2 bpp = 120 used
+let fbbad: i32[64] = 0;  // scratch for the negative control
+
+// 4 bytes per pixel: width 7, stride 10, height 6.
+// Each byte slot gets a unique value < 256: row * 28 + pix * 4 + chan.
+fn check4() -> i32 {
+    let y: i32 = 0;
+    while (y < 6) {
+        let x: i32 = 0;
+        while (x < 7) {
+            let px: i32 = (y * 10 + x) * 4;
+            let v0: i32 = y * 28 + x * 4;
+            let s0: i32 = store_u8(fb4 + px + 0, v0);
+            let s1: i32 = store_u8(fb4 + px + 1, v0 + 1);
+            let s2: i32 = store_u8(fb4 + px + 2, v0 + 2);
+            let s3: i32 = store_u8(fb4 + px + 3, v0 + 3);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    let bad: i32 = 0;
+    let o: i32 = 0;
+    while (o < 240) {
+        let row: i32 = o / 40;
+        let col: i32 = o - row * 40;
+        let want: i32 = 0;
+        if (col < 28) {
+            let pix: i32 = col / 4;
+            let chan: i32 = col - pix * 4;
+            want = row * 28 + pix * 4 + chan;
+        } else {
+            want = 0;
+        }
+        let got: i32 = load_u8(fb4 + o);
+        if (got != want) { bad = bad + 1; } else { }
+        o = o + 1;
+    }
+    return bad;
+}
+
+// 2 bytes per pixel: width 7, stride 10, height 6.
+// Each byte slot gets a unique value < 256: row * 14 + pix * 2 + chan.
+fn check2() -> i32 {
+    let y: i32 = 0;
+    while (y < 6) {
+        let x: i32 = 0;
+        while (x < 7) {
+            let px: i32 = (y * 10 + x) * 2;
+            let v0: i32 = y * 14 + x * 2;
+            let s0: i32 = store_u8(fb2 + px + 0, v0);
+            let s1: i32 = store_u8(fb2 + px + 1, v0 + 1);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    let bad: i32 = 0;
+    let o: i32 = 0;
+    while (o < 120) {
+        let row: i32 = o / 20;
+        let col: i32 = o - row * 20;
+        let want: i32 = 0;
+        if (col < 14) {
+            let pix: i32 = col / 2;
+            let chan: i32 = col - pix * 2;
+            want = row * 14 + pix * 2 + chan;
+        } else {
+            want = 0;
+        }
+        let got: i32 = load_u8(fb2 + o);
+        if (got != want) { bad = bad + 1; } else { }
+        o = o + 1;
+    }
+    return bad;
+}
+
+// Negative control: the old unscaled-row formula must NOT match the layout.
+// If this ever returns 0, the byte-for-byte check above has gone blind.
+fn check_old_formula_detected() -> i32 {
+    let y: i32 = 0;
+    while (y < 6) {
+        let x: i32 = 0;
+        while (x < 7) {
+            let px: i32 = y * 10 + x * 4;
+            let v0: i32 = y * 28 + x * 4;
+            let s0: i32 = store_u8(fbbad + px + 0, v0);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    let bad: i32 = 0;
+    let o: i32 = 0;
+    while (o < 240) {
+        let row: i32 = o / 40;
+        let col: i32 = o - row * 40;
+        let want: i32 = 0;
+        if (col < 28) {
+            let pix: i32 = col / 4;
+            want = row * 28 + pix * 4;
+        } else {
+            want = 0;
+        }
+        let got: i32 = load_u8(fbbad + o);
+        if (got != want) { bad = bad + 1; } else { }
+        o = o + 1;
+    }
+    return bad;
+}
+
+fn main() -> i32 {
+    let b4: i32 = check4();
+    let b2: i32 = check2();
+    let detected: i32 = check_old_formula_detected();
+    // Pass condition: zero mismatches on both correct paths, and the old
+    // formula still produces at least one mismatch.
+    if (b4 == 0) {
+        if (b2 == 0) {
+            if (detected > 0) {
+                return 0;
+            } else {
+                return 3;
+            }
+        } else {
+            return 2;
+        }
+    } else {
+        return 1;
+    }
+}

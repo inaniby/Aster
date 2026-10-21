@@ -1,0 +1,17 @@
+// The "header" half of a two-file program (v0.23.13-dev, P3.4).
+//
+// This file is compiled on its own — it is where `add2` and `total` are
+// *defined* — and it is also the file that examples/include_demo_main.ast
+// includes to get their declarations. Nothing in main.ast repeats anything
+// written here: it says `include "include_demo_defs.ast";` and the signature
+// arrives by being read out of this file, so it cannot drift from it.
+//
+//   aster build-obj examples/include_demo_defs.ast -o defs.o
+//   aster build-obj examples/include_demo_main.ast -o main.o
+//   aster link-obj main.o defs.o -o demo && ./demo   # prints 9
+
+let total: i32 = 7;
+
+fn add2(n: i32) -> i32 {
+    return n + 2;
+}
