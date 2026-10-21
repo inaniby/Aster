@@ -1,12 +1,17 @@
-/* tests/parser-twin.c — the C oracle for bootstrap/aster.ast's M3b parser.
+/* tests/parser-twin.c — the C oracle for bootstrap/aster.ast's M3b parser and
+ * M3c type-check pass.
  *
- * The same contract: bootstrap/PARSER-SPEC.md (frozen for v0.23.44-dev). The
+ * The same contract: bootstrap/PARSER-SPEC.md (frozen for v0.23.44-dev) for the
+ * parse, and bootstrap/SEMANTIC-SPEC.md (§13-§16) for the type check. The
  * Aster side reads one Aster source from stdin and writes the AST dump to
  * stdout, one node per line; this side does the same, byte for byte, with the
  * same diagnostics — the lexer's E1-E9, which still fire first, the host's
- * P1-P62, the subset's B1-B22 boundaries and the bootstrap's C1-C3 caps — and
- * the same exit statuses (0 clean, 1 error, stdout empty on error).
- * tests/parser-checks.sh runs the two over the same corpus and diffs.
+ * P1-P62, the subset's B1-B22 boundaries and the bootstrap's C1-C3 caps, plus
+ * the semantic S5-S22 codes — and the same exit statuses (0 clean, 1 error,
+ * stdout empty on error). On success the semantic pass leaves the AST untouched
+ * (so the dump is byte-identical to the no-sema parse); on a type error it emits
+ * the same S-diagnostic. tests/parser-checks.sh runs the two over the same
+ * corpus and diffs.
  *
  * This is written from the specification, not transliterated from the Aster
  * source, and the two differ in shape wherever the spec leaves room:
@@ -54,6 +59,7 @@
  */
 #include <ctype.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1442,6 +1448,565 @@ static void emit(int h, int d) {
         emit(c, d + 1);
 }
 
+/* ============================================================ SEMANTIC PASS
+ * The bootstrap's type-check pass (SEMANTIC-SPEC §13-§16), mirrored so the twin
+ * is a faithful oracle for the same sources: on success it leaves the AST
+ * untouched (the dump below is therefore byte-identical to the no-sema parse),
+ * and on a type error it emits the same S-code diagnostic the bootstrap does.
+ * The same contract as M3c: a pure validation gate, never a rewriter.
+ */
+static int ety[NODEMAX];   /* per-node result type tag (-2 == bool-valued) */
+static int earr[NODEMAX];  /* per-node "is a whole array value" (always 0 here) */
+
+/* Forward declarations (C11: no implicit declarations across the mutually
+ * recursive sema walk). */
+static int tc_combine(int n);
+static int sema_block(int b);
+
+/* --- type helpers (§2.4) --- */
+static int is_int_tag(int t)  { return (t == TY_I32 || t == TY_I64 || t == TY_U8); }
+static int is_ptr_tag(int t) {
+    return (t == TY_PTR || t == TY_PTR_U8 || t == TY_PTR_I32 || t == TY_PTR_I64);
+}
+static int ptr_to(int elem) {
+    if (elem == TY_I32) return TY_PTR_I32;
+    if (elem == TY_I64) return TY_PTR_I64;
+    if (elem == TY_U8)  return TY_PTR_U8;
+    return TY_PTR;
+}
+/* The element type of a pointer tag — what `p[i]` loads (host typeOf): ptr<i32>
+ * -> i32, ptr<i64> -> i64, ptr<u8> -> u8, bare ptr (no element) -> i32. */
+static int ptr_elem(int t) {
+    if (t == TY_PTR_I32) return TY_I32;
+    if (t == TY_PTR_I64) return TY_I64;
+    if (t == TY_PTR_U8)  return TY_U8;
+    return TY_I32;
+}
+static const char *ty_str(int t) {
+    switch (t) {
+    case TY_I32: return "i32";
+    case TY_I64: return "i64";
+    case TY_U8:  return "u8";
+    case TY_PTR: return "ptr";
+    case TY_PTR_U8: return "ptr<u8>";
+    case TY_PTR_I32: return "ptr<i32>";
+    case TY_PTR_I64: return "ptr<i64>";
+    default: return "ptr";
+    }
+}
+/* The "got" side: a bool-valued expr (-2) spells as i32 in a message. */
+static const char *ty_str_got(int t, int a) {
+    (void)a;
+    if (t == -2) return "i32";
+    return ty_str(t);
+}
+/* S10 arg assignability — mirrors the host's tyAssignable over the 5-type
+ * subset. Integers: exact match, widen (narrow -> wide, or to i64), or a
+ * constant that fits the narrow slot; a non-constant narrowing is rejected.
+ * Pointers: any ptr is mutually compatible with any other ptr; a ptr slot
+ * accepts only the null constant (0) from an integer. */
+static int ty_assignable(int to_tag, int to_arr, int from_tag, int from_arr,
+                         int is_const, int64_t cval) {
+    if (to_arr != from_arr) return 0;
+    if (is_ptr_tag(to_tag) && is_ptr_tag(from_tag)) return 1;
+    if (is_ptr_tag(to_tag)) {
+        if (is_const && cval == 0) return 1;
+        return 0;
+    }
+    if (is_ptr_tag(from_tag)) return 0;
+    if (to_tag == from_tag) return 1;
+    if (to_tag == TY_I64) return 1;
+    if (is_const) {
+        if (to_tag == TY_U8) return (cval >= 0 && cval <= 255);
+        return 1;
+    }
+    int wt = (to_tag == TY_I64) ? 8 : (to_tag == TY_U8) ? 1 : 4;
+    int wf = (from_tag == TY_I64) ? 8 : (from_tag == TY_U8) ? 1 : 4;
+    return (wt >= wf);
+}
+/* A constant integer's value, for the narrow-slot fit test above. */
+static int64_t rc_val;
+static int expr_const_int(int h) {
+    if (nodes[h].kind == E_Num) {
+        convert_num(nodes[h].tok);
+        rc_val = numval;
+        return 1;
+    }
+    return 0;
+}
+/* S11's own rule — the host's local-let/assign checks are *category* checks,
+ * not tyAssignable's: an integer slot takes any integer value (i64 -> i32
+ * narrowing is fine), a ptr slot takes a pointer or the null constant, and a
+ * bool-valued expression is rejected into an integer slot. */
+static int assign_ok(int to_tag, int from_tag, int from_arr, int e) {
+    if (from_arr != 0) return 0;
+    if (is_ptr_tag(to_tag)) {
+        if (is_ptr_tag(from_tag)) return 1;
+        if (expr_const_int(e) && rc_val == 0) return 1;
+        return 0;
+    }
+    if (is_ptr_tag(from_tag)) return 0;
+    if (from_tag == -2) return 0;
+    return 1;
+}
+/* A condition is accepted iff it is integer-valued or bool-valued. */
+static int cond_ok(int c) {
+    int t = ety[c];
+    if (t == -2) return 1;
+    if (earr[c] == 1) return 0;
+    if (is_int_tag(t)) return 1;
+    return 0;
+}
+
+/* --- the cross-function symbol table (functions + globals + externs) --- */
+#define SYMMAX 4096
+static int st_kind[SYMMAX];   /* 0=fn, 1=extern_fn, 2=global, 3=extern_global */
+static int st_name[SYMMAX];   /* name token index */
+static int st_tag[SYMMAX];
+static int st_cnt[SYMMAX];    /* array element count (globals) */
+static int st_node[SYMMAX];   /* the Function/Global AST node */
+static int nsym;
+
+static int rs_tag, rs_cnt, rs_kind;   /* find_var result scratch */
+
+/* --- the scoped local/param table (per function) --- */
+#define LOCALMAX 600
+static int lc_name[LOCALMAX];
+static int lc_kind[LOCALMAX];   /* 0 = param, 1 = local */
+static int lc_tag[LOCALMAX];
+static int lc_cnt[LOCALMAX];
+static int nlocs;
+static int sc_start[128];
+static int sc_depth;
+
+static void add_local(int t, int kind, int tag, int cnt) {
+    if (nlocs >= LOCALMAX)
+        die_np("too many local declarations (limit 600, including parameters)");
+    lc_name[nlocs] = t; lc_kind[nlocs] = kind;
+    lc_tag[nlocs]  = tag; lc_cnt[nlocs]  = cnt;
+    nlocs++;
+}
+static void push_scope(void) { sc_start[sc_depth] = nlocs; sc_depth++; }
+static void pop_scope(void)  { sc_depth--; nlocs = sc_start[sc_depth]; }
+
+static void build_symtab(int prog) {
+    nsym = 0;
+    for (int c = nodes[prog].first; c >= 0; c = nodes[c].next) {
+        int k = nodes[c].kind;
+        if (k == N_Function) {
+            if (nsym >= SYMMAX) die_np("too many symbols");
+            st_kind[nsym] = fn_extern(c) ? 1 : 0;
+            /* A Function node's tok is the `fn` keyword; the name is the next
+             * token (the dump renders it with put_name(tok + 1)). A Global
+             * node's tok is the name directly. */
+            st_name[nsym] = (nodes[c].kind == N_Function)
+                          ? nodes[c].tok + 1 : nodes[c].tok;
+            st_tag[nsym]  = nodes[c].ty;
+            st_cnt[nsym]  = 1;
+            st_node[nsym] = c;
+            nsym++;
+        } else if (k == N_Global) {
+            if (nsym >= SYMMAX) die_np("too many symbols");
+            int ext = (nodes[c].first < 0) ? 1 : 0;
+            st_kind[nsym] = ext ? 3 : 2;
+            st_name[nsym] = nodes[c].tok;
+            st_tag[nsym]  = nodes[c].ty;
+            st_cnt[nsym]  = nodes[c].count;
+            st_node[nsym] = c;
+            nsym++;
+        }
+    }
+}
+
+/* Resolve a variable name: the current scope chain, then the global table. */
+static int sym_find_var(int t) {
+    for (int d = sc_depth - 1; d >= 0; d--) {
+        int lo = sc_start[d];
+        int hi = (d + 1 < sc_depth) ? sc_start[d + 1] : nlocs;
+        for (int i = lo; i < hi; i++) {
+            if (name_eq(lc_name[i], t)) {
+                rs_tag = lc_tag[i]; rs_cnt = lc_cnt[i]; rs_kind = lc_kind[i];
+                return 1;
+            }
+        }
+    }
+    for (int s = 0; s < nsym; s++) {
+        if (st_kind[s] == 2 || st_kind[s] == 3) {   /* global / extern global */
+            if (name_eq(st_name[s], t)) {
+                rs_tag = st_tag[s]; rs_cnt = st_cnt[s];
+                rs_kind = (st_kind[s] == 3) ? 1 : 2;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Resolve a call callee name: 1 = function (rs_fnsym set), 2 = a variable
+ * (rs_* set, for S7/S8), 0 = neither (S6). */
+static int rcall_intrinsic;
+static int rcall_rtyp;
+static int rs_fnsym;   /* symbol index into st_*, or -1 for an intrinsic */
+
+static int tok_eq_tok(int t, const char *lit) {
+    int start = toks[t].start, n = toks[t].len, i = 0;
+    while (lit[i]) {
+        if (i >= n) return 0;
+        if ((unsigned char)lit[i] != srcbuf[start + i]) return 0;
+        i++;
+    }
+    return i == n;
+}
+static int sym_find_call(int t) {
+    rcall_intrinsic = 0;
+    for (int s = 0; s < nsym; s++) {
+        if (st_kind[s] == 0 || st_kind[s] == 1) {
+            if (name_eq(st_name[s], t)) { rs_fnsym = s; return 1; }
+        }
+    }
+    /* Host intrinsics (§3): declared nowhere in source, known to the compiler;
+     * a real declared function above wins, else these are always callable.
+     * load_u8/store_u8 return i32 (the byte is zero-extended). */
+    if (tok_eq_tok(t, "load_ptr"))  { rcall_intrinsic = 1; rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "mmap"))      { rcall_intrinsic = 1; rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "brk"))       { rcall_intrinsic = 1; rcall_rtyp = TY_PTR;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "load_i64"))  { rcall_intrinsic = 1; rcall_rtyp = TY_I64;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "store_i64")) { rcall_intrinsic = 1; rcall_rtyp = TY_I64;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "load_u8"))   { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "store_u8"))  { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "load_u16"))  { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "store_u16")) { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "read"))      { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (tok_eq_tok(t, "write"))     { rcall_intrinsic = 1; rcall_rtyp = TY_I32;  rs_fnsym = -1; return 1; }
+    if (sym_find_var(t)) return 2;
+    return 0;
+}
+
+/* A diagnostic with a name + numbers, then die_at (which adds the prefix and
+ * the "at L:C" position). */
+static void die_msg_at(int l, int c, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msgbuf, sizeof msgbuf, fmt, ap);
+    va_end(ap);
+    die_at(msgbuf, l, c);
+}
+
+/* Compute one expression's type (iterative post-order; a deep left chain would
+ * blow a C stack, so this reuses the bootstrap's explicit work-stack shape).
+ * Children's ety/earr are filled before the parent is combined; a type error
+ * reports the matching S-diagnostic and returns 1. */
+/* The work-stack can hold up to ~2*tree-depth entries on a fully left-deep
+ * chain; the densest E9-legal source (65529 nodes) peaks near 65525, so the
+ * logical cap mirrors the bootstrap's (65535) with a little headroom against an
+ * out-of-bounds write on the overflow path. */
+static int wstk[NODEMAX + 256];
+static int wmark[NODEMAX + 256];
+static int tc_expr(int h) {
+    int sp = 0;
+    wstk[sp] = h; wmark[sp] = 0; sp = 1;
+    while (sp > 0) {
+        sp--;
+        int n = wstk[sp];
+        int m = wmark[sp];
+        if (m == 1) { if (tc_combine(n) != 0) return 1; continue; }
+        if (sp > NODEMAX - 1) die_np("internal: tc stack overflow");
+        wstk[sp] = n; wmark[sp] = 1; sp++;
+        int kids[64];
+        int nk = 0;
+        for (int ch = nodes[n].first; ch >= 0; ch = nodes[ch].next) {
+            if (nk < 64) kids[nk] = ch;
+            nk++;
+        }
+        for (int i = nk - 1; i >= 0; i--) {
+            wstk[sp] = kids[i]; wmark[sp] = 0; sp++;
+        }
+    }
+    return 0;
+}
+
+/* Combine a node: derive its type from its children and enforce the operand
+ * rules (§7). Returns 1 on the first type error. */
+static int tc_combine(int n) {
+    int k = nodes[n].kind;
+    if (k == E_Num) {
+        convert_num(nodes[n].tok);
+        if (numval >= -2147483648LL && numval <= 2147483647LL) ety[n] = TY_I32;
+        else ety[n] = TY_I64;
+        earr[n] = 0;
+        return 0;
+    }
+    if (k == E_String) { ety[n] = TY_PTR_U8; earr[n] = 0; return 0; }
+    if (k == E_Var) {
+        int t = nodes[n].tok;
+        if (sym_find_var(t) == 0) die_name_at("unknown variable: ", t);
+        if (rs_cnt > 1) { ety[n] = ptr_to(rs_tag); earr[n] = 0; return 0; }
+        ety[n] = rs_tag; earr[n] = 0; return 0;
+    }
+    if (k == E_Call) {
+        int callee = nodes[n].tok;
+        int r = sym_find_call(callee);
+        if (r == 0) die_name_at("call to undeclared function: ", callee);
+        if (r == 2) {
+            if (rs_cnt > 1)
+                die_msg_at(tok_line(callee), tok_col(callee),
+                           "cannot call through '%.*s': it is an array",
+                           toks[callee].len, srcbuf + toks[callee].start);
+            snprintf(msgbuf, sizeof msgbuf,
+                     "cannot call through '%.*s': expected a function pointer "
+                     "(ptr), got %s",
+                     toks[callee].len, srcbuf + toks[callee].start,
+                     is_ptr_tag(rs_tag) ? "ptr" : ty_str(rs_tag));
+            die_at(msgbuf, tok_line(callee), tok_col(callee));
+        }
+        if (rs_fnsym == -1) { ety[n] = rcall_rtyp; earr[n] = 0; return 0; }
+        int fnode = st_node[rs_fnsym];
+        int argc = 0;
+        for (int a = nodes[n].first; a >= 0; a = nodes[a].next) argc++;
+        int nparams = 0;
+        for (int p = nodes[fnode].first; p >= 0; p = nodes[p].next)
+            if (nodes[p].kind == N_Param) nparams++;
+        if (argc != nparams)
+            die_msg_at(tok_line(callee), tok_col(callee),
+                       "wrong argument count calling %.*s: expected %d, got %d",
+                       toks[callee].len, srcbuf + toks[callee].start,
+                       nparams, argc);
+        int ai = 0;
+        for (int arg = nodes[n].first; arg >= 0; arg = nodes[arg].next) {
+            int pj = nodes[fnode].first, pi = 0;
+            while (pj >= 0) {
+                if (nodes[pj].kind == N_Param) { if (pi == ai) break; pi++; }
+                pj = nodes[pj].next;
+            }
+            int ptag = nodes[pj].ty;
+            int c0 = expr_const_int(arg);
+            if (ty_assignable(ptag, 0, ety[arg], earr[arg], c0, rc_val) == 0) {
+                snprintf(msgbuf, sizeof msgbuf,
+                         "argument type mismatch calling %.*s at argument %d: "
+                         "expected %s, got %s",
+                         toks[callee].len, srcbuf + toks[callee].start, ai + 1,
+                         ty_str(ptag), ty_str_got(ety[arg], earr[arg]));
+                die_at(msgbuf, tok_line(callee), tok_col(callee));
+            }
+            ai++;
+        }
+        ety[n] = st_tag[rs_fnsym]; earr[n] = 0;
+        return 0;
+    }
+    if (k == E_Index) {
+        int base = nodes[n].tok;
+        if (sym_find_var(base) == 0) die_name_at("unknown variable: ", base);
+        if (rs_cnt > 1) { ety[n] = rs_tag; earr[n] = 0; return 0; }
+        if (is_ptr_tag(rs_tag)) {
+            int etag = ptr_elem(rs_tag);
+            int idxexpr = nodes[n].first;   /* already type-checked */
+            if (is_ptr_tag(ety[idxexpr]))
+                die_at("pointer indexing is not supported yet",
+                       tok_line(base), tok_col(base));
+            ety[n] = etag; earr[n] = 0; return 0;
+        }
+        die_name_at("cannot index non-array variable: ", base);
+    }
+    if (k == E_Not) {
+        int op = nodes[n].first;
+        if (ety[op] != -2)
+            die_at("'!' requires a bool operand",
+                   tok_line(nodes[n].tok), tok_col(nodes[n].tok));
+        ety[n] = -2; earr[n] = 0; return 0;
+    }
+    if (k == E_Neg) {
+        int op = nodes[n].first;
+        ety[n] = ety[op]; earr[n] = earr[op]; return 0;
+    }
+    /* binary: arithmetic / shift / comparison / logical / bitwise */
+    int l = nodes[n].first;
+    int r = nodes[l].next;
+    int lt = ety[l], rt = ety[r];
+    if (k == E_Eq || k == E_Ne || k == E_Lt || k == E_Le || k == E_Gt || k == E_Ge) {
+        ety[n] = -2; earr[n] = 0; return 0;
+    }
+    if (k == E_And || k == E_Or) {
+        ety[n] = -2; earr[n] = 0; return 0;
+    }
+    if (k == E_Shl || k == E_Shr) {
+        ety[n] = lt; earr[n] = earr[l]; return 0;
+    }
+    /* Pointer arithmetic: ptr +/- integer keeps the pointer type. */
+    if (k == E_Add || k == E_Sub) {
+        if (is_ptr_tag(lt) && !is_ptr_tag(rt)) { ety[n] = lt; earr[n] = 0; return 0; }
+        if (is_ptr_tag(rt) && !is_ptr_tag(lt)) { ety[n] = rt; earr[n] = 0; return 0; }
+    }
+    /* + - * / % & | ^ : the wider integer (i64 if either is i64, else i32;
+     * u8 widens to i32). No pinned S-error fires for non-integer operands. */
+    if (lt == TY_I64 || rt == TY_I64) ety[n] = TY_I64;
+    else if (lt == TY_I32 && rt == TY_I32) ety[n] = TY_I32;
+    else ety[n] = TY_I32;
+    earr[n] = 0;
+    return 0;
+}
+
+static int cur_ret_ty;
+static int cur_fn_tok;
+
+/* Type-check one statement; returns 1 on the first S-error. */
+static int sema_stmt(int s) {
+    int k = nodes[s].kind;
+    if (k == S_Let) {
+        int e = nodes[s].first;
+        if (e >= 0) {
+            if (tc_expr(e) != 0) return 1;
+            if (assign_ok(nodes[s].ty, ety[e], earr[e], e) == 0)
+                die_name_at("type mismatch assigning variable: ", nodes[s].tok);
+        }
+        add_local(nodes[s].tok, 1, nodes[s].ty, 1);
+        return 0;
+    }
+    if (k == S_Assign) {
+        int t = nodes[s].tok;
+        if (sym_find_var(t) == 0) die_name_at("unknown variable: ", t);
+        if (rs_cnt > 1) die_name_at("cannot assign to an array as a whole: ", t);
+        int vtag = rs_tag;            /* copy out before tc_expr overwrites rs_* */
+        int e = nodes[s].first;
+        if (tc_expr(e) != 0) return 1;
+        if (assign_ok(vtag, ety[e], earr[e], e) == 0)
+            die_name_at("type mismatch assigning variable: ", t);
+        return 0;
+    }
+    if (k == S_IndexAssign) {
+        int idxnode = nodes[s].first;
+        int rhs = nodes[idxnode].next;
+        int arrname = nodes[idxnode].tok;
+        if (sym_find_var(arrname) == 0) die_name_at("unknown variable: ", arrname);
+        int vtag = 0;
+        if (rs_cnt > 1) vtag = rs_tag;
+        else if (is_ptr_tag(rs_tag)) vtag = ptr_elem(rs_tag);
+        else die_name_at("cannot index non-array variable: ", arrname);
+        int idxexpr = nodes[idxnode].first;
+        if (tc_expr(idxexpr) != 0) return 1;
+        if (is_ptr_tag(ety[idxexpr]))
+            die_at("pointer indexing is not supported yet",
+                   tok_line(nodes[idxnode].tok), tok_col(nodes[idxnode].tok));
+        if (tc_expr(rhs) != 0) return 1;
+        if (assign_ok(vtag, ety[rhs], earr[rhs], rhs) == 0)
+            die_name_at("type mismatch assigning variable: ", arrname);
+        return 0;
+    }
+    if (k == S_Return) {
+        int e = nodes[s].first;
+        if (tc_expr(e) != 0) return 1;
+        int is_ret_ptr  = is_ptr_tag(cur_ret_ty);
+        int is_expr_ptr = (earr[e] == 0 && is_ptr_tag(ety[e]));
+        int is_expr_bool = (ety[e] == -2);
+        if (is_expr_ptr != is_ret_ptr) {
+            if (is_ret_ptr) {
+                int c0 = expr_const_int(e);
+                if (c0 == 1 && rc_val == 0) { /* null constant -> ok */ }
+                else
+                    die_msg_at(tok_line(nodes[s].tok), tok_col(nodes[s].tok),
+                               "return type mismatch in function %.*s",
+                               toks[cur_fn_tok].len, srcbuf + toks[cur_fn_tok].start);
+            } else {
+                die_msg_at(tok_line(nodes[s].tok), tok_col(nodes[s].tok),
+                           "return type mismatch in function %.*s",
+                           toks[cur_fn_tok].len, srcbuf + toks[cur_fn_tok].start);
+            }
+        }
+        if (is_expr_bool) {
+            die_msg_at(tok_line(nodes[s].tok), tok_col(nodes[s].tok),
+                       "return type mismatch in function %.*s: expected i32, got bool",
+                       toks[cur_fn_tok].len, srcbuf + toks[cur_fn_tok].start);
+        }
+        if (nodes[e].kind == E_Var) {
+            if (sym_find_var(nodes[e].tok) == 1 && rs_kind == 0 && rs_cnt > 1)
+                die_name_at("cannot return a local array (its frame storage "
+                            "does not outlive the call): ", nodes[e].tok);
+        }
+        return 0;
+    }
+    if (k == S_If) {
+        int cond = nodes[s].first;
+        if (tc_expr(cond) != 0) return 1;
+        if (cond_ok(cond) == 0)
+            die_at("condition must be a comparison, a bool expression, or an integer",
+                   tok_line(nodes[s].tok), tok_col(nodes[s].tok));
+        int tb = nodes[cond].next;
+        push_scope();
+        if (sema_block(tb) != 0) return 1;
+        pop_scope();
+        int el = nodes[tb].next;
+        if (el >= 0) {
+            push_scope();
+            if (nodes[el].kind == N_Block) { if (sema_block(el) != 0) return 1; }
+            else { if (sema_stmt(el) != 0) return 1; }
+            pop_scope();
+        }
+        return 0;
+    }
+    if (k == S_While) {
+        int cond = nodes[s].first;
+        if (tc_expr(cond) != 0) return 1;
+        if (cond_ok(cond) == 0)
+            die_at("condition must be a comparison, a bool expression, or an integer",
+                   tok_line(nodes[s].tok), tok_col(nodes[s].tok));
+        int b = nodes[cond].next;
+        push_scope();
+        if (sema_block(b) != 0) return 1;
+        pop_scope();
+        return 0;
+    }
+    if (k == S_Expr) {
+        int e = nodes[s].first;
+        if (tc_expr(e) != 0) return 1;
+        return 0;
+    }
+    return 0;
+}
+
+static int sema_block(int b) {
+    for (int s = nodes[b].first; s >= 0; s = nodes[s].next) {
+        if (sema_stmt(s) != 0) return 1;
+    }
+    return 0;
+}
+
+static int sema_function(int f) {
+    nlocs = 0;
+    sc_depth = 0;
+    sc_start[0] = 0;
+    sc_depth = 1;
+    cur_ret_ty = nodes[f].ty;
+    cur_fn_tok = nodes[f].tok + 1;   /* the name token follows the `fn` keyword */
+    for (int c = nodes[f].first; c >= 0; c = nodes[c].next)
+        if (nodes[c].kind == N_Param)
+            add_local(nodes[c].tok, 0, nodes[c].ty, 1);
+    if (tok_eq_tok(cur_fn_tok, "main")) {
+        int np = 0;
+        for (int pc = nodes[f].first; pc >= 0; pc = nodes[pc].next)
+            if (nodes[pc].kind == N_Param) np++;
+        if (np > 0)
+            die_at("main must not have parameters",
+                   tok_line(cur_fn_tok), tok_col(cur_fn_tok));
+    }
+    int body = 0;
+    for (int bc = nodes[f].first; bc >= 0; bc = nodes[bc].next)
+        if (nodes[bc].kind == N_Block) { body = bc; break; }
+    if (body >= 0) { if (sema_block(body) != 0) return 1; }
+    sc_depth = 0;
+    return 0;
+}
+
+/* Phase 2.5: build the cross-function symbol table, then check each function
+ * body. Returns 1 on the first S-error. */
+static int sema(int prog) {
+    build_symtab(prog);
+    for (int c = nodes[prog].first; c >= 0; c = nodes[c].next) {
+        if (nodes[c].kind == N_Function) {
+            if (sema_function(c) != 0) return 1;
+        }
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------- driver */
 /* Three phases (§10): stdin and the scanner, then the parse, then the dump —
  * and nothing reaches stdout unless the parse was clean, which holds here
@@ -1450,6 +2015,7 @@ int main(void) {
     read_source();
     lex();
     int prog = parse_program();
+    if (sema(prog) != 0) return 1;
     emit(prog, 0);
     return 0;
 }
