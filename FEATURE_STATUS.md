@@ -308,6 +308,8 @@ milestones (tracked in
 `ROADMAP.md`'s backlog, with `SELFHOSTING-PLAN.md` the step-by-step route;
 M0 the input syscalls shipped v0.23.40-dev, M1 the heap v0.23.41-dev, M2 the
 stdlib v0.23.42-dev, M3a the bootstrap lexer v0.23.43-dev, M3b the bootstrap
-parser v0.23.44-dev, M3c the bootstrap semantic pass v0.23.45-dev — what remains
-is the rest of M3 (codegen, ELF writer) and M4 the closed loop). These are deliberate
+parser v0.23.44-dev, M3c the bootstrap semantic pass v0.23.45-dev, M3d the
+codegen + ELF writer v0.23.46-dev, and M4 the closed loop v0.23.47-dev — the
+bootstrap compiles itself and is a byte-level fixed point of its own codegen,
+`boot2 == boot3 == boot4`). These are deliberate
 boundaries, not missing work.

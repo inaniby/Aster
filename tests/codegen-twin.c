@@ -2289,6 +2289,17 @@ static int gx_push_un(int n,int wantC,int wt){
     gx_node[gx_top]=NF(n); gx_state[gx_top]=0; gx_want[gx_top]=wantC; gx_top++;
     return 0;
 }
+/* && / || short-circuit: push ONLY the left operand plus a state-2 logical
+ * frame. The right operand is evaluated lazily inside gen_logical, after the
+ * branch that skips it — a non-short-circuit (both operands evaluated) build
+ * would deref oprec[-1] and friends whenever the left operand decides the
+ * result. This is the twin half of the M4 fix; bootstrap/aster.ast mirrors it. */
+static int gx_push_logical(int n,int wt){
+    if (gx_top+2>65536){ return cg_die_at_node("internal compiler error: expression stack overflow", n); }
+    gx_node[gx_top]=n; gx_state[gx_top]=2; gx_want[gx_top]=wt; gx_top++;
+    gx_node[gx_top]=NF(n); gx_state[gx_top]=0; gx_want[gx_top]=1; gx_top++;
+    return 0;
+}
 static int gx_dispatch(int n,int wt){
     int k=NK(n);
     if (k==E_Index) return gx_push_un(n,1,wt);
@@ -2309,7 +2320,7 @@ static int gx_dispatch(int n,int wt){
         int cw=1; if (ty_is64_t(lt)||ty_is64_t(rt)) cw=2;
         return gx_push_bin(n,cw,cw,wt);
     }
-    if (k==E_And||k==E_Or) return gx_push_bin(n,1,1,wt);
+    if (k==E_And||k==E_Or) return gx_push_logical(n,wt);
     int ow=wt; if (ty_is64_t(wt)||ty_is64_t(lt)||ty_is64_t(rt)) ow=2;
     return gx_push_bin(n,ow,ow,wt);
 }
@@ -2320,12 +2331,14 @@ static int gen_index(int n,int want);
 static int gen_stmt(int s);
 static int gen_index_addr(int tok,int idxexpr);
 static int expr_yields_ptr(int h);
+static int gen_logical(int n,int want);
 static int gen_expr_at(int h,int want,int base){
     gx_node[base]=h; gx_state[base]=0; gx_want[base]=want; gx_top=base+1;
     while (gx_top>base){
         gx_top--;
         int n=gx_node[gx_top], st=gx_state[gx_top], wt=gx_want[gx_top];
         if (st==1){ if (gen_combine(n,wt)) return -1; continue; }
+        if (st==2){ if (gen_logical(n,wt)) return -1; continue; }
         int k=NK(n);
         if (k==E_Num||k==E_String||k==E_Var){
             int r=0;
@@ -2419,7 +2432,9 @@ static int gen_combine(int n,int want){
         if (k==E_Div){ if (emit_div(a,a,b,is64,uns)) return 1; if (free_tmp(b)) return 1; gx_val[n]=a; return 0; }
         int q=alloc_tmp(); if (q<0) return -1;
         if (emit_div(q,a,b,is64,uns)) return 1;
-        if (emit_msub(a,a,b,q,is64)) return 1;
+        // MSUB computes Rd = Ra - Rn*Rm; a % b = a - (a/b)*b, so the dividend
+        // is Ra (read before Rd is written) and the quotient Rn: MSUB a,q,b,a.
+        if (emit_msub(a,q,b,a,is64)) return 1;
         if (free_tmp(q)) return 1;
         if (free_tmp(b)) return 1;
         gx_val[n]=a; return 0;
@@ -2449,19 +2464,33 @@ static int gen_combine(int n,int want){
         if (emit_cset(d,cmp_cond(k,lt,rt))) return 1;
         gx_val[n]=d; return 0;
     }
-    if (k==E_And||k==E_Or){
-        int isAnd=(k==E_And)?1:0;
-        int is64=0; if (ty_is64_t(lt)) is64=1;
-        if (emit_cmp_imm(a,0,is64)) return 1;
-        if (isAnd==1){ if (emit_mov_zero(a,0)) return 1; } else { if (emit_movz(a,1,0,0)) return 1; }
-        int lend=new_label(); if (lend<0) return -1;
-        if (isAnd==1){ if (emit_bcond(0,lend)) return 1; } else { if (emit_bcond(1,lend)) return 1; }
-        if (emit_mov_rr(a,b,0)) return 1;
-        if (free_tmp(b)) return 1;
-        if (place_label(lend)) return 1;
-        gx_val[n]=a; return 0;
-    }
+    // E_And / E_Or never reach here: gx_dispatch routes them through
+    // gx_push_logical (state 2) so the right operand can be skipped. See
+    // gen_logical below.
     return cg_die_at_node("internal compiler error: unlowered expression", n);
+}
+
+/* && / || with genuine short-circuit evaluation (M4 #216). The left operand
+ * is already materialised in gx_val[l]; the right operand is generated here,
+ * only on the path the left operand does not decide — so a guarded array read
+ * like `osp > bottom && oprec[osp-1] == 11` never dereferences oprec[-1].
+ * Mirrors the host (src/aster.cpp) and bootstrap/aster.ast byte-for-byte. */
+static int gen_logical(int n,int want){
+    (void)want; /* && and || answer an i32 bool; the outer width is irrelevant */
+    int k=NK(n);
+    int l=NF(n), r=NN(l), lt=ETY(l);
+    int a=gx_val[l];
+    int isAnd=(k==E_And)?1:0;
+    int is64=0; if (ty_is64_t(lt)) is64=1;
+    if (emit_cmp_imm(a,0,is64)) return 1;
+    if (isAnd==1){ if (emit_mov_zero(a,0)) return 1; } else { if (emit_movz(a,1,0,0)) return 1; }
+    int lskip=new_label(); if (lskip<0) return -1;
+    if (isAnd==1){ if (emit_bcond(0,lskip)) return 1; } else { if (emit_bcond(1,lskip)) return 1; }
+    int b=gen_expr_at(r,1,gx_top); if (b<0) return -1;
+    if (emit_mov_rr(a,b,0)) return 1;
+    if (free_tmp(b)) return 1;
+    if (place_label(lskip)) return 1;
+    gx_val[n]=a; return 0;
 }
 
 static int gen_var(int n,int want){

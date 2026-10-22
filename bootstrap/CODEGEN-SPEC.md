@@ -622,15 +622,27 @@ M3d 的达成判据（`tests/codegen-checks.sh` 落地后必须全绿）：
    入口点落零（qemu SIGILL rc=132）——游标必须从 `64 + nseg*56` 起计；
    另修正「段缺失时三张表对齐到幻影数据页」为「跟在最后一段文件内容后 8 对齐」。
 
-**不在 M3d 范围**（属 M4 闭环自举）：`bootstrap/aster.ast` 自身编译——
-它调用 4 个 extern fn（`strlen/utoa/itoa/memcmp`，`bootstrap/aster.ast:33-36`），
-独立镜像无法解析（§10 C9）。M4 以多对象链接或内建 lowering 闭合。
+**M4 已闭合**（v0.23.47-dev，#216）：M3d 时本规格记「`bootstrap/aster.ast`
+自身编译不在范围——它调用 4 个 extern fn（`strlen/utoa/itoa/memcmp`），独立镜像
+无法解析（§10 C9），M4 以多对象链接或内建 lowering 闭合」。实际采取**内联
+lowering**：四例程按库中同体写进 stage 自身子集（`strlen` 声明未用已删，
+`reverse_digits` 因 `utoa` 尾调随之加入），stage 自此零外部符号，可独立
+`build-elf`/`link-obj` 成 ET_EXEC。伴随修正两处 codegen 缺陷（stage 与孪生
+同步，字节差分全程保持绿）：`a % b` 的 MSUB 操作数序（`emit_msub` 的 `Ra` 是
+第四参数，旧调用算成 `q − a*b`，修为 `emit_msub(a, q, b, a)`）；`&&`/`||` 真
+短路（左操作数已定时不得求值右操作数——stage 自身源码的
+`osp > bottom && oprec[osp-1] == 11` 曾因此读 `oprec[-1]` 段错误；修法为
+state-2 逻辑帧 + `gen_logical` 分支内延迟求值）。闭环判据全部达成：
+`boot2 == boot3 == boot4` 字节不动点，自建 boot2 对全语料与孪生 0 分歧。
 
 > **M3d 测试形态（#261）**：`bootstrap/aster.ast` 的 `main()` 已由 M3b 的 AST
 > 转储路径改接为 `sema → cg_collect → cg_gen_program → elf_emit → flush_out`
 > 的 codegen 链；常驻回归套件随之由 `tests/parser-checks.sh`（AST 转储差分 +
 > 自读自身源码的 self-parse pin）**退役**，由 `tests/codegen-checks.sh` 接替——
-> 后者以 `build-obj` 构建 bootstrap + 标准库、链接为 `verifybin`，并与孪生
+> 后者以 `build-obj` 构建 stage、`link-obj` 单目标链接为 `verifybin`，并与孪生
 > 对全语料做 #2 的字节级差分，即本规格的 **ELF 自校验**（替代原 AST self-parse
-> pin）。`tests/parser-twin.c` 与 `tests/parser-checks.sh` 已随本轮删除；M3b/M3c
-> 的 AST 转储与语义门不再有常驻套件（bootstrap 不再转储 AST）。
+> pin）。M4（#216）起 stage 自包含化，`verifybin` 不再链接标准库——旧的两目标
+> 形状会因 `memcmp` 等双边定义而失败，这正是自包含化的链接期自证；库的覆盖归
+> `tests/stdlib-checks.sh`。`tests/parser-twin.c` 与 `tests/parser-checks.sh`
+> 已随 #261 删除；M3b/M3c 的 AST 转储与语义门不再有常驻套件（bootstrap 不再
+> 转储 AST）。

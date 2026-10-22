@@ -14,12 +14,18 @@
 #
 # The shape follows tests/parser-checks.sh (the M3b delivery chain), which this
 # suite retires: strictly build the host compiler, build-obj the bootstrap
-# stage, build-obj the library, link-obj them main-first into the reference
-# compiler binary (verifybin), build the C twin, and diff the two over the same
-# corpus. What is new is that the subject is a code generator: both sides take
-# one Aster program on stdin and emit one AArch64 ELF on stdout, and the suite
-# requires byte-identical ELF on every accepted program and matching
-# accept/reject on every program.
+# stage, link-obj it into the reference compiler binary (verifybin), build the
+# C twin, and diff the two over the same corpus. What is new is that the
+# subject is a code generator: both sides take one Aster program on stdin and
+# emit one AArch64 ELF on stdout, and the suite requires byte-identical ELF on
+# every accepted program and matching accept/reject on every program.
+#
+# M4 (#216) delivery shape: the stage is self-contained. It used to declare
+# four `extern fn` (strlen/utoa/itoa/memcmp) and take them from std.o — but a
+# standalone ET_EXEC cannot reference an external symbol (§10 C9), so the
+# stage could never compile its own source. The routines are inlined into
+# bootstrap/aster.ast now, and verifybin links against nothing: the library is
+# covered by its own suite (tests/stdlib-checks.sh), not this one.
 #
 # The lexer's and parser's own coverage (E1-E9, P1-P62, the C1-C3 caps, the
 # semantic S5-S22 codes) is still exercised by the input corpus, but the oracle
@@ -69,19 +75,18 @@ printf 'PASS: aster.ast generated regions, tests/parser_names.h and tests/lexer_
 
 # ---------------------------------------------------------------------------
 # [4/6] The delivery shape. build-obj the bootstrap stage (the reference
-# compiler, now on the codegen path), build-obj the library, link-obj
-# main-first — the same chain bootstrap/aster.ast's header documents. The twin
-# is built with the host C compiler (it is a host program, not a guest) under
-# -Werror: the oracle is a shipped artifact and a warning there is future drift.
-printf '%s\n' '[4/6] Delivery shape: verifybin (boot.o + std.o) linked; the twin is built'
+# compiler, now on the codegen path) and link-obj it — the stage is
+# self-contained since M4 (#216), so there is exactly one input object and the
+# chain bootstrap/aster.ast's header documents is a single build-elf/link-obj.
+# The twin is built with the host C compiler (it is a host program, not a
+# guest) under -Werror: the oracle is a shipped artifact and a warning there is
+# future drift.
+printf '%s\n' '[4/6] Delivery shape: verifybin (boot.o alone) linked; the twin is built'
 if ! "$OUT/aster" build-obj bootstrap/aster.ast -o "$W/verify_boot.o" >"$W/boot.log" 2>&1; then
     echo "FAIL: bootstrap build-obj failed:" >&2; cat "$W/boot.log" >&2; exit 1
 fi
-if ! "$OUT/aster" build-obj stdlib/aster_std.ast -o "$W/std.o" >"$W/std.log" 2>&1; then
-    echo "FAIL: stdlib build-obj failed:" >&2; cat "$W/std.log" >&2; exit 1
-fi
-if ! "$OUT/aster" link-obj "$W/verify_boot.o" "$W/std.o" -o "$W/verifybin" >"$W/link.log" 2>&1; then
-    echo "FAIL: link-obj verify_boot.o std.o failed:" >&2; cat "$W/link.log" >&2; exit 1
+if ! "$OUT/aster" link-obj "$W/verify_boot.o" -o "$W/verifybin" >"$W/link.log" 2>&1; then
+    echo "FAIL: link-obj verify_boot.o failed:" >&2; cat "$W/link.log" >&2; exit 1
 fi
 printf 'PASS: %s | %s\n' "$(cat "$W/boot.log")" "$(cat "$W/link.log")"
 TWCC=${CC:-}
@@ -99,10 +104,10 @@ if ! "$TWCC" -std=c11 -O2 -Wall -Wextra -Werror -fwrapv -fno-builtin \
     echo "FAIL: C twin build failed:" >&2; cat "$W/twin.log" >&2; exit 1
 fi
 printf 'PASS: twin built with %s (-std=c11 -O2 -Wall -Wextra -Werror -fwrapv -fno-builtin)\n'
-# Zero-dependency, made checkable: the linked reference binary imports nothing
-# beyond what std.o supplies (the two extern fn the stage declares are satisfied
-# by std.o, and __aster_init_next by the linker). The only UND entry is the ELF
-# null symbol at index 0 — no libc, no external anything.
+# Zero-dependency, made checkable: the stage is self-contained since M4
+# (#216) — it imports nothing at all, so the linked reference binary has
+# exactly one UND entry, the ELF null symbol at index 0: no libc, no external
+# anything, not even the library it used to lean on.
 und=$(readelf -sW "$W/verifybin" | awk '$7=="UND"' | wc -l)
 if [ "$und" -ne 1 ]; then
     echo "FAIL: verifybin has $und UND symbols, expected exactly 1 (the ELF null symbol)" >&2
@@ -183,7 +188,7 @@ mutate(){ # $1 name, $2 sed-from, $3 sed-to, $4 targeted input
         echo "FAIL: probe $mname — mutant build-obj failed:" >&2
         cat "$W/mut_$mname.blog" >&2; MFAIL=$((MFAIL+1)); return 0
     fi
-    if ! "$OUT/aster" link-obj "$W/mut_$mname.o" "$W/std.o" -o "$W/mut_$mname.bin" >"$W/mut_$mname.llog" 2>&1; then
+    if ! "$OUT/aster" link-obj "$W/mut_$mname.o" -o "$W/mut_$mname.bin" >"$W/mut_$mname.llog" 2>&1; then
         echo "FAIL: probe $mname — mutant link-obj failed:" >&2
         cat "$W/mut_$mname.llog" >&2; MFAIL=$((MFAIL+1)); return 0
     fi

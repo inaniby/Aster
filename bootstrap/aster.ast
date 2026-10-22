@@ -1,17 +1,16 @@
 // bootstrap/aster.ast — the bootstrap compiler, stage by stage.
 //
-// M3b (v0.23.44-dev): the parser. Reads one Aster source from stdin, writes
-// the AST to stdout, one node per line. The contract is
-// bootstrap/PARSER-SPEC.md; the differential oracle is tests/parser-twin.c;
-// the suite is tests/parser-checks.sh. The M3a lexer it is built on is
-// bootstrap/LEXER-SPEC.md; the M3a token dump is retired with it (PARSER-SPEC
-// §12.1), and the packed token name table it printed from went with it.
+// M3d (v0.23.46-dev): the code generator. Reads one Aster source from stdin,
+// writes one AArch64 ELF (ET_EXEC) to stdout, one program per run — qemu runs
+// it directly. The contract is bootstrap/CODEGEN-SPEC.md; the differential
+// oracle is tests/codegen-twin.c; the suite is tests/codegen-checks.sh. The
+// M3c semantic pass it is built on is bootstrap/SEMANTIC-SPEC.md.
 //
-// Built by the host compiler and linked against the M2 standard library:
-//   aster build-obj bootstrap/aster.ast -o bootstrap.o
-//   aster build-obj stdlib/aster_std.ast -o std.o
-//   aster link-obj bootstrap.o std.o -o aster.bin
-//   aster.bin < source.ast > ast.txt
+// Built by the host compiler, linked against nothing (M4, #216):
+//   aster build-elf bootstrap/aster.ast -o aster.bin
+//   aster.bin < source.ast > out.elf
+// (or build-obj + link-obj as a single object — the same thing; the stage is
+// self-contained, so there is no library to link.)
 //
 // The GENERATED regions below are owned by the bootstrap generators: the
 // token kinds and the keyword chain by gen_lexer_names.py, the node kinds,
@@ -28,12 +27,14 @@
 // recursive-descent expression parser would spend one 8 KiB frame per
 // precedence level (PARSER-SPEC.md §7).
 
-// The standard-library routines this stage consumes. Everything else it
-// needs is a compiler intrinsic (read/write/load_u8/store_u8).
-extern fn strlen(s: ptr<u8>) -> i32;
-extern fn utoa(v: i64, buf: ptr<u8>) -> i32;
-extern fn itoa(v: i64, buf: ptr<u8>) -> i32;
-extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
+// M4 (#216): this stage is self-contained. It used to declare four `extern fn`
+// (strlen/utoa/itoa/memcmp) and take them from std.o at link time — but a
+// standalone ET_EXEC cannot reference an external symbol, so the stage could
+// never compile its own source: its own first extern call hit CODEGEN-SPEC §10
+// C9. The routines are now written here, in the stage's own subset
+// (immediately above bputraw, the emitter that consumes them), and the stage
+// links against nothing at all. `strlen` was declared but never called, so it
+// is gone; `reverse_digits` comes along because utoa ends by calling it.
 
 // ---- BEGIN GENERATED: lexer names (bootstrap/gen_lexer_names.py) ----
 // The 72 token kinds, numbered exactly as `enum class TK`
@@ -502,6 +503,57 @@ fn bputs(p: ptr<u8>) -> i32 {
     }
     return 0;
 }
+// ---- BEGIN M4: the four library routines the stage used to import ----
+// Copied from stdlib/aster_std.ast verbatim (same bodies, so the stage prints
+// byte for byte what it printed when the library supplied them) and written in
+// the stage's own subset: i64 division and modulo, a narrowing i64 -> i32 that
+// is safe because the digit is in 0..9, and the load_u8/store_u8 pair.
+fn reverse_digits(buf: ptr<u8>, i: i32) -> i32 {
+    let j: i32 = 0;
+    let k: i32 = i - 1;
+    while (j < k) {
+        let t: i32 = load_u8(buf + j);
+        store_u8(buf + j, load_u8(buf + k));
+        store_u8(buf + k, t);
+        j = j + 1;
+        k = k - 1;
+    }
+    store_u8(buf + i, 0);
+    return i;
+}
+fn utoa(v: i64, buf: ptr<u8>) -> i32 {
+    if (v == 0) {
+        store_u8(buf, 48);
+        store_u8(buf + 1, 0);
+        return 1;
+    }
+    let i: i32 = 0;
+    while (v > 0) {
+        let d: i32 = v % 10;              // narrowing: i64 -> i32, in range
+        store_u8(buf + i, 48 + d);        // '0' + digit
+        v = v / 10;
+        i = i + 1;
+    }
+    return reverse_digits(buf, i);
+}
+fn itoa(v: i64, buf: ptr<u8>) -> i32 {
+    if (v < 0) {
+        store_u8(buf, 45);                // '-'
+        return 1 + utoa(-v, buf + 1);
+    }
+    return utoa(v, buf);
+}
+fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x != y) { return x - y; }
+        i = i + 1;
+    }
+    return 0;
+}
+// ---- END M4 ----
 fn bputraw(p: ptr<u8>, n: i32) -> i32 {
     let i: i32 = 0;
     while (i < n) {
@@ -3776,6 +3828,19 @@ fn gx_push_un(n: i32, wantC: i32, wt: i32) -> i32 {
     return 0;
 }
 
+// && / || short-circuit: push ONLY the left operand plus a state-2 logical
+// frame. The right operand is evaluated lazily inside gen_logical, after the
+// branch that skips it — a non-short-circuit build (both operands evaluated)
+// dereferences oprec[-1] and friends whenever the left operand decides the
+// result. This is the bootstrap half of the M4 fix; tests/codegen-twin.c
+// mirrors it byte-for-byte.
+fn gx_push_logical(n: i32, wt: i32) -> i32 {
+    if (gx_top + 2 > 65536) { return cg_die_at_node("internal compiler error: expression stack overflow", n); }
+    gx_node[gx_top] = n; gx_state[gx_top] = 2; gx_want[gx_top] = wt; gx_top = gx_top + 1;
+    gx_node[gx_top] = nfirst[n - 1]; gx_state[gx_top] = 0; gx_want[gx_top] = TY_I32; gx_top = gx_top + 1;
+    return 0;
+}
+
 // First visit: decide each child's want (§2's width rules) and push. A
 // binary node's children may want different widths (a shift's count is
 // always i32; pointer arithmetic runs its pointer side at 64 and its integer
@@ -3816,8 +3881,10 @@ fn gx_dispatch(n: i32, wt: i32) -> i32 {
     }
     if (k == E_And || k == E_Or) {
         // Both sides are conditions: materialised at i32 and tested at their
-        // own static width (the §6.2 uniform rule), whatever want says.
-        return gx_push_bin(n, TY_I32, TY_I32, wt);
+        // own static width (the §6.2 uniform rule), whatever want says. The
+        // right operand is pushed lazily by gen_logical, so it is only
+        // evaluated when the left operand does not decide the result.
+        return gx_push_logical(n, wt);
     }
     let ow: i32 = wt;
     if (ty_is64(wt) == 1 || ty_is64(lt) == 1 || ty_is64(rt) == 1) { ow = TY_I64; }
@@ -3843,6 +3910,10 @@ fn gen_expr_at(h: i32, want: i32, base: i32) -> i32 {
         let wt: i32 = gx_want[gx_top];
         if (st == 1) {
             if (gen_combine(n, wt) != 0) { return -1; }
+            continue;
+        }
+        if (st == 2) {
+            if (gen_logical(n, wt) != 0) { return -1; }
             continue;
         }
         let k: i32 = nkind[n - 1];
@@ -3980,10 +4051,12 @@ fn gen_combine(n: i32, want: i32) -> i32 {
             return 0;
         }
         // a % b = a - (a/b)*b: SDIV/UDIV into a fresh quotient, then MSUB.
+        // MSUB computes Rd = Ra - Rn*Rm, so the dividend must be Ra (read
+        // before Rd is written) and the quotient Rn: MSUB a, q, b, a.
         let q: i32 = alloc_tmp();
         if (q < 0) { return -1; }
         if (emit_div(q, a, b, is64, uns) != 0) { return 1; }
-        if (emit_msub(a, a, b, q, is64) != 0) { return 1; }
+        if (emit_msub(a, q, b, a, is64) != 0) { return 1; }
         if (free_tmp(q) != 0) { return 1; }
         if (free_tmp(b) != 0) { return 1; }
         gx_val[n - 1] = a;
@@ -4031,38 +4104,47 @@ fn gen_combine(n: i32, want: i32) -> i32 {
         gx_val[n - 1] = d;
         return 0;
     }
-    if (k == E_And || k == E_Or) {
-        let isAnd: i32 = 0;
-        if (k == E_And) { isAnd = 1; }
-        // Short-circuit: compare the left side first (a still holds it), then
-        // preset a to the value the operator takes when the left decides the
-        // answer (0 for &&, 1 for ||); only if the left does NOT decide do we
-        // overwrite a with the right side. a is the older temporary (the left
-        // operand), so freeing b (the newer) leaves a as the result — correct
-        // LIFO, no second register. (Allocating a fresh result on top and then
-        // freeing b would trip the leak guard, since b would sit below it.)
-        let is64: i32 = 0;
-        if (ty_is64(lt) == 1) { is64 = 1; }
-        if (emit_cmp_imm(a, 0, is64) != 0) { return 1; }
-        if (isAnd == 1) {
-            if (emit_mov_zero(a, 0) != 0) { return 1; }     // a = 0 (&& default)
-        } else {
-            if (emit_movz(a, 1, 0, 0) != 0) { return 1; }   // a = 1 (|| default)
-        }
-        let lend: i32 = new_label();
-        if (lend < 0) { return -1; }
-        if (isAnd == 1) {
-            if (emit_bcond(0, lend) != 0) { return 1; }   // B.EQ: left false -> keep 0
-        } else {
-            if (emit_bcond(1, lend) != 0) { return 1; }   // B.NE: left true  -> keep 1
-        }
-        if (emit_mov_rr(a, b, 0) != 0) { return 1; }      // a = b (left did not decide)
-        if (free_tmp(b) != 0) { return 1; }
-        if (place_label(lend) != 0) { return 1; }
-        gx_val[n - 1] = a;
-        return 0;
-    }
+    // E_And / E_Or never reach here: gx_dispatch routes them through
+    // gx_push_logical (state 2) so the right operand can be skipped. See
+    // gen_logical below.
     return cg_die_at_node("internal compiler error: unlowered expression", n);
+}
+
+// && / || with genuine short-circuit evaluation (M4 #216). The left operand
+// is already materialised in gx_val[l]; the right operand is generated here,
+// only on the path the left operand does not decide — so a guarded array read
+// like `osp > bottom && oprec[osp-1] == 11` never dereferences oprec[-1].
+// Mirrors the host (src/aster.cpp) and tests/codegen-twin.c byte-for-byte.
+fn gen_logical(n: i32, want: i32) -> i32 {
+    let k: i32 = nkind[n - 1];
+    let l: i32 = nfirst[n - 1];
+    let r: i32 = nnext[l - 1];
+    let lt: i32 = ex_ty[l - 1];
+    let a: i32 = gx_val[l - 1];
+    let isAnd: i32 = 0;
+    if (k == E_And) { isAnd = 1; }
+    let is64: i32 = 0;
+    if (ty_is64(lt) == 1) { is64 = 1; }
+    if (emit_cmp_imm(a, 0, is64) != 0) { return 1; }
+    if (isAnd == 1) {
+        if (emit_mov_zero(a, 0) != 0) { return 1; }     // a = 0 (&& default)
+    } else {
+        if (emit_movz(a, 1, 0, 0) != 0) { return 1; }   // a = 1 (|| default)
+    }
+    let lskip: i32 = new_label();
+    if (lskip < 0) { return -1; }
+    if (isAnd == 1) {
+        if (emit_bcond(0, lskip) != 0) { return 1; }    // B.EQ: left false -> keep 0
+    } else {
+        if (emit_bcond(1, lskip) != 0) { return 1; }    // B.NE: left true  -> keep 1
+    }
+    let b: i32 = gen_expr_at(r, TY_I32, gx_top);        // right operand, only if reached
+    if (b < 0) { return -1; }
+    if (emit_mov_rr(a, b, 0) != 0) { return 1; }        // a = b (left did not decide)
+    if (free_tmp(b) != 0) { return 1; }
+    if (place_label(lskip) != 0) { return 1; }
+    gx_val[n - 1] = a;
+    return 0;
 }
 
 // ---- §6.1 E_Index ----
