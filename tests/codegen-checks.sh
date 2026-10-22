@@ -33,17 +33,17 @@ W="$OUT/work"
 mkdir -p "$W"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 
 # ---------------------------------------------------------------------------
-# [1/5] Strictly build the Aster compiler. The host is the tool that compiles
+# [1/6] Strictly build the Aster compiler. The host is the tool that compiles
 # the bootstrap stage into the reference binary, so it must build clean under
 # -Werror exactly as CI enforces.
-printf '%s\n' '[1/5] Strictly build Aster compiler'
+printf '%s\n' '[1/6] Strictly build Aster compiler'
 ${CXX:-g++} -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 
 # ---------------------------------------------------------------------------
-# [2/5] Locate a runner. verifybin is AArch64; on any other host it runs under
+# [2/6] Locate a runner. verifybin is AArch64; on any other host it runs under
 # qemu-aarch64 user-mode emulation (tests/run-aarch64.sh hides the difference).
 # The twin is a host C program and runs natively everywhere.
-printf '%s\n' '[2/5] Locate an AArch64 runner'
+printf '%s\n' '[2/6] Locate an AArch64 runner'
 if ! command -v qemu-aarch64 >/dev/null 2>&1 && [ "$(uname -m)" != "aarch64" ]; then
     echo "SKIP: codegen coverage needs qemu-aarch64 (or an AArch64 host)"
     exit 0
@@ -51,12 +51,12 @@ fi
 run(){ sh tests/run-aarch64.sh "$@"; }
 
 # ---------------------------------------------------------------------------
-# [3/5] Generator freshness. bootstrap/gen_parser_names.py is the single source
+# [3/6] Generator freshness. bootstrap/gen_parser_names.py is the single source
 # of truth for the node-kind names and numbers that both the bootstrap stage and
 # the C twin consume (via tests/parser_names.h); gen_lexer_names.py feeds the
 # token codes. A table that drifted from the Python fails CI here rather than
 # the differential.
-printf '%s\n' '[3/5] The generated tables are what the Python produces'
+printf '%s\n' '[3/6] The generated tables are what the Python produces'
 if ! python3 bootstrap/gen_parser_names.py --check; then
     echo "FAIL: stale parser tables — re-run: python3 bootstrap/gen_parser_names.py" >&2
     exit 1
@@ -68,12 +68,12 @@ fi
 printf 'PASS: aster.ast generated regions, tests/parser_names.h and tests/lexer_names.h are fresh\n'
 
 # ---------------------------------------------------------------------------
-# [4/5] The delivery shape. build-obj the bootstrap stage (the reference
+# [4/6] The delivery shape. build-obj the bootstrap stage (the reference
 # compiler, now on the codegen path), build-obj the library, link-obj
 # main-first — the same chain bootstrap/aster.ast's header documents. The twin
 # is built with the host C compiler (it is a host program, not a guest) under
 # -Werror: the oracle is a shipped artifact and a warning there is future drift.
-printf '%s\n' '[4/5] Delivery shape: verifybin (boot.o + std.o) linked; the twin is built'
+printf '%s\n' '[4/6] Delivery shape: verifybin (boot.o + std.o) linked; the twin is built'
 if ! "$OUT/aster" build-obj bootstrap/aster.ast -o "$W/verify_boot.o" >"$W/boot.log" 2>&1; then
     echo "FAIL: bootstrap build-obj failed:" >&2; cat "$W/boot.log" >&2; exit 1
 fi
@@ -112,7 +112,7 @@ fi
 printf 'PASS: zero-dependency — verifybin imports nothing (1 UND = the null symbol)\n'
 
 # ---------------------------------------------------------------------------
-# [5/5] The differential. Both sides take one Aster program on stdin and emit
+# [5/6] The differential. Both sides take one Aster program on stdin and emit
 # one AArch64 ELF on stdout. For every program in the corpus:
 #   - both reject  -> consistent (the suite does not pin rejection text; it only
 #                     requires the two sides agree on accept/reject);
@@ -125,7 +125,7 @@ printf 'PASS: zero-dependency — verifybin imports nothing (1 UND = the null sy
 # (tests/codegen-fixtures/*.ast) that pin the minimal accepted shapes (a bare
 # return, an unused extern global, runtime-initialised globals with a rodata
 # string, arrays and a write) without depending on any out-of-tree file.
-printf '%s\n' '[5/5] Differential: twin vs verifybin over the corpus'
+printf '%s\n' '[5/6] Differential: twin vs verifybin over the corpus'
 PASS=0; FAIL=0; REJ_BOTH=0; cnt=0; fails=""
 for f in examples/*.ast tests/codegen-fixtures/*.ast; do
     [ -e "$f" ] || continue
@@ -158,3 +158,67 @@ if [ "$FAIL" -ne 0 ]; then
 fi
 printf 'PASS: codegen-twin.c matches bootstrap/aster.ast byte-for-byte on every accepted program (%s/%s)\n' \
     "$PASS" "$cnt"
+
+# ---------------------------------------------------------------------------
+# [6/6] Mutation probes. Each one patches bootstrap/aster.ast — the reference
+# compiler's own source — into a scratch copy, rebuilds the reference binary
+# from it, and requires the mutant to DIVERGE from the twin on a targeted
+# input. A probe whose mutant still matches is blind, and blind is a failure,
+# so the suite asserts the edit applied before it even builds. This is
+# CODEGEN-SPEC.md §13 crusher 5: probes across instruction encoding, syscall
+# number, branch backfill and symbol address.
+printf '%s\n' '[6/6] Mutation probes against bootstrap/aster.ast'
+MPROBE=0; MFAIL=0
+mutate(){ # $1 name, $2 sed-from, $3 sed-to, $4 targeted input
+    mname="$1"; mfrom="$2"; mto="$3"; mtgt="$4"
+    MPROBE=$((MPROBE+1))
+    # '#' is the sed delimiter because several probes patch source text that
+    # itself contains '|' (e.g. `emit_word(0x54000000 | cond)`).
+    sed "s#$mfrom#$mto#" bootstrap/aster.ast > "$W/mut_$mname.ast"
+    if ! grep -qF -- "$mto" "$W/mut_$mname.ast"; then
+        echo "FAIL: probe $mname did not apply — blind" >&2
+        MFAIL=$((MFAIL+1)); return 0
+    fi
+    if ! "$OUT/aster" build-obj "$W/mut_$mname.ast" -o "$W/mut_$mname.o" >"$W/mut_$mname.blog" 2>&1; then
+        echo "FAIL: probe $mname — mutant build-obj failed:" >&2
+        cat "$W/mut_$mname.blog" >&2; MFAIL=$((MFAIL+1)); return 0
+    fi
+    if ! "$OUT/aster" link-obj "$W/mut_$mname.o" "$W/std.o" -o "$W/mut_$mname.bin" >"$W/mut_$mname.llog" 2>&1; then
+        echo "FAIL: probe $mname — mutant link-obj failed:" >&2
+        cat "$W/mut_$mname.llog" >&2; MFAIL=$((MFAIL+1)); return 0
+    fi
+    "$W/twin" <"$mtgt" > "$W/mut_$mname.twin" 2>/dev/null; mrc_t=$?
+    run "$W/mut_$mname.bin" <"$mtgt" > "$W/mut_$mname.mut" 2>/dev/null; mrc_m=$?
+    if [ "$mrc_t" -eq "$mrc_m" ] && cmp -s "$W/mut_$mname.twin" "$W/mut_$mname.mut"; then
+        echo "FAIL: probe $mname is blind — the mutant matches the twin on $(basename "$mtgt")" >&2
+        MFAIL=$((MFAIL+1)); return 0
+    fi
+    printf 'PASS: probe %s diverges on %s\n' "$mname" "$(basename "$mtgt")"
+    return 0
+}
+# syscall number: write 64 -> 65 (the MOV X8 immediate in a write program)
+mutate syscall_write '(64 << 21)' '(65 << 21)' tests/codegen-fixtures/globals_and_write.ast
+# syscall number: every main return path lowers to MOV X8,#93. Patched at the
+# emission itself rather than at ic_sig, because the return path does not read
+# the intrinsic signature table — a probe on ic_sig alone is blind here.
+mutate exit_main_ret 'emit_movz(8, 93, 0, 1)' 'emit_movz(8, 94, 0, 1)' tests/codegen-fixtures/return_42.ast
+# syscall number: the exit() intrinsic, which does come out of ic_sig
+mutate exit_intrinsic '(93 << 21)' '(94 << 21)' tests/codegen-fixtures/exit_intrinsic.ast
+# instruction encoding: the BL opcode
+mutate enc_bl 'emit_word(0x94000000)' 'emit_word(0x94000001)' tests/codegen-fixtures/globals_and_write.ast
+# branch encoding: bit 4 of B.cond, which sits outside imm19 and so survives
+# the branch fixup that rewrites the offset — unlike a low imm26 bit of B.
+mutate enc_bcond 'emit_word(0x54000000 | cond)' 'emit_word(0x54000010 | cond)' examples/if_less.ast
+# symbol address: the ELF entry point
+mutate addr_entry 'elf_put64(0x401000);  // e_entry' 'elf_put64(0x401004);  // e_entry' tests/codegen-fixtures/return_42.ast
+# symbol address: the .rodata base every string literal is placed at
+mutate addr_rodata '0x600000 + rodata_size' '0x610000 + rodata_size' tests/codegen-fixtures/globals_and_write.ast
+
+printf '=== mutation probes: %s probes, %s blind or failed ===\n' "$MPROBE" "$MFAIL"
+if [ "$MFAIL" -ne 0 ]; then
+    echo "FAIL: $MFAIL mutation probe(s) did not diverge from the twin" >&2
+    exit 1
+fi
+printf 'PASS: all %s mutation probes against bootstrap/aster.ast diverge from the twin\n' "$MPROBE"
+
+printf '%s\n' 'ALL CODEGEN CHECKS PASSED'

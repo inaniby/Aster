@@ -1,0 +1,10 @@
+// One of the fifteen intrinsics the M3d backend lowers: `exit` (93), the one
+// the bootstrap adds that the host compiler has no builtin for (the host's
+// main return *is* the exit). Kept in-tree so the resident gate covers the
+// intrinsic call path — and so the ic_sig syscall-number probe has an
+// in-tree target that actually reaches it, rather than main's return path
+// (which lowers to a separate hard-coded MOV X8,#93).
+fn main() -> i32 {
+    exit(42);
+    return 0;
+}
