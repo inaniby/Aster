@@ -460,19 +460,45 @@ Invalid argument` 静默拒载（#259 原型 emitter 实测：对齐掩码写成
 **Shdr**（顺序：0 null、`.text`、`.rodata`?、`.data`?、`.bss`?、`.symtab`、
 `.strtab`、`.shstrtab`）：`.text` = `SHT_PROGBITS`/`flags=0x6`/`align=4`；
 `.rodata` = PROGBITS/`0x4`/`align=1`；`.data` = PROGBITS/`0x3`/`align=8`；
-`.bss` = `SHT_NOBITS`/`0x3`/`align=8`；`.symtab` = `SHT_SYMTAB`/`link=.strtab`/
-`entsize=24`；`.strtab`/`.shstrtab` = `SHT_STRTAB`/`align=1`。
-`.shstrtab` 只含存在节的名（`\0.text\0...`）。
+`.bss` = `SHT_NOBITS`/`0x3`/`align=8`（`sh_offset` = `.data` 文件尾，即
+`data_off + data_size`；NOBITS 无文件内容）；`.symtab` = `SHT_SYMTAB`/`link=.strtab`/
+`info=1`（sym0 之后首个全局符号）/`entsize=24`；`.strtab`/`.shstrtab` =
+`SHT_STRTAB`/`align=1`。`.shstrtab` 只含存在节的名（`\0.text\0...`）。
+`e_shstrndx` = `.shstrtab` 的下标（末节），`e_shnum` = 上列节总数。
 
-**Symtab**（sym0 = 全零 null）：
-- 每个函数（发射序）：`STT_FUNC`(info `0x12`)，`shndx=.text`，
-  `value=0x401000+词偏移*4`，`size=词数*4`。
+**Symtab**（sym0 = 全零 null）。**表内顺序钉定**（孪生据此逐字节复现）：
+null → `_start` → `__aster_init`（有入口桩时）→ 程序函数（发射序：`main` 先，
+其余源序，即 `cg_gen_program` 的走查序；extern 函数无符号）→ 全局（符号行序，
+即声明序；`skind==SK_GLOBAL` 的每一行）：
+- 每个函数：`STT_FUNC`(info `0x12`)，`shndx=.text`，
+  `value=0x401000+词偏移*4`，`size=词数*4`（`fn_words`/`init_words`，
+  `cg_gen_program` 逐函数记录）。
 - `_start`：`value=0x401000`，`size` = 入口桩尺寸（16 字节）或 main 尺寸（无桩时）。
-- `__aster_init`（若有）：同函数符号规则。
+- `__aster_init`（若有）：同函数符号规则（`value=0x401000+labels[init_lab]*4`）。
 - 每个非 extern 全局：`STT_OBJECT`(info `0x11`)，`shndx=.data/.bss`，
   `value=虚址`，`size=字节数`。
 
-**小端化**：`put16/put32/put64` 各经若干 `putb(v>>(8*i)&0xff)`；ELF 字节仍走
+**字符串表**：`.strtab` 与 `.shstrtab` 均为「字节 + 一个 NUL」的追加式构造，
+**字节 0 恒为 NUL**（空名，null 符号的 `st_name=0` 解析到它）。`.strtab` 在
+符号收集时随每个符号追加其名（`st_name` = 落点偏移；函数/全局名取自
+`sname` 的 token 字节，`_start`/`__aster_init` 为字面量）；`.shstrtab` 在节图
+定死后按**节序**一次性构造（与 Shdr 写出序一致）。
+
+**表偏移**：三张表跟在**最后一段有文件内容的数据之后 8 对齐**（它们不被映射，
+故不需要页对齐——段缺失时不留幻影页）：基址 = `.text` 尾 / `.rodata` 尾 /
+`.data` 尾（按存在性取最后者），`symtab_off = align8(基址)`，
+`strtab_off = symtab_off + elf_nsym*24`，`shstr_off = strtab_off + strtab_len`，
+`shoff = align8(shstr_off + shstr_len)`。
+
+**分支距离守卫**：fixup 回填时校验 `delta`（词单位）在 `B.cond` 的 ±2^18 与
+`B/BL` 的 ±2^25 内——文本段上限 262144 词（1 MiB）使二者**永不可达**，
+是「上限即保证」的腰带式断言，消息 `conditional branch out of range` /
+`branch out of range`。
+
+**小端化**：`elf_put16/32/64` 各经若干 `putb(v>>(8*i)&0xff)`（32/64 位取值先
+窄化到 i32 局部——Aster 不允许 i64 实参直接进 i32 形参）；Shdr 记录与 symtab
+条目各有定长 writer（`elf_shdr` 10 字段 64 字节、条目 24 字节），补白游标
+`elf_written` 从「Ehdr+Phdr 已写字节数」（`64 + nseg*56`）起计。ELF 字节仍走
 现有 `putb/putn` + `flush_out()`（→ `write(1,…)`），与 M3b 转储同一条输出通道。
 
 ---
@@ -498,7 +524,7 @@ Invalid argument` 静默拒载（#259 原型 emitter 实测：对齐掩码写成
 | C10 | `no main function: this backend emits a standalone ELF and needs an entry point` | 新（宿主 `build-elf` 经链接器报 `no input object defines global _start`） |
 | C11 | `too many local declarations (limit 500, including parameters)` | 镜像 M3c S21（防御性） |
 | C12 | `internal compiler error: temporary register leak` / `...: invalid frame slot` / `...: walk stack overflow` | 宿主同款 |
-| C13 | 容量守卫：`.text exceeds the 1 MiB instruction buffer` / `.rodata exceeds its 2 MiB window` / `fixup table overflow` / `too many labels` / `loops nested too deeply (limit 64)` / `global data exceeds the address space` | 新 |
+| C13 | 容量守卫：`.text exceeds the 1 MiB instruction buffer` / `.rodata exceeds its 2 MiB window` / `.strtab exceeds its 1 MiB window` / `too many symbols` / `fixup table overflow` / `too many labels` / `loops nested too deeply (limit 64)` / `global data exceeds the address space` | 新 |
 | C14 | `type mismatch initializing global '<name>': expected <T>, got <U>` | 宿主 `src/aster.cpp:6527` 同款 |
 | C15 | 内建实参校验（§8 表尾消息集） | 宿主 `:3170-3210,5980-6043` |
 
@@ -578,6 +604,18 @@ M3d 的达成判据（`tests/codegen-checks.sh` 落地后必须全绿）：
    与宿主逐字一致（bootstrap 单行格式 vs 宿主富格式之差是 M3c 诊断的时代差，
    消息核心与位置即判据）；e15（exit 个数错误）为 bootstrap 自有消息，
    按钉定字符串比对。
+8. **ELF 结构**（#260 交付，`readelf` 断言）：节表钉定——null/`.text`/
+   `.rodata`?/`.data`?/`.bss`?/`.symtab`/`.strtab`/`.shstrtab` 的存在性与
+   类型/flag/对齐（§9），`e_shstrndx` 指末节；符号表钉定——顺序、`_start`
+   （有桩 size=16 / 无桩 = main 尺寸）、`__aster_init`、每函数
+   `value=0x401000+词偏移*4`/`size=词数*4`、每全局 `value`/`size`/`shndx`；
+   段表钉定——`p_offset ≡ p_vaddr (mod 0x1000)` 与三段的 filesz/memsz 分工
+   （`.bss` 只进 memsz）；零依赖（无动态节、无 UND——null 符号除外）。
+   综合样例 s1（`.data`+`.bss`+`.rodata`+入口桩+3 函数）与极端形态
+   （无全局无串：1 段 5 节；仅 `.data`；仅 `.bss`）逐一断言。**实证记录**：
+   原型 emitter 曾因补白游标漏计 Ehdr+Phdr 的 120 字节致 `.text` 整体后移、
+   入口点落零（qemu SIGILL rc=132）——游标必须从 `64 + nseg*56` 起计；
+   另修正「段缺失时三张表对齐到幻影数据页」为「跟在最后一段文件内容后 8 对齐」。
 
 **不在 M3d 范围**（属 M4 闭环自举）：`bootstrap/aster.ast` 自身编译——
 它调用 4 个 extern fn（`strlen/utoa/itoa/memcmp`，`bootstrap/aster.ast:33-36`），

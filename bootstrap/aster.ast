@@ -3410,6 +3410,8 @@ let rodata_size: i32 = 0;
 let data_size: i32 = 0;
 let bss_size: i32 = 0;
 let bss_base: i64 = 0;
+let fn_words: i32[4096] = 0;    // per function symbol row -> emitted words
+let init_words: i32 = 0;        // __aster_init's emitted words (elf_emit sizes it)
 let sstk: i32[65536] = 0;       // the string walk's pending siblings
 let pstk: i32[65536] = 0;       // the ptr-yield walk's pending children
 
@@ -4901,9 +4903,14 @@ fn cg_gen_program(prog: i32) -> i32 {
         if (emit_b(fn_lab[main_sym]) != 0) { return 1; }
         if (place_label(init_lab) != 0) { return 1; }
         if (gen_init(prog) != 0) { return 1; }
+        // elf_emit sizes __aster_init's symbol from the distance between its
+        // label and the end of the stream — recorded here, at the only moment
+        // both are known.
+        init_words = textlen - labels[init_lab];
     }
     if (place_label(fn_lab[main_sym]) != 0) { return 1; }
     if (gen_function(sfn[main_sym]) != 0) { return 1; }
+    fn_words[main_sym] = textlen - labels[fn_lab[main_sym]];
     let c: i32 = nfirst[prog - 1];
     while (c != 0) {
         if (nkind[c - 1] == N_Function) {
@@ -4914,9 +4921,398 @@ fn cg_gen_program(prog: i32) -> i32 {
                 let fsym: i32 = rs_fnsym;
                 if (place_label(fn_lab[fsym]) != 0) { return 1; }
                 if (gen_function(c) != 0) { return 1; }
+                fn_words[fsym] = textlen - labels[fn_lab[fsym]];
             }
         }
         c = nnext[c - 1];
     }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// §9 (third pass): ELF emission. cg_collect fixed every address and
+// cg_gen_program linearised the stream; elf_emit resolves the fixups in
+// place and writes the image — Ehdr+Phdr (page 0), .text, .rodata, .data,
+// then .symtab/.strtab/.shstrtab and the section-header table. Every byte
+// goes through putb, the same channel the M3c dump used, so a driver's tail
+// is one call. The failure contract of §10 holds because every reachable
+// diagnostic (C1-C15) fires in the two passes before this one: this pass's
+// own branch-range guards are unreachable under the 1 MiB text cap, and its
+// string-table guards report capacity limits for pathological input only —
+// either way the stream starts after every diagnostic that can fire.
+// ---------------------------------------------------------------------------
+
+// Little-endian field writers. put32/put64 take i64 because the values they
+// carry (addresses, sizes, the entry point) live above the 32-bit mark.
+fn elf_put16(v: i32) -> i32 {
+    putb(v & 0xff);
+    putb((v >> 8) & 0xff);
+    return 0;
+}
+fn elf_put32(v: i64) -> i32 {
+    let b0: i32 = v & 0xff;
+    let b1: i32 = (v >> 8) & 0xff;
+    let b2: i32 = (v >> 16) & 0xff;
+    let b3: i32 = (v >> 24) & 0xff;
+    putb(b0);
+    putb(b1);
+    putb(b2);
+    putb(b3);
+    return 0;
+}
+fn elf_put64(v: i64) -> i32 {
+    let lo: i32 = v & 0xffffffff;
+    let hi: i32 = (v >> 32) & 0xffffffff;
+    elf_put32(lo);
+    elf_put32(hi);
+    return 0;
+}
+
+// ---- §9.1 the string tables ----
+// .strtab is appended to as each symbol is collected (a symbol's st_name is
+// the offset its bytes landed at); .shstrtab is built once per emit, before
+// the section map is final, in section order. Both follow the ELF
+// convention: bytes then one NUL. .strtab is sized 1 MiB — a symbol's name
+// is a token, tokens are disjoint substrings of the 1 MiB source, so only a
+// pathological program (more than 1 MiB of identifier bytes, NULs included)
+// can reach the guard, and then it reports it as the capacity limit it is.
+let strtab: u8[1048576] = 0;
+let strtab_len: i32 = 0;
+let shstr: u8[128] = 0;
+let shstr_len: i32 = 0;
+
+fn strtab_add(p: ptr<u8>, n: i32) -> i32 {
+    if (strtab_len + n + 1 > 1048576) { return cg_die(".strtab exceeds its 1 MiB window"); }
+    let off: i32 = strtab_len;
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(strtab + strtab_len, load_u8(p + i));
+        strtab_len = strtab_len + 1;
+        i = i + 1;
+    }
+    store_u8(strtab + strtab_len, 0);
+    strtab_len = strtab_len + 1;
+    return off;
+}
+fn strtab_add_tok(t: i32) -> i32 {
+    return strtab_add(srcbuf + tstart[t], tlen[t]);
+}
+fn strtab_add_lit(lit: ptr<u8>) -> i32 {
+    let n: i32 = 0;
+    while (load_u8(lit + n) != 0) { n = n + 1; }
+    return strtab_add(lit, n);
+}
+fn shstr_add(lit: ptr<u8>) -> i32 {
+    let n: i32 = 0;
+    while (load_u8(lit + n) != 0) { n = n + 1; }
+    if (shstr_len + n + 1 > 128) { return cg_die(".shstrtab exceeds its window"); }
+    let off: i32 = shstr_len;
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(shstr + shstr_len, load_u8(lit + i));
+        shstr_len = shstr_len + 1;
+        i = i + 1;
+    }
+    store_u8(shstr + shstr_len, 0);
+    shstr_len = shstr_len + 1;
+    return off;
+}
+
+// ---- §9.2 the symbol table under construction ----
+// Ordered for the image, not for lookup: sym 0 is the null entry, then
+// _start, __aster_init (when the entry stub exists), the program's functions
+// in emission order (main first, then source order — cg_gen_program's walk),
+// and the globals in symbol-row (declaration) order. 4096 rows plus the
+// three synthetic entries at the head.
+let sym_name: i32[4160] = 0;    // .strtab offset of the name
+let sym_info: i32[4160] = 0;    // (STB_GLOBAL << 4) | STT_*
+let sym_shndx: i32[4160] = 0;   // the section the symbol lives in
+let sym_val: i64[4160] = 0;     // st_value
+let sym_size: i64[4160] = 0;    // st_size
+let elf_nsym: i32 = 0;
+
+fn sym_add(name_off: i32, info: i32, shndx: i32, val: i64, size: i64) -> i32 {
+    if (elf_nsym >= 4160) { return cg_die("too many symbols"); }
+    sym_name[elf_nsym] = name_off;
+    sym_info[elf_nsym] = info;
+    sym_shndx[elf_nsym] = shndx;
+    sym_val[elf_nsym] = val;
+    sym_size[elf_nsym] = size;
+    elf_nsym = elf_nsym + 1;
+    return 0;
+}
+
+// ---- §9.3 the section map ----
+// Section indices follow the fixed order of §9: null, .text, then .rodata,
+// .data, .bss as present, then the three tables. A zero index means the
+// section is absent (the segment count is the same three-way choice over
+// the same sizes). Set by elf_emit before anything reads them.
+let sh_ro: i32 = 0;
+let sh_da: i32 = 0;
+let sh_bs: i32 = 0;
+let sh_sym: i32 = 0;
+let sh_str: i32 = 0;
+let sh_shstr: i32 = 0;
+
+fn elf_collect_syms(prog: i32) -> i32 {
+    // sym 0: the null entry, all zero
+    if (sym_add(0, 0, 0, 0, 0) != 0) { return 1; }
+    // _start: the entry stub when one exists (the two words at .text+0),
+    // else main itself — the spec's e_entry is always 0x401000.
+    let start_size: i64 = fn_words[main_sym];
+    if (has_stub == 1) { start_size = 16; }
+    if (sym_add(strtab_add_lit("_start"), 0x12, 1, 0x401000, start_size) != 0) { return 1; }
+    // __aster_init: ahead of main in the text — the stub calls it first
+    if (has_stub == 1) {
+        if (sym_add(strtab_add_lit("__aster_init"), 0x12, 1, 0x401000 + labels[init_lab] * 4, init_words) != 0) { return 1; }
+    }
+    // the program's functions, emission order: main, then source order
+    if (sym_add(strtab_add_tok(sname[main_sym]), 0x12, 1, 0x401000 + labels[fn_lab[main_sym]] * 4, fn_words[main_sym]) != 0) { return 1; }
+    let c: i32 = nfirst[prog - 1];
+    while (c != 0) {
+        if (nkind[c - 1] == N_Function) {
+            if (fn_extern(c) == 0 && tok_is(ntok[c - 1] + 1, "main") == 0) {
+                if (find_call(ntok[c - 1] + 1) != 1) { return cg_die("internal compiler error: function symbol mismatch"); }
+                let fsym: i32 = rs_fnsym;
+                if (sym_add(strtab_add_tok(sname[fsym]), 0x12, 1, 0x401000 + labels[fn_lab[fsym]] * 4, fn_words[fsym]) != 0) { return 1; }
+            }
+        }
+        c = nnext[c - 1];
+    }
+    // the globals, symbol-row (declaration) order
+    let s: i32 = 0;
+    while (s < nsym) {
+        if (skind[s] == SK_GLOBAL) {
+            let shndx: i32 = sh_bs;
+            if (g_sec[s] == 1) { shndx = sh_da; }
+            if (sym_add(strtab_add_tok(sname[s]), 0x11, shndx, g_addr[s], scnt[s] * ty_width(stag[s])) != 0) { return 1; }
+        }
+        s = s + 1;
+    }
+    return 0;
+}
+
+// ---- §9.4 the writers ----
+let elf_written: i32 = 0;   // bytes streamed so far (the pad cursor)
+
+fn elf_pad_to(target: i32) -> i32 {
+    while (elf_written < target) { putb(0); elf_written = elf_written + 1; }
+    return 0;
+}
+// One 64-byte Shdr record: name, type, flags, addr, offset, size, link,
+// info, addralign, entsize — in that field order.
+fn elf_shdr(name: i32, ty: i32, flags: i64, addr: i64, off: i64, size: i64, link: i32, info: i32, align: i64, ent: i64) -> i32 {
+    elf_put32(name);
+    elf_put32(ty);
+    elf_put64(flags);
+    elf_put64(addr);
+    elf_put64(off);
+    elf_put64(size);
+    elf_put32(link);
+    elf_put32(info);
+    elf_put64(align);
+    elf_put64(ent);
+    elf_written = elf_written + 64;
+    return 0;
+}
+
+// ---- §9.5 the pass itself ----
+fn elf_emit(prog: i32) -> i32 {
+    // Fixups: every target is placed, so each placeholder is patched in
+    // place with delta = target - position, in words. The two range checks
+    // are unreachable — the text section is capped at 262144 words (1 MiB),
+    // which is exactly B.cond's ±2^18-word reach and far inside B/BL's
+    // ±2^25 — but they are the guard that says so.
+    let i: i32 = 0;
+    while (i < nfix) {
+        let delta: i32 = labels[fx_label[i]] - fx_pos[i];
+        if (fx_kind[i] == 0) {
+            if (delta < -262144 || delta > 262143) { return cg_die("conditional branch out of range"); }
+            textw[fx_pos[i]] = textw[fx_pos[i]] | ((delta & 0x7ffff) << 5) | fx_cond[i];
+        } else {
+            if (delta < -33554432 || delta > 33554431) { return cg_die("branch out of range"); }
+            textw[fx_pos[i]] = textw[fx_pos[i]] | (delta & 0x3ffffff);
+        }
+        i = i + 1;
+    }
+    // The section map and the segment count, over the sizes cg_collect left.
+    let textbytes: i32 = textlen * 4;
+    let nseg: i32 = 1;
+    if (rodata_size > 0) { nseg = nseg + 1; }
+    if (data_size + bss_size > 0) { nseg = nseg + 1; }
+    let nsh: i32 = 2;   // null + .text
+    if (rodata_size > 0) { sh_ro = nsh; nsh = nsh + 1; }
+    if (data_size > 0) { sh_da = nsh; nsh = nsh + 1; }
+    if (bss_size > 0) { sh_bs = nsh; nsh = nsh + 1; }
+    sh_sym = nsh; nsh = nsh + 1;
+    sh_str = nsh; nsh = nsh + 1;
+    sh_shstr = nsh; nsh = nsh + 1;
+    // .shstrtab: the leading NUL, then each present section's name in
+    // section order — the same order the Shdr table is written in. .strtab
+    // opens with its own leading NUL too: byte 0 of a string table is the
+    // empty name, which is what the null symbol's st_name=0 resolves to.
+    strtab_len = 0;
+    store_u8(strtab + strtab_len, 0);
+    strtab_len = strtab_len + 1;
+    shstr_len = 0;
+    elf_nsym = 0;
+    store_u8(shstr + shstr_len, 0);
+    shstr_len = shstr_len + 1;
+    let nm_text: i32 = shstr_add(".text");
+    let nm_ro: i32 = 0;
+    let nm_da: i32 = 0;
+    let nm_bs: i32 = 0;
+    if (rodata_size > 0) { nm_ro = shstr_add(".rodata"); }
+    if (data_size > 0) { nm_da = shstr_add(".data"); }
+    if (bss_size > 0) { nm_bs = shstr_add(".bss"); }
+    let nm_sym: i32 = shstr_add(".symtab");
+    let nm_str: i32 = shstr_add(".strtab");
+    let nm_shstr: i32 = shstr_add(".shstrtab");
+    // Symbols (this appends every name to .strtab).
+    if (elf_collect_syms(prog) != 0) { return 1; }
+    // File offsets. The segments keep the page-alignment invariant of §9
+    // (p_offset ≡ p_vaddr mod 0x1000 — every offset below is a multiple of
+    // 0x1000 and every base address ends in 000); the three tables follow
+    // the last file-backed content 8-aligned (they are not mapped, so they
+    // need no page — and take none when a segment is absent).
+    let rodata_off: i32 = (0x1000 + textbytes + 4095) / 4096 * 4096;
+    let data_off: i32 = (rodata_off + rodata_size + 4095) / 4096 * 4096;
+    let tail_base: i32 = 0x1000 + textbytes;
+    if (rodata_size > 0) { tail_base = rodata_off + rodata_size; }
+    if (data_size > 0) { tail_base = data_off + data_size; }
+    let symtab_off: i32 = (tail_base + 7) / 8 * 8;
+    let strtab_off: i32 = symtab_off + elf_nsym * 24;
+    let shstr_off: i32 = strtab_off + strtab_len;
+    let shoff: i32 = (shstr_off + shstr_len + 7) / 8 * 8;
+    // ---- the image ----
+    elf_written = 0;
+    putb(0x7f); putb(69); putb(76); putb(70); putb(2); putb(1); putb(1); putb(0);
+    let z: i32 = 0;
+    while (z < 8) { putb(0); z = z + 1; }
+    elf_put16(2);         // e_type = ET_EXEC
+    elf_put16(183);       // e_machine = AArch64
+    elf_put32(1);         // e_version
+    elf_put64(0x401000);  // e_entry (the stub or main, always .text+0)
+    elf_put64(64);        // e_phoff (the Ehdr is 64 bytes)
+    elf_put64(shoff);     // e_shoff
+    elf_put32(0);         // e_flags
+    elf_put16(64);        // e_ehsize
+    elf_put16(56);        // e_phentsize
+    elf_put16(nseg);      // e_phnum
+    elf_put16(64);        // e_shentsize
+    elf_put16(nsh);       // e_shnum
+    elf_put16(sh_shstr);  // e_shstrndx
+    // Phdr 0: Ehdr+Phdrs+.text, R+X
+    elf_put32(1); elf_put32(5);
+    elf_put64(0); elf_put64(0x400000); elf_put64(0x400000);
+    elf_put64(0x1000 + textbytes); elf_put64(0x1000 + textbytes); elf_put64(0x1000);
+    // Phdr 1: .rodata, R
+    if (rodata_size > 0) {
+        elf_put32(1); elf_put32(4);
+        elf_put64(rodata_off); elf_put64(0x600000); elf_put64(0x600000);
+        elf_put64(rodata_size); elf_put64(rodata_size); elf_put64(0x1000);
+    }
+    // Phdr 2: .data in the file, .bss only in memory, R+W
+    if (data_size + bss_size > 0) {
+        elf_put32(1); elf_put32(6);
+        elf_put64(data_off); elf_put64(0x800000); elf_put64(0x800000);
+        elf_put64(data_size); elf_put64(data_size + bss_size); elf_put64(0x1000);
+    }
+    // The pad cursor starts after the headers just written (Ehdr + Phdrs),
+    // so the first pad lands the stream exactly on the .text page.
+    elf_written = 64 + nseg * 56;
+    if (elf_pad_to(0x1000) != 0) { return 1; }
+    let w: i32 = 0;
+    while (w < textlen) {
+        let v: i32 = textw[w];
+        putb(v & 0xff);
+        putb((v >> 8) & 0xff);
+        putb((v >> 16) & 0xff);
+        putb((v >> 24) & 0xff);
+        elf_written = elf_written + 4;
+        w = w + 1;
+    }
+    // .rodata: the strings in the same pre-order walk cg_strings assigned
+    // their addresses with (each literal then one NUL), so the offsets
+    // recorded in pass 1 line up byte for byte.
+    if (rodata_size > 0) {
+        if (elf_pad_to(rodata_off) != 0) { return 1; }
+        let esp: i32 = 0;
+        let h: i32 = prog;
+        while (1 == 1) {
+            while (h != 0) {
+                if (nkind[h - 1] == E_String) {
+                    let t: i32 = ntok[h - 1];
+                    putn(strpool + tstart[t], tlen[t]);
+                    putb(0);
+                    elf_written = elf_written + tlen[t] + 1;
+                }
+                let nx: i32 = nnext[h - 1];
+                if (nx != 0) { sstk[esp] = nx; esp = esp + 1; }
+                h = nfirst[h - 1];
+            }
+            if (esp == 0) { break; }
+            esp = esp - 1;
+            h = sstk[esp];
+        }
+    }
+    // .data: the constant globals in declaration order, each zero-padded up
+    // to its address (the section walk aligned every global per its width).
+    if (data_size > 0) {
+        if (elf_pad_to(data_off) != 0) { return 1; }
+        let c: i32 = nfirst[prog - 1];
+        while (c != 0) {
+            if (nkind[c - 1] == N_Global) {
+                let s: i32 = cg_find_global(ntok[c - 1]);
+                if (s >= 0 && g_sec[s] == 1) {
+                    let target: i32 = data_off + (g_addr[s] - 0x800000);
+                    if (elf_pad_to(target) != 0) { return 1; }
+                    let v: i64 = fold(nfirst[c - 1]);
+                    if (perr != 0) { return 1; }
+                    let w2: i32 = ty_width(stag[s]);
+                    let el: i32 = 0;
+                    while (el < scnt[s]) {
+                        let bi: i32 = 0;
+                        while (bi < w2) {
+                            let byte: i32 = (v >> (8 * bi)) & 0xff;
+                            putb(byte);
+                            elf_written = elf_written + 1;
+                            bi = bi + 1;
+                        }
+                        el = el + 1;
+                    }
+                }
+            }
+            c = nnext[c - 1];
+        }
+    }
+    // .symtab (24-byte entries), .strtab, .shstrtab.
+    if (elf_pad_to(symtab_off) != 0) { return 1; }
+    i = 0;
+    while (i < elf_nsym) {
+        elf_put32(sym_name[i]);
+        putb(sym_info[i]);
+        putb(0);            // st_other
+        elf_put16(sym_shndx[i]);
+        elf_put64(sym_val[i]);
+        elf_put64(sym_size[i]);
+        elf_written = elf_written + 24;
+        i = i + 1;
+    }
+    putn(strtab, strtab_len);
+    elf_written = elf_written + strtab_len;
+    putn(shstr, shstr_len);
+    elf_written = elf_written + shstr_len;
+    // The section headers, in section order: null, .text, the data sections
+    // as present, then the three tables.
+    if (elf_pad_to(shoff) != 0) { return 1; }
+    elf_shdr(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    elf_shdr(nm_text, 1, 6, 0x401000, 0x1000, textbytes, 0, 0, 4, 0);
+    if (rodata_size > 0) { elf_shdr(nm_ro, 1, 4, 0x600000, rodata_off, rodata_size, 0, 0, 1, 0); }
+    if (data_size > 0) { elf_shdr(nm_da, 1, 3, 0x800000, data_off, data_size, 0, 0, 8, 0); }
+    if (bss_size > 0) { elf_shdr(nm_bs, 8, 3, bss_base, data_off + data_size, bss_size, 0, 0, 8, 0); }
+    elf_shdr(nm_sym, 2, 0, 0, symtab_off, elf_nsym * 24, sh_str, 1, 8, 24);
+    elf_shdr(nm_str, 3, 0, 0, strtab_off, strtab_len, 0, 0, 1, 0);
+    elf_shdr(nm_shstr, 3, 0, 0, shstr_off, shstr_len, 0, 0, 1, 0);
     return 0;
 }
