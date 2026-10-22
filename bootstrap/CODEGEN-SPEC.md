@@ -268,6 +268,8 @@
 
 > **`E_Index` 的 LIFO**：基址临时 `a` 在 `gen_index` 内 `alloc`（较新），下标 `i` 由子表达式先 `alloc`（较旧）。地址结果落 `i`（`ADD Xi,Xa,Wi,UXTW` → `free a`），返回 `i`；若反过来 `free i` 会触发泄漏守卫（上面压着 `a`）。`E_And`/`E_Or` 同理——结果落较旧的左寄存器、释放较新的右寄存器。
 
+> **嵌套 `gen_expr` 的基址约定**（#258 定钉）：入口是 `gen_expr(h, want)`，实现为 `gen_expr_at(h, want, 0)` 的包装；被表达式求值中途调用的路径（唯一一处：`gen_call` 的逐参 staging）必须传**调用方的 `gx_top`** 作 base——`gen_expr_at(参, 参型, gx_top)`。内层表达式（含其中再嵌的调用）的全部工作帧落在外层活帧**之上**，正常退出时 `gx_top == base`，外层帧及其左结果寄存器原样存活。若内层从 0 起压栈，外层帧被覆写，外层循环随后把 `gx_top` 弹到 base 以下、寄存器分配错乱（实测：p5b `n * fact(n-1)` 的 `E_Mul` 右子是 `E_Call`，泄漏守卫误报、调用目标错乱）。语句层的 `gen_index_addr`/`gen_init` 无外层表达式在跑（`gx_top==0`），仍走 `gen_expr`。循环不变量：`while (gx_top > base)`；任何 `return -1` 直接向上返回（错误即终止编译，不尝试恢复工作栈）。
+
 ### 6.2 语句 `gen_stmt(s)`（递归，深 ≤96 安全）
 
 | 语句 | lowering |
@@ -309,11 +311,17 @@
 - `fixups`（并行四数组 `fx_pos/fx_kind/fx_label/fx_cond` + `nfix`）：
   - `fx_kind=0`：`B.cond`（`fx_cond` 存条件码）
   - `fx_kind=1`：`B`
-  - `fx_kind=2`：`BL`（`fx_label` = 被调函数符号行）
+  - `fx_kind=2`：`BL`（`fx_label` = 目标**标签 id**，对调用即 `fn_lab[fsym]`——不是符号行）
 - 发射分支/调用时先 `emit_word(占位)` 并 `push_fixup`；`elf_emit` 统一解析：
   `delta = labels[fx_label] - fx_pos`，校验 `|delta| ≤ 2^18`（B.cond）/`2^25`（B/BL）
   后写回。`textw` 上限 262144 词恰为 ±2^18，故 B.cond 恒可达；越界仍断言（§10 C13）。
 - 标签 id：单调计数器（每个 `if` 2 个、每个 `while` 2 个），上限 65536（§10 C13）。
+- **标签 id 的生命周期跨趟**（#258 定钉）：`cg_collect`（第一趟，零发射）已为每个
+  非 extern 函数（及需要时的 `__aster_init`）分配标签 id；第二趟的控制流标签必须
+  **接续**该计数器。`cg_init` 只重置 `textlen` 与临时寄存器池，**不得**重置
+  `nlabels`/`nfix`——一旦重置，`if`/`while` 的 `lelse`/`lend` 会复用函数标签 id 0/1，
+  其 `place_label` 覆盖函数入口偏移，所有 `BL` 错解析到控制流标签处（实测：p5b 递归
+  `fact` 的调用目标变成 if 的合并标签，无限递归）。
 - **break/continue 标签栈**：`lp_exit[64]`/`lp_cont[64]`/`lp_depth`；嵌套超 64 → §10 C13。
   宿主对应物是 `loops` 向量（`src/aster.cpp:2419`）。
 
@@ -357,8 +365,9 @@ park 活临时（`STR Xr,[SP,#(900+r)*8]`，`tmp_top←0`）→ 逐参 `gen_expr
 `write expects (fd: i32, buf: ptr, len: i32)`、`load_u8 expects exactly one ptr argument`。
 
 **普通函数调用**（宿主 `emitCallSeq`，`src/aster.cpp:4115`）：
-park 活临时（`tmp_top←0`）→ 逐参 `gen_expr(参i, 形参型i)` 落网格槽（每参 1 槽，
-高水位+1；嵌套调用以当前高水位为基、返回时恢复）→ `LDR (W/X)Xi,[SP,#(800+基+i)*8]`
+park 活临时（`tmp_top←0`）→ 逐参 `gen_expr_at(参i, 形参型i, gx_top)` 落网格槽（每参 1 槽，
+高水位+1；嵌套调用以当前高水位为基、返回时恢复；内层求值从调用方工作栈顶起压栈，§6.1 注）
+→ `LDR (W/X)Xi,[SP,#(800+基+i)*8]`
 （i<8）→ 栈参：`LDR X9,[SP,#(800+基+i)*8]; STR X9,[SP,#8*(i-8)]` → `BL`（fixup=2）→
 `STR X0,[SP+#1022*8]` → 还原 `tmp_top` 与活临时 → `alloc d; LDR (W/X)d,[SP+#1022*8]`
 → 返回型 i32 且 want 64 位 → `SXTW d,d`。
@@ -475,6 +484,11 @@ runtime-init 全局时才有。文件内顺序：`Ehdr+Phdr`（页 0）→ `.tex
 - 帧槽号 ∈ [0,1023]；
 - `gen_expr` 工作栈不溢出不变量（条目上界 65536）；
 - 每函数收尾 `tmp_top == 0`（临时泄漏检查，宿主 `:4988` 同款）。
+
+**C1/C2/C3 的 bootstrap 位置钉定**（#258 实证，探针 e1–e4 与宿主逐字对齐）：
+C1/C2 锚在 `break`/`continue` 关键字 token（宿主同）；C3 锚在**函数名 token**
+（`gen_function` 的名称 token）——宿主持句无位置，bootstrap 补 `at L:C`。
+三条均在发射任何指令前判定（C3 在 prologue 之前），故拒绝时 stdout 无字节。
 
 **容量上限**（与上游共享）：源 1 MiB、节点 65536、符号 4096、串池 1 MiB、
 指令流 262144 词、fixup/标签 65536、循环嵌套 64、语句嵌套 96（M3b C2）。

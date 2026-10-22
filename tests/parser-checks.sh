@@ -612,7 +612,7 @@ for f in bootstrap/aster.ast stdlib/aster_std.ast examples/*.ast; do
     n=$((n+1))
 done
 printf 'PASS: self-parsing — %d sources, parser and twin agree on every one\n' "$n"
-for pair in "bootstrap/aster.ast 15856" "stdlib/aster_std.ast 555"; do
+for pair in "bootstrap/aster.ast 17671" "stdlib/aster_std.ast 555"; do
     set -- $pair
     lines=$(run "$W/parser" <"$1" 2>/dev/null | wc -l)
     if [ "$lines" -ne "$2" ]; then

@@ -3122,8 +3122,11 @@ fn cg_init() -> i32 {
     }
     tmp_top = 0;
     textlen = 0;
-    nlabels = 0;
-    nfix = 0;
+    // nlabels/nfix deliberately NOT reset: cg_collect (pass 1) already handed
+    // out the function labels, and pass 2's control-flow labels must continue
+    // that sequence — resetting here made lelse/lend reuse ids 0/1 and their
+    // place_label calls overwrite the function entries, so every BL resolved
+    // to the if's merge label (found by the p5b recursive-fact probe).
     return 0;
 }
 
@@ -3814,9 +3817,18 @@ fn gx_dispatch(n: i32, wt: i32) -> i32 {
 }
 
 fn gen_expr(h: i32, want: i32) -> i32 {
-    gx_top = 0;
-    gx_node[0] = h; gx_state[0] = 0; gx_want[0] = want; gx_top = 1;
-    while (gx_top > 0) {
+    return gen_expr_at(h, want, 0);
+}
+
+// The iterative core. `base` is the work-stack depth the caller already
+// occupies: a nested evaluation — a call's arguments (§7) run their own
+// gen_expr — continues ABOVE the caller's pending entries instead of
+// resetting gx_top to 0, so the outer expression's state survives the
+// inner one. The loop never pops below base, and it leaves gx_top == base
+// on normal exit, restoring the caller's stack top exactly.
+fn gen_expr_at(h: i32, want: i32, base: i32) -> i32 {
+    gx_node[base] = h; gx_state[base] = 0; gx_want[base] = want; gx_top = base + 1;
+    while (gx_top > base) {
         gx_top = gx_top - 1;
         let n: i32 = gx_node[gx_top];
         let st: i32 = gx_state[gx_top];
@@ -4152,7 +4164,10 @@ fn gen_call(n: i32, want: i32) -> i32 {
     while (arg != 0) {
         let pty: i32 = param_type(fnode, i);
         cg_grid_hi = base + i;
-        let v: i32 = gen_expr(arg, pty);
+        // Stage from the caller's work-stack top: a nested expression (which
+        // may itself contain calls) pushes its frames above every live outer
+        // frame instead of resetting the stack underneath it.
+        let v: i32 = gen_expr_at(arg, pty, gx_top);
         if (v < 0) { return -1; }
         if (emit_mem(1, mem_scale(ty_width(pty)), v, 31, (800 + base + i) * 8) != 0) { return -1; }
         if (free_tmp(v) != 0) { return -1; }
@@ -4195,9 +4210,9 @@ fn gen_call(n: i32, want: i32) -> i32 {
 
 // ---- §8 entry point ----
 // Per the M3d contract (CODEGEN-SPEC.md §10) the driver still ends with the
-// dump until #260 wires the three codegen passes in; gen_expr/gen_combine and
-// the rest of the lowering layer are written here and consumed by gen_function
-// (the statement/structure pass, #258).
+// dump until #260 wires the three codegen passes in; gen_stmt/gen_block and
+// the rest of the statement layer are written here and consumed by
+// cg_gen_program (the program pass, #258).
 fn main() -> i32 {
     let rc: i32 = read_source();
     if (rc != 0) { return rc; }
@@ -4283,4 +4298,397 @@ fn gen_var(n: i32, want: i32) -> i32 {
         if (emit_sxtw(d, d) != 0) { return -1; }
     }
     return d;
+}
+
+// ---------------------------------------------------------------------------
+// §6.2 statements. gen_stmt lowers one statement; gen_block walks a block's
+// statement chain. Both are recursive, but the recursion is statement nesting
+// (M3b C2 caps it at 96), not expression depth — gen_expr is the iterative
+// one. The scope discipline mirrors M3c's sema exactly: a block's caller
+// pushes and pops (an if branch, a while body), the function body runs in the
+// base scope the parameters were registered into.
+// ---------------------------------------------------------------------------
+
+// ---- §7 the loop label stack ----
+// One (exit, continue) pair per enclosing while; break branches to the exit
+// label, continue to the condition label. The host keeps the same stack as a
+// vector of {start, breaks, continues} (src/aster.cpp:2419); the bootstrap
+// resolves both targets at emit time, since new_label() has already handed
+// out the ids before the body is lowered.
+let lp_exit: i32[64] = 0;
+let lp_cont: i32[64] = 0;
+let lp_depth: i32 = 0;
+
+// ---- §10 C3: does this statement provably return? ----
+// The host's definitelyReturns (src/aster.cpp:4562), statement for statement:
+// a Return does; an If does iff both its then and its else bodies do (an
+// else-if chain is the else body's single statement); nothing else does — a
+// while may run zero times. The list scan stops at the first returning
+// statement, so dead code after a return is not an error.
+fn stmt_returns(s: i32) -> i32 {
+    let k: i32 = nkind[s - 1];
+    if (k == S_Return) { return 1; }
+    if (k == S_If) {
+        let cond: i32 = nfirst[s - 1];
+        let tb: i32 = nnext[cond - 1];
+        let el: i32 = nnext[tb - 1];
+        if (el == 0) { return 0; }
+        if (block_returns(tb) == 0) { return 0; }
+        if (nkind[el - 1] == N_Block) { return block_returns(el); }
+        return stmt_returns(el);
+    }
+    return 0;
+}
+fn block_returns(b: i32) -> i32 {
+    let s: i32 = nfirst[b - 1];
+    while (s != 0) {
+        if (stmt_returns(s) == 1) { return 1; }
+        s = nnext[s - 1];
+    }
+    return 0;
+}
+
+// ---- §6.2 the statement loop ----
+fn gen_block(b: i32) -> i32 {
+    let s: i32 = nfirst[b - 1];
+    while (s != 0) {
+        if (gen_stmt(s) != 0) { return 1; }
+        s = nnext[s - 1];
+    }
+    return 0;
+}
+
+// The element address of `name[idx]`, for S_IndexAssign: the index first
+// (the OLDER temporary), then the base address (NEWER), the scaled ADD lands
+// in the index register, the base is freed — the same LIFO order gen_index
+// uses inside an expression. The element width and type are published in
+// gia_ew/gia_ety for the store that follows.
+let gia_ew: i32 = 0;
+let gia_ety: i32 = 0;
+fn gen_index_addr(tok: i32, idxexpr: i32) -> i32 {
+    let i: i32 = gen_expr(idxexpr, TY_I32);
+    if (i < 0) { return -1; }
+    let a: i32 = alloc_tmp();
+    if (a < 0) { return -1; }
+    let e: i32 = cg_find_local(tok);
+    if (e >= 0) {
+        let cnt: i32 = cg_loc_cnt[e];
+        let ty: i32 = cg_loc_ty[e];
+        if (cnt > 1) {
+            gia_ety = ty;
+            if (emit_frame_addr(a, cg_loc_slot[e] * 8) != 0) { return -1; }
+        } else if (is_ptr_tag(ty) == 1) {
+            gia_ety = ptr_elem(ty);
+            if (emit_mem(0, 3, a, 31, cg_loc_slot[e] * 8) != 0) { return -1; }
+        } else {
+            if (cg_die_name_at("cannot index non-array variable: ", tok) != 0) { return -1; }
+        }
+    } else {
+        let s: i32 = cg_find_global(tok);
+        if (s < 0) { if (cg_die_name_at("unknown variable: ", tok) != 0) { return -1; } }
+        if (skind[s] == SK_EXTERN_LET) { if (cg_die_name_at("cannot reference external global: ", tok) != 0) { return -1; } }
+        if (scnt[s] > 1) {
+            gia_ety = stag[s];
+            if (emit_addr64(a, g_addr[s]) != 0) { return -1; }
+        } else if (is_ptr_tag(stag[s]) == 1) {
+            gia_ety = ptr_elem(stag[s]);
+            let t: i32 = alloc_tmp();
+            if (t < 0) { return -1; }
+            if (emit_addr64(t, g_addr[s]) != 0) { return -1; }
+            if (emit_mem(0, 3, a, t, 0) != 0) { return -1; }
+            if (free_tmp(t) != 0) { return -1; }
+        } else {
+            if (cg_die_name_at("cannot index non-array variable: ", tok) != 0) { return -1; }
+        }
+    }
+    gia_ew = ty_width(gia_ety);
+    if (emit_addsub_ext(i, a, i, 0, 2, log2w(gia_ew)) != 0) { return -1; }
+    if (free_tmp(a) != 0) { return -1; }
+    return i;
+}
+
+fn gen_stmt(s: i32) -> i32 {
+    let k: i32 = nkind[s - 1];
+    if (k == S_Let) {
+        // A local is always a scalar here (the parser refuses local arrays),
+        // so one slot, and the initializer stores at the declared width.
+        let slot: i32 = cg_add_local(ntok[s - 1], nnty[s - 1], 1);
+        if (slot < 0) { return 1; }
+        let v: i32 = gen_expr(nfirst[s - 1], nnty[s - 1]);
+        if (v < 0) { return 1; }
+        if (emit_mem(1, mem_scale(ty_width(nnty[s - 1])), v, 31, slot * 8) != 0) { return 1; }
+        if (free_tmp(v) != 0) { return 1; }
+        return 0;
+    }
+    if (k == S_Assign) {
+        let tok: i32 = ntok[s - 1];
+        let e: i32 = nfirst[s - 1];
+        let li: i32 = cg_find_local(tok);
+        if (li >= 0) {
+            let ty: i32 = cg_loc_ty[li];
+            let v: i32 = gen_expr(e, ty);
+            if (v < 0) { return 1; }
+            if (emit_mem(1, mem_scale(ty_width(ty)), v, 31, cg_loc_slot[li] * 8) != 0) { return 1; }
+            if (free_tmp(v) != 0) { return 1; }
+            return 0;
+        }
+        let gs: i32 = cg_find_global(tok);
+        if (gs < 0) { if (cg_die_name_at("unknown variable: ", tok) != 0) { return 1; } }
+        if (skind[gs] == SK_EXTERN_LET) { if (cg_die_name_at("cannot reference external global: ", tok) != 0) { return 1; } }
+        let ty: i32 = stag[gs];
+        let v: i32 = gen_expr(e, ty);
+        if (v < 0) { return 1; }
+        let t: i32 = alloc_tmp();
+        if (t < 0) { return 1; }
+        if (emit_addr64(t, g_addr[gs]) != 0) { return 1; }
+        if (emit_mem(1, mem_scale(ty_width(ty)), v, t, 0) != 0) { return 1; }
+        if (free_tmp(t) != 0) { return 1; }
+        if (free_tmp(v) != 0) { return 1; }
+        return 0;
+    }
+    if (k == S_IndexAssign) {
+        // Child 0 is the E_Index (name + subscript), child 1 the value.
+        let inode: i32 = nfirst[s - 1];
+        let rhs: i32 = nnext[inode - 1];
+        let a: i32 = gen_index_addr(ntok[inode - 1], nfirst[inode - 1]);
+        if (a < 0) { return 1; }
+        let ew: i32 = gia_ew;
+        let v: i32 = gen_expr(rhs, gia_ety);
+        if (v < 0) { return 1; }
+        if (emit_mem(1, mem_scale(ew), v, a, 0) != 0) { return 1; }
+        if (free_tmp(v) != 0) { return 1; }
+        if (free_tmp(a) != 0) { return 1; }
+        return 0;
+    }
+    if (k == S_Return) {
+        let v: i32 = gen_expr(nfirst[s - 1], cg_ret_ty);
+        if (v < 0) { return 1; }
+        let is64: i32 = 0;
+        if (ty_is64(cg_ret_ty) == 1) { is64 = 1; }
+        if (emit_mov_rr(0, v, is64) != 0) { return 1; }
+        if (free_tmp(v) != 0) { return 1; }
+        if (cg_is_main == 1) {
+            // main returns through the exit system call: the process status
+            // is the returned value (the host's isMain path, :4558).
+            if (emit_movz(8, 93, 0, 1) != 0) { return 1; }
+            if (emit_svc() != 0) { return 1; }
+            return 0;
+        }
+        if (emit_mem(0, 3, 30, 31, 1023 * 8) != 0) { return 1; }
+        if (emit_addsub_imm(31, 31, 8192, 0, 1) != 0) { return 1; }
+        if (emit_ret() != 0) { return 1; }
+        return 0;
+    }
+    if (k == S_If) {
+        // The uniform condition rule (§6.2): materialise the condition, CMP
+        // at its static width, branch to the else label on zero. No flags
+        // reuse — the bootstrap always materialises (§11.2).
+        let cond: i32 = nfirst[s - 1];
+        let r: i32 = gen_expr(cond, TY_I32);
+        if (r < 0) { return 1; }
+        let is64: i32 = 0;
+        if (ty_is64(ex_ty[cond - 1]) == 1) { is64 = 1; }
+        if (emit_cmp_imm(r, 0, is64) != 0) { return 1; }
+        if (free_tmp(r) != 0) { return 1; }
+        let lelse: i32 = new_label();
+        if (lelse < 0) { return 1; }
+        if (emit_bcond(0, lelse) != 0) { return 1; }
+        let tb: i32 = nnext[cond - 1];
+        if (cg_push_scope() != 0) { return 1; }
+        if (gen_block(tb) != 0) { return 1; }
+        if (cg_pop_scope() != 0) { return 1; }
+        let lend: i32 = new_label();
+        if (lend < 0) { return 1; }
+        if (emit_b(lend) != 0) { return 1; }
+        if (place_label(lelse) != 0) { return 1; }
+        let el: i32 = nnext[tb - 1];
+        if (el != 0) {
+            if (cg_push_scope() != 0) { return 1; }
+            let erc: i32 = 0;
+            if (nkind[el - 1] == N_Block) { erc = gen_block(el); }
+            else { erc = gen_stmt(el); }
+            if (erc != 0) { return 1; }
+            if (cg_pop_scope() != 0) { return 1; }
+        }
+        if (place_label(lend) != 0) { return 1; }
+        return 0;
+    }
+    if (k == S_While) {
+        let cond: i32 = nfirst[s - 1];
+        let lcond: i32 = new_label();
+        if (lcond < 0) { return 1; }
+        let lexit: i32 = new_label();
+        if (lexit < 0) { return 1; }
+        if (place_label(lcond) != 0) { return 1; }
+        let r: i32 = gen_expr(cond, TY_I32);
+        if (r < 0) { return 1; }
+        let is64: i32 = 0;
+        if (ty_is64(ex_ty[cond - 1]) == 1) { is64 = 1; }
+        if (emit_cmp_imm(r, 0, is64) != 0) { return 1; }
+        if (free_tmp(r) != 0) { return 1; }
+        if (emit_bcond(0, lexit) != 0) { return 1; }
+        if (lp_depth >= 64) { return cg_die_at_node("loops nested too deeply (limit 64)", s); }
+        lp_exit[lp_depth] = lexit;
+        lp_cont[lp_depth] = lcond;
+        lp_depth = lp_depth + 1;
+        if (cg_push_scope() != 0) { return 1; }
+        if (gen_block(nnext[cond - 1]) != 0) { return 1; }
+        if (cg_pop_scope() != 0) { return 1; }
+        lp_depth = lp_depth - 1;
+        if (emit_b(lcond) != 0) { return 1; }
+        if (place_label(lexit) != 0) { return 1; }
+        return 0;
+    }
+    if (k == S_Break) {
+        if (lp_depth == 0) { return cg_die_at_node("break used outside a loop", s); }
+        if (emit_b(lp_exit[lp_depth - 1]) != 0) { return 1; }
+        return 0;
+    }
+    if (k == S_Continue) {
+        if (lp_depth == 0) { return cg_die_at_node("continue used outside a loop", s); }
+        if (emit_b(lp_cont[lp_depth - 1]) != 0) { return 1; }
+        return 0;
+    }
+    // S_Expr: a discarded call — computed for its side effects, the result
+    // register released (the host's v0.23.39-dev path, :4858).
+    let v: i32 = gen_expr(nfirst[s - 1], TY_I32);
+    if (v < 0) { return 1; }
+    if (free_tmp(v) != 0) { return 1; }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// §6.3 structures. gen_function lays out one function: the fixed 8 KiB frame,
+// the parameters moved from X0-X7 (or the caller's stack area) into their
+// slots, the body, and a per-return epilogue. gen_init is the synthetic
+// __aster_init the entry stub calls; cg_gen_program drives the whole second
+// pass in the spec's order (stub, __aster_init, main, the rest in source
+// order).
+// ---------------------------------------------------------------------------
+let cg_ret_ty: i32 = 0;    // the function being lowered's return type
+let cg_is_main: i32 = 0;   // 1 while lowering main (its return is exit(93))
+
+fn gen_function(f: i32) -> i32 {
+    let name_tok: i32 = ntok[f - 1] + 1;
+    let is_main: i32 = 0;
+    if (tok_is(name_tok, "main") == 1) { is_main = 1; }
+    // C3 first: a body that can fall through has no epilogue to fall into,
+    // and the host refuses it before emitting anything (:4903). The
+    // bootstrap anchors the host's position-less error at the name token.
+    let body: i32 = 0;
+    let bc: i32 = nfirst[f - 1];
+    while (bc != 0) {
+        if (nkind[bc - 1] == N_Block) { body = bc; break; }
+        bc = nnext[bc - 1];
+    }
+    if (block_returns(body) == 0) {
+        cg_l = tok_line(name_tok);
+        cg_c = tok_col(name_tok);
+        die_open();
+        bputname(name_tok);
+        bputs(" may fall through without returning ");
+        if (is_ptr_tag(nnty[f - 1]) == 1) { bputs("ptr"); } else { bputs("i32"); }
+        bputs("; add a return or make both if/else branches return");
+        return die_close(cg_l, cg_c);
+    }
+    if (cg_reset_frame() != 0) { return 1; }
+    cg_ret_ty = nnty[f - 1];
+    cg_is_main = is_main;
+    lp_depth = 0;
+    // Prologue: the fixed frame, X30 saved for every function but main (whose
+    // return exits the process, so nothing comes back).
+    if (emit_addsub_imm(31, 31, 8192, 1, 1) != 0) { return 1; }
+    if (is_main == 0) {
+        if (emit_mem(1, 3, 30, 31, 1023 * 8) != 0) { return 1; }
+    }
+    // Parameters: one slot each (§6.3), the first eight from X0-X7, the rest
+    // from the caller's stack area just above this frame.
+    let i: i32 = 0;
+    let p: i32 = nfirst[f - 1];
+    while (p != 0) {
+        if (nkind[p - 1] == N_Param) {
+            let slot: i32 = cg_add_local(ntok[p - 1], nnty[p - 1], 1);
+            if (slot < 0) { return 1; }
+            if (i < 8) {
+                if (emit_mem(1, mem_scale(ty_width(nnty[p - 1])), i, 31, slot * 8) != 0) { return 1; }
+            } else {
+                if (emit_mem(0, 3, 9, 31, 8192 + 8 * (i - 8)) != 0) { return 1; }
+                if (emit_mem(1, 3, 9, 31, slot * 8) != 0) { return 1; }
+            }
+            i = i + 1;
+        }
+        p = nnext[p - 1];
+    }
+    if (gen_block(body) != 0) { return 1; }
+    // The body provably returns (C3 above), so control never falls out — but
+    // the temporary pool still has to balance at the end of the pass (§10).
+    if (tmp_top != 0) { return cg_die("internal compiler error: temporary register leak"); }
+    return 0;
+}
+
+// __aster_init: a standard frame, then every runtime-initialised global
+// assigned in declaration order, then the standard epilogue. The globals are
+// re-walked from the program (the same chain cg_globals walked), each one's
+// symbol resolved by name — the declaration order of g_init is exactly this
+// walk's order.
+fn gen_init(prog: i32) -> i32 {
+    if (cg_reset_frame() != 0) { return 1; }
+    cg_ret_ty = TY_I32;
+    cg_is_main = 0;
+    lp_depth = 0;
+    if (emit_addsub_imm(31, 31, 8192, 1, 1) != 0) { return 1; }
+    if (emit_mem(1, 3, 30, 31, 1023 * 8) != 0) { return 1; }
+    let c: i32 = nfirst[prog - 1];
+    while (c != 0) {
+        if (nkind[c - 1] == N_Global) {
+            let init: i32 = nfirst[c - 1];
+            if (init != 0 && is_const(init) == 0) {
+                let s: i32 = cg_find_global(ntok[c - 1]);
+                if (s < 0) { return cg_die("internal compiler error: global symbol mismatch"); }
+                let v: i32 = gen_expr(init, stag[s]);
+                if (v < 0) { return 1; }
+                let t: i32 = alloc_tmp();
+                if (t < 0) { return 1; }
+                if (emit_addr64(t, g_addr[s]) != 0) { return 1; }
+                if (emit_mem(1, mem_scale(ty_width(stag[s])), v, t, 0) != 0) { return 1; }
+                if (free_tmp(t) != 0) { return 1; }
+                if (free_tmp(v) != 0) { return 1; }
+            }
+        }
+        c = nnext[c - 1];
+    }
+    if (emit_mem(0, 3, 30, 31, 1023 * 8) != 0) { return 1; }
+    if (emit_addsub_imm(31, 31, 8192, 0, 1) != 0) { return 1; }
+    if (emit_ret() != 0) { return 1; }
+    return 0;
+}
+
+// ---- §6.3 the second pass, in the spec's order ----
+fn cg_gen_program(prog: i32) -> i32 {
+    if (cg_init() != 0) { return 1; }
+    // The entry stub (only when a runtime-init global forces one) is the two
+    // words at .text offset 0: call the initialiser, then fall into main.
+    if (has_stub == 1) {
+        if (emit_bl(init_lab) != 0) { return 1; }
+        if (emit_b(fn_lab[main_sym]) != 0) { return 1; }
+        if (place_label(init_lab) != 0) { return 1; }
+        if (gen_init(prog) != 0) { return 1; }
+    }
+    if (place_label(fn_lab[main_sym]) != 0) { return 1; }
+    if (gen_function(sfn[main_sym]) != 0) { return 1; }
+    let c: i32 = nfirst[prog - 1];
+    while (c != 0) {
+        if (nkind[c - 1] == N_Function) {
+            if (fn_extern(c) == 0 && tok_is(ntok[c - 1] + 1, "main") == 0) {
+                // The function's symbol row resolves by name (find_call's
+                // rs_fnsym); an extern function has no label and no code.
+                if (find_call(ntok[c - 1] + 1) != 1) { return cg_die("internal compiler error: function symbol mismatch"); }
+                let fsym: i32 = rs_fnsym;
+                if (place_label(fn_lab[fsym]) != 0) { return 1; }
+                if (gen_function(c) != 0) { return 1; }
+            }
+        }
+        c = nnext[c - 1];
+    }
+    return 0;
 }
