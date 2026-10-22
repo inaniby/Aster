@@ -3509,8 +3509,14 @@ fn cg_globals(prog: i32) -> i32 {
     let c: i32 = nfirst[prog - 1];
     while (c != 0) {
         if (nkind[c - 1] == N_Global) {
-            while (s < nsym && skind[s] != SK_GLOBAL) { s = s + 1; }
-            if (s >= nsym || name_eq(sname[s], ntok[c - 1]) == 0) {
+            // M3c registered symbol rows by walking this same program chain,
+            // so rows and N_Global nodes share program order. An extern global
+            // is SK_EXTERN_LET (not SK_GLOBAL) and may appear before a defined
+            // global, so the cursor must match the row by NAME walking forward
+            // — stopping at the first SK_GLOBAL would mismatch when an extern
+            // precedes a defined global (#261).
+            while (s < nsym && name_eq(sname[s], ntok[c - 1]) == 0) { s = s + 1; }
+            if (s >= nsym) {
                 return cg_die("internal compiler error: global symbol mismatch");
             }
             let init: i32 = nfirst[c - 1];
@@ -4440,9 +4446,11 @@ fn gen_call(n: i32, want: i32) -> i32 {
 
 // ---- §8 entry point ----
 // Per the M3d contract (CODEGEN-SPEC.md §10) the driver still ends with the
-// dump until #260 wires the three codegen passes in; gen_stmt/gen_block and
-// the rest of the statement layer are written here and consumed by
-// cg_gen_program (the program pass, #258).
+// M3d (#261): the three codegen passes are wired in. The parser stage (M3b)
+// and the statement/codegen layers (M3c, gen_stmt/gen_block/gen_expr_at and
+// the cg_* passes) all funnel through here: read source, lex, parse, sema,
+// then collect addresses (cg_collect), linearise the text stream
+// (cg_gen_program), and emit the ELF (elf_emit) before flushing.
 fn main() -> i32 {
     let rc: i32 = read_source();
     if (rc != 0) { return rc; }
@@ -4451,7 +4459,11 @@ fn main() -> i32 {
     let prog: i32 = parse_program();
     if (prog == 0 || perr != 0) { return 1; }
     if (sema(prog) != 0) { return 1; }
-    rc = emit(prog);
+    rc = cg_collect(prog);
+    if (rc != 0) { return rc; }
+    rc = cg_gen_program(prog);
+    if (rc != 0) { return rc; }
+    rc = elf_emit(prog);
     if (rc != 0) { return rc; }
     flush_out();
     return 0;

@@ -1,49 +1,38 @@
-/* tests/parser-twin.c — the C oracle for bootstrap/aster.ast's M3b parser and
- * M3c type-check pass.
+/* tests/codegen-twin.c — the C oracle for bootstrap/aster.ast's M3d codegen.
  *
- * The same contract: bootstrap/PARSER-SPEC.md (frozen for v0.23.44-dev) for the
- * parse, and bootstrap/SEMANTIC-SPEC.md (§13-§16) for the type check. The
- * Aster side reads one Aster source from stdin and writes the AST dump to
- * stdout, one node per line; this side does the same, byte for byte, with the
- * same diagnostics — the lexer's E1-E9, which still fire first, the host's
- * P1-P62, the subset's B1-B22 boundaries and the bootstrap's C1-C3 caps, plus
- * the semantic S5-S22 codes — and the same exit statuses (0 clean, 1 error,
- * stdout empty on error). On success the semantic pass leaves the AST untouched
- * (so the dump is byte-identical to the no-sema parse); on a type error it emits
- * the same S-diagnostic. tests/parser-checks.sh runs the two over the same
- * corpus and diffs.
+ * The contract (bootstrap/CODEGEN-SPEC.md, frozen for v0.23.46-dev): the
+ * Aster side reads one Aster source on stdin and writes one AArch64 ELF64
+ * ET_EXEC on stdout; on failure it prints a single `aster: error: <Cxx> at
+ * L:C` to stderr, leaves stdout empty, and exits 1. This side reproduces that
+ * byte for byte on every accepted program — the same ELF layout (§9: base
+ * 0x400000, .text@0x401000 / .rodata@0x600000 / .data@0x800000, three
+ * PT_LOAD segments), the same three passes (cg_collect address/label
+ * allocation -> cg_gen_program linearisation into textw: i32[262144] ->
+ * elf_emit fixup back-patch + section/segment emission), and the same
+ * diagnostics — and the same exit statuses (0 clean, 1 error, stdout empty
+ * on error). tests/codegen-checks.sh builds this twin and the reference
+ * compiler (bootstrap/aster.ast build-obj'd + stdlib/aster_std.ast, linked
+ * into "verifybin") and diffs the two's ELF output across the corpus.
  *
  * This is written from the specification, not transliterated from the Aster
  * source, and the two differ in shape wherever the spec leaves room:
  *
- *   - expressions parse by recursive descent — one function per precedence
- *     level of §6.1's grammar — where the bootstrap runs an explicit work
- *     stack with markers (§7). The two shapes meet in §6.1's tree: the same
- *     precedence, the same left-association, the same one-comparison-per-level
- *     rule, and the same position inheritance (§8, a binary node carries its
- *     left operand's token). The stack's marker discipline reappears here as
- *     the C1 depth counter, which is incremented around exactly the spans the
- *     bootstrap pushes a marker or a prefix for: a group, a call, a subscript
- *     and each unary prefix.
- *   - the AST is a struct array, not seven parallel i32 arrays, and its child
- *     chains link node indices (0-based, -1 = none) rather than handles
- *     (index + 1, 0 = none). One append serves every list, as there.
- *   - the dump recurses and streams through stdio, where the bootstrap walks
- *     an explicit stack into a 64 KiB buffer it flushes by hand. The dump has
- *     no size bound — a left-associative chain of the maximum token count
- *     indents quadratically, past a gigabyte — so neither side could stage it
- *     whole; stdio's own buffering is the twin's answer.
- *   - input goes through stdio (fread), not read(2);
- *   - character classes are the C locale's ctype macros, and the operator
- *     spellings dispatch through the grammar's levels instead of a precedence
- *     table;
- *   - number conversion runs the spec's own too-large checks (§6.2) and then
- *     strtoull — libc witnesses what the bootstrap's hand-rolled accumulator
- *     produces, which is the agreement §6.2 asks the twin's strtoull for;
- *   - the constant folder recurses, where the bootstrap walks an explicit
- *     stack: the deepest tree the caps allow is a left-associative chain, a
- *     few tens of thousands of frames here and the same walk with no frames
- *     there, and neither number is interesting on a host stack.
+ *   - the node graph is a struct array, not the bootstrap's seven parallel
+ *     i32 arrays; child chains link node indices (0-based, -1 = none) rather
+ *     than handles (index + 1, 0 = none). The NK/NF/NN/NT/NTY/ETY/EAR macros
+ *     map -1 to 0 so the bootstrap's 1-based ported logic can be reused
+ *     unchanged.
+ *   - expressions lower through an explicit work stack (gen_expr_at(node,
+ *     state, want) with a (node,state,want) triple and a gx_top cursor), not
+ *     recursion — the same discipline the bootstrap uses so a 30k+ node
+ *     left-associative chain (dense.ast-class corpora) cannot blow the host
+ *     or guest call stack.
+ *   - temporaries come from a LIFO free list over X0-X15 (alloc_tmp /
+ *     free_tmp); a release that is not the top of the stack trips the leak
+ *     guard C12, exactly as in the bootstrap.
+ *   - the input goes through stdio (fread), not read(2); the emitted bytes go
+ *     through putb/putn + flush_out(), the same output channel the bootstrap
+ *     uses, so the two streams meet in one buffer.
  *
  * Three arithmetic corners are spelled out because the bootstrap's host
  * compiler emits AArch64 instructions whose wrap the C standards leave
@@ -55,7 +44,7 @@
  *
  * Build (same flags as the other twins, tests/stdlib-checks.sh's convention):
  *   gcc -std=c11 -O2 -Wall -Wextra -Werror -fwrapv -fno-builtin \
- *       -o parser-twin tests/parser-twin.c
+ *       -I. -o codegen-twin tests/codegen-twin.c
  */
 #include <ctype.h>
 #include <limits.h>
@@ -1369,31 +1358,11 @@ static int64_t fold(int h) {
                     fold(nodes[nodes[h].first].next), h);
 }
 
-/* ------------------------------------------------------------ the dump (§9) */
-static const char *kind_name(int k) {
-    if (k < 64) return EK_NAMES[k];
-    if (k < 128) return SK_NAMES[k - 64];
-    return NK_NAMES[k - 128];
-}
+/* ------------------------------------------------------------ type names */
+/* ty_name mirrors parser_names.h's TY_NAMES; the codegen twin's diagnostics
+ * (bputtybase) print through it. The old AST dump (kind_name / put_name /
+ * put_escaped) is gone — the twin now emits an ELF, not a node dump. */
 static const char *ty_name(int t) { return TY_NAMES[t - 1]; }
-static void put_name(int t) {
-    fwrite(srcbuf + toks[t].start, 1, (size_t)toks[t].len, stdout);
-}
-/* The decoded value, re-escaped with exactly the six escapes of §9. */
-static void put_escaped(int start, int n) {
-    for (int i = 0; i < n; i++) {
-        unsigned char b = strpool[start + i];
-        switch (b) {
-        case '"':  fputs("\\\"", stdout); break;
-        case '\\': fputs("\\\\", stdout); break;
-        case '\n': fputs("\\n", stdout); break;
-        case '\r': fputs("\\r", stdout); break;
-        case '\t': fputs("\\t", stdout); break;
-        case '\0': fputs("\\0", stdout); break;
-        default:   putchar(b);
-        }
-    }
-}
 /* Whether a Function node is external — read off the child shape rather than
  * a flag of its own: a defined function always has its body Block (an empty
  * body is P16, and the node exists either way), an external one has its
@@ -1404,50 +1373,6 @@ static int fn_extern(int h) {
         if (nodes[c].kind == N_Block) return 0;
     return 1;
 }
-static void emit_node(int h, int d) {
-    for (int i = 0; i < d; i++) fputs("  ", stdout);
-    int k = nodes[h].kind;
-    fputs(kind_name(k), stdout);
-    putchar(' ');
-    int t = nodes[h].tok;
-    printf("%d:%d", tok_line(t), tok_col(t));
-    if (k == N_Function) {
-        putchar(' ');
-        put_name(t + 1);                /* the token after `fn` */
-        putchar(' ');
-        fputs(ty_name(nodes[h].ty), stdout);
-        if (fn_extern(h)) fputs(" extern", stdout);
-    } else if (k == N_Global) {
-        putchar(' ');
-        put_name(t);
-        putchar(' ');
-        fputs(ty_name(nodes[h].ty), stdout);
-        printf(" %d", nodes[h].count);
-        if (nodes[h].first < 0) fputs(" extern", stdout);
-    } else if (k == N_Param || k == S_Let) {
-        putchar(' ');
-        put_name(t);
-        putchar(' ');
-        fputs(ty_name(nodes[h].ty), stdout);
-    } else if (k == S_Assign || k == S_IndexAssign || k == E_Var
-               || k == E_Call || k == E_Index) {
-        putchar(' ');
-        put_name(t);
-    } else if (k == E_Num) {
-        convert_num(t);
-        printf(" %lld", (long long)numval);
-    } else if (k == E_String) {
-        putchar(' ');
-        put_escaped(toks[t].start, toks[t].len);
-    }
-    putchar('\n');
-}
-static void emit(int h, int d) {
-    emit_node(h, d);
-    for (int c = nodes[h].first; c >= 0; c = nodes[c].next)
-        emit(c, d + 1);
-}
-
 /* ============================================================ SEMANTIC PASS
  * The bootstrap's type-check pass (SEMANTIC-SPEC §13-§16), mirrored so the twin
  * is a faithful oracle for the same sources: on success it leaves the AST
@@ -2012,15 +1937,1267 @@ static int sema(int prog) {
     return 0;
 }
 
+/* ===== codegen back-end: independent C implementation of CODEGEN-SPEC.md =====
+ * Ports the bootstrap's three-pass AArch64 code generator verbatim from the
+ * frozen spec (§2-§10), operating on this twin's own AST (struct node, 0-based
+ * indices) instead of the bootstrap's parallel i32 arrays. The AST shape is
+ * the twin's; the bytes it emits must match the bootstrap word for word.
+ *
+ * Mapping bootstrap handles (n, where n = idx+1) -> twin nodes (idx):
+ *   NK(n) nodes[n].kind   NF(n) nodes[n].first   NN(n) nodes[n].next
+ *   NT(n) nodes[n].tok     NTY(n) nodes[n].ty     ETY(n) ety[n]  EAR(n) earr[n]
+ * Symbol table st_kind: 0=fn 1=extern_fn 2=global 3=extern_global (SK_*).
+ */
+
+/* ---- node/token accessors ---- */
+/* The bootstrap's node graph is 1-based (handle h = idx+1, 0 == none); this
+ * twin's struct node is 0-based (-1 == none). The codegen below was ported
+ * verbatim from the bootstrap and therefore tests "no node" with 0. Map the
+ * twin's -1 sentinel to 0 here so every `x != 0` / `x == 0` child-chain test
+ * reads correctly without touching the ported logic. (gx_val is never keyed
+ * by a -1 node, so collapsing -1 -> 0 cannot alias a real node index.) */
+#define NK(n)  nodes[(n)].kind
+#define NF(n)  ((nodes[(n)].first < 0) ? 0 : nodes[(n)].first)
+#define NN(n)  ((nodes[(n)].next  < 0) ? 0 : nodes[(n)].next)
+#define NT(n)  nodes[(n)].tok
+#define NTY(n) nodes[(n)].ty
+#define ETY(n) ety[(n)]
+#define EAR(n) earr[(n)]
+
+/* ---- type tags (mirror parser_names.h TY_*) ---- */
+/* TY_I32=1 TY_I64=2 TY_U8=3 TY_PTR=4 TY_PTR_U8=5 TY_PTR_I32=6 TY_PTR_I64=7 */
+#define is_ptr_tag_t(t) ((t)==4||(t)==5||(t)==6||(t)==7)
+static int ptr_elem_t(int t){
+    if (t==6) return 1;   /* i32 */
+    if (t==7) return 2;   /* i64 */
+    if (t==5) return 3;   /* u8  */
+    return 1;             /* bare ptr -> i32 */
+}
+static int ty_width_t(int t){
+    if (t==1) return 4;   /* i32 */
+    if (t==2) return 8;   /* i64 */
+    if (t==3) return 1;   /* u8  */
+    return 8;             /* every pointer is 8 bytes */
+}
+static int ty_is64_t(int t){ return (t==2) || is_ptr_tag_t(t); }
+static int ty_is_uns_t(int t){ return (t==3); }
+static int log2w_t(int w){ if (w==1) return 0; if (w==4) return 2; return 3; }
+static int mem_scale_t(int w){ if (w==1) return 0; if (w==4) return 2; return 3; }
+
+/* ---- output channel (byte-identical to the bootstrap's write(1,...)) ---- */
+static unsigned char outbuf[16*1048576];
+static int outlen;
+static void putb(int c){ if (outlen < (int)sizeof(outbuf)) outbuf[outlen++] = (unsigned char)c; }
+static void putn(const unsigned char *p, int n){ for (int i=0;i<n;i++) putb(p[i]); }
+static int flush_out(void){ fwrite(outbuf,1,(size_t)outlen,stdout); return 0; }
+
+/* ---- ELF little-endian field writers ---- */
+static void elf_put16(int v){ putb(v&0xff); putb((v>>8)&0xff); }
+static void elf_put32(int64_t v){ putb(v&0xff); putb((v>>8)&0xff); putb((v>>16)&0xff); putb((v>>24)&0xff); }
+static void elf_put64(int64_t v){ elf_put32(v & 0xffffffffLL); elf_put32((v>>32)&0xffffffffLL); }
+
+/* ---- codegen diagnostics ---- */
+static int cg_l=1, cg_c=1;
+static int cg_die(const char *msg){ die_at(msg, cg_l, cg_c); return 1; }
+static int cg_die_at_node(const char *msg, int n){
+    cg_l = tok_line(NT(n)); cg_c = tok_col(NT(n)); return cg_die(msg);
+}
+static int cg_die_name_at(const char *msg, int t){ die_name_at(msg, t); return 1; }
+/* The bootstrap's builder-style diagnostic (die_open / bputname / bputs /
+ * die_close) reimplemented against this twin's token buffer; exits 1, same
+ * shape as the frontend's `aster: error: <msg> at L:C`. */
+static void die_open(void){ fprintf(stderr, "aster: error: "); }
+static void bputname(int t){ fprintf(stderr, "%.*s", toks[t].len, srcbuf + toks[t].start); }
+static void bputs(const char *s){ fputs(s, stderr); }
+static int die_close(int l, int c){ fprintf(stderr, " at %d:%d\n", l, c); exit(1); }
+/* Print a type tag's name to stderr (mirrors the frontend's ty_name). */
+static void bputtybase(int t){ fputs(ty_name(t), stderr); }
+
+/* ---- §4/§5: the instruction stream and temporary pool ---- */
+static int textw[262144];
+static int textlen;
+static int tmp_free[16];
+static int tmp_top;
+/* Address/layout state allocated during cg_collect, referenced by the code
+ * emitter; declared here (ahead of first use) so the file compiles clean. */
+static int str_addr[65536];      /* per E_String node: .rodata address */
+static int g_addr[4096];         /* per global symbol: absolute address */
+static int g_sec[4096];          /* 0=.bss 1=.data */
+/* codegen/emit shared state, hoisted ahead of first use */
+static int fn_lab[4096], main_sym=-1, init_lab=0, has_stub=0, init_words=0, fn_words[4096];
+static int gia_ew=0, gia_ety=0;
+static int cg_init_pool(void){
+    for (int i=0;i<16;i++) tmp_free[i]=i;
+    tmp_top=0; textlen=0; return 0;
+}
+static int alloc_tmp(void){
+    if (tmp_top >= 16){ cg_die("expression too complex: temporary register limit exceeded"); return -1; }
+    int r = tmp_free[tmp_top]; tmp_top++; return r;
+}
+static int free_tmp(int r){
+    if (tmp_top<=0 || tmp_free[tmp_top-1]!=r){ cg_die("internal compiler error: temporary register leak"); return 1; }
+    tmp_top--; return 0;
+}
+static int emit_word(int64_t w){
+    if (textlen >= 262144){ return cg_die(".text exceeds the 1 MiB instruction buffer"); }
+    textw[textlen] = (int)(w & 0xffffffffLL); textlen++; return 0;
+}
+
+/* ---- §7 labels and fixups ---- */
+static int labels[65536];
+static int nlabels;
+static int fx_pos[65536], fx_kind[65536], fx_label[65536], fx_cond[65536], nfix;
+static int new_label(void){
+    if (nlabels >= 65536){ cg_die("too many labels"); return -1; }
+    int l=nlabels; nlabels++; return l;
+}
+static int place_label(int l){ labels[l]=textlen; return 0; }
+static int push_fix(int kind, int label, int cond){
+    if (nfix >= 65536){ return cg_die("fixup table overflow"); }
+    fx_pos[nfix]=textlen-1; fx_kind[nfix]=kind; fx_label[nfix]=label; fx_cond[nfix]=cond; nfix++; return 0;
+}
+
+/* ---- §4.1 immediate moves ---- */
+static int emit_movz(int rd,int imm,int hw,int is64){
+    int64_t base = 0x52800000LL; if (is64==1) base=0xd2800000LL;
+    return emit_word(base | (((int64_t)hw<<21) | ((int64_t)imm<<5) | rd));
+}
+static int emit_movk(int rd,int imm,int hw,int is64){
+    int64_t base = 0x72800000LL; if (is64==1) base=0xf2800000LL;
+    return emit_word(base | (((int64_t)hw<<21) | ((int64_t)imm<<5) | rd));
+}
+static int emit_mov_rr(int rd,int rm,int is64){
+    int64_t base = 0x2a0003e0LL; if (is64==1) base=0xaa0003e0LL;
+    return emit_word(base | (((int64_t)rm<<16) | rd));
+}
+static int emit_mov_zero(int rd,int is64){
+    int64_t base = 0x2a1f03e0LL; if (is64==1) base=0xaa1f03e0LL;
+    return emit_word(base | rd);
+}
+static int emit_imm64(int rd,int64_t v){
+    int c0=(int)(v&0xffff), c1=(int)((v>>16)&0xffff), c2=(int)((v>>32)&0xffff), c3=(int)((v>>48)&0xffff);
+    int rc=emit_movz(rd,c0,0,1); if(rc) return rc;
+    if ((v>>16)!=0){ rc=emit_movk(rd,c1,1,1); if(rc) return rc; }
+    if ((v>>32)!=0){ rc=emit_movk(rd,c2,2,1); if(rc) return rc; }
+    if ((v>>48)!=0){ rc=emit_movk(rd,c3,3,1); if(rc) return rc; }
+    return 0;
+}
+static int emit_addr64(int rd,int64_t v){
+    int c0=(int)(v&0xffff), c1=(int)((v>>16)&0xffff), c2=(int)((v>>32)&0xffff), c3=(int)((v>>48)&0xffff);
+    int rc=emit_movz(rd,c0,0,1); if(rc) return rc;
+    rc=emit_movk(rd,c1,1,1); if(rc) return rc;
+    rc=emit_movk(rd,c2,2,1); if(rc) return rc;
+    return emit_movk(rd,c3,3,1);
+}
+/* ---- §4.2 arithmetic / logic / shift ---- */
+static int emit_addsub_imm(int rd,int rn,int imm,int is_sub,int is64){
+    int64_t base=0x11000000LL;
+    if (is64==1){ base = is_sub?0xd1000000LL:0x91000000LL; }
+    else { base = is_sub?0x51000000LL:0x11000000LL; }
+    int sh=0, im=imm;
+    if (imm>4095){
+        if (imm%4096!=0 || imm/4096>4095){ return cg_die("internal compiler error: immediate out of range"); }
+        im=imm/4096; sh=1;
+    }
+    return emit_word(base | (((int64_t)sh<<22) | ((int64_t)im<<10) | ((int64_t)rn<<5) | rd));
+}
+static int emit_addsub_rr(int rd,int rn,int rm,int is_sub,int is64){
+    int64_t base=0x0b000000LL;
+    if (is64==1){ base = is_sub?0xcb000000LL:0x8b000000LL; }
+    else { base = is_sub?0x4b000000LL:0x0b000000LL; }
+    return emit_word(base | (((int64_t)rm<<16) | ((int64_t)rn<<5) | rd));
+}
+static int emit_mul(int rd,int rn,int rm,int is64){
+    int64_t base=0x1b007c00LL; if (is64==1) base=0x9b007c00LL;
+    return emit_word(base | (((int64_t)rm<<16) | ((int64_t)rn<<5) | rd));
+}
+static int emit_div(int rd,int rn,int rm,int is64,int uns){
+    int64_t base=0x1ac00c00LL;
+    if (is64==1) base=0x9ac00c00LL;
+    if (uns==1) base = base - 1024;
+    return emit_word(base | (((int64_t)rm<<16) | ((int64_t)rn<<5) | rd));
+}
+static int emit_msub(int rd,int rn,int rm,int ra,int is64){
+    int64_t base=0x1b008000LL; if (is64==1) base=0x9b008000LL;
+    return emit_word(base | (((int64_t)rm<<16) | ((int64_t)ra<<10) | ((int64_t)rn<<5) | rd));
+}
+static int emit_shift(int rd,int rn,int rm,int is64,int kind){
+    int64_t base=0x1ac02000LL; if (is64==1) base=0x9ac02000LL;
+    return emit_word(base | (((int64_t)kind<<10) | ((int64_t)rm<<16) | ((int64_t)rn<<5) | rd));
+}
+static int emit_logic(int rd,int rn,int rm,int is64,int kind){
+    int64_t base=0x0a000000LL; if (is64==1) base=0x8a000000LL;
+    if (kind==1) base+=0x20000000LL;
+    if (kind==2) base+=0x40000000LL;
+    return emit_word(base | (((int64_t)rm<<16) | ((int64_t)rn<<5) | rd));
+}
+static int emit_neg(int rd,int rm,int is64){
+    int64_t base=0x4b0003e0LL; if (is64==1) base=0xcb0003e0LL;
+    return emit_word(base | (((int64_t)rm<<16) | rd));
+}
+static int emit_sxtw(int rd,int rn){ return emit_word(0x93407c00LL | (((int64_t)rn<<5)|rd)); }
+/* ---- §4.3 pointer arithmetic (extended register) ---- */
+static int emit_addsub_ext(int rd,int rn,int rm,int is_sub,int option,int sh){
+    int64_t base=0x8b200000LL; if (is_sub==1) base=0xcb200000LL;
+    return emit_word(base | (((int64_t)rm<<16) | ((int64_t)option<<13) | ((int64_t)sh<<10) | ((int64_t)rn<<5) | rd));
+}
+/* ---- §4.4 compare / condition / branch ---- */
+static int emit_cmp_rr(int rn,int rm,int is64){
+    int64_t base=0x6b00001fLL; if (is64==1) base=0xeb00001fLL;
+    return emit_word(base | (((int64_t)rm<<16) | ((int64_t)rn<<5)));
+}
+static int emit_cmp_imm(int rn,int imm,int is64){
+    int64_t base=0x7100001fLL; if (is64==1) base=0xf100001fLL;
+    if (imm<0 || imm>4095){ return cg_die("internal compiler error: compare immediate out of range"); }
+    return emit_word(base | (((int64_t)imm<<10) | ((int64_t)rn<<5)));
+}
+static int emit_cset(int rd,int cond){ return emit_word(0x1a9f07e0LL | ((((int64_t)cond^1)<<12) | rd)); }
+static int emit_bcond(int cond,int label){
+    int rc=emit_word(0x54000000LL | cond); if(rc) return rc;
+    return push_fix(0,label,cond);
+}
+static int emit_b(int label){
+    int rc=emit_word(0x14000000LL); if(rc) return rc;
+    return push_fix(1,label,0);
+}
+static int emit_bl(int label){
+    int rc=emit_word(0x94000000LL); if(rc) return rc;
+    return push_fix(2,label,0);
+}
+static int emit_ret(void){ return emit_word(0xd65f03c0LL); }
+static int emit_svc(void){ return emit_word(0xd4000001LL); }
+/* ---- §4.5 load/store ---- */
+static int emit_mem(int is_store,int scale,int rt,int rn,int off){
+    int64_t base=0xf9400000LL;
+    if (is_store==1){
+        if (scale==0) base=0x39000000LL; else if (scale==1) base=0x79000000LL;
+        else if (scale==2) base=0xb9000000LL; else base=0xf9000000LL;
+    } else {
+        if (scale==0) base=0x39400000LL; else if (scale==1) base=0x79400000LL;
+        else if (scale==2) base=0xb9400000LL; else base=0xf9400000LL;
+    }
+    int imm = off>>scale;
+    if (imm<0 || imm>4095){ return cg_die("internal compiler error: frame offset out of range"); }
+    return emit_word(base | (((int64_t)imm<<10) | ((int64_t)rn<<5) | rt));
+}
+
+/* ---- §6.0 the frame's local-variable table (rebuilt per function) ---- */
+static int cg_loc_tok[512], cg_loc_slot[512], cg_loc_ty[512], cg_loc_cnt[512];
+static int cg_nlocs, cg_next_slot, cg_scope[128], cg_sc_depth, cg_grid_hi;
+static int cg_reset_frame(void){ cg_nlocs=0; cg_next_slot=32; cg_sc_depth=0; cg_grid_hi=0; return 0; }
+static int cg_push_scope(void){
+    if (cg_sc_depth>=128){ return cg_die("internal compiler error: scope stack overflow"); }
+    cg_scope[cg_sc_depth]=cg_nlocs; cg_sc_depth++; return 0;
+}
+static int cg_pop_scope(void){
+    if (cg_sc_depth<=0){ return cg_die("internal compiler error: scope stack underflow"); }
+    cg_sc_depth--; cg_nlocs=cg_scope[cg_sc_depth]; return 0;
+}
+static int cg_add_local(int tok,int ty,int cnt){
+    if (cg_nlocs>=500 || cg_next_slot>=532){
+        cg_l=tok_line(tok); cg_c=tok_col(tok);
+        if (cg_die("too many local declarations (limit 500, including parameters)")) return -1;
+    }
+    cg_loc_tok[cg_nlocs]=tok; cg_loc_slot[cg_nlocs]=cg_next_slot; cg_loc_ty[cg_nlocs]=ty; cg_loc_cnt[cg_nlocs]=cnt;
+    cg_nlocs++; cg_next_slot++; return cg_loc_slot[cg_nlocs-1];
+}
+static int cg_find_local(int tok){
+    for (int i=cg_nlocs-1;i>=0;i--) if (name_eq(cg_loc_tok[i],tok)==1) return i;
+    return -1;
+}
+static int cg_find_global(int tok){
+    for (int s=0;s<nsym;s++) if (st_kind[s]==2 && name_eq(st_name[s],tok)==1) return s;
+    return -1;
+}
+static int emit_frame_addr(int d,int off){
+    if (off<=4095 || off%4096==0){ return emit_addsub_imm(d,31,off,0,1); }
+    if (off/4096>4095){ return cg_die("internal compiler error: frame offset out of range"); }
+    if (emit_addsub_imm(d,31,(off/4096)*4096,0,1)) return 1;
+    return emit_addsub_imm(d,d,off%4096,0,1);
+}
+
+/* ---- §3 the intrinsic signatures (CODEGEN-SPEC.md §8) ---- */
+#define IC_LOAD_PTR 1
+#define IC_MMAP     2
+#define IC_BRK      3
+#define IC_LOAD_I64 4
+#define IC_STORE_I64 5
+#define IC_LOAD_U8  6
+#define IC_STORE_U8 7
+#define IC_LOAD_U16 8
+#define IC_STORE_U16 9
+#define IC_READ     10
+#define IC_WRITE    11
+#define IC_EXIT     12
+#define IC_OPENAT   13
+#define IC_CLOSE    14
+#define IC_FSTAT    15
+static int ic_sig(int ic){
+    if (ic==IC_LOAD_PTR)  return 1 | (4<<3);
+    if (ic==IC_LOAD_I64)  return 1 | (4<<3);
+    if (ic==IC_LOAD_U8)   return 1 | (4<<3);
+    if (ic==IC_LOAD_U16)  return 1 | (4<<3);
+    if (ic==IC_STORE_I64) return 2 | (4<<3) | (2<<6);
+    if (ic==IC_STORE_U8)  return 2 | (4<<3) | (1<<6);
+    if (ic==IC_STORE_U16) return 2 | (4<<3) | (1<<6);
+    if (ic==IC_WRITE)     return 3 | (1<<3) | (4<<6) | (1<<9) | (64<<21);
+    if (ic==IC_READ)      return 3 | (1<<3) | (4<<6) | (1<<9) | (63<<21);
+    if (ic==IC_OPENAT)    return 4 | (1<<3) | (4<<6) | (1<<9) | (1<<12) | (56<<21);
+    if (ic==IC_CLOSE)     return 1 | (1<<3) | (57<<21);
+    if (ic==IC_FSTAT)     return 2 | (1<<3) | (4<<6) | (80<<21);
+    if (ic==IC_MMAP)      return 6 | (4<<3) | (2<<6) | (1<<9) | (1<<12) | (1<<15) | (2<<18) | (222<<21);
+    if (ic==IC_BRK)       return 1 | (4<<3) | (214<<21);
+    return 1 | (1<<3) | (93<<21);   /* IC_EXIT */
+}
+static int ic_argc(int s){ return s & 7; }
+static int ic_argty(int s,int i){ return (s>>(3+3*i)) & 7; }
+static int ic_nr(int s){ return (s>>21) & 255; }
+static const char *ic_ordinal(int i){
+    if (i==0) return " first";
+    if (i==1) return " second";
+    if (i==2) return " third";
+    if (i==3) return " fourth";
+    if (i==4) return " fifth";
+    return " sixth";
+}
+static const char *ic_count_msg(int ic){
+    if (ic==IC_LOAD_PTR||ic==IC_LOAD_I64||ic==IC_LOAD_U8||ic==IC_LOAD_U16) return " expects exactly one ptr argument";
+    if (ic==IC_STORE_I64) return " expects (ptr, i64)";
+    if (ic==IC_STORE_U8||ic==IC_STORE_U16) return " expects (ptr, i32)";
+    if (ic==IC_WRITE||ic==IC_READ) return " expects (fd: i32, buf: ptr, len: i32)";
+    if (ic==IC_OPENAT) return " expects (fd: i32, path: ptr, flags: i32, mode: i32)";
+    if (ic==IC_CLOSE) return " expects (fd: i32)";
+    if (ic==IC_FSTAT) return " expects (fd: i32, buf: ptr)";
+    if (ic==IC_MMAP) return " expects (addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64)";
+    if (ic==IC_BRK) return " expects (addr: ptr)";
+    return " expects (code: i32)";
+}
+
+/* ---- §6.1 gen_expr: the iterative lowering machine ---- */
+static int gx_node[65536], gx_state[65536], gx_want[65536], gx_val[65536], gx_top;
+static int gx_push_bin(int n,int wantL,int wantR,int wt){
+    if (gx_top+3>65536){ return cg_die_at_node("internal compiler error: expression stack overflow", n); }
+    int l=NF(n), r=NN(l);
+    gx_node[gx_top]=n; gx_state[gx_top]=1; gx_want[gx_top]=wt; gx_top++;
+    gx_node[gx_top]=r; gx_state[gx_top]=0; gx_want[gx_top]=wantR; gx_top++;
+    gx_node[gx_top]=l; gx_state[gx_top]=0; gx_want[gx_top]=wantL; gx_top++;
+    return 0;
+}
+static int gx_push_un(int n,int wantC,int wt){
+    if (gx_top+2>65536){ return cg_die_at_node("internal compiler error: expression stack overflow", n); }
+    gx_node[gx_top]=n; gx_state[gx_top]=1; gx_want[gx_top]=wt; gx_top++;
+    gx_node[gx_top]=NF(n); gx_state[gx_top]=0; gx_want[gx_top]=wantC; gx_top++;
+    return 0;
+}
+static int gx_dispatch(int n,int wt){
+    int k=NK(n);
+    if (k==E_Index) return gx_push_un(n,1,wt);
+    if (k==E_Neg||k==E_Not) return gx_push_un(n,wt,wt);
+    int l=NF(n), r=NN(l), lt=ETY(l), rt=ETY(r);
+    if (k==E_Shl||k==E_Shr){
+        int ow=wt; if (ty_is64_t(wt)||ty_is64_t(lt)) ow=2;
+        return gx_push_bin(n,ow,1,wt);
+    }
+    if (k==E_Add||k==E_Sub){
+        int lp=is_ptr_tag_t(lt), rp=is_ptr_tag_t(rt);
+        if (lp==1 && rp==0) return gx_push_bin(n,2,1,wt);
+        if (k==E_Add && lp==0 && rp==1) return gx_push_bin(n,1,2,wt);
+        int ow=wt; if (ty_is64_t(wt)||ty_is64_t(lt)||ty_is64_t(rt)) ow=2;
+        return gx_push_bin(n,ow,ow,wt);
+    }
+    if (k==E_Eq||k==E_Ne||k==E_Lt||k==E_Le||k==E_Gt||k==E_Ge){
+        int cw=1; if (ty_is64_t(lt)||ty_is64_t(rt)) cw=2;
+        return gx_push_bin(n,cw,cw,wt);
+    }
+    if (k==E_And||k==E_Or) return gx_push_bin(n,1,1,wt);
+    int ow=wt; if (ty_is64_t(wt)||ty_is64_t(lt)||ty_is64_t(rt)) ow=2;
+    return gx_push_bin(n,ow,ow,wt);
+}
+static int gen_var(int n,int want);
+static int gen_call(int n,int want);
+static int gen_combine(int n,int want);
+static int gen_index(int n,int want);
+static int gen_stmt(int s);
+static int gen_index_addr(int tok,int idxexpr);
+static int expr_yields_ptr(int h);
+static int gen_expr_at(int h,int want,int base){
+    gx_node[base]=h; gx_state[base]=0; gx_want[base]=want; gx_top=base+1;
+    while (gx_top>base){
+        gx_top--;
+        int n=gx_node[gx_top], st=gx_state[gx_top], wt=gx_want[gx_top];
+        if (st==1){ if (gen_combine(n,wt)) return -1; continue; }
+        int k=NK(n);
+        if (k==E_Num||k==E_String||k==E_Var){
+            int r=0;
+            if (k==E_Num){
+                convert_num(NT(n));
+                int d=alloc_tmp(); if (d<0) return -1;
+                if (ty_is64_t(wt)==1){
+                    if (emit_imm64(d,numval)) return -1;
+                } else {
+                    int lo=(int)(numval&0xffff), hi=(int)((numval>>16)&0xffff);
+                    if (emit_movz(d,lo,0,0)) return -1;
+                    if (hi!=0){ if (emit_movk(d,hi,1,0)) return -1; }
+                }
+                r=d;
+            } else if (k==E_String){
+                int d=alloc_tmp(); if (d<0) return -1;
+                if (emit_addr64(d, str_addr[n])) return -1;
+                r=d;
+            } else {
+                r=gen_var(n,wt);
+            }
+            if (r<0) return -1;
+            gx_val[n]=r; continue;
+        }
+        if (k==E_Call){ int r=gen_call(n,wt); if (r<0) return -1; gx_val[n]=r; continue; }
+        if (gx_dispatch(n,wt)) return -1;
+    }
+    return gx_val[h];
+}
+static int gen_expr(int h,int want){ return gen_expr_at(h,want,0); }
+
+static int param_type(int fnode,int i){
+    int p=NF(fnode), pi=0;
+    while (p!=0){
+        if (NK(p)==N_Param){ if (pi==i) return NTY(p); pi++; }
+        p=NN(p);
+    }
+    return 1;
+}
+static int cmp_cond(int k,int lt,int rt){
+    int uns=0; if (lt==3||rt==3) uns=1;
+    if (k==E_Eq) return 0;
+    if (k==E_Ne) return 1;
+    if (k==E_Lt){ return uns?3:11; }
+    if (k==E_Le){ return uns?9:13; }
+    if (k==E_Gt){ return uns?8:12; }
+    if (k==E_Ge){ return uns?2:10; }
+    return 0;
+}
+static int gen_combine(int n,int want){
+    int k=NK(n);
+    if (k==E_Index) return gen_index(n,want);
+    if (k==E_Neg){
+        int a=gx_val[NF(n)], is64 = ty_is64_t(want)?1:0;
+        if (emit_neg(a,a,is64)) return 1;
+        gx_val[n]=a; return 0;
+    }
+    if (k==E_Not){
+        int op=NF(n), a=gx_val[op], is64 = ty_is64_t(ETY(op))?1:0;
+        if (emit_cmp_imm(a,0,is64)) return 1;
+        if (emit_cset(a,0)) return 1;
+        gx_val[n]=a; return 0;
+    }
+    int l=NF(n), r=NN(l), lt=ETY(l), rt=ETY(r), a=gx_val[l], b=gx_val[r];
+    if (k==E_Add||k==E_Sub){
+        int lp=is_ptr_tag_t(lt), rp=is_ptr_tag_t(rt);
+        if (k==E_Add && lp==1 && rp==1){ return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n); }
+        if (k==E_Sub && rp==1){ return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n); }
+        if (lp==1 && rp==0){
+            int sub = (k==E_Sub)?1:0;
+            if (emit_addsub_ext(a,a,b,sub,6,0)) return 1;
+            if (free_tmp(b)) return 1;
+            gx_val[n]=a; return 0;
+        }
+        if (k==E_Add && lp==0 && rp==1){
+            if (emit_addsub_ext(a,b,a,0,6,0)) return 1;
+            if (free_tmp(b)) return 1;
+            gx_val[n]=a; return 0;
+        }
+        int is64=0; if (ty_is64_t(want)||ty_is64_t(lt)||ty_is64_t(rt)) is64=1;
+        int sub=(k==E_Sub)?1:0;
+        if (emit_addsub_rr(a,a,b,sub,is64)) return 1;
+        if (free_tmp(b)) return 1;
+        gx_val[n]=a; return 0;
+    }
+    if (k==E_Mul||k==E_Div||k==E_Mod){
+        if (is_ptr_tag_t(lt)||is_ptr_tag_t(rt)){ return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n); }
+        int is64=0; if (ty_is64_t(want)||ty_is64_t(lt)||ty_is64_t(rt)) is64=1;
+        int uns=0; if (ty_is_uns_t(lt)||ty_is_uns_t(rt)) uns=1;
+        if (k==E_Mul){ if (emit_mul(a,a,b,is64)) return 1; if (free_tmp(b)) return 1; gx_val[n]=a; return 0; }
+        if (k==E_Div){ if (emit_div(a,a,b,is64,uns)) return 1; if (free_tmp(b)) return 1; gx_val[n]=a; return 0; }
+        int q=alloc_tmp(); if (q<0) return -1;
+        if (emit_div(q,a,b,is64,uns)) return 1;
+        if (emit_msub(a,a,b,q,is64)) return 1;
+        if (free_tmp(q)) return 1;
+        if (free_tmp(b)) return 1;
+        gx_val[n]=a; return 0;
+    }
+    if (k==E_Shl||k==E_Shr){
+        if (is_ptr_tag_t(lt)){ return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n); }
+        int is64=0; if (ty_is64_t(want)||ty_is64_t(lt)) is64=1;
+        int shk=0; if (k==E_Shr){ shk = ty_is_uns_t(lt)?1:2; }
+        if (emit_shift(a,a,b,is64,shk)) return 1;
+        if (free_tmp(b)) return 1;
+        gx_val[n]=a; return 0;
+    }
+    if (k==E_BitAnd||k==E_BitOr||k==E_BitXor){
+        if (is_ptr_tag_t(lt)||is_ptr_tag_t(rt)){ return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n); }
+        int is64=0; if (ty_is64_t(want)||ty_is64_t(lt)||ty_is64_t(rt)) is64=1;
+        int lk=0; if (k==E_BitOr) lk=1; if (k==E_BitXor) lk=2;
+        if (emit_logic(a,a,b,is64,lk)) return 1;
+        if (free_tmp(b)) return 1;
+        gx_val[n]=a; return 0;
+    }
+    if (k==E_Eq||k==E_Ne||k==E_Lt||k==E_Le||k==E_Gt||k==E_Ge){
+        int is64=0; if (ty_is64_t(lt)||ty_is64_t(rt)) is64=1;
+        if (emit_cmp_rr(a,b,is64)) return 1;
+        if (free_tmp(b)) return 1;
+        if (free_tmp(a)) return 1;
+        int d=alloc_tmp(); if (d<0) return -1;
+        if (emit_cset(d,cmp_cond(k,lt,rt))) return 1;
+        gx_val[n]=d; return 0;
+    }
+    if (k==E_And||k==E_Or){
+        int isAnd=(k==E_And)?1:0;
+        int is64=0; if (ty_is64_t(lt)) is64=1;
+        if (emit_cmp_imm(a,0,is64)) return 1;
+        if (isAnd==1){ if (emit_mov_zero(a,0)) return 1; } else { if (emit_movz(a,1,0,0)) return 1; }
+        int lend=new_label(); if (lend<0) return -1;
+        if (isAnd==1){ if (emit_bcond(0,lend)) return 1; } else { if (emit_bcond(1,lend)) return 1; }
+        if (emit_mov_rr(a,b,0)) return 1;
+        if (free_tmp(b)) return 1;
+        if (place_label(lend)) return 1;
+        gx_val[n]=a; return 0;
+    }
+    return cg_die_at_node("internal compiler error: unlowered expression", n);
+}
+
+static int gen_var(int n,int want){
+    int tok=NT(n);
+    int e=cg_find_local(tok);
+    if (e>=0){
+        int cnt=cg_loc_cnt[e], ty=cg_loc_ty[e];
+        if (cnt>1){
+            int d=alloc_tmp(); if (d<0) return -1;
+            if (emit_frame_addr(d, cg_loc_slot[e]*8)) return -1;
+            return d;
+        }
+        int d=alloc_tmp(); if (d<0) return -1;
+        if (emit_mem(0, mem_scale_t(ty_width_t(ty)), d, 31, cg_loc_slot[e]*8)) return -1;
+        if (ty==1 && ty_is64_t(want)==1){ if (emit_sxtw(d,d)) return -1; }
+        return d;
+    }
+    int s=cg_find_global(tok);
+    if (s<0){ return cg_die_name_at("unknown variable: ", tok); }
+    if (st_kind[s]==3){ return cg_die_name_at("cannot reference external global: ", tok); }
+    if (st_cnt[s]>1){
+        int d=alloc_tmp(); if (d<0) return -1;
+        if (emit_addr64(d, g_addr[s])) return -1;
+        return d;
+    }
+    int d=alloc_tmp(); if (d<0) return -1;
+    int t=alloc_tmp(); if (t<0) return -1;
+    if (emit_addr64(t, g_addr[s])) return -1;
+    if (emit_mem(0, mem_scale_t(ty_width_t(st_tag[s])), d, t, 0)) return -1;
+    if (free_tmp(t)) return -1;
+    if (st_tag[s]==1 && ty_is64_t(want)==1){ if (emit_sxtw(d,d)) return -1; }
+    return d;
+}
+
+static int gen_index(int n,int want){
+    int tok=NT(n), idx=NF(n), i=gx_val[idx], a=-1, ew=0;
+    int e=cg_find_local(tok);
+    if (e>=0){
+        int cnt=cg_loc_cnt[e], ty=cg_loc_ty[e];
+        if (cnt>1){ ew=ty_width_t(ty); a=alloc_tmp(); if (a<0) return -1; if (emit_frame_addr(a, cg_loc_slot[e]*8)) return -1; }
+        else if (is_ptr_tag_t(ty)==1){ ew=ty_width_t(ptr_elem_t(ty)); a=alloc_tmp(); if (a<0) return -1; if (emit_mem(0,3,a,31,cg_loc_slot[e]*8)) return -1; }
+        else { return cg_die_name_at("cannot index non-array variable: ", tok); }
+    } else {
+        int s=cg_find_global(tok);
+        if (s<0){ return cg_die_name_at("unknown variable: ", tok); }
+        if (st_kind[s]==3){ return cg_die_name_at("cannot reference external global: ", tok); }
+        if (st_cnt[s]>1){ ew=ty_width_t(st_tag[s]); a=alloc_tmp(); if (a<0) return -1; if (emit_addr64(a, g_addr[s])) return -1; }
+        else if (is_ptr_tag_t(st_tag[s])==1){ ew=ty_width_t(ptr_elem_t(st_tag[s])); a=alloc_tmp(); if (a<0) return -1; int t=alloc_tmp(); if (t<0) return -1; if (emit_addr64(t, g_addr[s])) return -1; if (emit_mem(0,3,a,t,0)) return -1; if (free_tmp(t)) return -1; }
+        else { return cg_die_name_at("cannot index non-array variable: ", tok); }
+    }
+    if (emit_addsub_ext(i,a,i,0,2,log2w_t(ew))) return -1;
+    if (free_tmp(a)) return -1;
+    if (emit_mem(0, mem_scale_t(ew), i, i, 0)) return -1;
+    if (ew==4 && ty_is64_t(want)==1){ if (emit_sxtw(i,i)) return -1; }
+    gx_val[n]=i;
+    return 0;
+}
+
+/* ---- §8 intrinsic dispatch ---- */
+static int ic_check(int n,int ic){
+    int s=ic_sig(ic), argc=ic_argc(s), cnt=0;
+    int a=NF(n);
+    while (a!=0){ cnt++; a=NN(a); }
+    int callee=NT(n); cg_l=tok_line(callee); cg_c=tok_col(callee);
+    if (cnt!=argc){
+        die_open(); bputname(callee); bputs(ic_count_msg(ic)); return die_close(cg_l,cg_c);
+    }
+    int i=0; int arg=NF(n);
+    while (arg!=0){
+        int t=ETY(arg), slot=ic_argty(s,i), bad=0;
+        if (is_ptr_tag_t(slot)==1){ if (is_ptr_tag_t(t)==0) bad=1; }
+        else if (slot==2){ if (is_ptr_tag_t(t)==1 || t==-2) bad=1; }
+        else { if (is_ptr_tag_t(t)==1) bad=1; }
+        if (bad){
+            die_open(); bputname(callee);
+            if (ic_nr(s)==0 && argc==1){ bputs(" expects a ptr argument"); }
+            else { if (argc>1) bputs(ic_ordinal(i)); bputs(" argument must be ");
+                   if (is_ptr_tag_t(slot)==1) bputs("ptr"); else if (slot==2) bputs("i64"); else bputs("i32"); }
+            return die_close(cg_l,cg_c);
+        }
+        i++; arg=NN(arg);
+    }
+    return 0;
+}
+static int gen_mem_intrinsic(int n,int ic,int s){
+    int a0=NF(n);
+    if (ic_argc(s)==1){
+        int a=gen_expr_at(a0,2,gx_top); if (a<0) return -1;
+        int scale=3; if (ic==IC_LOAD_U8) scale=0; if (ic==IC_LOAD_U16) scale=1;
+        if (emit_mem(0,scale,a,a,0)) return -1;
+        return a;
+    }
+    int a1=NN(a0), vty=ic_argty(s,1);
+    int v=gen_expr_at(a1,vty,gx_top); if (v<0) return -1;
+    int a=gen_expr_at(a0,2,gx_top); if (a<0) return -1;
+    if (emit_mem(1, mem_scale_t(ty_width_t(vty)), v, a, 0)) return -1;
+    if (free_tmp(a)) return -1;
+    return v;
+}
+static int gen_intrinsic(int n,int want){
+    int ic=rcall_intrinsic;
+    if (ic_check(n,ic)) return -1;
+    int s=ic_sig(ic), argc=ic_argc(s), nr=ic_nr(s);
+    if (nr==0) return gen_mem_intrinsic(n,ic,s);
+    int base=cg_grid_hi;
+    if (base+argc>100){ cg_l=tok_line(NT(n)); cg_c=tok_col(NT(n)); if (cg_die("nested function-call arguments exceed compiler limit (100 scratch slots)")) return -1; }
+    int parked_n=tmp_top; int pr=0;
+    while (pr<parked_n){ if (emit_mem(1,3,tmp_free[pr],31,(900+pr)*8)) return -1; pr++; }
+    tmp_top=0;
+    int i=0; int arg=NF(n);
+    while (arg!=0){
+        int pty=ic_argty(s,i); cg_grid_hi=base+i;
+        int v=gen_expr_at(arg,pty,gx_top); if (v<0) return -1;
+        if (emit_mem(1, mem_scale_t(ty_width_t(pty)), v, 31, (800+base+i)*8)) return -1;
+        if (free_tmp(v)) return -1;
+        i++; arg=NN(arg);
+    }
+    cg_grid_hi=base;
+    i=0; while (i<argc){ int pty=ic_argty(s,i); if (emit_mem(0, mem_scale_t(ty_width_t(pty)), i, 31, (800+base+i)*8)) return -1; i++; }
+    if (emit_movz(8,nr,0,1)) return -1;
+    if (emit_svc()) return -1;
+    if (emit_mem(1,3,0,31,1022*8)) return -1;
+    pr=0; while (pr<parked_n){ if (emit_mem(0,3,tmp_free[pr],31,(900+pr)*8)) return -1; pr++; }
+    tmp_top=parked_n;
+    int d=alloc_tmp(); if (d<0) return -1;
+    int rty=rcall_rtyp;
+    if (emit_mem(0, mem_scale_t(ty_width_t(rty)), d, 31, 1022*8)) return -1;
+    if (rty==1 && ty_is64_t(want)==1){ if (emit_sxtw(d,d)) return -1; }
+    return d;
+}
+static int gen_call(int n,int want){
+    int callee=NT(n);
+    int r=sym_find_call(callee);
+    if (r!=1){ return cg_die_name_at("call to undeclared function: ", callee); }
+    int fsym=rs_fnsym;
+    if (fsym==-1) return gen_intrinsic(n,want);
+    if (st_kind[fsym]==1){ return cg_die_name_at("cannot call external function: ", callee); }
+    int fnode=st_node[fsym], argc=0;
+    int a0=NF(n); while (a0!=0){ argc++; a0=NN(a0); }
+    int base=cg_grid_hi;
+    if (base+argc>100){ cg_l=tok_line(callee); cg_c=tok_col(callee); if (cg_die("nested function-call arguments exceed compiler limit (100 scratch slots)")) return -1; }
+    int parked_n=tmp_top; int pr=0;
+    while (pr<parked_n){ if (emit_mem(1,3,tmp_free[pr],31,(900+pr)*8)) return -1; pr++; }
+    tmp_top=0;
+    int i=0; int arg=NF(n);
+    while (arg!=0){
+        int pty=param_type(fnode,i); cg_grid_hi=base+i;
+        int v=gen_expr_at(arg,pty,gx_top); if (v<0) return -1;
+        if (emit_mem(1, mem_scale_t(ty_width_t(pty)), v, 31, (800+base+i)*8)) return -1;
+        if (free_tmp(v)) return -1;
+        i++; arg=NN(arg);
+    }
+    cg_grid_hi=base;
+    i=0; while (i<argc && i<8){ int pty=param_type(fnode,i); if (emit_mem(0, mem_scale_t(ty_width_t(pty)), i, 31, (800+base+i)*8)) return -1; i++; }
+    while (i<argc){ if (emit_mem(0,3,9,31,(800+base+i)*8)) return -1; if (emit_mem(1,3,9,31,(i-8)*8)) return -1; i++; }
+    if (emit_bl(fn_lab[fsym])) return -1;
+    if (emit_mem(1,3,0,31,1022*8)) return -1;
+    pr=0; while (pr<parked_n){ if (emit_mem(0,3,tmp_free[pr],31,(900+pr)*8)) return -1; pr++; }
+    tmp_top=parked_n;
+    int d=alloc_tmp(); if (d<0) return -1;
+    if (emit_mem(0, mem_scale_t(ty_width_t(st_tag[fsym])), d, 31, 1022*8)) return -1;
+    if (st_tag[fsym]==1 && ty_is64_t(want)==1){ if (emit_sxtw(d,d)) return -1; }
+    return d;
+}
+
+/* ---- §6.3 the loop label stack ---- */
+static int lp_exit[64], lp_cont[64], lp_depth;
+static int cg_ret_ty=0, cg_is_main=0;
+
+static int gen_block(int b){
+    int s=NF(b);
+    while (s!=0){ if (gen_stmt(s)) return 1; s=NN(s); }
+    return 0;
+}
+static int gen_stmt(int s){
+    int k=NK(s);
+    if (k==S_Let){
+        int slot=cg_add_local(NT(s), NTY(s), 1); if (slot<0) return 1;
+        int v=gen_expr(NF(s), NTY(s)); if (v<0) return 1;
+        if (emit_mem(1, mem_scale_t(ty_width_t(NTY(s))), v, 31, slot*8)) return 1;
+        if (free_tmp(v)) return 1;
+        return 0;
+    }
+    /* (S_Assign continues below) */
+    if (k==S_Assign){
+        int tok=NT(s), e=NF(s), li=cg_find_local(tok);
+        if (li>=0){
+            int ty=cg_loc_ty[li], v=gen_expr(e,ty); if (v<0) return 1;
+            if (emit_mem(1, mem_scale_t(ty_width_t(ty)), v, 31, cg_loc_slot[li]*8)) return 1;
+            if (free_tmp(v)) return 1;
+            return 0;
+        }
+        int gs=cg_find_global(tok);
+        if (gs<0){ return cg_die_name_at("unknown variable: ", tok); }
+        if (st_kind[gs]==3){ return cg_die_name_at("cannot reference external global: ", tok); }
+        int ty=st_tag[gs], v=gen_expr(e,ty); if (v<0) return 1;
+        int t=alloc_tmp(); if (t<0) return 1;
+        if (emit_addr64(t, g_addr[gs])) return 1;
+        if (emit_mem(1, mem_scale_t(ty_width_t(ty)), v, t, 0)) return 1;
+        if (free_tmp(t)) return 1;
+        if (free_tmp(v)) return 1;
+        return 0;
+    }
+    if (k==S_IndexAssign){
+        int inode=NF(s), rhs=NN(inode);
+        int a=gen_index_addr(NT(inode), NF(inode)); if (a<0) return 1;
+        int ew=gia_ew, v=gen_expr(rhs, gia_ety); if (v<0) return 1;
+        if (emit_mem(1, mem_scale_t(ew), v, a, 0)) return 1;
+        if (free_tmp(v)) return 1;
+        if (free_tmp(a)) return 1;
+        return 0;
+    }
+    if (k==S_Return){
+        int v=gen_expr(NF(s), cg_ret_ty); if (v<0) return 1;
+        int is64 = ty_is64_t(cg_ret_ty)?1:0;
+        if (emit_mov_rr(0,v,is64)) return 1;
+        if (free_tmp(v)) return 1;
+        if (cg_is_main==1){
+            if (emit_movz(8,93,0,1)) return 1;
+            if (emit_svc()) return 1;
+            return 0;
+        }
+        if (emit_mem(0,3,30,31,1023*8)) return 1;
+        if (emit_addsub_imm(31,31,8192,0,1)) return 1;
+        if (emit_ret()) return 1;
+        return 0;
+    }
+    if (k==S_If){
+        int cond=NF(s), r=gen_expr(cond,1); if (r<0) return 1;
+        int is64 = ty_is64_t(ETY(cond))?1:0;
+        if (emit_cmp_imm(r,0,is64)) return 1;
+        if (free_tmp(r)) return 1;
+        int lelse=new_label(); if (lelse<0) return 1;
+        if (emit_bcond(0,lelse)) return 1;
+        int tb=NN(cond);
+        if (cg_push_scope()) return 1;
+        if (gen_block(tb)) return 1;
+        if (cg_pop_scope()) return 1;
+        int lend=new_label(); if (lend<0) return 1;
+        if (emit_b(lend)) return 1;
+        if (place_label(lelse)) return 1;
+        int el=NN(tb);
+        if (el!=0){
+            if (cg_push_scope()) return 1;
+            int erc; if (NK(el)==N_Block) erc=gen_block(el); else erc=gen_stmt(el);
+            if (erc) return 1;
+            if (cg_pop_scope()) return 1;
+        }
+        if (place_label(lend)) return 1;
+        return 0;
+    }
+    if (k==S_While){
+        int cond=NF(s), lcond=new_label(); if (lcond<0) return 1;
+        int lexit=new_label(); if (lexit<0) return 1;
+        if (place_label(lcond)) return 1;
+        int r=gen_expr(cond,1); if (r<0) return 1;
+        int is64 = ty_is64_t(ETY(cond))?1:0;
+        if (emit_cmp_imm(r,0,is64)) return 1;
+        if (free_tmp(r)) return 1;
+        if (emit_bcond(0,lexit)) return 1;
+        if (lp_depth>=64){ return cg_die_at_node("loops nested too deeply (limit 64)", s); }
+        lp_exit[lp_depth]=lexit; lp_cont[lp_depth]=lcond; lp_depth++;
+        if (cg_push_scope()) return 1;
+        if (gen_block(NN(cond))) return 1;
+        if (cg_pop_scope()) return 1;
+        lp_depth--;
+        if (emit_b(lcond)) return 1;
+        if (place_label(lexit)) return 1;
+        return 0;
+    }
+    if (k==S_Break){ if (lp_depth==0) return cg_die_at_node("break used outside a loop", s); if (emit_b(lp_exit[lp_depth-1])) return 1; return 0; }
+    if (k==S_Continue){ if (lp_depth==0) return cg_die_at_node("continue used outside a loop", s); if (emit_b(lp_cont[lp_depth-1])) return 1; return 0; }
+    int v=gen_expr(NF(s),1); if (v<0) return 1;
+    if (free_tmp(v)) return 1;
+    return 0;
+}
+/* gia_ew / gia_ety declared earlier (hoisted) */
+static int gen_index_addr(int tok,int idxexpr){
+    int i=gen_expr(idxexpr,1); if (i<0) return -1;
+    int a=alloc_tmp(); if (a<0) return -1;
+    int e=cg_find_local(tok);
+    if (e>=0){
+        int cnt=cg_loc_cnt[e], ty=cg_loc_ty[e];
+        if (cnt>1){ gia_ety=ty; if (emit_frame_addr(a, cg_loc_slot[e]*8)) return -1; }
+        else if (is_ptr_tag_t(ty)==1){ gia_ety=ptr_elem_t(ty); if (emit_mem(0,3,a,31,cg_loc_slot[e]*8)) return -1; }
+        else { return cg_die_name_at("cannot index non-array variable: ", tok); }
+    } else {
+        int s=cg_find_global(tok);
+        if (s<0){ return cg_die_name_at("unknown variable: ", tok); }
+        if (st_kind[s]==3){ return cg_die_name_at("cannot reference external global: ", tok); }
+        if (st_cnt[s]>1){ gia_ety=st_tag[s]; if (emit_addr64(a, g_addr[s])) return -1; }
+        else if (is_ptr_tag_t(st_tag[s])==1){ gia_ety=ptr_elem_t(st_tag[s]); int t=alloc_tmp(); if (t<0) return -1; if (emit_addr64(t, g_addr[s])) return -1; if (emit_mem(0,3,a,t,0)) return -1; if (free_tmp(t)) return -1; }
+        else { return cg_die_name_at("cannot index non-array variable: ", tok); }
+    }
+    gia_ew=ty_width_t(gia_ety);
+    if (emit_addsub_ext(i,a,i,0,2,log2w_t(gia_ew))) return -1;
+    if (free_tmp(a)) return -1;
+    return i;
+}
+
+/* ---- §6.3 function lowering ---- */
+static int block_returns(int b){
+    int k=NK(b);
+    if (k==N_Block){
+        int s=NF(b);
+        while (s!=0){ if (block_returns(s)) return 1; s=NN(s); }
+        return 0;
+    }
+    if (k==S_Return) return 1;
+    if (k==S_If){
+        int cond=NF(b), tb=NN(cond), el=NN(tb);
+        int tr=0, er=0;
+        if (tb!=0) tr=block_returns(tb);
+        if (el!=0) er=block_returns(el);
+        return tr && er;
+    }
+    return 0;
+}
+static int gen_function(int f){
+    int name_tok=NT(f)+1, is_main=0;
+    if (tok_eq_tok(name_tok,"main")==1) is_main=1;
+    int body=0, bc=NF(f);
+    while (bc!=0){ if (NK(bc)==N_Block){ body=bc; break; } bc=NN(bc); }
+    if (block_returns(body)==0){
+        cg_l=tok_line(name_tok); cg_c=tok_col(name_tok);
+        die_open(); bputname(name_tok); bputs(" may fall through without returning ");
+        if (is_ptr_tag_t(NTY(f))==1) bputs("ptr"); else bputs("i32");
+        bputs("; add a return or make both if/else branches return");
+        return die_close(cg_l,cg_c);
+    }
+    if (cg_reset_frame()) return 1;
+    cg_ret_ty=NTY(f); cg_is_main=is_main; lp_depth=0;
+    if (emit_addsub_imm(31,31,8192,1,1)) return 1;
+    if (is_main==0){ if (emit_mem(1,3,30,31,1023*8)) return 1; }
+    int i=0; int p=NF(f);
+    while (p!=0){
+        if (NK(p)==N_Param){
+            int slot=cg_add_local(NT(p), NTY(p), 1); if (slot<0) return 1;
+            if (i<8){ if (emit_mem(1, mem_scale_t(ty_width_t(NTY(p))), i, 31, slot*8)) return 1; }
+            else { if (emit_mem(0,3,9,31,8192+8*(i-8))) return 1; if (emit_mem(1,3,9,31,slot*8)) return 1; }
+            i++;
+        }
+        p=NN(p);
+    }
+    if (gen_block(body)) return 1;
+    if (tmp_top!=0){ return cg_die("internal compiler error: temporary register leak"); }
+    return 0;
+}
+static int gen_init(int prog){
+    if (cg_reset_frame()) return 1;
+    cg_ret_ty=1; cg_is_main=0; lp_depth=0;
+    if (emit_addsub_imm(31,31,8192,1,1)) return 1;
+    if (emit_mem(1,3,30,31,1023*8)) return 1;
+    int c=NF(prog);
+    while (c!=0){
+        if (NK(c)==N_Global){
+            int init=NF(c);
+            if (init!=0 && is_const(init)==0){
+                int s=cg_find_global(NT(c)); if (s<0) return cg_die("internal compiler error: global symbol mismatch");
+                int v=gen_expr(init, st_tag[s]); if (v<0) return 1;
+                int t=alloc_tmp(); if (t<0) return 1;
+                if (emit_addr64(t, g_addr[s])) return 1;
+                if (emit_mem(1, mem_scale_t(ty_width_t(st_tag[s])), v, t, 0)) return 1;
+                if (free_tmp(t)) return 1;
+                if (free_tmp(v)) return 1;
+            }
+        }
+        c=NN(c);
+    }
+    if (emit_mem(0,3,30,31,1023*8)) return 1;
+    if (emit_addsub_imm(31,31,8192,0,1)) return 1;
+    if (emit_ret()) return 1;
+    return 0;
+}
+/* ---- §6.3 the second pass (stub, __aster_init, main, the rest) ---- */
+/* (fn_lab / main_sym / init_lab / has_stub / init_words / fn_words hoisted) */
+static int symrow_of_name(int t){
+    for (int s=0;s<nsym;s++) if (name_eq(st_name[s], t)==1) return s;
+    return -1;
+}
+static int cg_gen_program(int prog){
+    if (cg_init_pool()!=0) return 1;
+    if (has_stub==1){
+        if (emit_bl(init_lab)) return 1;
+        if (emit_b(fn_lab[main_sym])) return 1;
+        if (place_label(init_lab)) return 1;
+        if (gen_init(prog)) return 1;
+        init_words = textlen - labels[init_lab];
+    }
+    if (place_label(fn_lab[main_sym])) return 1;
+    if (gen_function(st_node[main_sym])) return 1;
+    fn_words[main_sym] = textlen - labels[fn_lab[main_sym]];
+    int c=NF(prog);
+    while (c!=0){
+        if (NK(c)==N_Function){
+            int fsym=symrow_of_name(NT(c)+1);
+            if (fsym>=0 && st_kind[fsym]==0 && tok_eq_tok(NT(c)+1,"main")==0){
+                if (place_label(fn_lab[fsym])) return 1;
+                if (gen_function(st_node[fsym])) return 1;
+                fn_words[fsym] = textlen - labels[fn_lab[fsym]];
+            }
+        }
+        c=NN(c);
+    }
+    return 0;
+}
+
+/* ---- §9 address allocation (str_addr / g_addr / g_sec declared earlier) ---- */
+static int rodata_size, data_size, bss_size;
+static int64_t bss_base;
+static int ninit, g_init[4096];
+static int sstk[65536];
+static int align_up(int64_t v,int a){ return (int)((v+a-1)/a*a); }
+
+static int cg_strings(int root){
+    int esp=0, h=NF(root);
+    while (1){
+        while (h!=0){
+            if (NK(h)==E_String){
+                int t=NT(h);
+                str_addr[h] = 0x600000 + rodata_size;
+                rodata_size = rodata_size + toks[t].len + 1;
+            }
+            int nx=NN(h);
+            if (nx!=0){ sstk[esp]=nx; esp++; }
+            h=NF(h);
+        }
+        if (esp==0) break;
+        esp--; h=sstk[esp];
+    }
+    return 0;
+}
+static int cg_globals(int prog){
+    int s=0;
+    int c=NF(prog);
+    while (c!=0){
+        if (NK(c)==N_Global){
+            while (s<nsym && name_eq(st_name[s], NT(c))==0) s=s+1;
+            if (s>=nsym){ return cg_die("internal compiler error: global symbol mismatch"); }
+            int init=NF(c);
+            if (init!=0){
+                int w=ty_width_t(st_tag[s]), total=w*st_cnt[s], sec=0;
+                if (is_const(init)==1){
+                    int64_t val=fold(init);
+                    if (val!=0) sec=1;
+                } else {
+                    if (tc_expr(init)) return 1;
+                    cg_l=tok_line(NT(c)); cg_c=tok_col(NT(c));
+                    if (is_ptr_tag_t(st_tag[s])==0 && expr_yields_ptr(init)==1){
+                        die_open(); bputs("type mismatch initializing global '"); bputname(NT(c));
+                        bputs("': expected "); bputtybase(st_tag[s]); bputs(", got ptr");
+                        return die_close(cg_l,cg_c);
+                    }
+                    if (assign_ok(st_tag[s], ETY(init), EAR(init), init)==0){
+                        die_name_at("type mismatch assigning variable: ", NT(c)); return 1;
+                    }
+                    g_init[ninit]=s; ninit=ninit+1;
+                }
+                if (sec==1){
+                    data_size = align_up(data_size, w);
+                    g_addr[s] = 0x800000 + data_size;
+                    g_sec[s]=1; data_size = data_size + total;
+                } else {
+                    bss_size = align_up(bss_size, w);
+                    g_addr[s] = bss_size; g_sec[s]=0; bss_size = bss_size + total;
+                }
+            }
+            s=s+1;
+        }
+        c=NN(c);
+    }
+    return 0;
+}
+static int cg_functions(void){
+    int s=0;
+    while (s<nsym){
+        if (st_kind[s]==0){
+            fn_lab[s]=new_label(); if (fn_lab[s]<0) return 1;
+            if (tok_eq_tok(st_name[s],"main")==1) main_sym=s;
+        }
+        s=s+1;
+    }
+    if (ninit>0){ init_lab=new_label(); if (init_lab<0) return 1; has_stub=1; }
+    if (main_sym<0){
+        cg_l=1; cg_c=1;
+        return cg_die("no main function: this backend emits a standalone ELF and needs an entry point");
+    }
+    return 0;
+}
+static int cg_collect(int prog){
+    if (cg_strings(prog)) return 1;
+    if (cg_globals(prog)) return 1;
+    if (rodata_size>2097152) return cg_die(".rodata exceeds its 2 MiB window");
+    if (data_size>1069547519 || bss_size>1069547519) return cg_die("global data exceeds the address space");
+    bss_base = align_up(0x800000LL + data_size, 8);
+    int s=0; while (s<nsym){ if (st_kind[s]==2 && g_sec[s]==0) g_addr[s]=g_addr[s]+bss_base; s++; }
+    return cg_functions();
+}
+
+/* The bootstrap's exprYieldsPtr over the M3d subset (iterative). */
+static int pstk[65536];
+static int expr_yields_ptr(int h){
+    int esp=0; pstk[0]=h; esp=1;
+    while (esp>0){
+        esp--; int n=pstk[esp], k=NK(n);
+        if (k==E_String) return 1;
+        if (k==E_Var){ if (sym_find_var(NT(n))==1 && rs_cnt>1) return 1; continue; }
+        if (k==E_Call){
+            if (sym_find_call(NT(n))==1){
+                if (rs_fnsym==-1){ if (rcall_rtyp==4) return 1; }
+                else if (is_ptr_tag_t(st_tag[rs_fnsym])==1) return 1;
+            }
+            continue;
+        }
+        if (k==E_Add||k==E_Sub){
+            int l=NF(n);
+            if (esp+2>65536){ cg_die("internal compiler error: walk stack overflow"); return 0; }
+            pstk[esp]=NN(l); esp++; pstk[esp]=l; esp++;
+            continue;
+        }
+    }
+    return 0;
+}
+
+/* ---- §9.1/§9.2/§9.3 string & symbol tables ---- */
+static unsigned char strtab[1048576]; static int strtab_len;
+static unsigned char shstr[128]; static int shstr_len;
+static int strtab_add(const unsigned char *p,int n){
+    if (strtab_len+n+1>1048576) return cg_die(".strtab exceeds its 1 MiB window");
+    int off=strtab_len, i=0;
+    while (i<n){ strtab[strtab_len]=p[i]; strtab_len++; i++; }
+    strtab[strtab_len]=0; strtab_len++;
+    return off;
+}
+static int strtab_add_tok(int t){ return strtab_add(srcbuf + toks[t].start, toks[t].len); }
+static int strtab_add_lit(const char *lit){
+    int n=0; while (lit[n]) n++;
+    return strtab_add((const unsigned char*)lit, n);
+}
+static int shstr_add(const char *lit){
+    int n=0; while (lit[n]) n++;
+    if (shstr_len+n+1>128) return cg_die(".shstrtab exceeds its window");
+    int off=shstr_len, i=0;
+    while (i<n){ shstr[shstr_len]=lit[i]; shstr_len++; i++; }
+    shstr[shstr_len]=0; shstr_len++;
+    return off;
+}
+static int sym_name[4160], sym_info[4160], sym_shndx[4160];
+static int64_t sym_val[4160], sym_size[4160];
+static int elf_nsym;
+static int sym_add(int name_off,int info,int shndx,int64_t val,int64_t size){
+    if (elf_nsym>=4160) return cg_die("too many symbols");
+    sym_name[elf_nsym]=name_off; sym_info[elf_nsym]=info; sym_shndx[elf_nsym]=shndx;
+    sym_val[elf_nsym]=val; sym_size[elf_nsym]=size; elf_nsym++;
+    return 0;
+}
+static int sh_ro, sh_da, sh_bs, sh_sym, sh_str, sh_shstr;
+static int elf_collect_syms(int prog){
+    if (sym_add(0,0,0,0,0)) return 1;
+    int start_size=fn_words[main_sym];
+    if (has_stub==1) start_size=16;
+    if (sym_add(strtab_add_lit("_start"), 0x12, 1, 0x401000LL, start_size)) return 1;
+    if (has_stub==1){
+        if (sym_add(strtab_add_lit("__aster_init"), 0x12, 1, 0x401000LL + (int64_t)labels[init_lab]*4, init_words)) return 1;
+    }
+    if (sym_add(strtab_add_tok(st_name[main_sym]), 0x12, 1, 0x401000LL + (int64_t)labels[fn_lab[main_sym]]*4, fn_words[main_sym])) return 1;
+    int c=NF(prog);
+    while (c!=0){
+        if (NK(c)==N_Function){
+            int fsym=symrow_of_name(NT(c)+1);
+            if (fsym>=0 && st_kind[fsym]==0 && tok_eq_tok(NT(c)+1,"main")==0){
+                if (sym_add(strtab_add_tok(st_name[fsym]), 0x12, 1, 0x401000LL + (int64_t)labels[fn_lab[fsym]]*4, fn_words[fsym])) return 1;
+            }
+        }
+        c=NN(c);
+    }
+    int s=0; while (s<nsym){
+        if (st_kind[s]==2){
+            int shndx=sh_bs; if (g_sec[s]==1) shndx=sh_da;
+            if (sym_add(strtab_add_tok(st_name[s]), 0x11, shndx, g_addr[s], (int64_t)st_cnt[s]*ty_width_t(st_tag[s]))) return 1;
+        }
+        s++;
+    }
+    return 0;
+}
+static int elf_written;
+static int elf_pad_to(int target){
+    while (elf_written<target){ putb(0); elf_written++; }
+    return 0;
+}
+static int elf_shdr(int name,int ty,int64_t flags,int64_t addr,int64_t off,int64_t size,int link,int info,int64_t align,int64_t ent){
+    elf_put32(name); elf_put32(ty); elf_put64(flags); elf_put64(addr);
+    elf_put64(off); elf_put64(size); elf_put32(link); elf_put32(info);
+    elf_put64(align); elf_put64(ent); elf_written=elf_written+64;
+    return 0;
+}
+static int elf_emit(int prog){
+    int i=0;
+    while (i<nfix){
+        int delta=labels[fx_label[i]] - fx_pos[i];
+        if (fx_kind[i]==0){
+            if (delta<-262144 || delta>262143) return cg_die("conditional branch out of range");
+            textw[fx_pos[i]] = textw[fx_pos[i]] | ((delta & 0x7ffff) << 5) | fx_cond[i];
+        } else {
+            if (delta<-33554432 || delta>33554431) return cg_die("branch out of range");
+            textw[fx_pos[i]] = textw[fx_pos[i]] | (delta & 0x3ffffff);
+        }
+        i++;
+    }
+    int textbytes=textlen*4;
+    int nseg=1;
+    if (rodata_size>0) nseg++;
+    if (data_size+bss_size>0) nseg++;
+    int nsh=2;
+    if (rodata_size>0){ sh_ro=nsh; nsh++; }
+    if (data_size>0){ sh_da=nsh; nsh++; }
+    if (bss_size>0){ sh_bs=nsh; nsh++; }
+    sh_sym=nsh; nsh++;
+    sh_str=nsh; nsh++;
+    sh_shstr=nsh; nsh++;
+    strtab_len=0; strtab[0]=0; strtab_len=1;
+    shstr_len=0; elf_nsym=0; shstr[0]=0; shstr_len=1;
+    int nm_text=shstr_add(".text");
+    int nm_ro=0, nm_da=0, nm_bs=0;
+    if (rodata_size>0) nm_ro=shstr_add(".rodata");
+    if (data_size>0) nm_da=shstr_add(".data");
+    if (bss_size>0) nm_bs=shstr_add(".bss");
+    int nm_sym=shstr_add(".symtab");
+    int nm_str=shstr_add(".strtab");
+    int nm_shstr=shstr_add(".shstrtab");   /* name offset for the .shstrtab section header */
+    if (elf_collect_syms(prog)) return 1;
+    int rodata_off=(0x1000+textbytes+4095)/4096*4096;
+    int data_off=(rodata_off+rodata_size+4095)/4096*4096;
+    int tail_base=0x1000+textbytes;
+    if (rodata_size>0) tail_base=rodata_off+rodata_size;
+    if (data_size>0) tail_base=data_off+data_size;
+    int symtab_off=(tail_base+7)/8*8;
+    int strtab_off=symtab_off+elf_nsym*24;
+    int shstr_off=strtab_off+strtab_len;
+    int shoff=(shstr_off+shstr_len+7)/8*8;
+    elf_written=0;
+    putb(0x7f); putb(69); putb(76); putb(70); putb(2); putb(1); putb(1); putb(0);
+    int z=0; while (z<8){ putb(0); z++; }
+    elf_put16(2); elf_put16(183); elf_put32(1);
+    elf_put64(0x401000LL); elf_put64(64); elf_put64(shoff);
+    elf_put32(0); elf_put16(64); elf_put16(56); elf_put16(nseg);
+    elf_put16(64); elf_put16(nsh); elf_put16(sh_shstr);
+    elf_put32(1); elf_put32(5);
+    elf_put64(0); elf_put64(0x400000LL); elf_put64(0x400000LL);
+    elf_put64(0x1000+textbytes); elf_put64(0x1000+textbytes); elf_put64(0x1000);
+    if (rodata_size>0){
+        elf_put32(1); elf_put32(4);
+        elf_put64(rodata_off); elf_put64(0x600000LL); elf_put64(0x600000LL);
+        elf_put64(rodata_size); elf_put64(rodata_size); elf_put64(0x1000);
+    }
+    if (data_size+bss_size>0){
+        elf_put32(1); elf_put32(6);
+        elf_put64(data_off); elf_put64(0x800000LL); elf_put64(0x800000LL);
+        elf_put64(data_size); elf_put64(data_size+bss_size); elf_put64(0x1000);
+    }
+    elf_written = 64 + nseg*56;
+    if (elf_pad_to(0x1000)) return 1;
+    i=0; while (i<textlen){
+        int v=textw[i];
+        putb(v&0xff); putb((v>>8)&0xff); putb((v>>16)&0xff); putb((v>>24)&0xff);
+        elf_written=elf_written+4; i++;
+    }
+        if (rodata_size>0){
+            if (elf_pad_to(rodata_off)) return 1;
+            int esp=0, h=NF(prog);
+            while (1){
+                while (h!=0){
+                    if (NK(h)==E_String){
+                        int t=NT(h);
+                        putn(strpool + toks[t].start, toks[t].len); putb(0);
+                        elf_written=elf_written+toks[t].len+1;
+                    }
+                    int nx=NN(h);
+                    if (nx!=0){ sstk[esp]=nx; esp++; }
+                    h=NF(h);
+                }
+            if (esp==0) break;
+            esp--; h=sstk[esp];
+        }
+    }
+    if (data_size>0){
+        if (elf_pad_to(data_off)) return 1;
+        int c=NF(prog);
+        while (c!=0){
+            if (NK(c)==N_Global){
+                int s=cg_find_global(NT(c));
+                if (s>=0 && g_sec[s]==1){
+                    int target=data_off + (int)(g_addr[s] - 0x800000);
+                    if (elf_pad_to(target)) return 1;
+                    int64_t v=fold(NF(c));
+                    int w2=ty_width_t(st_tag[s]), el=0;
+                    while (el<st_cnt[s]){
+                        int bi=0;
+                        while (bi<w2){ putb((int)((v>>(8*bi))&0xff)); elf_written++; bi++; }
+                        el++;
+                    }
+                }
+            }
+            c=NN(c);
+        }
+    }
+    if (elf_pad_to(symtab_off)) return 1;
+    i=0; while (i<elf_nsym){
+        elf_put32(sym_name[i]); putb(sym_info[i]); putb(0); elf_put16(sym_shndx[i]);
+        elf_put64(sym_val[i]); elf_put64(sym_size[i]); elf_written=elf_written+24; i++;
+    }
+    putn(strtab, strtab_len); elf_written=elf_written+strtab_len;
+    putn(shstr, shstr_len); elf_written=elf_written+shstr_len;
+    if (elf_pad_to(shoff)) return 1;
+    elf_shdr(0,0,0,0,0,0,0,0,0,0);
+    elf_shdr(nm_text,1,6,0x401000LL,0x1000,textbytes,0,0,4,0);
+    if (rodata_size>0) elf_shdr(nm_ro,1,4,0x600000LL,rodata_off,rodata_size,0,0,1,0);
+    if (data_size>0) elf_shdr(nm_da,1,3,0x800000LL,data_off,data_size,0,0,8,0);
+    if (bss_size>0) elf_shdr(nm_bs,8,3,bss_base,data_off+data_size,bss_size,0,0,8,0);
+    elf_shdr(nm_sym,2,0,0,symtab_off,(int64_t)elf_nsym*24,sh_str,1,8,24);
+    elf_shdr(nm_str,3,0,0,strtab_off,strtab_len,0,0,1,0);
+    elf_shdr(nm_shstr,3,0,0,shstr_off,shstr_len,0,0,1,0);
+    return 0;
+}
 /* ------------------------------------------------------------------- driver */
-/* Three phases (§10): stdin and the scanner, then the parse, then the dump —
- * and nothing reaches stdout unless the parse was clean, which holds here
- * because the dump is a later phase than every diagnostic. */
+/* §10 read; then sema; then the codegen chain cg_collect -> cg_gen_program ->
+ * elf_emit -> flush_out, which emits a byte-identical ELF to the bootstrap
+ * (CODEGEN-SPEC.md) on every accepted program. */
 int main(void) {
     read_source();
     lex();
     int prog = parse_program();
     if (sema(prog) != 0) return 1;
-    emit(prog, 0);
+    if (cg_collect(prog) != 0) return 1;
+    if (cg_gen_program(prog) != 0) return 1;
+    if (elf_emit(prog) != 0) return 1;
+    flush_out();
     return 0;
 }

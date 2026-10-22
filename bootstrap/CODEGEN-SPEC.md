@@ -566,15 +566,16 @@ C1/C2 锚在 `break`/`continue` 关键字 token（宿主同）；C3 锚在**函�
 
 ## 12. 与孪生的字节级一致性条款
 
-`tests/codegen-twin.c`（独立 C 实现，仿 `tests/parser-twin.c` 纪律：
-`gcc -std=c11 -O2 -Wall -Wextra -Werror -fwrapv -fno-builtin`）从本规格**独立**
-实现：自有递归下降解析 → 自有 AST → 同一份 lowering 规则（§2–§9 的全部编码、
-帧布局、发射序、fixup/标签语义、ELF 布局）→ 同一字节流。
+`tests/codegen-twin.c`（独立 C 实现，沿用孪生一贯纪律：
+`gcc -std=c11 -O2 -Wall -Wextra -Werror -fwrapv -fno-builtin -I.`）从本规格**独立**
+实现：自有递归下降解析 → 自有 AST（0 基节点图，NK/NF/NN/NT/NTY/ETY/EAR 宏把
+-1 映射为 0 以复用 bootstrap 的 1 基移植逻辑）→ 同一份 lowering 规则
+（§2–§9 的全部编码、帧布局、发射序、fixup/标签语义、ELF 布局）→ 同一字节流。
 
 - **一致项**：对任何双方都接受的程序，`cmp -s boot.elf twin.elf` 逐字节相同；
   对任何一方拒绝的程序，退出码与 stderr 基础串相同。
 - **纪律**：孪生不得读 bootstrap 源码；两实现共享的唯一知识是本规格与
-  `tests/parser-twin.c` 已验证的节点编号/转储事实。
+  bootstrap/aster.ast 经 §12 之前各节验证的节点编号事实。
 - **裁判规则**：任何发散即一方缺陷——bootstrap 侧缺陷修 bootstrap，
   孪生侧缺陷修孪生；规格本身歧义时先修规格再修两侧。
 
@@ -588,9 +589,13 @@ M3d 的达成判据（`tests/codegen-checks.sh` 落地后必须全绿）：
    `write_hello.ast`（字符串 rodata + `write` syscall，stdout=`Hello, World!`）、
    综合样例（多函数 `BL` + 全局数组 + 指针遍历 + `while` + `break`/`continue`）
    在 `qemu-aarch64` 下结果正确。
-2. **字节级差分**：上述样例 + 全语料接纳用例，bootstrap 与孪生 `cmp -s` 一致。
+2. **字节级差分（冻结判据）**：`tests/codegen-checks.sh` 遍历 `examples/*.ast`
+   + `tests/codegen-fixtures/*.ast`，对每个程序**两侧（verifybin 与孪生）必须就
+   接纳/拒绝达成一致**，且对每个双方都接纳的程序，**二者产出的 ELF `cmp -s`
+   逐字节相同**——这是 M3d 的达成红线，任何发散即一方缺陷。
 3. **功能等价**：bootstrap ELF vs 宿主 `build-elf` ELF 运行结果一致。
-4. **零依赖**：产物 ELF 无动态节、无 UND 符号（`readelf -d` 无输出）。
+4. **零依赖**：产物 ELF 无动态节、无 UND 符号（`readelf -d` 无输出）；
+   codegen-checks.sh 亦对 `verifybin` 自身断言唯一 UND 是 ELF null symbol。
 5. **变异探针**：对 `bootstrap/aster.ast` 打补丁重建，断言与孪生发散
    （≥3–5 探针覆盖：指令编码、syscall 号、分支回填、符号地址、宽度传播）。
 6. **容量/边界**：大函数、深表达式（左结合 3 万+ 项）、>8 参数走栈、长串、
@@ -620,3 +625,12 @@ M3d 的达成判据（`tests/codegen-checks.sh` 落地后必须全绿）：
 **不在 M3d 范围**（属 M4 闭环自举）：`bootstrap/aster.ast` 自身编译——
 它调用 4 个 extern fn（`strlen/utoa/itoa/memcmp`，`bootstrap/aster.ast:33-36`），
 独立镜像无法解析（§10 C9）。M4 以多对象链接或内建 lowering 闭合。
+
+> **M3d 测试形态（#261）**：`bootstrap/aster.ast` 的 `main()` 已由 M3b 的 AST
+> 转储路径改接为 `sema → cg_collect → cg_gen_program → elf_emit → flush_out`
+> 的 codegen 链；常驻回归套件随之由 `tests/parser-checks.sh`（AST 转储差分 +
+> 自读自身源码的 self-parse pin）**退役**，由 `tests/codegen-checks.sh` 接替——
+> 后者以 `build-obj` 构建 bootstrap + 标准库、链接为 `verifybin`，并与孪生
+> 对全语料做 #2 的字节级差分，即本规格的 **ELF 自校验**（替代原 AST self-parse
+> pin）。`tests/parser-twin.c` 与 `tests/parser-checks.sh` 已随本轮删除；M3b/M3c
+> 的 AST 转储与语义门不再有常驻套件（bootstrap 不再转储 AST）。

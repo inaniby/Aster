@@ -1,0 +1,3 @@
+extern let g: i32;
+let h: i32 = 1;
+fn main() -> i32 { return h; }

@@ -1,0 +1,10 @@
+let kc: i32 = 77;
+let kz: i32 = 0;
+let ka: u8[3] = 9;
+let msg: ptr<u8> = "s1ok";
+fn add1(x: i32) -> i32 { return x + 1; }
+fn twice(x: i32) -> i32 { return x * 2; }
+fn main() -> i32 {
+    write(1, msg, 4);
+    return twice(kc) + kz + ka[0];
+}
