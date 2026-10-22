@@ -348,7 +348,8 @@ park 活临时（`STR Xr,[SP,#(900+r)*8]`，`tmp_top←0`）→ 逐参 `gen_expr
 | `brk` | 214 | `(ptr) → ptr` | |
 | `exit` | 93 | `(i32) → i32` | **bootstrap 新增**（宿主持无；宿主 main 的 return 即 exit） |
 
-**内存类**（不走 SVC，直接访存；宿主 `src/aster.cpp:3169-3210`）：
+**内存类**（不走 SVC，直接访存；宿主 `src/aster.cpp:3169-3210`）。store 族
+**先求值参后求指针参**（宿主同序），故指针临时较新、被释放的是它：
 
 | 内建 | lowering | 返回 |
 |---|---|---|
@@ -356,13 +357,27 @@ park 活临时（`STR Xr,[SP,#(900+r)*8]`，`tmp_top←0`）→ 逐参 `gen_expr
 | `load_i64` | `a=gen(ptr参,i64); LDR Xa,[Xa]`（`0xf9400000\|(a<<5)\|a`） | i64 |
 | `load_u8` | `a=gen(ptr参,i64); LDRB Wa,[Xa]`（`0x39400000\|(a<<5)\|a`） | i32（零扩展） |
 | `load_u16` | `a=gen(ptr参,i64); LDRH Wa,[Xa]`（`0x79400000\|(a<<5)\|a`） | i32（零扩展） |
-| `store_i64` | `a=gen(ptr参,i64); v=gen(i64参); STR Xv,[Xa]`（`0xf9000000\|(a<<5)\|v`） | i64 |
-| `store_u8` | `a=gen(ptr参,i64); v=gen(i32参); STRB Wv,[Xa]`（`0x39000000\|(a<<5)\|v`） | i32 |
-| `store_u16` | `a=gen(ptr参,i64); v=gen(i32参); STRH Wv,[Xa]`（`0x79000000\|(a<<5)\|v`） | i32 |
+| `store_i64` | `v=gen(i64参); a=gen(ptr参,i64); STR Xv,[Xa]`（`0xf9000000\|(a<<5)\|v`） | i64 |
+| `store_u8` | `v=gen(i32参); a=gen(ptr参,i64); STRB Wv,[Xa]`（`0x39000000\|(a<<5)\|v`） | i32 |
+| `store_u16` | `v=gen(i32参); a=gen(ptr参,i64); STRH Wv,[Xa]`（`0x79000000\|(a<<5)\|v`） | i32 |
+
+load 族的载入形自带全宽零扩展（LDRB/LDRH 写 W 即清零高 32 位），**无 SXTW 尾**；
+store 族原样返回值临时（宿主同）。
 
 **内建实参校验**（M3c 对内建跳过签名检查，故由 codegen 补）：个数与类型按上表，
 消息镜像宿主（`src/aster.cpp:3170-3210,5980-6043`），如
 `write expects (fd: i32, buf: ptr, len: i32)`、`load_u8 expects exactly one ptr argument`。
+逐槽规则（镜像宿主 typeOf 比较）：**i32 槽只拒指针**（bool 放行，宿主亦然）；
+**i64 槽拒指针或 bool**；**ptr 槽要求四个指针标记之一**。消息形状：load 族
+（单参内存类）走 `<名> expects a ptr argument`；其余内建命名位置
+（`<名> [第n] argument must be <型>`，单参时省序数）。**exit 的消息为 bootstrap 自有**
+（宿主持无 exit 内建，其 main 的 return 即 exit），按 close 的图案拼写：
+`exit expects (code: i32)` / `exit argument must be i32`。
+
+系统调用类与普通调用共用同一网格纪律：`基 = cg_grid_hi`，越界同样触发
+`nested function-call arguments exceed compiler limit (100 scratch slots)`
+（内建最多 6 参，mmap）。系统调用类结果经槽 1022 还原后读回，**返回型 i32 且 want
+64 位时同样 `SXTW`**（与普通调用尾一致；内存类无此尾）。
 
 **普通函数调用**（宿主 `emitCallSeq`，`src/aster.cpp:4115`）：
 park 活临时（`tmp_top←0`）→ 逐参 `gen_expr_at(参i, 形参型i, gx_top)` 落网格槽（每参 1 槽，
@@ -392,6 +407,14 @@ park 活临时（`tmp_top←0`）→ 逐参 `gen_expr_at(参i, 形参型i, gx_to
 字符串字面量时才有；`.data` 有 ≥1 个非零常量全局时才有；`.bss` 有 ≥1 个全零或
 runtime-init 全局时才有。文件内顺序：`Ehdr+Phdr`（页 0）→ `.text` → `.rodata`
 （页对齐）→ `.data`（页对齐）→ `.symtab`/`.strtab`/`.shstrtab`（8 对齐）→ Shdr 表。
+
+**段页对齐不变量**（#260 `elf_emit` 必须遵守）：每个 `PT_LOAD` 的
+`p_offset ≡ p_vaddr (mod 0x1000)`。qemu-user 的加载器按
+`vaddr − (offset mod page)` 反推映射基址，一旦错位即 `Error mapping file:
+Invalid argument` 静默拒载（#259 原型 emitter 实测：对齐掩码写成 `0-0xfff`
+即 −4095，少 1 个位，`.rodata` 整体偏移 1 字节，所有含字符串字面量的探针
+ rc=255）。对齐须用 `(v + 0xfff) / 0x1000 * 0x1000` 或 `& ~0xfff`，
+**不得**写成 `& (0 - 0xfff)`。
 
 **`cg_collect` 分配规则**：
 
@@ -546,6 +569,15 @@ M3d 的达成判据（`tests/codegen-checks.sh` 落地后必须全绿）：
    （≥3–5 探针覆盖：指令编码、syscall 号、分支回填、符号地址、宽度传播）。
 6. **容量/边界**：大函数、深表达式（左结合 3 万+ 项）、>8 参数走栈、长串、
    大数组（≤1 MiB）、32 参上限、嵌套调用网格预算。
+7. **内建对拍**（#259 交付，宿主参照 `build-elf`）：15 内建逐一覆盖——
+   退出码对拍 q1 `exit(42)`=42、q2 `write`=5、q3a/b/c/d 内存族四宽
+   （200/64/7/99）、q4a/b `mmap`/`brk`=77/88、q5a/b/c 嵌套与 park 交互
+   （2/3/1）、q6 `openat`+`fstat`+`read`+`close`=100、q7 mmap i64 宽实参
+   =225、q8 字符串字面量上的 load 族=9、q9 bool 参 `exit`=1；
+   write 探针另比对 stdout 字节。错误探针 e5–e11/e13–e15 的消息与位置
+   与宿主逐字一致（bootstrap 单行格式 vs 宿主富格式之差是 M3c 诊断的时代差，
+   消息核心与位置即判据）；e15（exit 个数错误）为 bootstrap 自有消息，
+   按钉定字符串比对。
 
 **不在 M3d 范围**（属 M4 闭环自举）：`bootstrap/aster.ast` 自身编译——
 它调用 4 个 extern fn（`strlen/utoa/itoa/memcmp`，`bootstrap/aster.ast:33-36`），

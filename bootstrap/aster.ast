@@ -4124,18 +4124,246 @@ fn gen_index(n: i32, want: i32) -> i32 {
     return 0;
 }
 
+// ---- §8 the intrinsic signatures ----
+// One packed word per host intrinsic (CODEGEN-SPEC.md §8), indexed by the
+// IC_* id: bits 0..2 the argument count, bits 3..20 six 3-bit argument type
+// tags (the TY_* family; positions past the count stay zero), bits 21..28
+// the AArch64 syscall number — 0 marks the memory family, which lowers to a
+// single load or store and never reaches SVC. The tags drive all three
+// consumers: ic_check's validation, the width each argument is staged at,
+// and (with the count) the shape of the count diagnostic.
+fn ic_sig(ic: i32) -> i32 {
+    if (ic == IC_LOAD_PTR)  { return 1 | (TY_PTR << 3); }
+    if (ic == IC_LOAD_I64)  { return 1 | (TY_PTR << 3); }
+    if (ic == IC_LOAD_U8)   { return 1 | (TY_PTR << 3); }
+    if (ic == IC_LOAD_U16)  { return 1 | (TY_PTR << 3); }
+    if (ic == IC_STORE_I64) { return 2 | (TY_PTR << 3) | (TY_I64 << 6); }
+    if (ic == IC_STORE_U8)  { return 2 | (TY_PTR << 3) | (TY_I32 << 6); }
+    if (ic == IC_STORE_U16) { return 2 | (TY_PTR << 3) | (TY_I32 << 6); }
+    if (ic == IC_WRITE)     { return 3 | (TY_I32 << 3) | (TY_PTR << 6) | (TY_I32 << 9) | (64 << 21); }
+    if (ic == IC_READ)      { return 3 | (TY_I32 << 3) | (TY_PTR << 6) | (TY_I32 << 9) | (63 << 21); }
+    if (ic == IC_OPENAT)    { return 4 | (TY_I32 << 3) | (TY_PTR << 6) | (TY_I32 << 9) | (TY_I32 << 12) | (56 << 21); }
+    if (ic == IC_CLOSE)     { return 1 | (TY_I32 << 3) | (57 << 21); }
+    if (ic == IC_FSTAT)     { return 2 | (TY_I32 << 3) | (TY_PTR << 6) | (80 << 21); }
+    if (ic == IC_MMAP)      { return 6 | (TY_PTR << 3) | (TY_I64 << 6) | (TY_I32 << 9) | (TY_I32 << 12) | (TY_I32 << 15) | (TY_I64 << 18) | (222 << 21); }
+    if (ic == IC_BRK)       { return 1 | (TY_PTR << 3) | (214 << 21); }
+    return 1 | (TY_I32 << 3) | (93 << 21);   // IC_EXIT
+}
+fn ic_argc(s: i32) -> i32 { return s & 7; }
+fn ic_argty(s: i32, i: i32) -> i32 { return (s >> (3 + 3 * i)) & 7; }
+fn ic_nr(s: i32) -> i32 { return (s >> 21) & 255; }
+
+// The ordinal word of a multi-argument intrinsic's type diagnostic — the
+// host spells them out ("first argument", "sixth argument"), so the
+// bootstrap does too rather than printing a number.
+fn ic_ordinal(i: i32) -> ptr<u8> {
+    if (i == 0) { return " first"; }
+    if (i == 1) { return " second"; }
+    if (i == 2) { return " third"; }
+    if (i == 3) { return " fourth"; }
+    if (i == 4) { return " fifth"; }
+    return " sixth";
+}
+
+// The tail of the count diagnostic: the caller prints the callee's name
+// first, this is everything after it — the host's signature spellings,
+// verbatim (src/aster.cpp:5980-6043). exit is the bootstrap's own (the host
+// has no exit intrinsic; its main's return is the exit), spelled on close's
+// pattern.
+fn ic_count_msg(ic: i32) -> ptr<u8> {
+    if (ic == IC_LOAD_PTR || ic == IC_LOAD_I64 || ic == IC_LOAD_U8 || ic == IC_LOAD_U16) {
+        return " expects exactly one ptr argument";
+    }
+    if (ic == IC_STORE_I64) { return " expects (ptr, i64)"; }
+    if (ic == IC_STORE_U8 || ic == IC_STORE_U16) { return " expects (ptr, i32)"; }
+    if (ic == IC_WRITE || ic == IC_READ) { return " expects (fd: i32, buf: ptr, len: i32)"; }
+    if (ic == IC_OPENAT) { return " expects (fd: i32, path: ptr, flags: i32, mode: i32)"; }
+    if (ic == IC_CLOSE) { return " expects (fd: i32)"; }
+    if (ic == IC_FSTAT) { return " expects (fd: i32, buf: ptr)"; }
+    if (ic == IC_MMAP) { return " expects (addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64)"; }
+    if (ic == IC_BRK) { return " expects (addr: ptr)"; }
+    return " expects (code: i32)";   // IC_EXIT
+}
+
+// §8 argument validation. M3c skips the intrinsic signature checks — an
+// intrinsic has no declaration to bind arguments against — so codegen
+// performs them here: the count first, then each position's type, with the
+// host's messages mirrored word for word. The per-slot rules follow the
+// host's typeOf comparisons: an i32 slot refuses only a pointer, an i64
+// slot refuses a pointer or a bool, a ptr slot requires one of the four
+// pointer tags. The load family (the one-argument memory intrinsics) spells
+// its type diagnostic on its own pattern; every other intrinsic names the
+// position, omitting the ordinal when there is only one argument. Returns 1
+// after printing the diagnostic.
+fn ic_check(n: i32, ic: i32) -> i32 {
+    let s: i32 = ic_sig(ic);
+    let argc: i32 = ic_argc(s);
+    let cnt: i32 = 0;
+    let a: i32 = nfirst[n - 1];
+    while (a != 0) { cnt = cnt + 1; a = nnext[a - 1]; }
+    let callee: i32 = ntok[n - 1];
+    cg_l = tok_line(callee);
+    cg_c = tok_col(callee);
+    if (cnt != argc) {
+        die_open();
+        bputname(callee);
+        bputs(ic_count_msg(ic));
+        return die_close(cg_l, cg_c);
+    }
+    let i: i32 = 0;
+    let arg: i32 = nfirst[n - 1];
+    while (arg != 0) {
+        let t: i32 = ex_ty[arg - 1];
+        let slot: i32 = ic_argty(s, i);
+        let bad: i32 = 0;
+        if (is_ptr_tag(slot) == 1) {
+            if (is_ptr_tag(t) == 0) { bad = 1; }
+        } else if (slot == TY_I64) {
+            if (is_ptr_tag(t) == 1 || t == -2) { bad = 1; }
+        } else {
+            if (is_ptr_tag(t) == 1) { bad = 1; }
+        }
+        if (bad == 1) {
+            die_open();
+            bputname(callee);
+            if (ic_nr(s) == 0 && argc == 1) {
+                bputs(" expects a ptr argument");   // the load family's pattern
+            } else {
+                if (argc > 1) { bputs(ic_ordinal(i)); }
+                bputs(" argument must be ");
+                if (is_ptr_tag(slot) == 1) { bputs("ptr"); }
+                else if (slot == TY_I64) { bputs("i64"); }
+                else { bputs("i32"); }
+            }
+            return die_close(cg_l, cg_c);
+        }
+        i = i + 1;
+        arg = nnext[arg - 1];
+    }
+    return 0;
+}
+
+// ---- §8 the intrinsic dispatch ----
+// gen_call's fsym == -1 branch. Two shapes: the memory family (nr == 0)
+// lowers to a single load or store with no call sequence at all; the syscall
+// family to the parked-temporaries / staged-arguments / SVC sequence §8
+// freezes — the same staging as a direct call, the callee replaced by
+// MOV X8,#nr; SVC #0 and the argument widths taken from the intrinsic's
+// signature rather than a declaration.
+fn gen_intrinsic(n: i32, want: i32) -> i32 {
+    let ic: i32 = rcall_intrinsic;
+    if (ic_check(n, ic) != 0) { return -1; }
+    let s: i32 = ic_sig(ic);
+    let argc: i32 = ic_argc(s);
+    let nr: i32 = ic_nr(s);
+    if (nr == 0) { return gen_mem_intrinsic(n, ic, s); }
+    let base: i32 = cg_grid_hi;
+    if (base + argc > 100) {
+        cg_l = tok_line(ntok[n - 1]);
+        cg_c = tok_col(ntok[n - 1]);
+        if (cg_die("nested function-call arguments exceed compiler limit (100 scratch slots)") != 0) { return -1; }
+    }
+    // Park every live temporary in the spill area (900+r), then reset the
+    // pool so the argument expressions start from a clean X0 — the same
+    // discipline a direct call follows, and for the same reason: the
+    // syscall's X0-X7 are the pool's first registers.
+    let parked_n: i32 = tmp_top;
+    let pr: i32 = 0;
+    while (pr < parked_n) {
+        if (emit_mem(1, 3, tmp_free[pr], 31, (900 + pr) * 8) != 0) { return -1; }
+        pr = pr + 1;
+    }
+    tmp_top = 0;
+    // Stage each argument: its own grid slot, at the width its signature
+    // slot names (mmap's second and sixth ride at full i64 width). The grid
+    // high-water mark moves before each argument, so a nested call stages
+    // above everything this one already occupies — §6.1's base rule.
+    let i: i32 = 0;
+    let arg: i32 = nfirst[n - 1];
+    while (arg != 0) {
+        let pty: i32 = ic_argty(s, i);
+        cg_grid_hi = base + i;
+        let v: i32 = gen_expr_at(arg, pty, gx_top);
+        if (v < 0) { return -1; }
+        if (emit_mem(1, mem_scale(ty_width(pty)), v, 31, (800 + base + i) * 8) != 0) { return -1; }
+        if (free_tmp(v) != 0) { return -1; }
+        i = i + 1;
+        arg = nnext[arg - 1];
+    }
+    cg_grid_hi = base;
+    // X0-X7 straight from the grid: every intrinsic takes at most six
+    // arguments (mmap), so no stack half of the sequence is ever reached.
+    i = 0;
+    while (i < argc) {
+        let pty: i32 = ic_argty(s, i);
+        if (emit_mem(0, mem_scale(ty_width(pty)), i, 31, (800 + base + i) * 8) != 0) { return -1; }
+        i = i + 1;
+    }
+    if (emit_movz(8, nr, 0, 1) != 0) { return -1; }
+    if (emit_svc() != 0) { return -1; }
+    // The answer rides through slot 1022 so restoring the parked temporaries
+    // cannot clobber it, then reads back at the intrinsic's result width —
+    // a byte count as i32, mmap/brk's address at full pointer width.
+    if (emit_mem(1, 3, 0, 31, 1022 * 8) != 0) { return -1; }
+    pr = 0;
+    while (pr < parked_n) {
+        if (emit_mem(0, 3, tmp_free[pr], 31, (900 + pr) * 8) != 0) { return -1; }
+        pr = pr + 1;
+    }
+    tmp_top = parked_n;
+    let d: i32 = alloc_tmp();
+    if (d < 0) { return -1; }
+    let rty: i32 = rcall_rtyp;
+    if (emit_mem(0, mem_scale(ty_width(rty)), d, 31, 1022 * 8) != 0) { return -1; }
+    if (rty == TY_I32 && ty_is64(want) == 1) {
+        if (emit_sxtw(d, d) != 0) { return -1; }
+    }
+    return d;
+}
+
+// The memory family: one load or one store against the pointer its first
+// argument produces, the host's shape (src/aster.cpp:3169-3210). A store
+// evaluates its value argument first (the host's order), so the pointer's
+// temporary is the newer of the two and the one released. The loads
+// zero-extend into the full X register through their own width, so no
+// SXTW tail is needed the way a call's i32 answer has one.
+fn gen_mem_intrinsic(n: i32, ic: i32, s: i32) -> i32 {
+    let a0: i32 = nfirst[n - 1];
+    if (ic_argc(s) == 1) {
+        // load_ptr / load_i64: LDR Xa,[Xa]; load_u8: LDRB Wa,[Xa];
+        // load_u16: LDRH Wa,[Xa].
+        let a: i32 = gen_expr_at(a0, TY_I64, gx_top);
+        if (a < 0) { return -1; }
+        let scale: i32 = 3;
+        if (ic == IC_LOAD_U8) { scale = 0; }
+        if (ic == IC_LOAD_U16) { scale = 1; }
+        if (emit_mem(0, scale, a, a, 0) != 0) { return -1; }
+        return a;
+    }
+    let a1: i32 = nnext[a0 - 1];
+    let vty: i32 = ic_argty(s, 1);
+    let v: i32 = gen_expr_at(a1, vty, gx_top);
+    if (v < 0) { return -1; }
+    let a: i32 = gen_expr_at(a0, TY_I64, gx_top);
+    if (a < 0) { return -1; }
+    if (emit_mem(1, mem_scale(ty_width(vty)), v, a, 0) != 0) { return -1; }
+    if (free_tmp(a) != 0) { return -1; }
+    return v;
+}
+
 // ---- §7 calls (§8's sequence) ----
 // A direct call: park the live temporaries, stage each argument in the
 // scratch grid at its declared width, move the first eight into X0-X7 (the
 // rest into this frame's outgoing slots), BL, and read the result back.
 // M3c has already checked the count and each argument's type; the extern
-// rejection (C9) and the intrinsic dispatch (#263) live here.
+// rejection (C9) lives here, and the intrinsic dispatch above answers the
+// host intrinsics (fsym == -1).
 fn gen_call(n: i32, want: i32) -> i32 {
     let callee: i32 = ntok[n - 1];
     let r: i32 = find_call(callee);
     if (r != 1) { if (cg_die_name_at("call to undeclared function: ", callee) != 0) { return -1; } }
     let fsym: i32 = rs_fnsym;
-    if (fsym == -1) { if (cg_die_at_node("internal compiler error: intrinsic lowering not yet wired", n) != 0) { return -1; } }
+    if (fsym == -1) { return gen_intrinsic(n, want); }
     if (skind[fsym] == SK_EXTERN_FN) { if (cg_die_name_at("cannot call external function: ", callee) != 0) { return -1; } }
     let fnode: i32 = sfn[fsym];
     let argc: i32 = 0;
