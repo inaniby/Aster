@@ -37,7 +37,7 @@
 // is gone; `reverse_digits` comes along because utoa ends by calling it.
 
 // ---- BEGIN GENERATED: lexer names (bootstrap/gen_lexer_names.py) ----
-// The 72 token kinds, numbered exactly as `enum class TK`
+// The 73 token kinds, numbered exactly as `enum class TK`
 // in src/aster.cpp. Regenerate: python3 bootstrap/gen_lexer_names.py
 let K_End: i32 = 0;
 let K_Ident: i32 = 1;
@@ -61,56 +61,57 @@ let K_I64: i32 = 18;
 let K_U8: i32 = 19;
 let K_U16: i32 = 20;
 let K_U32: i32 = 21;
-let K_True: i32 = 22;
-let K_False: i32 = 23;
-let K_Struct: i32 = 24;
-let K_Include: i32 = 25;
-let K_LParen: i32 = 26;
-let K_RParen: i32 = 27;
-let K_LBrace: i32 = 28;
-let K_RBrace: i32 = 29;
-let K_Colon: i32 = 30;
-let K_Semi: i32 = 31;
-let K_Comma: i32 = 32;
-let K_Arrow: i32 = 33;
-let K_Eq: i32 = 34;
-let K_EqEq: i32 = 35;
-let K_Ne: i32 = 36;
-let K_Lt: i32 = 37;
-let K_Le: i32 = 38;
-let K_Gt: i32 = 39;
-let K_Ge: i32 = 40;
-let K_Plus: i32 = 41;
-let K_Minus: i32 = 42;
-let K_Star: i32 = 43;
-let K_Slash: i32 = 44;
-let K_LBracket: i32 = 45;
-let K_RBracket: i32 = 46;
-let K_At: i32 = 47;
-let K_And: i32 = 48;
-let K_Or: i32 = 49;
-let K_Not: i32 = 50;
-let K_Percent: i32 = 51;
-let K_Shl: i32 = 52;
-let K_Shr: i32 = 53;
-let K_BitXor: i32 = 54;
-let K_BitOr: i32 = 55;
-let K_Tilde: i32 = 56;
-let K_Question: i32 = 57;
-let K_PlusEq: i32 = 58;
-let K_MinusEq: i32 = 59;
-let K_StarEq: i32 = 60;
-let K_SlashEq: i32 = 61;
-let K_PercentEq: i32 = 62;
-let K_ShlEq: i32 = 63;
-let K_ShrEq: i32 = 64;
-let K_AndEq: i32 = 65;
-let K_OrEq: i32 = 66;
-let K_XorEq: i32 = 67;
-let K_PlusPlus: i32 = 68;
-let K_MinusMinus: i32 = 69;
-let K_Dot: i32 = 70;
-let K_Amp: i32 = 71;
+let K_U64: i32 = 22;
+let K_True: i32 = 23;
+let K_False: i32 = 24;
+let K_Struct: i32 = 25;
+let K_Include: i32 = 26;
+let K_LParen: i32 = 27;
+let K_RParen: i32 = 28;
+let K_LBrace: i32 = 29;
+let K_RBrace: i32 = 30;
+let K_Colon: i32 = 31;
+let K_Semi: i32 = 32;
+let K_Comma: i32 = 33;
+let K_Arrow: i32 = 34;
+let K_Eq: i32 = 35;
+let K_EqEq: i32 = 36;
+let K_Ne: i32 = 37;
+let K_Lt: i32 = 38;
+let K_Le: i32 = 39;
+let K_Gt: i32 = 40;
+let K_Ge: i32 = 41;
+let K_Plus: i32 = 42;
+let K_Minus: i32 = 43;
+let K_Star: i32 = 44;
+let K_Slash: i32 = 45;
+let K_LBracket: i32 = 46;
+let K_RBracket: i32 = 47;
+let K_At: i32 = 48;
+let K_And: i32 = 49;
+let K_Or: i32 = 50;
+let K_Not: i32 = 51;
+let K_Percent: i32 = 52;
+let K_Shl: i32 = 53;
+let K_Shr: i32 = 54;
+let K_BitXor: i32 = 55;
+let K_BitOr: i32 = 56;
+let K_Tilde: i32 = 57;
+let K_Question: i32 = 58;
+let K_PlusEq: i32 = 59;
+let K_MinusEq: i32 = 60;
+let K_StarEq: i32 = 61;
+let K_SlashEq: i32 = 62;
+let K_PercentEq: i32 = 63;
+let K_ShlEq: i32 = 64;
+let K_ShrEq: i32 = 65;
+let K_AndEq: i32 = 66;
+let K_OrEq: i32 = 67;
+let K_XorEq: i32 = 68;
+let K_PlusPlus: i32 = 69;
+let K_MinusMinus: i32 = 70;
+let K_Dot: i32 = 71;
+let K_Amp: i32 = 72;
 
 // Byte-wise equality of n bytes at id against the
 // NUL-terminated literal lit; the terminator must sit
@@ -125,7 +126,7 @@ fn ident_is(lit: ptr<u8>, id: ptr<u8>, n: i32) -> i32 {
     return 1;
 }
 
-// Keyword recognition — the 22 reserved words, one branch
+// Keyword recognition — the 23 reserved words, one branch
 // each, from the same list as the C twin's table
 // (tests/lexer_names.h). No match is K_Ident.
 fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
@@ -147,6 +148,7 @@ fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
     if (ident_is("u8", id, n)) { return K_U8; }
     if (ident_is("u16", id, n)) { return K_U16; }
     if (ident_is("u32", id, n)) { return K_U32; }
+    if (ident_is("u64", id, n)) { return K_U64; }
     if (ident_is("struct", id, n)) { return K_Struct; }
     if (ident_is("include", id, n)) { return K_Include; }
     if (ident_is("true", id, n)) { return K_True; }
@@ -159,9 +161,9 @@ fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
 // The 25 expression node kinds this parser builds
 // (PARSER-SPEC.md §2.1), at the host's `enum Kind` numbers
 // inside struct Expr: the subset keeps the numbering, the
-// ten excluded kinds (§12.2) are simply absent, so a kind's
+// eleven excluded kinds (§12.2) are simply absent, so a kind's
 // number means the same thing in both implementations. The
-// full 35-record entab below still carries every host name.
+// full 36-record entab below still carries every host name.
 // Regenerate: python3 bootstrap/gen_parser_names.py
 let E_Num: i32 = 0;
 let E_Var: i32 = 1;
@@ -222,12 +224,12 @@ let TY_PTR_I64: i32 = 7;
 
 // The kind names, four packed tables of 16-byte records: a
 // record is the name's bytes, NUL-padded. entab is the
-// host's full Expr::Kind list (35 records, so a kind's
+// host's full Expr::Kind list (36 records, so a kind's
 // record sits at its own number); sntab is Stmt::Kind (12);
 // nntab the structural kinds (5); tytab the type spellings
 // (7, tag 1 at record 0). The dump picks the table by the
 // kind's space (§9): < 64 entab, < 128 sntab, else nntab.
-let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0";
+let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0Cast\0\0\0\0\0\0\0\0\0\0\0\0";
 let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0";
 let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0";
 let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0";
@@ -1358,6 +1360,10 @@ fn parse_expr() -> i32 {
                 die_at("type u32 is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
                 return 0;
             }
+            if (k == K_U64) {
+                die_at("type u64 is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
             if (k == K_Ident || k == K_Main) {
                 let nt: i32 = ppos;
                 let nxt: i32 = nextk();
@@ -1587,6 +1593,10 @@ fn bad_type_spelling(k: i32) -> i32 {
     }
     if (k == K_U32) {
         die_at("type u32 is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        return 1;
+    }
+    if (k == K_U64) {
+        die_at("type u64 is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
         return 1;
     }
     if (k == K_Fn) {

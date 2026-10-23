@@ -5,7 +5,7 @@ Emits two artifacts from one set of lists (bootstrap/PARSER-SPEC.md §13):
 
   * the GENERATED region of bootstrap/aster.ast — the 25 E_* constants, the
     9 S_* constants, the 5 N_* constants, the 7 TY_* constants, and four
-    packed name tables: `entab` (35 records, the host's full Expr::Kind list
+    packed name tables: `entab` (36 records, the host's full Expr::Kind list
     so a kind's record sits at its own number), `sntab` (12 records,
     Stmt::Kind), `nntab` (5 records, the structural kinds) and `tytab`
     (7 records, the type spellings);
@@ -48,10 +48,11 @@ EXPR_KINDS = [
     "Mod", "Shl", "Shr", "BitAnd", "BitOr", "BitXor", "BitNot", "Cond",
     "SizeOf", "Len",
     "FieldCall",
+    "Cast",                  # v0.23.48-dev: T(x), an explicit integer cast
 ]
 
 # The kinds the bootstrap parser builds, in the host's order: a subsequence of
-# EXPR_KINDS. The ten excluded kinds (§2.1, replaced per §12.2) keep their
+# EXPR_KINDS. The eleven excluded kinds (§2.1, replaced per §12.2) keep their
 # numbers unused, so a surviving kind's number is the host's.
 EXPR_SUBSET = [
     "Num", "Var", "String", "Call", "Index",
@@ -123,8 +124,8 @@ def die(msg):
 # Self-checks: the lists must be well-formed before anything is emitted.
 # ---------------------------------------------------------------------------
 def check_list():
-    if EXPR_COUNT != 35:
-        die("expected 35 expression kinds, list has %d" % EXPR_COUNT)
+    if EXPR_COUNT != 36:
+        die("expected 36 expression kinds, list has %d" % EXPR_COUNT)
     if EXPR_SUBSET_COUNT != 25:
         die("expected 25 expression kinds in the subset, list has %d"
             % EXPR_SUBSET_COUNT)
@@ -257,7 +258,7 @@ def aster_region():
                  % EXPR_SUBSET_COUNT)
     lines.append("// (PARSER-SPEC.md §2.1), at the host's `enum Kind` numbers")
     lines.append("// inside struct Expr: the subset keeps the numbering, the")
-    lines.append("// ten excluded kinds (§12.2) are simply absent, so a kind's")
+    lines.append("// eleven excluded kinds (§12.2) are simply absent, so a kind's")
     lines.append("// number means the same thing in both implementations. The")
     lines.append("// full %d-record entab below still carries every host name."
                  % EXPR_COUNT)
@@ -323,7 +324,7 @@ def c_header():
         "",
         "/* The %d expression kinds the bootstrap parser builds"
         % EXPR_SUBSET_COUNT,
-        " * (PARSER-SPEC.md §2.1), at the host's Expr::Kind numbers. The ten",
+        " * (PARSER-SPEC.md §2.1), at the host's Expr::Kind numbers. The eleven",
         " * excluded host kinds get no constant here, exactly as on the Aster",
         " * side. */",
         "enum {",

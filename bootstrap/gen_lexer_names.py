@@ -4,10 +4,10 @@
 Emits two artifacts from one list (bootstrap/LEXER-SPEC.md §12, as narrowed by
 PARSER-SPEC.md §12.1):
 
-  * the GENERATED region of bootstrap/aster.ast — the 72 K_* constants, the
+  * the GENERATED region of bootstrap/aster.ast — the 73 K_* constants, the
     `ident_is` byte-compare helper and the `keyword_kind` else-if chain. The
     packed `ktab` name table the retired token dump used is no longer emitted;
-  * tests/lexer_names.h — the C side's enum of the same 72 codes and keyword
+  * tests/lexer_names.h — the C side's enum of the same 73 codes and keyword
     table, consumed by tests/parser-twin.c (the M3b differential twin, which
     lexes the input itself).
 
@@ -41,6 +41,7 @@ TOKENS = [
     "Fn", "Extern", "Main", "Let", "Return", "If", "Else", "While", "For",
     "Break", "Continue", "I32", "Ptr", "Bool",
     "I64", "U8", "U16", "U32",
+    "U64",                 # v0.23.48-dev: the 64-bit unsigned integer
     "True", "False",
     "Struct", "Include",
     "LParen", "RParen", "LBrace", "RBrace", "Colon", "Semi", "Comma", "Arrow",
@@ -54,7 +55,7 @@ TOKENS = [
     "Dot", "Amp",
 ]
 
-# The 22 reserved words, each spelling mapped to the kind it lexes to. Order
+# The 23 reserved words, each spelling mapped to the kind it lexes to. Order
 # is the order the host compiler's chain tests them in; since every spelling
 # is distinct the order carries no meaning, but keeping it identical makes
 # the generated chain diff against the C++ one line for line.
@@ -64,6 +65,7 @@ KEYWORDS = [
     ("for", "For"), ("break", "Break"), ("continue", "Continue"),
     ("i32", "I32"), ("ptr", "Ptr"), ("bool", "Bool"),
     ("i64", "I64"), ("u8", "U8"), ("u16", "U16"), ("u32", "U32"),
+    ("u64", "U64"),       # v0.23.48-dev
     ("struct", "Struct"), ("include", "Include"),
     ("true", "True"), ("false", "False"),
 ]
@@ -94,8 +96,8 @@ def die(msg):
 # Self-checks: the list must be well-formed before anything is emitted.
 # ---------------------------------------------------------------------------
 def check_list():
-    if TOKEN_COUNT != 72:
-        die("expected 72 token kinds, list has %d" % TOKEN_COUNT)
+    if TOKEN_COUNT != 73:
+        die("expected 73 token kinds, list has %d" % TOKEN_COUNT)
     if len(set(TOKENS)) != TOKEN_COUNT:
         die("duplicate token kind name")
     for name in TOKENS:
@@ -104,8 +106,8 @@ def check_list():
         if len(name) >= RECORD:
             die("token kind name %r does not fit a %d-byte record"
                 % (name, RECORD))
-    if KEYWORD_COUNT != 22:
-        die("expected 22 keywords, list has %d" % KEYWORD_COUNT)
+    if KEYWORD_COUNT != 23:
+        die("expected 23 keywords, list has %d" % KEYWORD_COUNT)
     kinds = [k for _, k in KEYWORDS]
     if len(set(kinds)) != KEYWORD_COUNT:
         die("two keywords map to the same kind")

@@ -8,7 +8,7 @@
 #define ASTER_PARSER_NAMES_H
 
 /* The 25 expression kinds the bootstrap parser builds
- * (PARSER-SPEC.md §2.1), at the host's Expr::Kind numbers. The ten
+ * (PARSER-SPEC.md §2.1), at the host's Expr::Kind numbers. The eleven
  * excluded host kinds get no constant here, exactly as on the Aster
  * side. */
 enum {
@@ -77,7 +77,7 @@ enum {
  * (index = kind), sntab Stmt::Kind (index = kind - 64),
  * nntab the structural kinds (index = kind - 128), tytab
  * the type spellings (index = tag - 1). */
-#define EK_COUNT 35
+#define EK_COUNT 36
 static const char *const EK_NAMES[EK_COUNT] = {
     "Num",
     "Var",
@@ -114,6 +114,7 @@ static const char *const EK_NAMES[EK_COUNT] = {
     "SizeOf",
     "Len",
     "FieldCall",
+    "Cast",
 };
 
 #define SK_COUNT 12
