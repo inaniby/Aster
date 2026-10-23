@@ -86,7 +86,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.48-dev"
+#define ASTER_VERSION_STRING "0.23.49-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -179,6 +179,7 @@ static void reportError(const std::string& msg) {
 uint64_t alignUp(uint64_t n,uint64_t a){return (n+a-1u)&~(a-1u);}
 
 enum class TK { End, Ident, Number, String, Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool,
+    Switch, Case, Default, // v0.23.49-dev: the switch statement — Pascal semantics, so no fallthrough and no per-case break
     I64, U8, U16, U32,   // v0.23.2-dev (P3.2): wider integer type keywords
     U64,                 // v0.23.48-dev: the 64-bit unsigned integer — the cast target the language was missing
     True, False,         // v0.23.25-dev: Bool literals — the first the language has had
@@ -223,7 +224,7 @@ public:
                 std::string x; while(std::isalnum((unsigned char)peek())||peek()=='_') x+=take();
                 TK k=TK::Ident;
                 if(x=="fn")k=TK::Fn; else if(x=="extern")k=TK::Extern; else if(x=="main")k=TK::Main; else if(x=="let")k=TK::Let;
-                else if(x=="return")k=TK::Return; else if(x=="if")k=TK::If; else if(x=="else")k=TK::Else; else if(x=="while")k=TK::While; else if(x=="for")k=TK::For; else if(x=="break")k=TK::Break; else if(x=="continue")k=TK::Continue; else if(x=="i32")k=TK::I32; else if(x=="ptr")k=TK::Ptr; else if(x=="bool")k=TK::Bool;
+                else if(x=="return")k=TK::Return; else if(x=="if")k=TK::If; else if(x=="else")k=TK::Else; else if(x=="while")k=TK::While; else if(x=="for")k=TK::For; else if(x=="break")k=TK::Break; else if(x=="continue")k=TK::Continue; else if(x=="switch")k=TK::Switch; else if(x=="case")k=TK::Case; else if(x=="default")k=TK::Default; else if(x=="i32")k=TK::I32; else if(x=="ptr")k=TK::Ptr; else if(x=="bool")k=TK::Bool;
                 else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct;
                 else if(x=="include")k=TK::Include;   // v0.23.13-dev (P3.4)
                 // v0.23.25-dev: true/false are reserved words now. No shipped
@@ -676,8 +677,27 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
         default:      return true;   // i64 holds everything; i32 truncates as before
     }
 }
+// v0.23.49-dev: the range a switch case value must sit in for the subject's
+// type — the same table initializerFits applies to a slot's initializer, and
+// for the same reason: the case value is loaded into the subject's width
+// before the comparison, so a value outside the range would silently compare
+// against its own truncation. i32 is the one entry that differs from a let
+// initializer's (which truncates): a case label is chosen by value, so a
+// label that does not fit the subject is refused instead of folded away.
+static bool caseValueFits(Ty t,int64_t folded){
+    switch(t.k){
+        case Ty::U8:  return folded>=0&&folded<=255;
+        case Ty::U16: return folded>=0&&folded<=65535;
+        case Ty::U32: return folded>=0;
+        case Ty::I32: return folded>=INT32_MIN&&folded<=INT32_MAX;
+        // v0.23.48-dev: u64 holds every folded value's bit pattern exactly
+        // (-1 is 2^64-1, never a truncation); i64 holds everything.
+        case Ty::U64: return true;
+        default:      return true;
+    }
+}
 struct Stmt {
-    enum Kind { Let, Assign, FieldAssign, IndexAssign, DerefAssign, Return, If, While, For, Break, Continue, Expr } k; std::string name; unsigned line=0, col=0;   // P4.1: source location of this statement's leading token
+    enum Kind { Let, Assign, FieldAssign, IndexAssign, DerefAssign, Return, If, While, For, Break, Continue, Switch, Expr } k; std::string name; unsigned line=0, col=0;   // P4.1: source location of this statement's leading token
     E expr; E idx;
     Ty ty=Ty::I32;          // declared value type (v0.23.2-dev); isPtr/isBool mirror it
     bool isPtr=false; bool isBool=false;
@@ -702,6 +722,18 @@ struct Stmt {
     // for (init; cond; step) body: forInit/forStep hold 0 or 1 statement each
     // (a let declaration is only legal in the initializer); thenBody is the loop body.
     std::vector<Stmt> forInit, forStep;
+    // v0.23.49-dev: switch (subject) { case C1: ... default: ... }, with Pascal
+    // semantics — each case body runs to its end and drops out of the
+    // statement, so there is no fallthrough and no per-case break (a `break`
+    // inside a case body still means the innermost loop: a switch never opens
+    // one). caseExprs and caseBodies are index-paired; the default body, when
+    // present, rides in elseBody with hasDefault set. `label` names the
+    // statement: a while or a for may declare one (`outer: while ...`) and a
+    // break or continue may consume one (`break outer;`).
+    std::vector<E> caseExprs;
+    std::vector<std::vector<Stmt>> caseBodies;
+    bool hasDefault=false;
+    std::string label;
     Stmt(Kind kind):k(kind){}
     Stmt(Stmt&&)=default; Stmt& operator=(Stmt&&)=default;
     Stmt(const Stmt&)=delete; Stmt& operator=(const Stmt&)=delete;
@@ -1704,35 +1736,94 @@ class Parser {
         }
         return depth==0&&i<t.size()&&t[i].k==TK::Dot;
     }
+    // v0.23.49-dev: while and for moved out of statement() so the label form
+    // (`outer: while ...`) can share one parse. The label itself is consumed
+    // by the caller; these see the keyword and everything after it.
+    Stmt whileStatement(){
+        Stmt s(Stmt::While);need(TK::LParen,"expected '(' after while");s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;need(TK::RParen,"expected ')' after condition");s.thenBody=block();return s;
+    }
+    Stmt forStatement(){
+        // for (init; cond; step) body  ==  { init; while (cond) { body; step; } }
+        // with continue landing on the step (standard for semantics). The
+        // three clauses are kept as statements so codegen can place the
+        // step between the body and the back-edge without an extra scope.
+        Stmt s(Stmt::For);
+        need(TK::LParen,"expected '(' after for");
+        if(!forClause(s.forInit,true,true))need(TK::Semi,"expected ';' after for initializer");
+        if(cur().k==TK::Semi)throw Error("for condition cannot be empty at "+std::to_string(cur().line)+":"+std::to_string(cur().col));
+        s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;
+        need(TK::Semi,"expected ';' after for condition");
+        forClause(s.forStep,false,false);
+        need(TK::RParen,"expected ')' after for step");
+        s.thenBody=block();
+        return s;
+    }
+    // A case or default body runs from its ':' to the next case, the next
+    // default, or the switch's closing brace. There are no braces to match,
+    // so the boundary is a lookahead over the keywords that can only be a
+    // body's end; End stops the loop so a missing '}' surfaces as the
+    // switchStatement's own diagnostic rather than spinning here.
+    std::vector<Stmt> caseBody(){
+        std::vector<Stmt> v;
+        while(cur().k!=TK::Case&&cur().k!=TK::Default&&cur().k!=TK::RBrace&&cur().k!=TK::End)
+            v.push_back(statement());
+        return v;
+    }
+    Stmt switchStatement(){
+        Stmt s(Stmt::Switch);
+        need(TK::LParen,"expected '(' after switch");
+        s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;
+        need(TK::RParen,"expected ')' after switch subject");
+        need(TK::LBrace,"expected '{' after switch subject");
+        // Cases and the default may come in any order and the default may sit
+        // anywhere; a second default is the one repetition refused.
+        while(cur().k==TK::Case||cur().k==TK::Default){
+            if(eat(TK::Default)){
+                if(s.hasDefault)throw Error(loc(cur().line,cur().col,"a second default case"));
+                s.hasDefault=true;
+                need(TK::Colon,"expected ':' after default");
+                s.elseBody=caseBody();
+            } else {
+                ++p;
+                s.caseExprs.push_back(expr());
+                need(TK::Colon,"expected ':' after case value");
+                s.caseBodies.push_back(caseBody());
+            }
+        }
+        need(TK::RBrace,"expected '}' to close switch");
+        return s;
+    }
     Stmt statement(){
         if(cur().k==TK::Star)return derefAssignStatement();
         if(eat(TK::Let))return letStatement();
         if(eat(TK::Return)){Stmt s(Stmt::Return);s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;need(TK::Semi,"expected ';'");return s;}
         if(eat(TK::If))return ifStatement();
+        // v0.23.49-dev: `name:` labels the loop that follows. Only while and
+        // for may carry one — the two statements break and continue can name —
+        // and the label is declared before the keyword it belongs to. Nothing
+        // else in a statement position begins with an identifier followed by
+        // a colon, so the lookahead cannot steal a different form.
+        if(cur().k==TK::Ident&&t[p+1].k==TK::Colon){
+            const Token& lt=cur();
+            if(!(t[p+2].k==TK::While||t[p+2].k==TK::For))
+                throw Error(loc(lt.line,lt.col,"only a while or for loop may be labeled: "+cur().s));
+            std::string lab=cur().s;
+            p+=2;                                  // skip the label and its ':'; cur() is now the loop keyword
+            if(cur().k==TK::While){++p;Stmt s=whileStatement();s.label=lab;return s;}
+            ++p;Stmt s=forStatement();s.label=lab;return s;
+        }
         // v0.23.17-dev: `i++;` / `++i;` / `i--;` / `--i;` as statements. The
         // value is discarded either way, so prefix and postfix are the same
         // store — and keeping ++ out of expression position is what lets an
         // Aster expression stay free of side effects (see compoundValue above).
         if(cur().k==TK::PlusPlus||cur().k==TK::MinusMinus)return incDecStatement();
-        if(eat(TK::While)){Stmt s(Stmt::While);need(TK::LParen,"expected '(' after while");s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;need(TK::RParen,"expected ')' after condition");s.thenBody=block();return s;}
-        if(eat(TK::For)){
-            // for (init; cond; step) body  ==  { init; while (cond) { body; step; } }
-            // with continue landing on the step (standard for semantics). The
-            // three clauses are kept as statements so codegen can place the
-            // step between the body and the back-edge without an extra scope.
-            Stmt s(Stmt::For);
-            need(TK::LParen,"expected '(' after for");
-            if(!forClause(s.forInit,true,true))need(TK::Semi,"expected ';' after for initializer");
-            if(cur().k==TK::Semi)throw Error("for condition cannot be empty at "+std::to_string(cur().line)+":"+std::to_string(cur().col));
-            s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;
-            need(TK::Semi,"expected ';' after for condition");
-            forClause(s.forStep,false,false);
-            need(TK::RParen,"expected ')' after for step");
-            s.thenBody=block();
-            return s;
-        }
-        if(cur().k==TK::Break){const Token& bt=cur();++p;Stmt s(Stmt::Break);s.line=bt.line;s.col=bt.col;need(TK::Semi,"expected ';' after break");return s;}
-        if(cur().k==TK::Continue){const Token& ct=cur();++p;Stmt s(Stmt::Continue);s.line=ct.line;s.col=ct.col;need(TK::Semi,"expected ';' after continue");return s;}
+        if(eat(TK::While))return whileStatement();
+        if(eat(TK::For))return forStatement();
+        // v0.23.49-dev: switch joins the control-flow group. The bodies are
+        // collected by caseBody() above — no braces of their own.
+        if(eat(TK::Switch))return switchStatement();
+        if(cur().k==TK::Break){const Token& bt=cur();++p;Stmt s(Stmt::Break);s.line=bt.line;s.col=bt.col;if(cur().k==TK::Ident){s.label=cur().s;++p;}need(TK::Semi,"expected ';' after break");return s;}
+        if(cur().k==TK::Continue){const Token& ct=cur();++p;Stmt s(Stmt::Continue);s.line=ct.line;s.col=ct.col;if(cur().k==TK::Ident){s.label=cur().s;++p;}need(TK::Semi,"expected ';' after continue");return s;}
         // v0.23.39-dev: a bare call whose result is discarded — `foo();` and
         // `h.onClick(41);` — for fire-and-forget callbacks (an event loop that
         // only wants the side effect, never the return value). Only an
@@ -1763,7 +1854,7 @@ class Parser {
         // it needs its own dispatch entry next to the prefix one above.
         if(cur().k==TK::Ident&&isIncDec(after()))return postIncDecStatement();
         if(cur().k==TK::Ident&&(t[p+1].k==TK::Eq||isCompoundAssign(t[p+1].k)))return assignStatement();
-        throw Error("expected let, assignment, return, if, while, for, break, or continue at "+std::to_string(cur().line)+":"+std::to_string(cur().col));
+        throw Error("expected let, assignment, return, if, while, for, break, continue, or switch at "+std::to_string(cur().line)+":"+std::to_string(cur().col));
     }
     int64_t foldConst(const Expr& e){
         switch(e.k){
@@ -2503,7 +2594,10 @@ struct Codegen {
     int nextSlot=0, nextTemp=0;
     // continue sites are patched after the body: a while loop sends them back
     // to the condition, a for loop to its step (see Stmt::For).
-    struct LoopContext { size_t start; std::vector<size_t> breaks; std::vector<size_t> continues; };
+    // v0.23.49-dev: `name` is the loop's label when it has one (`outer: while
+    // ...`); empty for the unlabeled form, which is every loop the language
+    // had before labels.
+    struct LoopContext { size_t start; std::vector<size_t> breaks; std::vector<size_t> continues; std::string name; };
     std::vector<LoopContext> loops;
     static constexpr int kMaxLocals=500;
     static constexpr int kMaxTemps=16;
@@ -4687,8 +4781,35 @@ struct Codegen {
         for(const auto& s:ss){
             if(s.k==Stmt::Return)return true;
             if(s.k==Stmt::If&&definitelyReturns(s.thenBody)&&definitelyReturns(s.elseBody))return true;
+            // v0.23.49-dev: a switch cannot fall through when it has a
+            // default (else the subject may match no case) and every body,
+            // the default's included, returns. An empty case body — `case 1:
+            // case 2: return 0;` — leaves a matching value with nothing to
+            // do, so it counts as falling through, exactly as it behaves.
+            if(s.k==Stmt::Switch&&s.hasDefault){
+                bool all=true;
+                for(const auto& b:s.caseBodies)if(!definitelyReturns(b)){all=false;break;}
+                if(all&&definitelyReturns(s.elseBody))return true;
+            }
         }
         return false;
+    }
+    // v0.23.49-dev: the loop a break or continue targets. The unlabeled form
+    // takes the innermost open loop, exactly as it always did; a label scans
+    // the stack from the inside out and takes the first loop whose name
+    // matches, so an inner unlabeled loop is never confused with an outer
+    // named one. Sema has already refused a label that names no open loop
+    // (and a label that names a loop not enclosing the jump), so the throw
+    // here is the defensive twin the unlabeled form wears against an empty
+    // stack.
+    size_t loopIndexFor(const Stmt& s) const {
+        if(s.label.empty()){
+            if(loops.empty())throw Error(loc(s.line,s.col,s.k==Stmt::Continue?"continue used outside a loop":"break used outside a loop"));
+            return loops.size()-1;
+        }
+        for(size_t i=loops.size();i-->0;)
+            if(loops[i].name==s.label)return i;
+        throw Error(loc(s.line,s.col,"no such loop label: "+s.label));
     }
     void execStmt(const Stmt& s){
         // One row per statement: the instruction it begins at, and the line the
@@ -4990,14 +5111,14 @@ struct Codegen {
                 size_t toElse;const int cond=emitCondition(*s.expr,toElse);
                 block(s.thenBody,true);size_t toEnd=code.size();emit(0);patchCond(toElse,cond,(int)code.size());block(s.elseBody,true);patchBranch(toEnd,code.size());
             } else if(s.k==Stmt::Break){
-                if(loops.empty()) throw Error("break used outside a loop");
-                loops.back().breaks.push_back(code.size()); emit(0);
+                if(s.label.empty()&&loops.empty()) throw Error("break used outside a loop");
+                loops[loopIndexFor(s)].breaks.push_back(code.size()); emit(0);
             } else if(s.k==Stmt::Continue){
-                if(loops.empty()) throw Error("continue used outside a loop");
-                loops.back().continues.push_back(code.size()); emit(0);
+                if(s.label.empty()&&loops.empty()) throw Error("continue used outside a loop");
+                loops[loopIndexFor(s)].continues.push_back(code.size()); emit(0);
             } else if(s.k==Stmt::While){
                 size_t loopStart=code.size();size_t toEnd;const int cond=emitCondition(*s.expr,toEnd);
-                loops.push_back({loopStart,{},{}});block(s.thenBody,true);size_t back=code.size();emit(branch((int)back,(int)loopStart));size_t loopEnd=code.size();patchCond(toEnd,cond,(int)loopEnd);for(size_t at:loops.back().breaks)patchBranch(at,loopEnd);for(size_t at:loops.back().continues)patchBranch(at,loopStart);loops.pop_back();
+                loops.push_back({loopStart,{},{},s.label});block(s.thenBody,true);size_t back=code.size();emit(branch((int)back,(int)loopStart));size_t loopEnd=code.size();patchCond(toEnd,cond,(int)loopEnd);for(size_t at:loops.back().breaks)patchBranch(at,loopEnd);for(size_t at:loops.back().continues)patchBranch(at,loopStart);loops.pop_back();
             } else if(s.k==Stmt::For){
                 // for (init; cond; step) body — observable semantics of
                 // { init; while (cond) { body; step; } }: the initializer runs
@@ -5007,7 +5128,7 @@ struct Codegen {
                 scopes.emplace_back();
                 for(const auto& init:s.forInit)execStmt(init);
                 size_t loopStart=code.size();size_t toEnd;const int cond=emitCondition(*s.expr,toEnd);
-                loops.push_back({loopStart,{},{}});block(s.thenBody,true);
+                loops.push_back({loopStart,{},{},s.label});block(s.thenBody,true);
                 size_t stepAt=code.size();
                 for(size_t at:loops.back().continues)patchBranch(at,stepAt);
                 for(const auto& step:s.forStep)execStmt(step);
@@ -5016,6 +5137,46 @@ struct Codegen {
                 for(size_t at:loops.back().breaks)patchBranch(at,loopEnd);
                 loops.pop_back();
                 scopes.pop_back();
+            } else if(s.k==Stmt::Switch){
+                // switch (subject) { case C: body ... default: body } with
+                // Pascal semantics: each body runs to its end and drops out
+                // of the statement — no fallthrough, and a `break` inside a
+                // body still means the innermost loop, because a switch
+                // never opens one. The shape is a comparison chain: the
+                // subject is evaluated once into a frame slot (a spill, not
+                // a named local), each case reloads it and compares it
+                // against its constant — the same CMP + B.EQ an `==`
+                // condition emits — and a body's end jumps to the statement's
+                // single exit. The default, when present, is the chain's
+                // else; without one, a subject matching no case falls
+                // straight through to the exit.
+                const Ty subjTy=exprType(*s.expr);
+                if(!tyIsInteger(subjTy))
+                    throw Error(loc(s.line,s.col,"switch subject must be an integer, not "+tyNameFull(subjTy)));
+                if(nextSlot>=kMaxLocals)
+                    throw Error(loc(s.line,s.col,"too many locals: the switch subject needs a frame slot (limit 500)"));
+                const int subjSlot=nextSlot++;
+                int subjReg=gen(*s.expr,subjTy);
+                emit(storeVarT(subjReg,subjSlot,subjTy));releaseTemp(subjReg);
+                std::vector<size_t> toEnds;
+                for(size_t i=0;i<s.caseExprs.size();++i){
+                    int a=temp();emit(loadVarT(a,subjSlot,subjTy));
+                    int b=gen(*s.caseExprs[i],subjTy);
+                    // CMP a, b at the subject's width — W for the 32-bit
+                    // types, X for i64/u64, exactly as emitCondition picks
+                    // for a comparison of the same operands.
+                    emit((tyIs64(subjTy)?0xeb00001fu:0x6b00001fu)|((uint32_t(b)&0x1f)<<16)|((uint32_t(a)&0x1f)<<5));
+                    releaseTemp(b);releaseTemp(a);
+                    // The chain is an if-style "branch on mismatch": B.NE (cond
+                    // 1) skips this case's body to the next case, and the body
+                    // falls through into the chain when the subject matches.
+                    size_t skip=code.size();emit(0);          // patched to B.NE, once the body's end is known
+                    block(s.caseBodies[i],true);
+                    toEnds.push_back(code.size());emit(0);    // the body's end jumps to the exit
+                    patchCond(skip,1,code.size());            // cond 1 is NE: subject != this case value, skip the body
+                }
+                if(s.hasDefault)block(s.elseBody,true);
+                for(size_t at:toEnds)patchBranch(at,code.size());
             }
     }
     void block(const std::vector<Stmt>& ss, bool newScope=false){
@@ -5395,6 +5556,12 @@ struct Sema {
     bool retIsFunc=false; FuncSig retFuncSig;
     std::vector<std::map<std::string,Binding>> scopes;
     int loopDepth=0;
+    // v0.23.49-dev: the labels of the loops currently open, innermost last,
+    // pushed beside every loopDepth change. A `break outer;` finds its loop
+    // by scanning this from the back — the same innermost-first order the
+    // unlabeled form takes from loopDepth alone. Labels may repeat across
+    // nesting levels; the innermost one wins, exactly as a variable does.
+    std::vector<std::string> loopNames;
 
     Sema(const std::map<std::string,size_t>& ar,const std::set<std::string>& gn,const std::set<std::string>& ef,
          const std::set<std::string>& ag,const std::set<std::string>& bg,
@@ -6531,22 +6698,52 @@ struct Sema {
                 return;
             case Stmt::While:
                 checkCondition(*s.expr);
-                ++loopDepth;checkBlock(s.thenBody,true);--loopDepth;
+                ++loopDepth;loopNames.push_back(s.label);checkBlock(s.thenBody,true);loopNames.pop_back();--loopDepth;
                 return;
             case Stmt::For:
                 scopes.emplace_back();
                 for(const auto& init:s.forInit)checkStmt(init);
                 checkCondition(*s.expr);
-                ++loopDepth;checkBlock(s.thenBody,true);--loopDepth;
+                ++loopDepth;loopNames.push_back(s.label);checkBlock(s.thenBody,true);loopNames.pop_back();--loopDepth;
                 for(const auto& step:s.forStep)checkStmt(step);
                 scopes.pop_back();
                 return;
             case Stmt::Break:
-                if(loopDepth==0)throw Error(loc(s.line,s.col,"break used outside a loop"));
+                if(s.label.empty()){if(loopDepth==0)throw Error(loc(s.line,s.col,"break used outside a loop"));}
+                else if(std::find(loopNames.rbegin(),loopNames.rend(),s.label)==loopNames.rend())
+                    throw Error(loc(s.line,s.col,"no such loop label: "+s.label));
                 return;
             case Stmt::Continue:
-                if(loopDepth==0)throw Error(loc(s.line,s.col,"continue used outside a loop"));
+                if(s.label.empty()){if(loopDepth==0)throw Error(loc(s.line,s.col,"continue used outside a loop"));}
+                else if(std::find(loopNames.rbegin(),loopNames.rend(),s.label)==loopNames.rend())
+                    throw Error(loc(s.line,s.col,"no such loop label: "+s.label));
                 return;
+            // v0.23.49-dev: switch. The subject must be an integer (the
+            // comparison chain is an integer comparison); each case value
+            // must fold at compile time, fit the subject's width, and be
+            // distinct — a repeated label would make the second body
+            // unreachable, which is a mistake, not a dialect. Every body is
+            // its own scope, so a `let` inside one case cannot be seen by the
+            // next (there is no fallthrough to carry it anyway).
+            case Stmt::Switch: {
+                const Ty subj=typeOf(*s.expr);
+                if(!tyIsInteger(subj))
+                    throw Error(loc(s.expr->line,s.expr->col,"switch subject must be an integer, not "+tyNameFull(subj)));
+                std::set<int64_t> seen;
+                for(size_t i=0;i<s.caseExprs.size();++i){
+                    const Expr& c=*s.caseExprs[i];
+                    int64_t v=0;
+                    if(!constantInteger(c,v))
+                        throw Error(loc(c.line,c.col,"case value must be a compile-time constant"));
+                    if(!caseValueFits(subj,v))
+                        throw Error(loc(c.line,c.col,"case value does not fit the switch subject type"));
+                    if(!seen.insert(v).second)
+                        throw Error(loc(c.line,c.col,"duplicate case value "+std::to_string(v)));
+                    checkBlock(s.caseBodies[i],true);
+                }
+                if(s.hasDefault)checkBlock(s.elseBody,true);
+                return;
+            }
         }
         throw Error(loc(s.line,s.col,"unsupported statement"));
     }
@@ -6563,7 +6760,7 @@ struct Sema {
         // declares one — the return slot's signature, checked at every
         // `return` exactly as a variable's is checked at its initializer.
         retIsFunc=f.returnIsFunc;retFuncSig=f.returnFuncSig;
-        scopes.clear();loopDepth=0;
+        scopes.clear();loopDepth=0;loopNames.clear();
         scopes.emplace_back();
         for(size_t i=0;i<f.params.size();++i){
             // v0.23.34-dev: an array parameter (`fn f(a: i64[4])`) is a strided
