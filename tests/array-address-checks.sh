@@ -574,7 +574,7 @@ done
 # same way, so fifteen families are skipped and the pre-existing count is still
 # 288: 333 recorded, 45 of them belonging to the fifteen rounds this suite
 # knows are new.
-FILTER='-e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\.'
+FILTER='-e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\.'
 grep -v $FILTER "$BASE" > "$OUT/expected-old.txt"
 grep -v $FILTER "$OUT/hashes.txt" > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then

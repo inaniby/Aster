@@ -37,7 +37,11 @@ grep -qF 'condition must be a comparison, a bool expression, or an integer' src/
     || { echo 'FAIL: for condition type check missing' >&2; exit 1; }
 grep -qF 'for(size_t at:loops.back().continues)patchBranch(at,stepAt);' src/aster.cpp \
     || { echo 'FAIL: continue-to-step patching missing from Stmt::For' >&2; exit 1; }
-grep -qF 'loops.back().continues.push_back(code.size());' src/aster.cpp \
+# v0.23.49-dev: the while/for continue push now indexes the loop by label
+# (loopIndexFor) so a labeled break/continue can reach an enclosing loop; for an
+# unlabeled loop loopIndexFor returns loops.size()-1 == loops.back(), so the
+# deferred continue target still lands on the while condition.
+grep -qF 'loops[loopIndexFor(s)].continues.push_back(code.size());' src/aster.cpp \
     || { echo 'FAIL: deferred continue sites missing (while must keep branching to its condition)' >&2; exit 1; }
 grep -qF 'for(size_t at:loops.back().continues)patchBranch(at,loopStart);' src/aster.cpp \
     || { echo 'FAIL: while continue target must stay the loop condition' >&2; exit 1; }

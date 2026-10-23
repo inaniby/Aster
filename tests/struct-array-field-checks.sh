@@ -436,8 +436,8 @@ for mode in build-so build-elf "build-obj --pic"; do
         fi
     done
 done
-grep -v -e '^sizeof_len\.' -e '^struct_array_field\.' -e '^array_elem_types\.' -e '^precedence\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' "$BASE" > "$OUT/expected-old.txt"
-grep -v -e '^sizeof_len\.' -e '^struct_array_field\.' -e '^array_elem_types\.' -e '^precedence\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
+grep -v -e '^sizeof_len\.' -e '^struct_array_field\.' -e '^array_elem_types\.' -e '^precedence\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' "$BASE" > "$OUT/expected-old.txt"
+grep -v -e '^sizeof_len\.' -e '^struct_array_field\.' -e '^array_elem_types\.' -e '^precedence\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
     echo 'FAIL: a pre-existing example moved — one of the four fixes changed bytes' >&2
     sed -n '1,20p' "$OUT/old.diff" >&2

@@ -47,8 +47,9 @@ ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OU
 # ---------------------------------------------------------------------------
 # [2/8] Source guards. Each piece of the machinery is pinned by its exact text.
 printf '%s\n' '[2/8] Source guards: the discarded-call machinery is pinned'
-# The new statement kind.
-grep -qF 'Continue, Expr } k;' src/aster.cpp \
+# The new statement kind. v0.23.49-dev inserted Switch between Continue and
+# Expr (Round B); Expr still closes the enum as the discarded-call kind.
+grep -qF 'Continue, Switch, Expr } k;' src/aster.cpp \
     || { echo 'FAIL: Stmt no longer carries the Expr (discarded call) kind' >&2; exit 1; }
 # The peek that tells a discarded call from a field store.
 grep -qF 'bool isCallStatement() const {' src/aster.cpp \
@@ -346,10 +347,10 @@ reject(){ # reject <name> <source> <expected message fragment>
 }
 reject "a bare variable is still not a statement" \
     'fn main() -> i32 { let x: i32 = 3; x; return 0; }' \
-    "expected let, assignment, return, if, while, for, break, or continue"
+    "expected let, assignment, return, if, while, for, break, continue, or switch"
 reject "an arithmetic expression is still not a statement" \
     'fn main() -> i32 { let x: i32 = 3; let y: i32 = 4; x + y; return 0; }' \
-    "expected let, assignment, return, if, while, for, break, or continue"
+    "expected let, assignment, return, if, while, for, break, continue, or switch"
 reject "a discarded direct call is still checked for argument count" \
     'fn f(a: i32) -> i32 { return a; }
 fn main() -> i32 { f(1, 2); return 0; }' \

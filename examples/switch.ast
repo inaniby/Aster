@@ -1,0 +1,51 @@
+// v0.23.49-dev demonstration: the switch statement (Pascal semantics) and
+// labeled break/continue.
+//
+// switch is Pascal-shaped: every case body runs to its end and drops out of the
+// statement, so there is no fallthrough and no per-case break. A `break` inside
+// a case body still means the innermost *loop* — a switch never opens one.
+// Labels name a while or a for and are consumed by break/continue.
+//
+// The program is written so its return value is hand-computable and matches its
+// C twin exactly (see tests/switch-twin.c).
+fn lookup(x: i32) -> i32 {
+    switch (x) {
+        case 1: return 100;
+        case 2: return 200;
+        case 3: return 300;
+        default: return 0;
+    }
+}
+
+fn main() -> i32 {
+    let total: i32 = 0;
+    // Labeled double loop. `continue outer` jumps to the outer step (the for's
+    // increment), so the inner `total = total + 1` runs only for i = 1 and i = 2
+    // — three outer iterations contribute 3 * 2 = 6.
+    let i: i32 = 0;
+    outer: for (let k: i32 = 0; k < 3; k = k + 1) {
+        i = 0;
+        inner: while (i < 4) {
+            i = i + 1;
+            if (i == 3) { continue outer; }
+            total = total + 1;
+        }
+    }
+    // switch inside a loop: Pascal semantics, no fallthrough. Over w = 1..5 the
+    // bodies add 1 + 2 + 3 + 0 + 0 = 6.
+    let n: i32 = 0;
+    let w: i32 = 0;
+    while (w < 5) {
+        w = w + 1;
+        switch (w) {
+            case 1: n = n + 1;
+            case 2: n = n + 2;
+            case 3: n = n + 3;
+            default: n = n + 0;
+        }
+    }
+    total = total + n;            // 6 + 6 = 12
+    total = total + lookup(2);    // +200
+    total = total + lookup(9);    // +0 (default)
+    return total;                 // 212
+}
