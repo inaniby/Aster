@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.48-dev.** One table per area. "Since" is the version that
+**As of v0.23.49-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -62,6 +62,8 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | Hexadecimal integer literals `0x…` / `0X…` (any position a decimal literal is legal, including array lengths; a bare `0x` is a positioned lexer error) | shipped | v0.23.22-dev | `syntax-relief-checks.sh` [5/7] hex battery |
 | `while (cond) { }`, `break;`, `continue;` | shipped | early | `smoke.sh` |
 | `for (init; cond; step) { }` — `continue` lands on the step | shipped | v0.22.50-dev | `for-loop-checks.sh` |
+| **`switch (e) { case C: … default: … }`** — Pascal semantics: the subject must be an integer type, each case value a compile-time integer constant that fits the subject and is unique, `default` at most once in any position; each matching case body self-ends (no fall-through, no per-case `break`); `switch` does not push a loop context, so a `break` inside it still names the innermost loop. Lowered to a comparison chain — zero new instructions, zero new label concepts — so every pre-existing example's bytes are unchanged | shipped | v0.23.49-dev | `switch-checks.sh` [3/9], [5/9], [9/9] |
+| **Labeled `break` / `continue`** — `name: while/for` names a loop, and `break name;` / `continue name;` jump to that loop's exit / step, resolved innermost-first at compile time against a `loopNames` stack; a missing or misplaced label is a hard error, not a runtime `goto` | shipped | v0.23.49-dev | `switch-checks.sh` [3/9], [5/9] |
 | Global `let` scalars, arrays, `@align(N)` | shipped | v0.22.x | `global-checks.sh`, `global-deep-checks.sh` |
 | `extern let` declarations (cross-object globals) | shipped | v0.22.x | `global-checks.sh` |
 | Run-time global initializers (ordered `__aster_init` chain) | shipped | v0.22.x | `e2e-global-deep.sh` |

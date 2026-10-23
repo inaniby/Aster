@@ -871,7 +871,7 @@ deterministic and idempotent, and it emits:
   constants, the 9 `S_*` constants, the 5 `N_*` constants, the 7 `TY_*`
   constants, and four packed name tables — `entab` (35 records × 16 bytes, the
   host's full `Expr::Kind` list so a kind's record sits at its own number),
-  `sntab` (12 records, `Stmt::Kind`), `nntab` (5 records, the structural
+  `sntab` (13 records, `Stmt::Kind`), `nntab` (5 records, the structural
   kinds), `tytab` (7 records, the type spellings). A record is the name's bytes,
   NUL-padded to 16; the longest name, `IndexAssign`, is 12 bytes.
 - `tests/parser_names.h`: the C twin's `enum`s of the same codes, the same four

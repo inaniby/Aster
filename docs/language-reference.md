@@ -1,9 +1,9 @@
 # Aster Language Reference
 
-**Applies to: v0.23.32-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.49-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
-source and then **checked against the v0.23.32-dev binary**. Where a rule says a
+source and then **checked against the v0.23.49-dev binary**. Where a rule says a
 construct is rejected, the message quoted is the compiler's own. Where Aster
 differs from C, it is called out explicitly — §9 records four such places, all
 of them closed in v0.23.27-dev and kept there because each row is still the
@@ -25,9 +25,9 @@ explains *why* each rule exists. This file is the lookup table.
 | Whitespace | spaces, tabs, newlines (`isspace`) |
 | Encoding note | UTF-8 inside a comment is fine: comments are consumed before the ASCII check runs |
 
-## 2. Reserved words — 23
+## 2. Reserved words — 26
 
-All 23 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
+All 26 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
 fails for every one of them).
 
 | Word | Role | Since |
@@ -55,6 +55,9 @@ fails for every one of them).
 | `include` | `include "file.ast";` declaration sharing | v0.23.13-dev |
 | `true` | Bool literal, value 1 | v0.23.25-dev |
 | `false` | Bool literal, value 0 | v0.23.25-dev |
+| `switch` | multi-way branch over a compile-time integer (Pascal semantics) | v0.23.49-dev |
+| `case` | a `switch` arm value (followed by `:`) | v0.23.49-dev |
+| `default` | the `switch` arm taken when no `case` matches | v0.23.49-dev |
 
 **Not reserved** (ordinary identifiers, checked by name after `@`): `embed`,
 `embed_len`, `align`. `let embed: i32 = 1;` and `let align: i32 = 2;` both
@@ -431,16 +434,18 @@ statement ::= let-decl
                                     '--' ident ';' | ident '--' ';'
             | 'return' expr ';'
             | if-stmt
+            | labeled-loop          ident ':' ( while-stmt | for-stmt )   (v0.23.49-dev)
             | while-stmt
             | for-stmt
-            | 'break' ';'
-            | 'continue' ';'
+            | switch-stmt           (v0.23.49-dev)
+            | 'break' [ ident ] ';'
+            | 'continue' [ ident ] ';'
             | discard-call          ( Call-expr | FieldCall-expr ) ';'   (v0.23.39-dev)
 ```
 
 **There are no expression statements — except a call.** A bare `;` and a bare
 variable (`x;`) or an arithmetic value (`a + b;`) are still refused
-(`expected let, assignment, return, if, while, for, break, or continue at L:C`),
+(`expected let, assignment, return, if, while, for, break, continue, or switch at L:C`),
 and every assignment form keeps its reading. But a call written for its side
 effect alone, with its result dropped, is now a statement: `g();` and
 `h.onClick(41);` run the callee and throw the answer away. Only an expression
@@ -544,7 +549,9 @@ The braces are **mandatory** (`if (c) return 1;` → `expected '{'`).
 while-stmt ::= 'while' '(' expr ')' block
 ```
 
-Braces mandatory.
+Braces mandatory. A `while` may carry a **label** (`name: while (…) { }`,
+v0.23.49-dev); the label is only usable as the target of a `break name;` /
+`continue name;` from inside a nested loop.
 
 ### `for`
 
@@ -556,7 +563,53 @@ step     ::= assign | inc-dec          (no let)
 
 Semantics: `{ init; while (cond) { body; step; } }`, with `continue` landing on
 the **step**, not the condition. The condition may not be empty
-(`for condition cannot be empty`). The initializer and step may be empty.
+(`for condition cannot be empty`). The initializer and step may be empty. A `for`
+may also carry a **label** (`name: for (…) { }`, v0.23.49-dev), used the same
+way as a `while` label.
+
+### `switch` (v0.23.49-dev)
+
+```
+switch-stmt ::= 'switch' '(' expr ')' '{'
+                  { 'case' expr ':' statement* }
+                  [ 'default' ':' statement* ]
+                '}'
+```
+
+Pascal semantics: the subject must be an **integer** type (`switch subject must
+be an integer, not X` — `bool` and `ptr` are refused); each `case` value must be
+a **compile-time integer constant** (`case value must be a compile-time constant`)
+that **fits the subject's type** (`case value does not fit the switch subject
+type`) and is **unique** (`duplicate case value N`); `default` may appear at most
+once, in any position (`a second default case`). A `case` with no statements is
+legal and simply falls through to the next arm (chaining empty cases is the one
+form of sharing the language allows). **Each matching case body self-ends** — a
+match does not run the next arm, so there is **no fallthrough and no `break`
+keyword inside a `switch`**. `break` and `continue` keep their ordinary meaning
+and still name the innermost loop; a `switch` does **not** push a loop context,
+so a `break` inside a `switch` that is inside a `while` breaks the `while`, not
+the `switch`. Codegen lowers the `switch` to a comparison chain — the subject
+spilled to a slot, then per case `load subject; load case value; CMP; B.NE → skip
+body; body; B → end`, with the `default` body last — adding **no new
+instruction** and **no new label concept**, which is why the byte baseline of
+every pre-existing example is unchanged (see `tests/switch-checks.sh` and
+`tests/rebuild-baseline-v0.23.49.sh`).
+
+### Labeled `break` / `continue` (v0.23.49-dev)
+
+```
+break  [ ident ] ';'
+continue [ ident ] ';'
+```
+
+Unlabeled, `break` / `continue` name the innermost loop, as ever. Labeled, they
+read the following identifier as a **target loop name** and resolve it
+innermost-first among the enclosing labeled loops; a name that matches no
+enclosing loop is `no such loop label: X`, and a label on anything but a `while`
+or `for` is `only a while or for loop may be labeled`. The labels are a
+compile-time name resolution, not a runtime `goto`: `break outer;` from inside a
+nested loop jumps straight to the named loop's exit, and `continue outer;`
+jumps to its step / condition — exactly what C needs an explicit `goto` for.
 
 ### Scope
 
