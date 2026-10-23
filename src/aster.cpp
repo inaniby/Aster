@@ -86,7 +86,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.47-dev"
+#define ASTER_VERSION_STRING "0.23.48-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;

@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.45-dev.** One table per area. "Since" is the version that
+**As of v0.23.48-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -50,7 +50,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | The five prefix operators `-` `!` `~` `*` `&` take a **`unary()` operand** — a level between `postfix()` and the multiplicative one — so `-s.v` is `-(s.v)`, `*s.p` is `*(s.p)` and `!s.ok` is `!(s.ok)`, as in C | shipped | v0.23.27-dev | `precedence-checks.sh` [3/9], [4/9], mutants m3/m4/m5 |
 | A comparison **level crossing** is legal: `a < b == c` reads `(a < b) == c` and `a == b < c` reads `a == (b < c)`; the result is still an ordinary bool | shipped | v0.23.27-dev | `precedence-checks.sh` [3/9], [4/9], mutant m6 |
 | A **local** `let` is range-checked like a global one: `initializerFits` on a constant initializer, for a scalar and for an array's element initializer, in sema and again in codegen | shipped | v0.23.27-dev | `precedence-checks.sh` [5/9], mutants m8–m12 |
-| Narrowing a **value** into a narrower local (`let b: i32 = <an i64>;`, `let b: u8 = <an i32>;`) is still allowed — the check applies to a constant that does not fit, not to a conversion the language offers | shipped (by design) | v0.23.27-dev | `precedence-checks.sh` [3/9] |
+| Narrowing a **value** into a narrower local (`let b: i32 = <an i64>;`, `let b: u8 = <an i32>;`) is still allowed — the check applies to a constant that does not fit, not to a conversion; since v0.23.48-dev the spelled-out way to ask for the truncation is a cast (`let b: u8 = u8(a);`) | shipped (by design) | v0.23.27-dev | `precedence-checks.sh` [3/9] |
 | Logical operators `&&` / `\|\|` (short-circuit) and `!` | shipped | v0.22.51-dev | `bool-checks.sh` |
 | `bool` is not implicitly convertible to or from `i32` | shipped (by design) | v0.22.51-dev | `bool-checks.sh` |
 | `else if (cond) { }` chains (sugar for `else { if … }`) | shipped | v0.22.51-dev | `bool-checks.sh` |
@@ -73,6 +73,11 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | An operation is 64-bit when either operand is `i64` or a constant beyond `i32`, whatever the consumer's width wants (`wideOp`) | shipped | v0.23.18-dev | `wide-int-literal-checks.sh` |
 | `?:` arms widen from the expression's own type when the consumer is `i32`, so `c ? 4294967297 : small` keeps both arms wide | shipped | v0.23.18-dev | `wide-int-literal-checks.sh` |
 | `u8` / `u16` / `u32` unsigned narrow types on the same lattice | shipped | v0.23.2-dev | `wide-int-checks.sh` |
+| **`u64` type** (unsigned 64-bit) — the eighth integer type: `i64`'s 8-byte slots and X registers with the unsigned reading (`LO/LS/HI/HS`, `UDIV`); `ptr<u64>` strides 8 bytes through the existing `tyPtrToElem` | shipped | v0.23.48-dev | `integer-cast-checks.sh` [3/10] |
+| **The cast `T(x)`** — a function-shaped explicit conversion at the primary level, six spellings (`i32 i64 u8 u16 u32 u64`), recognized with zero lookahead; integer operands only (`ptr`/`bool` are neither spellings nor operands); a narrowing answers the target width's low bits, a widening extends by the **source** type's signedness (the arm's `SXTW` answers at the consumer's width — the producer-extends rule) | shipped | v0.23.48-dev | `integer-cast-checks.sh` [3/10], [5/10], [8/10] m2/m3/m7 |
+| `promoteInt` answers **`U64` first**, ahead of the `tyIs64` branch — otherwise `u64 + i64` would answer `I64` and a `u64` comparison would be emitted signed, silently wrong past 2^63−1 | shipped | v0.23.48-dev | `integer-cast-checks.sh` [8/10] m4 |
+| An integer literal is accepted up to 2^64−1 by the parser; the slot's own range is enforced at the declaration by `initializerFits` (`let x: i64 = 9223372036854775808;` → `local initializer does not fit in i64: x (…)`, naming the slot rather than the token) | shipped | v0.23.48-dev | `integer-cast-checks.sh` [5/10], [6/10] |
+| The `u64` slot takes a negative literal as the sign-extended view of a value near 2^64 (`-1` is 2^64−1), never a truncation | shipped | v0.23.48-dev | `integer-cast-checks.sh` [3/10] |
 | Unified `Ty` lattice (`i32`/`u32`/`u8`/`u16`/`i64`/`ptr`/`bool`) replacing scattered booleans | shipped | v0.23.2-dev | `sema-checks.sh`, `wide-int-checks.sh` |
 | i64 arithmetic `+ - * / % << >> & \| ^ ~`, unary minus, negative literals — width from the operands, not the consumer (hardened v0.23.18-dev) | shipped | v0.23.2-dev, hardened v0.23.18-dev | `wide-int-checks.sh` [4/7], `wide-int-literal-checks.sh` |
 | i64 uses 64-bit registers and the 8-byte AAPCS64 ABI (`x0`–`x7`, stack for args 9+) | shipped | v0.23.2-dev | `wide-int-checks.sh` [5/7] |

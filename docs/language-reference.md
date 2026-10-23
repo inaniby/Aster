@@ -25,9 +25,9 @@ explains *why* each rule exists. This file is the lookup table.
 | Whitespace | spaces, tabs, newlines (`isspace`) |
 | Encoding note | UTF-8 inside a comment is fine: comments are consumed before the ASCII check runs |
 
-## 2. Reserved words — 21
+## 2. Reserved words — 23
 
-All 21 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
+All 23 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
 fails for every one of them).
 
 | Word | Role | Since |
@@ -48,6 +48,7 @@ fails for every one of them).
 | `u8` | 8-bit unsigned integer type | v0.23.2-dev |
 | `u16` | 16-bit unsigned integer type | v0.23.2-dev |
 | `u32` | 32-bit unsigned integer type | v0.23.2-dev |
+| `u64` | 64-bit unsigned integer type | v0.23.48-dev |
 | `ptr` | untyped / typed address (`ptr`, `ptr<S>`) | — |
 | `bool` | boolean type | v0.22.51-dev |
 | `struct` | struct declaration | v0.23.5-dev |
@@ -80,7 +81,7 @@ ident ::= [A-Za-z_] [A-Za-z0-9_]*
 | --- | --- | --- |
 | Decimal integer | `[0-9]+` | e.g. `0`, `42`, `3000000000` |
 | Hex integer | `0x` / `0X` + ≥1 hex digit | `0x1F`. Bare `0x` → `hexadecimal literal has no digits at L:C` |
-| Integer range | ≤ `0x7FFFFFFFFFFFFFFF` | larger → `integer literal exceeds i64 range at L:C` |
+| Integer range | ≤ `0xFFFFFFFFFFFFFFFF` | larger → `integer literal exceeds u64 range at L:C` (v0.23.48-dev; the slot's own range is checked at the declaration — §9.4) |
 | Bool | `true`, `false` | reserved words, not integers |
 | String | `"…"` | value is a `ptr` to NUL-terminated rodata |
 
@@ -128,6 +129,7 @@ leading `&` and the bitwise level only sees one in operator position.
 | `i32` | 4 | 4 | signed |
 | `u32` | 4 | 4 | unsigned; `LO/LS/HI/HS` condition codes, `UDIV` |
 | `i64` | 8 | 8 | signed; X registers |
+| `u64` | 8 | 8 | unsigned; X registers, `UDIV`, `LO/LS/HI/HS` (v0.23.48-dev) |
 | `ptr` | 8 | 8 | untyped address |
 | `ptr<S>` | 8 | 8 | address of an `S`; gives `.field` its offsets |
 | `fn(P1,..,Pn) -> R` | 8 | 8 | function pointer carrying a signature (v0.23.37-dev); stored as a `ptr`. Since v0.23.38-dev it is also legal as a **struct field** type and as a function's **return** type |
@@ -140,28 +142,52 @@ Struct layout is AAPCS64 / C: each field starts at the next offset that is a
 multiple of its own alignment, the struct's alignment is the largest of its
 fields', and its size is the final offset rounded up to that alignment.
 
-There is **no** `void`, `float`/`double`, `char`, `enum`, `union`, `const`,
-`typedef`/type alias, or cast expression. (`sizeof` and `len` are operators
-since v0.23.35-dev — see §6.)
+There is **no** `void`, `float`/`double`, `char`, `enum`, `union`, `const`, or
+`typedef`/type alias. An explicit conversion between the integer types is the
+**cast** `T(x)` (v0.23.48-dev — see §5.1); no other conversion is expressible.
+(`sizeof` and `len` are operators since v0.23.35-dev — see §6.)
+
+### 5.1 The cast: `T(x)`
+
+```
+cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64" ) "(" expr ")"
+```
+
+- Function-shaped and **primary** (precedence 1), the spelling `sizeof` and
+  `len` already use. The type keywords are reserved words, so an integer
+  keyword followed by `(` can be nothing else — zero lookahead.
+- The operand must be an **integer**: `u8(p)`, `u8(true)`, `u8(s)` are
+  `cannot cast ptr to u8` / `cannot cast bool to u8` /
+  `cannot cast Point to u8`. `ptr` and `bool` are not cast *spellings*
+  either — `ptr(x)` is `expected expression`, exactly as before.
+- A **narrowing** cast answers with the target width's low bits:
+  `u8(300)` is `44`, `u16(70000)` is `4464`, `u32(0 - 1)` is `4294967295`.
+- A **widening** cast extends by the *source* type's signedness:
+  `u64(u8(200))` is `200`, `u64(u32(4294967295))` is `4294967295`,
+  `i64(i32(0 - 1))` is `-1` (sign-extended, not `4294967295`).
+- This is the only way to ask for a truncation; implicit narrowing of a value
+  remains a compile error where it is checked at all.
 
 ### Implicit conversions
 
 - A folded constant takes on the target type, range-checked by
-  `initializerFits` (§10.2 for the one place this does **not** happen).
+  `initializerFits` (§9.4 for the one place this does **not** happen).
 - `i32` ↔ `u32` interconvert (one 32-bit representation).
 - A narrower integer widens losslessly to a wider one.
-- Everything else is an error. **There are no casts**, so there is no way to
-  ask for a truncation; silently dropping bits would be a bug in the program.
+- Everything else is an error. **A narrowing must be asked for** with a cast
+  (§5.1): silently dropping bits would be a bug in the program.
 
 Usual arithmetic conversion for two integer operands: equal types keep their
-own width (`u8 + u8` wraps at 256); a 64-bit operand wins; a mixed pair widens
+own width (`u8 + u8` wraps at 256); a 64-bit operand wins — and since
+v0.23.48-dev `u64` outranks `i64`, so a mixed pair with a `u64` side is
+compared unsigned (`u64 + i64` answers `u64`, not `i64`); a mixed pair widens
 to 32 bits, taking the unsigned reading when either side is unsigned.
 
 ## 6. Expressions — precedence, highest first
 
 | # | Level | Operators | Associativity |
 | --- | --- | --- | --- |
-| 1 | Primary | literal, identifier, `f(…)`, `a[i]`, `S { … }`, `( e )`, `@embed(…)`, `@embed_len(…)`, `sizeof(…)`, `len(…)` | — |
+| 1 | Primary | literal, identifier, `f(…)`, `a[i]`, `S { … }`, `( e )`, `@embed(…)`, `@embed_len(…)`, `sizeof(…)`, `len(…)`, `T(x)` cast (v0.23.48-dev) | — |
 | 2 | Postfix | `.field` `[i]` `f(args)` | left |
 | 3 | Unary prefix | `-` `!` `~` `*` `&` | right |
 | 4 | Multiplicative | `*` `/` `%` | left |
@@ -692,8 +718,11 @@ now runs for a local scalar **and** for a local array's element initializer
 (`let a: u8[4] = 300;` → `local array initializer does not fit in u8: a (300)`),
 in sema and again in codegen — the two passes carry the same message. Only a
 *constant* initializer is checked: narrowing a value (`let b: i32 = <an i64>`,
-`let b: u8 = <an i32>`) is still allowed, as it always was, because that is a
-conversion the language offers rather than a constant that does not fit.
+`let b: u8 = <an i32>`) is still allowed, as it always was — the slot's range
+is only enforced against constants, and a non-constant narrowing at a `let`
+or assignment site is silently accepted (the strict check guards the two
+argument paths). Since v0.23.48-dev the explicit spelling is a cast
+(§5.1): `let b: u8 = u8(a);` says the truncation was meant.
 
 ## 10. Limits and quotas
 
@@ -706,7 +735,7 @@ conversion the language offers rather than a constant that does not fit.
 | Multi-dimensional array | same limits, on the **total** element count — `i32[1000][1000]` is refused exactly as `i32[1000000]` is (v0.23.31-dev) | `local array length must be between 1 and 1000: a` |
 | Struct size | 1024 bytes | `struct S is too large: N bytes (limit 1024)` |
 | Global alignment | power of two, ≤ 4096 | `alignment must be a power of two` / `must not exceed 4096 bytes` |
-| Integer literal | ≤ `0x7FFF_FFFF_FFFF_FFFF` | `integer literal exceeds i64 range` |
+| Integer literal | ≤ `0xFFFF_FFFF_FFFF_FFFF` | `integer literal exceeds u64 range` (the slot's own range is checked at the declaration: `local initializer does not fit in i64: x (…)`) |
 | Shift count (constant) | 0 … 63 | `shift count N is out of range (0..63)` |
 | Embedded file | ≤ 16 MiB | `embedded file is too large` |
 | Struct nesting | a struct may not contain itself, directly or by value | `struct S cannot contain itself` |

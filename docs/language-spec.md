@@ -549,8 +549,10 @@ fn main() -> i32 {
 
 - **Only the literal `0`.** `let p: ptr = 1;` is
   `type mismatch initializing 'p': expected ptr`, and so are `p = 1`, `f(1)`
-  and `return 1` from a `-> ptr` function. There is no cast in Aster, so there
-  is no way to ask for an address with a value.
+  and `return 1` from a `-> ptr` function. A cast does not help either:
+  since v0.23.48-dev the six cast spellings are the integer types only —
+  `ptr` is not one of them, so there is no way to ask for an address with a
+  value.
 - **`false` is not null.** A Bool literal's stored value is also `0`, but a
   bool is not an address: `let p: ptr = false;` is refused. This is the one
   subtlety in the rule, and the reason the compiler's `isNullConstant` reads
@@ -724,6 +726,78 @@ described above, and mixing them with C expects the caller to pass a full
 register whose low bits hold the value. `ptr` and raw pointer arithmetic remain
 as documented in the pointer section; `i64`/`u8`/`u16`/`u32` are distinct from
 `ptr` and never implicitly convertible.
+
+## u64 and explicit casts (v0.23.48-dev)
+
+The lattice grows its eighth integer type and the language gains its first
+explicit conversion. `enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Struct }`
+— `U64` sits beside `I64`, and `Cast` joins the expression kinds.
+
+### `u64`: the unsigned 64-bit type
+
+- Same storage as `i64`: 8-byte slots, X registers, `MOVZ`+`MOVK` literals.
+  Same width of access; what changes is the reading — comparisons take the
+  unsigned condition codes `LO`/`LS`/`HI`/`HS` and division is `UDIV`, exactly
+  as `u8`/`u16`/`u32` already do at their widths (`tyIsUnsigned` learns `U64`).
+- **Literals up to `2^64-1`.** `primary()`'s guard moves from
+  `0x7fffffffffffffffULL` to `0xffffffffffffffffULL`; past that there is
+  nowhere for the value to go at all and the parse fails with
+  `integer literal exceeds u64 range at L:C`. The check against the *slot* —
+  which is what knows whether a value above `2^63-1` was meant for `i64` or
+  `u64` — moves to the declaration site, `initializerFits`:
+  `let x: u64 = 18446744073709551615;` is accepted, and
+  `let x: i64 = 9223372036854775808;` is refused naming the slot,
+  `local initializer does not fit in i64: x (9223372036854775808)`, where the
+  old parser named the token instead. A negative literal in a `u64` slot is
+  the sign-extended view of a value near `2^64` (`-1` is `2^64-1`), not a
+  truncation, so the slot takes it as it stands.
+- **`promoteInt` answers `U64` first.** `u64` outranks `i64` and is tested
+  before the `tyIs64` branch: were that branch reached first, `u64 + i64`
+  would answer `I64` and a `u64` comparison would be emitted with the signed
+  condition codes — silently wrong for every value past `2^63-1`, which is
+  exactly the range `u64` exists for. A mixed pair widens to 64 bits and
+  takes the unsigned reading when either side is `u64`.
+- **`tyAssignable`** keeps its shape: an `i64` flows into a `u64` slot as the
+  one same-width asymmetric rule beside `i32`↔`u32` (`to==U64 && from==I64`),
+  and every integer still widens into `i64`.
+- **C ABI**: `u64` travels exactly the path `i64` does — `x0`–`x7`, 8-byte
+  stack slots, `x0` on return — so it is call-compatible with a C
+  `unsigned long` argument/return on LP64.
+
+### The cast: `T(x)`
+
+- **Function-shaped, primary level.** `u8(x)`, `i64(x)` — the same spelling
+  `sizeof` and `len` use. The type keywords are reserved words, so the
+  recognition is zero-lookahead: an integer keyword followed by `(` can be
+  nothing else. Six spellings: `i32 i64 u8 u16 u32 u64`.
+- **`ptr` and `bool` are deliberately not spellings.** There is no conversion
+  to or from an address or a bool, so `ptr(x)` falls through to the
+  `expected expression` error exactly as it did before, and a bool operand is
+  refused by sema rather than read as `0`/`1`.
+- **Sema**: the operand must be an integer — `cannot cast ptr to u8`,
+  `cannot cast bool to i32`, `cannot cast Point to i32`. The answer is the
+  target type, which is also the type codegen's `exprType` reports, so the
+  two passes cannot disagree about the width the value is carried at.
+- **Codegen**: a narrowing cast answers with the target width's low bits
+  (`u8(300)` is `44`, `u32(-1)` is `0xFFFFFFFF`); a widening cast extends by
+  the *source* type's signedness (`u64(u8(200))` zero-extends,
+  `i64(i32(-1))` sign-extends). The extension honours the same
+  producer-extends rule every other producer follows: the `SXTW` at the end
+  of the `Cast` arm answers at 64 bits when a 64-bit consumer asks, because a
+  cast that stopped at 32 bits would leave the upper half zeroed — the
+  correct `u32` reading of those bits, but not the `i32` one.
+- **A cast is how a program asks for a truncation.** There is no implicit
+  one: `tyAssignable` refuses a narrowing value at the argument paths, and a
+  constant that does not fit its slot is a compile error. `u16(70000)`
+  exists so the program can say it meant the low bits.
+
+```aster
+let top: u64 = 18446744073709551615;      // 2^64-1, accepted
+let b: u8 = u8(300);                      // 44 — the low 8 bits, asked for
+let w: u64 = u64(u32(4294967295));        // 4294967295 — zero-extended
+let s: i64 = i64(i32(0 - 1));             // -1 — sign-extended, not 4294967295
+if (top / 1000000000000 == 18446744) { return 73; }   // UDIV, unsigned compare
+```
 
 ## Structs (v0.23.5-dev)
 
