@@ -180,6 +180,7 @@ uint64_t alignUp(uint64_t n,uint64_t a){return (n+a-1u)&~(a-1u);}
 
 enum class TK { End, Ident, Number, String, Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool,
     I64, U8, U16, U32,   // v0.23.2-dev (P3.2): wider integer type keywords
+    U64,                 // v0.23.48-dev: the 64-bit unsigned integer — the cast target the language was missing
     True, False,         // v0.23.25-dev: Bool literals — the first the language has had
     Struct,              // v0.23.5-dev (P3.3): struct declarations
     Include,             // v0.23.13-dev (P3.4): include "file.ast" declaration sharing
@@ -223,7 +224,7 @@ public:
                 TK k=TK::Ident;
                 if(x=="fn")k=TK::Fn; else if(x=="extern")k=TK::Extern; else if(x=="main")k=TK::Main; else if(x=="let")k=TK::Let;
                 else if(x=="return")k=TK::Return; else if(x=="if")k=TK::If; else if(x=="else")k=TK::Else; else if(x=="while")k=TK::While; else if(x=="for")k=TK::For; else if(x=="break")k=TK::Break; else if(x=="continue")k=TK::Continue; else if(x=="i32")k=TK::I32; else if(x=="ptr")k=TK::Ptr; else if(x=="bool")k=TK::Bool;
-                else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="struct")k=TK::Struct;
+                else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct;
                 else if(x=="include")k=TK::Include;   // v0.23.13-dev (P3.4)
                 // v0.23.25-dev: true/false are reserved words now. No shipped
                 // example or suite used either as an identifier, so the byte
@@ -376,7 +377,7 @@ public:
 // The Kind keeps the spelling `Ty::I32`, so every site that asks "is this a
 // pointer?" or "how wide is it?" reads exactly as it did before.
 struct Ty {
-    enum Kind { I32, U32, U8, U16, I64, Ptr, Bool, Struct };
+    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Struct };
     Kind k = I32;
     int sid = -1;                      // struct-table index; see above
     // v0.23.34-dev: a pointer may carry the *element* it strides over, so
@@ -471,13 +472,13 @@ static const StructDef& structOf(int sid) {
 // Width in bytes of one value of this type as it sits in memory.
 static uint32_t tySize(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).size;
-    return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::Ptr) ? 8u : 4u;
+    return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
 // Alignment in bytes. Structs carry their own; every scalar is naturally
 // aligned. This is the number AAPCS64 rounds a field offset up to.
 static uint32_t tyAlign(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).align;
-    return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::Ptr) ? 8u : 4u;
+    return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
 static bool tyIsStruct(Ty t) { return t.k == Ty::Struct; }
 // A `ptr<S>`: still a 64-bit address with the ordinary pointer ABI, but field
@@ -509,13 +510,13 @@ static uint64_t sizeofTypeValue(Ty t, const std::vector<uint32_t>& dims) {
 // True for the types that occupy an 8-byte slot and use X registers (and, for
 // pointers, the existing 64-bit load/store forms). A struct is not one of
 // them: it is copied by address, never materialized in a single register.
-static bool tyIs64(Ty t) { return t.k == Ty::I64 || t.k == Ty::Ptr; }
-// I32/U32/U8/U16/I64: arithmetic and comparison operands that are not bool,
+static bool tyIs64(Ty t) { return t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr; }
+// I32/U32/U8/U16/I64/U64: arithmetic and comparison operands that are not bool,
 // not an address, and not a composite.
-static bool tyIsInteger(Ty t) { return t.k == Ty::I32 || t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::I64; }
-// U32/U8/U16 compare with the unsigned condition codes (LO/LS/HI/HS) and divide
+static bool tyIsInteger(Ty t) { return t.k == Ty::I32 || t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::I64 || t.k == Ty::U64; }
+// U32/U8/U16/U64 compare with the unsigned condition codes (LO/LS/HI/HS) and divide
 // with UDIV, unlike i32/i64.
-static bool tyIsUnsigned(Ty t) { return t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16; }
+static bool tyIsUnsigned(Ty t) { return t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::U64; }
 // v0.23.28-dev: log2(tySize(t)) when the size is a power of two — the shift
 // `ADD Xd, Xn, Wm, UXTW #sh` folds into one instruction — or -1 when it is
 // not. Only a struct reaches the second case: a struct's size is a multiple of
@@ -532,7 +533,7 @@ static int elemShiftOf(Ty t){
 static const char* tyName(Ty t) {
     switch (t.k) {
         case Ty::I32: return "i32"; case Ty::U32: return "u32"; case Ty::U8: return "u8";
-        case Ty::U16: return "u16"; case Ty::I64: return "i64"; case Ty::Ptr: return "ptr";
+        case Ty::U16: return "u16"; case Ty::I64: return "i64"; case Ty::U64: return "u64"; case Ty::Ptr: return "ptr";
         case Ty::Bool: return "bool";
         case Ty::Struct: break;
     }
@@ -576,7 +577,7 @@ static void layoutStruct(StructDef& s) {
 }
 // The single spelling of "this is not a type name", shared by the parameter,
 // return, local and global declaration sites so they cannot drift apart.
-static const char* kTypeExpected="expected i32, i64, u8, u16, u32, ptr, ptr<S>, bool, or a struct name";
+static const char* kTypeExpected="expected i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name";
 struct Expr {
     // Field   : a.field   — a is a struct lvalue or a ptr<S>; name is the field
     // AddrOf  : &a        — the address of an lvalue, typed ptr<S> for a struct
@@ -630,6 +631,12 @@ using E=std::unique_ptr<Expr>;
 // exactly. A bare literal is therefore accepted for every 32-bit-and-wider
 // type and only checked for the narrow ones. i32 keeps its historical
 // behaviour (the low 32 bits are stored) so no existing program changes.
+//
+// v0.23.48-dev: the i64 upper bound moved here from primary(), which used to
+// reject any literal past 2^63-1 outright. With u64 in the language the parser
+// accepts the full unsigned range, and the declaration site is where a too-wide
+// value is caught — `let x: i64 = 9223372036854775808;` reports the slot it was
+// meant for instead of the token it was written at.
 static bool initializerFits(Ty t,const Expr& e,int64_t folded){
     // v0.23.28-dev: `true`/`false` fill a bool slot and only a bool slot. A
     // bool array element is one, so this is where an out-of-range fill is
@@ -642,12 +649,20 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
         if(t==Ty::U8) return (uint64_t)e.n<=255u;
         if(t==Ty::U16)return (uint64_t)e.n<=65535u;
         if(t==Ty::Bool)return (uint64_t)e.n<=1u;
+        // v0.23.48-dev: an i64 slot's signed range, checked here rather than in
+        // the parser — u64 now takes every literal up to 2^64-1, and only the
+        // declaration knows which slot the value was meant for.
+        if(t==Ty::I64) return (uint64_t)e.n<=0x7fffffffffffffffULL;
         return true;
     }
     switch(t.k){
         case Ty::U8:  return folded>=0&&folded<=255;
         case Ty::U16: return folded>=0&&folded<=65535;
         case Ty::U32: return folded>=0;
+        // v0.23.48-dev: u64 holds every folded value's bit pattern exactly: a
+        // negative fold is the sign-extended view of a u64 value (-1 is
+        // 2^64-1), never a truncation, so the slot accepts it as it stands.
+        case Ty::U64: return true;
         case Ty::Bool: return folded==0||folded==1;
         default:      return true;   // i64 holds everything; i32 truncates as before
     }
@@ -827,6 +842,7 @@ class Parser {
             case TK::U8:  out=Ty::U8;   ++p; return true;
             case TK::U16: out=Ty::U16;  ++p; return true;
             case TK::U32: out=Ty::U32;  ++p; return true;
+            case TK::U64: out=Ty::U64;  ++p; return true;   // v0.23.48-dev
             case TK::Ptr: return pointerType(out);
             case TK::Bool:out=Ty::Bool; ++p; return true;
             // A struct type is spelled with the name it was declared with. An
@@ -1065,10 +1081,13 @@ class Parser {
         }
         if(cur().k==TK::String){auto tok=t[p++];Global g;g.name="__aster_string_"+std::to_string(stringCounter++);g.isString=true;g.rawData.assign(tok.s.begin(),tok.s.end());g.rawData.push_back(0);g.align=1;globals.push_back(std::move(g));E x(new Expr(Expr::String));x->name=globals.back().name;x->line=tok.line;x->col=tok.col;return x;}
         if(eat(TK::LParen)){E x=expr();need(TK::RParen,"expected ')' ");return x;}
-        // Literals are accepted up to the signed i64 maximum (9.2e18). Anything
-        // wider would not fit the widest supported type (i64) anyway. The u32/u8/u16
-        // widths are checked later, at the declaration site, against the declared type.
-        if(cur().k==TK::Number){auto tok=t[p++];unsigned long long n=unsignedLiteral(tok,"integer literal");if(n>0x7fffffffffffffffULL)throw Error("integer literal exceeds i64 range at "+std::to_string(tok.line)+":"+std::to_string(tok.col));E nn(new Expr(Expr::Num,(uint64_t)n)); nn->line=tok.line; nn->col=tok.col; return nn;}
+        // Literals are accepted up to the full unsigned 64-bit range (1.8e19).
+        // v0.23.48-dev: the old signed-i64 ceiling is gone — u64 is a type now,
+        // and the range check that used to live here moved to the declaration
+        // site (initializerFits), which is what knows which slot the value was
+        // meant for. Only a value past 2^64-1 has nowhere to go at all. The
+        // u32/u8/u16 widths are still checked later, against the declared type.
+        if(cur().k==TK::Number){auto tok=t[p++];unsigned long long n=unsignedLiteral(tok,"integer literal");if(n>0xffffffffffffffffULL)throw Error("integer literal exceeds u64 range at "+std::to_string(tok.line)+":"+std::to_string(tok.col));E nn(new Expr(Expr::Num,(uint64_t)n)); nn->line=tok.line; nn->col=tok.col; return nn;}
         // v0.23.25-dev: true/false — Bool literals. They ride the Num node
         // (there is no other constant kind) but carry boolLit, so no type
         // rule can mistake them for the integers 0 and 1.
@@ -2260,8 +2279,14 @@ static bool isNullConstant(const Expr& e){return e.k==Expr::Num&&!e.boolLit&&e.n
 // Usual arithmetic conversion for the integer types: equal types keep their own
 // width (u8 + u8 wraps at 256), a 64-bit operand wins, and a mixed pair widens
 // to 32 bits taking the unsigned reading when either side is unsigned.
+//
+// v0.23.48-dev: u64 outranks i64 and is tested first. Were the tyIs64 branch
+// reached first, `u64 + i64` would answer I64 and a u64 comparison would be
+// emitted with the signed condition codes — silently wrong for every value
+// past 2^63-1, which is exactly the range u64 exists for.
 static Ty promoteInt(Ty a,Ty b){
     if(a==b)return a;
+    if(a==Ty::U64||b==Ty::U64)return Ty::U64;
     if(tyIs64(a)||tyIs64(b))return Ty::I64;
     return (tyIsUnsigned(a)||tyIsUnsigned(b))?Ty::U32:Ty::I32;
 }
@@ -2274,8 +2299,8 @@ static Ty promoteInt(Ty a,Ty b){
 //   * i32 and u32 interconvert, sharing one 32-bit representation;
 //   * a narrower integer widens losslessly to a wider one;
 //   * everything else — narrowing a value, mixing in a bool or a pointer — is
-//     an error. Aster has no cast expressions, so there is no way to ask for a
-//     truncation, and silently dropping bits would be a bug in the program.
+//     an error. There is no *implicit* truncation: a cast is how a program asks
+//     for one (v0.23.48-dev), and silently dropping bits would be a bug.
 static bool tyAssignable(Ty to,Ty from,const Expr& e){
     if(to==from)return true;
     // v0.23.26-dev: the null pointer constant is the one integer a ptr slot
@@ -2288,7 +2313,7 @@ static bool tyAssignable(Ty to,Ty from,const Expr& e){
     if(to==Ty::I64)return true;                     // every integer widens to i64
     const uint32_t wt=tySize(to),wf=tySize(from);
     if(wt<wf)return false;                          // narrowing
-    if(wt==wf)return (to==Ty::I32&&from==Ty::U32)||(to==Ty::U32&&from==Ty::I32)||(to==Ty::U32&&tyIsUnsigned(from));
+    if(wt==wf)return (to==Ty::I32&&from==Ty::U32)||(to==Ty::U32&&from==Ty::I32)||(to==Ty::U32&&tyIsUnsigned(from))||(to==Ty::U64&&from==Ty::I64);
     return true;                                    // u8/u16 -> wider: zero-extension is lossless
 }
 // AArch64 condition code for a comparison: eq, ne, lt, le, gt, ge. The ordered
@@ -6855,6 +6880,7 @@ struct DwarfDieWriter {
             case Ty::U8:   nm="u8";  size=1;enc=0x07;break;
             case Ty::U16:  nm="u16"; size=2;enc=0x07;break;
             case Ty::I64:  nm="i64"; size=8;enc=0x05;break;
+            case Ty::U64:  nm="u64"; size=8;enc=0x07;break;   // v0.23.48-dev: DW_ATE_unsigned
             // A bool slot is four bytes wide (v0.23.2-dev), so its type says so.
             case Ty::Bool: nm="bool";size=4;enc=0x02;break;   // DW_ATE_boolean
             default: break;
