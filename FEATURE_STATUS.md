@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.49-dev.** One table per area. "Since" is the version that
+**As of v0.23.50-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -60,6 +60,11 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | `if (cond) { }` and `if (cond) { } else { }` — **`else` optional** (since v0.23.22-dev; before it every `if` demanded an else, and `} else { }` filler blocks were the only way out) | shipped | v0.23.22-dev (was: else mandatory, early) | `syntax-relief-checks.sh` [4/7] shape battery |
 | `else { if (cond) { } }` — the explicit spelling of `else if`, legal even when the inner `if` has no else (it did not parse before v0.23.22-dev) | shipped | v0.23.22-dev | `syntax-relief-checks.sh` [4/7] shape battery |
 | Hexadecimal integer literals `0x…` / `0X…` (any position a decimal literal is legal, including array lengths; a bare `0x` is a positioned lexer error) | shipped | v0.23.22-dev | `syntax-relief-checks.sh` [5/7] hex battery |
+| `0b…` / `0B…` binary integer literals (the `0b`/`0B` prefix is stripped and the body parsed base 2; a bare `0b` with no digits is a positioned lexer error) | shipped | v0.23.50-dev | `literals-checks.sh` [3/9], [5/9] |
+| Digit separators `1_000_000` — an underscore between two digits (decimal, hex or binary), dropped from the value text so `1_000_000` *is* `1000000`; a separator not flanked by two digits (`1_0_`, `_1`, `1_`) is a positioned error | shipped | v0.23.50-dev | `literals-checks.sh` [3/9], [5/9] |
+| **Character literals** `'a'` / `'\n'` / `'\''` / `'\a'` / `'\x41'` — a new `Char` token carrying exactly one code unit (the only punctuation token, and the only `TOKENS` entry not in the 26-keyword set), decoded through the shared `unescape` table; empty or multi-character literals are refused | shipped | v0.23.50-dev | `literals-checks.sh` [3/9], [5/9] |
+| **Numeric suffixes** `u` / `l` / `ul` — pin a literal's type: `1u` is `u32`, `2l` is `i64`, `3ul` is `u64` (`primary()` answers `U32`/`I64`/`U64` from `LitSuffix`); a value outside the suffix's ceiling (`0xFFFFFFFFu` past `u32`, `0x8000000000000000l` past `i64`) or an unsupported suffix (`ll`, `uu`) is refused | shipped | v0.23.50-dev | `literals-checks.sh` [3/9], [5/9] |
+| **Extended escape table** in string and character literals: `\' \a \b \f \v` plus the existing `\n \r \t \0 \\ \"` and `\xHH`, all folded in the shared `unescape` (the string table used to refuse `\'` and the control codes) | shipped | v0.23.50-dev | `literals-checks.sh` [3/9] |
 | `while (cond) { }`, `break;`, `continue;` | shipped | early | `smoke.sh` |
 | `for (init; cond; step) { }` — `continue` lands on the step | shipped | v0.22.50-dev | `for-loop-checks.sh` |
 | **`switch (e) { case C: … default: … }`** — Pascal semantics: the subject must be an integer type, each case value a compile-time integer constant that fits the subject and is unique, `default` at most once in any position; each matching case body self-ends (no fall-through, no per-case `break`); `switch` does not push a loop context, so a `break` inside it still names the innermost loop. Lowered to a comparison chain — zero new instructions, zero new label concepts — so every pre-existing example's bytes are unchanged | shipped | v0.23.49-dev | `switch-checks.sh` [3/9], [5/9], [9/9] |

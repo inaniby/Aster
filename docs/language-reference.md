@@ -1,9 +1,9 @@
 # Aster Language Reference
 
-**Applies to: v0.23.49-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.50-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
-source and then **checked against the v0.23.49-dev binary**. Where a rule says a
+source and then **checked against the v0.23.50-dev binary**. Where a rule says a
 construct is rejected, the message quoted is the compiler's own. Where Aster
 differs from C, it is called out explicitly — §9 records four such places, all
 of them closed in v0.23.27-dev and kept there because each row is still the
@@ -84,17 +84,25 @@ ident ::= [A-Za-z_] [A-Za-z0-9_]*
 | --- | --- | --- |
 | Decimal integer | `[0-9]+` | e.g. `0`, `42`, `3000000000` |
 | Hex integer | `0x` / `0X` + ≥1 hex digit | `0x1F`. Bare `0x` → `hexadecimal literal has no digits at L:C` |
+| Binary integer | `0b` / `0B` + ≥1 binary digit | `0b1010` (= 10). Bare `0b` → `binary literal has no digits at L:C` (v0.23.50-dev) |
+| Digit separators | `_` between two digits | `1_000_000`, `0xFF_FF`, `0b1111_1111_1111` all read with the `_` dropped — `1_000_000` *is* `1000000` (v0.23.50-dev); a `_` not flanked by two digits (`1_`, `_1`, `1_0_`) → `digit separator '_' must be between two digits at L:C` |
+| Numeric suffix | `u` / `l` / `ul` after an integer literal | pins the literal's type: `1u` → `u32`, `2l` → `i64`, `3ul` → `u64` (v0.23.50-dev); `primary()` answers `U32`/`I64`/`U64` from `LitSuffix`. A value past the suffix's ceiling (`0xFFFFFFFFu` past `u32`, `0x8000000000000000l` past `i64`) or an unsupported suffix (`ll`, `uu`) → `u32 literal out of range at L:C` / `i64 literal out of range at L:C` / `invalid numeric suffix 'll' at L:C` |
 | Integer range | ≤ `0xFFFFFFFFFFFFFFFF` | larger → `integer literal exceeds u64 range at L:C` (v0.23.48-dev; the slot's own range is checked at the declaration — §9.4) |
 | Bool | `true`, `false` | reserved words, not integers |
 | String | `"…"` | value is a `ptr` to NUL-terminated rodata |
+| Character | `'…'` | exactly one code unit; `'a'`, `'\n'`, `'\''`, `'\a'`, `'\x41'` decode through the shared escape table (v0.23.50-dev). Empty `''` → `empty or unterminated char literal at L:C`; more than one unit `'ab'` → `char literal must hold exactly one character at L:C` |
 
-**String escapes** — exactly six: `\n` `\r` `\t` `\0` `\\` `\"`.
-Anything else → `unsupported string escape at L:C`.
+**String and character escapes** — shared by both literal kinds, exactly:
+`\n` `\r` `\t` `\0` `\\` `\"` `\'` `\a` `\b` `\f` `\v` and `\xHH` (two hex digits).
+The last six were added in v0.23.50-dev; before then the string table refused
+`\'` and had no control codes.
+Anything else → `unsupported string escape at L:C` (or `unsupported char escape at L:C`).
 A raw newline inside → `newline in string literal at L:C`.
-Unterminated → `unterminated string literal at L:C`.
+Unterminated → `unterminated string literal at L:C` (or `unterminated char literal at L:C`).
 
-There are **no** floating-point literals, character literals, suffixes
-(`1u`, `2L`), digit separators, or raw strings.
+There are **no** floating-point literals or raw strings; every other literal
+shape in the host language is supported (character literals, `u`/`l`/`ul`
+suffixes, digit separators and `0b` binary all landed in v0.23.50-dev).
 
 ## 4. Operators and punctuation — complete token set
 
