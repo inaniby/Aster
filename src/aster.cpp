@@ -86,7 +86,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.49-dev"
+#define ASTER_VERSION_STRING "0.23.50-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -178,7 +178,9 @@ static void reportError(const std::string& msg) {
 }
 uint64_t alignUp(uint64_t n,uint64_t a){return (n+a-1u)&~(a-1u);}
 
-enum class TK { End, Ident, Number, String, Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool,
+enum class TK { End, Ident, Number, String,
+    Char,                // v0.23.50-dev: the character literal — 'a' lexes to a Char token carrying its byte value (0..255)
+    Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool,
     Switch, Case, Default, // v0.23.49-dev: the switch statement — Pascal semantics, so no fallthrough and no per-case break
     I64, U8, U16, U32,   // v0.23.2-dev (P3.2): wider integer type keywords
     U64,                 // v0.23.48-dev: the 64-bit unsigned integer — the cast target the language was missing
@@ -199,6 +201,38 @@ class Lexer {
     const std::string& s; size_t p=0; unsigned line=1, col=1;
     char peek(size_t n=0) const { return p+n<s.size()?s[p+n]:'\0'; }
     char take() { char c=peek(); if(c){++p;if(c=='\n'){++line;col=1;}else ++col;} return c; }
+    // v0.23.50-dev: the shared escape table for string and character literals.
+    // Returns the unescaped byte (0..255). `\xHH` consumes two hex digits from
+    // the stream; every other escape is the single character after the backslash.
+    // An unsupported escape, or a malformed `\x`, is a lexer error.
+    int unescape(char e, unsigned l, unsigned c) {
+        switch(e){
+            case 'n': return '\n';
+            case 'r': return '\r';
+            case 't': return '\t';
+            case '0': return '\0';
+            case '\\': return '\\';
+            case '"': return '"';
+            case '\'': return '\'';   // an apostrophe inside '...'
+            case 'a': return '\a';    // v0.23.50-dev: the escapes the string table used to refuse
+            case 'b': return '\b';
+            case 'f': return '\f';
+            case 'v': return '\v';
+            case 'x': {
+                auto hexv=[&](char d)->int{
+                    if(d>='0'&&d<='9')return d-'0';
+                    if(d>='a'&&d<='f')return d-'a'+10;
+                    if(d>='A'&&d<='F')return d-'A'+10;
+                    return -1;
+                };
+                char h1=take(); int hi=hexv(h1);
+                char h2=take(); int lo=hexv(h2);
+                if(hi<0||lo<0)throw Error("invalid \\x escape at "+std::to_string(l)+":"+std::to_string(c));
+                return (hi<<4)|lo;
+            }
+            default: throw Error("unsupported escape at "+std::to_string(l)+":"+std::to_string(c));
+        }
+    }
 public:
     explicit Lexer(const std::string& x):s(x){}
     std::vector<Token> run() {
@@ -234,18 +268,43 @@ public:
                 v.push_back({k,x,l,c}); continue;
             }
             if(std::isdigit((unsigned char)ch)) {
-                std::string x; while(std::isdigit((unsigned char)peek()))x+=take();
-                // v0.23.22-dev: hexadecimal literals. `0x`/`0X` followed by at
-                // least one hex digit; the prefix stays in the token text and
-                // unsignedLiteral parses base 16 (strtoull accepts the optional
-                // prefix under base 16). A bare `0x` with no digits is a lexer
-                // error here rather than a confusing parser error downstream.
-                if(x=="0"&&(peek()=='x'||peek()=='X')){
+                std::string x;
+                // v0.23.50-dev: digit separators. A '_' is accepted wherever a
+                // digit may appear and is stripped at value-parse time, so
+                // `1_000_000` reads as 1000000; a '_' with nothing on one side
+                // simply ends the run here and unsignedLiteral reports the
+                // malformed literal. Hex (`0x`) and binary (`0b`) prefixes are
+                // recognised and their digit sets widened accordingly.
+                x+=take();   // the first character is a digit
+                bool isHex=false, isBin=false;
+                if(x=="0"&&(peek()=='x'||peek()=='X'||peek()=='b'||peek()=='B')){
                     x+=take();
-                    if(!std::isxdigit((unsigned char)peek()))
-                        throw Error("hexadecimal literal has no digits at "+std::to_string(l)+":"+std::to_string(c));
-                    while(std::isxdigit((unsigned char)peek()))x+=take();
+                    if(x[1]=='b'||x[1]=='B') isBin=true; else isHex=true;
+                    bool okFirst = isBin ? (peek()=='0'||peek()=='1')
+                                         : std::isxdigit((unsigned char)peek());
+                    if(!okFirst)
+                        throw Error(std::string(isBin?"binary":"hexadecimal")+" literal has no digits at "+std::to_string(l)+":"+std::to_string(c));
                 }
+                for(;;){
+                    char q=peek();
+                    if(q=='_'){ x+=take(); continue; }
+                    if(isHex){ if(std::isxdigit((unsigned char)q)){ x+=take(); continue; } break; }
+                    if(isBin){ if(q=='0'||q=='1'){ x+=take(); continue; } break; }
+                    if(std::isdigit((unsigned char)q)){ x+=take(); continue; }
+                    break;
+                }
+                // v0.23.50-dev: optional numeric suffix — u / l / ul / lu
+                // (case-insensitive). Anything else (ll, uu, a stray letter) is
+                // a lexer error; the canonical four spell reduce to one of u, l,
+                // ul, lu, which the parser maps to U32, I64, U64.
+                std::string suf;
+                while(peek()=='u'||peek()=='U'||peek()=='l'||peek()=='L') suf+=take();
+                if(!suf.empty()){
+                    std::string low; for(char s: suf) low += (s=='U'?'u':(s=='L'?'l':s));
+                    bool ok = (low=="u"||low=="l"||low=="ul"||low=="lu");
+                    if(!ok) throw Error("invalid numeric suffix '"+suf+"' at "+std::to_string(l)+":"+std::to_string(c));
+                }
+                x += suf;   // carry the suffix in s; unsignedLiteral strips it
                 v.push_back({TK::Number,x,l,c}); continue;
             }
             if(ch=='"') {
@@ -256,11 +315,34 @@ public:
                     if(q=='\n'||q=='\r')throw Error("newline in string literal at "+std::to_string(l)+":"+std::to_string(c));
                     if(q=='\\') {
                         char e=take(); if(!e)break;
-                        switch(e){case 'n':value+='\n';break;case 'r':value+='\r';break;case 't':value+='\t';break;case '0':value+='\0';break;case '\\':value+='\\';break;case '"':value+='"';break;default:throw Error("unsupported string escape at "+std::to_string(line)+":"+std::to_string(col));}
+                        value += (char)unescape(e, line, col);
                     } else value+=q;
                 }
                 if(!closed)throw Error("unterminated string literal at "+std::to_string(l)+":"+std::to_string(c));
                 v.push_back({TK::String,value,l,c}); continue;
+            }
+            // v0.23.50-dev: a character literal 'x' or '\xHH' holds exactly one
+            // code unit (an escape counts as the one), closed by a single quote.
+            // It lexes to a Char token carrying the byte value; the parser
+            // materialises it as an i32 Num. Empty, overlong or unterminated
+            // char literals are refused.
+            if(ch=='\'') {
+                take();
+                int value=0;
+                if(peek()=='\\') {
+                    take(); char e=take();
+                    if(!e) throw Error("unterminated char literal at "+std::to_string(l)+":"+std::to_string(c));
+                    value=unescape(e, l, c);
+                } else {
+                    char q=take();
+                    if(!q||q=='\''||q=='\n'||q=='\r')
+                        throw Error("empty or unterminated char literal at "+std::to_string(l)+":"+std::to_string(c));
+                    value=(unsigned char)q;
+                }
+                if(peek()!='\'')
+                    throw Error("char literal must hold exactly one character at "+std::to_string(l)+":"+std::to_string(c));
+                take();   // the closing quote
+                v.push_back({TK::Char, std::string(1,(char)(unsigned char)value), l, c}); continue;
             }
             if ((unsigned char)ch > 127) throw Error("non-ASCII character at "+std::to_string(l)+":"+std::to_string(c)+" (Aster source must be ASCII)");
             take();
@@ -627,6 +709,10 @@ struct Expr {
     // bool, folds as no integer constant at all, and initializes a bool slot
     // — while `let x: i32 = true;` is the type error it always should
     // have been.
+    // v0.23.50-dev: a numeric suffix pins a literal's type. LSNone leaves the
+    // literal context-driven (i32, widened by the slot it lands in); the others
+    // answer the named width so operations and codegen see it directly.
+    enum LitSuffix { LSNone, LSU, LSL, LSUL } suffix=LSNone;
     bool boolLit=false;
     unsigned line=0, col=0;   // P4.1: source location of the token that introduces this node
     explicit Expr(Kind kind):k(kind){} Expr(Kind kind,uint64_t value):k(kind),n(value){}
@@ -867,15 +953,49 @@ class Parser {
     Token need(TK k,const char* msg){if(cur().k!=k)throw Error(std::string(msg)+" at "+std::to_string(cur().line)+":"+std::to_string(cur().col));return t[p++];}
     unsigned long long unsignedLiteral(const Token& tok,const char* what) {
         try {
-            size_t used=0;
-            // v0.23.22-dev: hexadecimal literals carry their `0x`/`0X` prefix
-            // in the token text; strtoull consumes the optional prefix under
-            // base 16. Every caller (integer literals, array lengths) inherits
-            // hex for free, and the range check at the call site still sees a
-            // plain unsigned long long.
-            const bool hex=tok.s.size()>1&&tok.s[0]=='0'&&(tok.s[1]=='x'||tok.s[1]=='X');
-            const unsigned long long value=std::stoull(tok.s,&used,hex?16:10);
-            if(used!=tok.s.size())throw Error(std::string("invalid ")+what+" at "+std::to_string(tok.line)+":"+std::to_string(tok.col));
+            // v0.23.50-dev: digit separators and binary literals. The token
+            // text may carry '_' between digits (and a 0x/0X/0b/0B prefix);
+            // both are handled here so every caller — array lengths, the
+            // integer-literal parser — inherits them for free. A '_' not
+            // flanked by two digits, or a prefix with no digits after it, is a
+            // malformed literal rather than a confusing downstream error.
+            // v0.23.50-dev: the lexer carries an optional numeric suffix
+            // (u/l/ul/lu) at the tail of the text; strip it before parsing the
+            // value. The suffix only pins the literal's type, which the parser
+            // reads on its own.
+            const std::string text=tok.s;
+            size_t end=text.size();
+            while(end>0 && (text[end-1]=='u'||text[end-1]=='U'||text[end-1]=='l'||text[end-1]=='L')) --end;
+            const std::string raw=text.substr(0,end);
+            std::string digits; digits.reserve(raw.size());
+            for(size_t i=0;i<raw.size();++i){
+                const char ch=raw[i];
+                if(ch=='_'){
+                    if(i==0||i+1>=raw.size()||!std::isalnum((unsigned char)raw[i-1])||!std::isalnum((unsigned char)raw[i+1]))
+                        throw Error(std::string("digit separator '_' must be between two digits in ")+what+" at "+std::to_string(tok.line)+":"+std::to_string(tok.col));
+                    continue;   // dropped from the value text
+                }
+                digits+=ch;
+            }
+            if(digits.empty())
+                throw Error(std::string("invalid ")+what+" at "+std::to_string(tok.line)+":"+std::to_string(tok.col));
+            // v0.23.22-dev: hexadecimal literals carry their `0x`/`0X` prefix;
+            // strtoull consumes it under base 16. v0.23.50-dev adds `0b`/`0B`
+            // binary, which strtoull does not understand, so the prefix is
+            // stripped and the body parsed in base 2.
+            const bool hex=digits.size()>1&&digits[0]=='0'&&(digits[1]=='x'||digits[1]=='X');
+            const bool bin=digits.size()>1&&digits[0]=='0'&&(digits[1]=='b'||digits[1]=='B');
+            size_t used=0; unsigned long long value;
+            if(bin){
+                const std::string body=digits.substr(2);
+                if(body.empty())
+                    throw Error(std::string("binary literal has no digits in ")+what+" at "+std::to_string(tok.line)+":"+std::to_string(tok.col));
+                value=std::stoull(body,&used,2);
+                if(used!=body.size())throw Error(std::string("invalid ")+what+" at "+std::to_string(tok.line)+":"+std::to_string(tok.col));
+            } else {
+                value=std::stoull(digits,&used,hex?16:10);
+                if(used!=digits.size())throw Error(std::string("invalid ")+what+" at "+std::to_string(tok.line)+":"+std::to_string(tok.col));
+            }
             return value;
         } catch(const std::out_of_range&) {
             throw Error(std::string(what)+" is too large at "+std::to_string(tok.line)+":"+std::to_string(tok.col));
@@ -1168,7 +1288,34 @@ class Parser {
         // site (initializerFits), which is what knows which slot the value was
         // meant for. Only a value past 2^64-1 has nowhere to go at all. The
         // u32/u8/u16 widths are still checked later, against the declared type.
-        if(cur().k==TK::Number){auto tok=t[p++];unsigned long long n=unsignedLiteral(tok,"integer literal");if(n>0xffffffffffffffffULL)throw Error("integer literal exceeds u64 range at "+std::to_string(tok.line)+":"+std::to_string(tok.col));E nn(new Expr(Expr::Num,(uint64_t)n)); nn->line=tok.line; nn->col=tok.col; return nn;}
+        // v0.23.50-dev: the character literal — a Char token is an i32 Num
+        // holding its byte value (0..255), exactly as an unsuffixed integer
+        // literal is. The value rode the token from the lexer, so no second
+        // parse is needed.
+        // v0.23.50-dev: the character literal — a Char token carries its byte
+        // value in s (exactly one code unit); the parser materialises it as an
+        // i32 Num, exactly as an unsuffixed integer literal is.
+        if(cur().k==TK::Char){auto tok=t[p++];E nn(new Expr(Expr::Num,(uint64_t)(unsigned char)tok.s[0]));nn->line=tok.line;nn->col=tok.col;return nn;}
+        if(cur().k==TK::Number){auto tok=t[p++];
+            // v0.23.50-dev: peel the optional suffix (u/l/ul/lu) off the token
+            // text so the value parse and the type pin agree. The lexer already
+            // validated the combination; here we only read it to choose the type.
+            std::string suf; { size_t e=tok.s.size(); while(e>0&&(tok.s[e-1]=='u'||tok.s[e-1]=='U'||tok.s[e-1]=='l'||tok.s[e-1]=='L')){ suf=tok.s[e-1]+suf; --e; } }
+            unsigned long long n=unsignedLiteral(tok,"integer literal");
+            if(n>0xffffffffffffffffULL)throw Error("integer literal exceeds u64 range at "+std::to_string(tok.line)+":"+std::to_string(tok.col));
+            E nn(new Expr(Expr::Num,(uint64_t)n)); nn->line=tok.line; nn->col=tok.col;
+            // v0.23.50-dev: a suffix pins the literal's type and constrains its
+            // value to the width the suffix names, so `0xFFFFFFFFu` is a u32 and
+            // not a value folded into i64. Unsuffixed literals keep their
+            // context-driven i32 typing.
+            if(!suf.empty()){
+                std::string low; for(char c: suf) low += (c=='U'?'u':(c=='L'?'l':c));
+                if(low=="u"){nn->suffix=Expr::LSU; if(n>0xffffffffULL)throw Error("u32 literal out of range at "+std::to_string(tok.line)+":"+std::to_string(tok.col));}
+                else if(low=="l"){nn->suffix=Expr::LSL; if(n>0x7fffffffffffffffULL)throw Error("i64 literal out of range at "+std::to_string(tok.line)+":"+std::to_string(tok.col));}
+                else {nn->suffix=Expr::LSUL;}   // ul / lu — the full u64 range
+            }
+            return nn;
+        }
         // v0.23.25-dev: true/false — Bool literals. They ride the Num node
         // (there is no other constant kind) but carry boolLit, so no type
         // rule can mistake them for the integers 0 and 1.
@@ -2825,7 +2972,16 @@ struct Codegen {
     // questions can never disagree.
     Ty exprType(const Expr& e) const {
         switch(e.k){
-            case Expr::Num: return e.boolLit?Ty::Bool:Ty::I32;   // a literal takes on the type its context asks for — but true/false are bool, not the integers 0/1 (v0.23.25-dev)
+            case Expr::Num:
+                if(e.boolLit) return Ty::Bool;
+                // v0.23.50-dev: a suffixed literal answers the type its suffix
+                // names; an unsuffixed one stays context-driven (i32) as before.
+                switch(e.suffix){
+                    case Expr::LSU:  return Ty::U32;
+                    case Expr::LSL:  return Ty::I64;
+                    case Expr::LSUL: return Ty::U64;
+                    default:      return Ty::I32;
+                }
             case Expr::String: return Ty::Ptr;   // a string literal is its rodata address
             case Expr::Embed: return Ty::Ptr;    // @embed is likewise the address of its bytes
             case Expr::SizeOf: case Expr::Len: return Ty::I32;   // v0.23.35-dev: a folded compile-time i32 constant
@@ -5955,7 +6111,16 @@ struct Sema {
     }
     Ty typeOf(const Expr& e){
         switch(e.k){
-            case Expr::Num: return e.boolLit?Ty::Bool:Ty::I32;   // v0.23.25-dev: true/false type as bool; every other literal takes on the type its context asks for
+            case Expr::Num:
+                if(e.boolLit) return Ty::Bool;
+                // v0.23.50-dev: a suffixed literal answers the type its suffix
+                // names; an unsuffixed one stays context-driven (i32) as before.
+                switch(e.suffix){
+                    case Expr::LSU:  return Ty::U32;
+                    case Expr::LSL:  return Ty::I64;
+                    case Expr::LSUL: return Ty::U64;
+                    default:      return Ty::I32;
+                }
             case Expr::String: return Ty::Ptr;   // a string literal is its rodata address
             case Expr::Embed: return Ty::Ptr;    // @embed: the address of the embedded bytes
             case Expr::SizeOf: case Expr::Len:
