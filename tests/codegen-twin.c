@@ -302,6 +302,15 @@ static int scan_one(void) {
         if (!closed) die_at("unterminated string literal", l, c);
         return push(TK_String, vstart, spool - vstart, l, c);
     }
+    /* v0.23.50-dev: the host compiler (src/aster.cpp) now lexes character
+     * literals ('a'), but the bootstrap subset has no Char token — the
+     * reference compiler's own source never writes one — so the twin rejects
+     * it explicitly rather than letting it fall through to "unexpected
+     * character". The host and the twin disagree on accept/reject here by
+     * deliberate design; the differential only ever runs subset programs. */
+    if (ch == '\'') {
+        die_at("character literals are not in the bootstrap subset", l, c);
+    }
     if (ch > 127) die_e6(l, c);
 
     {

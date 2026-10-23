@@ -4,10 +4,10 @@
 Emits two artifacts from one list (bootstrap/LEXER-SPEC.md §12, as narrowed by
 PARSER-SPEC.md §12.1):
 
-  * the GENERATED region of bootstrap/aster.ast — the 73 K_* constants, the
+  * the GENERATED region of bootstrap/aster.ast — the 77 K_* constants, the
     `ident_is` byte-compare helper and the `keyword_kind` else-if chain. The
     packed `ktab` name table the retired token dump used is no longer emitted;
-  * tests/lexer_names.h — the C side's enum of the same 73 codes and keyword
+  * tests/lexer_names.h — the C side's enum of the same 77 codes and keyword
     table, consumed by tests/parser-twin.c (the M3b differential twin, which
     lexes the input itself).
 
@@ -38,6 +38,7 @@ import sys
 # ---------------------------------------------------------------------------
 TOKENS = [
     "End", "Ident", "Number", "String",
+    "Char",               # v0.23.50-dev: the character literal — 'a' lexes here
     "Fn", "Extern", "Main", "Let", "Return", "If", "Else", "While", "For",
     "Break", "Continue", "I32", "Ptr", "Bool",
     "Switch", "Case", "Default",   # v0.23.49-dev: the switch statement — Pascal semantics
@@ -56,7 +57,7 @@ TOKENS = [
     "Dot", "Amp",
 ]
 
-# The 23 reserved words, each spelling mapped to the kind it lexes to. Order
+# The 26 reserved words, each spelling mapped to the kind it lexes to. Order
 # is the order the host compiler's chain tests them in; since every spelling
 # is distinct the order carries no meaning, but keeping it identical makes
 # the generated chain diff against the C++ one line for line.
@@ -98,8 +99,8 @@ def die(msg):
 # Self-checks: the list must be well-formed before anything is emitted.
 # ---------------------------------------------------------------------------
 def check_list():
-    if TOKEN_COUNT != 76:
-        die("expected 76 token kinds, list has %d" % TOKEN_COUNT)
+    if TOKEN_COUNT != 77:
+        die("expected 77 token kinds, list has %d" % TOKEN_COUNT)
     if len(set(TOKENS)) != TOKEN_COUNT:
         die("duplicate token kind name")
     for name in TOKENS:

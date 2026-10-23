@@ -37,84 +37,85 @@
 // is gone; `reverse_digits` comes along because utoa ends by calling it.
 
 // ---- BEGIN GENERATED: lexer names (bootstrap/gen_lexer_names.py) ----
-// The 76 token kinds, numbered exactly as `enum class TK`
+// The 77 token kinds, numbered exactly as `enum class TK`
 // in src/aster.cpp. Regenerate: python3 bootstrap/gen_lexer_names.py
 let K_End: i32 = 0;
 let K_Ident: i32 = 1;
 let K_Number: i32 = 2;
 let K_String: i32 = 3;
-let K_Fn: i32 = 4;
-let K_Extern: i32 = 5;
-let K_Main: i32 = 6;
-let K_Let: i32 = 7;
-let K_Return: i32 = 8;
-let K_If: i32 = 9;
-let K_Else: i32 = 10;
-let K_While: i32 = 11;
-let K_For: i32 = 12;
-let K_Break: i32 = 13;
-let K_Continue: i32 = 14;
-let K_I32: i32 = 15;
-let K_Ptr: i32 = 16;
-let K_Bool: i32 = 17;
-let K_Switch: i32 = 18;
-let K_Case: i32 = 19;
-let K_Default: i32 = 20;
-let K_I64: i32 = 21;
-let K_U8: i32 = 22;
-let K_U16: i32 = 23;
-let K_U32: i32 = 24;
-let K_U64: i32 = 25;
-let K_True: i32 = 26;
-let K_False: i32 = 27;
-let K_Struct: i32 = 28;
-let K_Include: i32 = 29;
-let K_LParen: i32 = 30;
-let K_RParen: i32 = 31;
-let K_LBrace: i32 = 32;
-let K_RBrace: i32 = 33;
-let K_Colon: i32 = 34;
-let K_Semi: i32 = 35;
-let K_Comma: i32 = 36;
-let K_Arrow: i32 = 37;
-let K_Eq: i32 = 38;
-let K_EqEq: i32 = 39;
-let K_Ne: i32 = 40;
-let K_Lt: i32 = 41;
-let K_Le: i32 = 42;
-let K_Gt: i32 = 43;
-let K_Ge: i32 = 44;
-let K_Plus: i32 = 45;
-let K_Minus: i32 = 46;
-let K_Star: i32 = 47;
-let K_Slash: i32 = 48;
-let K_LBracket: i32 = 49;
-let K_RBracket: i32 = 50;
-let K_At: i32 = 51;
-let K_And: i32 = 52;
-let K_Or: i32 = 53;
-let K_Not: i32 = 54;
-let K_Percent: i32 = 55;
-let K_Shl: i32 = 56;
-let K_Shr: i32 = 57;
-let K_BitXor: i32 = 58;
-let K_BitOr: i32 = 59;
-let K_Tilde: i32 = 60;
-let K_Question: i32 = 61;
-let K_PlusEq: i32 = 62;
-let K_MinusEq: i32 = 63;
-let K_StarEq: i32 = 64;
-let K_SlashEq: i32 = 65;
-let K_PercentEq: i32 = 66;
-let K_ShlEq: i32 = 67;
-let K_ShrEq: i32 = 68;
-let K_AndEq: i32 = 69;
-let K_OrEq: i32 = 70;
-let K_XorEq: i32 = 71;
-let K_PlusPlus: i32 = 72;
-let K_MinusMinus: i32 = 73;
-let K_Dot: i32 = 74;
-let K_Amp: i32 = 75;
+let K_Char: i32 = 4;
+let K_Fn: i32 = 5;
+let K_Extern: i32 = 6;
+let K_Main: i32 = 7;
+let K_Let: i32 = 8;
+let K_Return: i32 = 9;
+let K_If: i32 = 10;
+let K_Else: i32 = 11;
+let K_While: i32 = 12;
+let K_For: i32 = 13;
+let K_Break: i32 = 14;
+let K_Continue: i32 = 15;
+let K_I32: i32 = 16;
+let K_Ptr: i32 = 17;
+let K_Bool: i32 = 18;
+let K_Switch: i32 = 19;
+let K_Case: i32 = 20;
+let K_Default: i32 = 21;
+let K_I64: i32 = 22;
+let K_U8: i32 = 23;
+let K_U16: i32 = 24;
+let K_U32: i32 = 25;
+let K_U64: i32 = 26;
+let K_True: i32 = 27;
+let K_False: i32 = 28;
+let K_Struct: i32 = 29;
+let K_Include: i32 = 30;
+let K_LParen: i32 = 31;
+let K_RParen: i32 = 32;
+let K_LBrace: i32 = 33;
+let K_RBrace: i32 = 34;
+let K_Colon: i32 = 35;
+let K_Semi: i32 = 36;
+let K_Comma: i32 = 37;
+let K_Arrow: i32 = 38;
+let K_Eq: i32 = 39;
+let K_EqEq: i32 = 40;
+let K_Ne: i32 = 41;
+let K_Lt: i32 = 42;
+let K_Le: i32 = 43;
+let K_Gt: i32 = 44;
+let K_Ge: i32 = 45;
+let K_Plus: i32 = 46;
+let K_Minus: i32 = 47;
+let K_Star: i32 = 48;
+let K_Slash: i32 = 49;
+let K_LBracket: i32 = 50;
+let K_RBracket: i32 = 51;
+let K_At: i32 = 52;
+let K_And: i32 = 53;
+let K_Or: i32 = 54;
+let K_Not: i32 = 55;
+let K_Percent: i32 = 56;
+let K_Shl: i32 = 57;
+let K_Shr: i32 = 58;
+let K_BitXor: i32 = 59;
+let K_BitOr: i32 = 60;
+let K_Tilde: i32 = 61;
+let K_Question: i32 = 62;
+let K_PlusEq: i32 = 63;
+let K_MinusEq: i32 = 64;
+let K_StarEq: i32 = 65;
+let K_SlashEq: i32 = 66;
+let K_PercentEq: i32 = 67;
+let K_ShlEq: i32 = 68;
+let K_ShrEq: i32 = 69;
+let K_AndEq: i32 = 70;
+let K_OrEq: i32 = 71;
+let K_XorEq: i32 = 72;
+let K_PlusPlus: i32 = 73;
+let K_MinusMinus: i32 = 74;
+let K_Dot: i32 = 75;
+let K_Amp: i32 = 76;
 
 // Byte-wise equality of n bytes at id against the
 // NUL-terminated literal lit; the terminator must sit
@@ -725,6 +726,14 @@ fn scan_one() -> i32 {
                 return die_at("unterminated string literal", l, c);
             }
             return push(K_String, vstart, spool - vstart, l, c);
+        }
+        // v0.23.50-dev: the host compiler (src/aster.cpp) now lexes character
+        // literals ('a') as a Char token, but the bootstrap subset has no Char
+        // kind — this compiler's own source never writes one — so it is
+        // rejected explicitly. The reference and the twin both reject it, so
+        // they stay in agreement (both reject) on the differential corpus.
+        if (ch == 39) {
+            return die_at("character literals are not in the bootstrap subset", l, c);
         }
         // --- anything above ASCII is refused before the operator table ---
         if (ch > 127) { return die_e6(l, c); }

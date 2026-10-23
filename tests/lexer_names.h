@@ -16,6 +16,7 @@ enum {
     TK_Ident,
     TK_Number,
     TK_String,
+    TK_Char,
     TK_Fn,
     TK_Extern,
     TK_Main,
@@ -90,12 +91,13 @@ enum {
     TK_Amp,
 };
 
-#define TK_COUNT 76
+#define TK_COUNT 77
 static const char *const TK_NAMES[TK_COUNT] = {
     "End",
     "Ident",
     "Number",
     "String",
+    "Char",
     "Fn",
     "Extern",
     "Main",
