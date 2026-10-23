@@ -1,0 +1,67 @@
+// v0.23.50-dev — the literal surface: character literals, numeric suffixes
+// (`u` / `l` / `ul`), digit separators (`1_000_000`), binary literals
+// (`0b1010`), and the extended escape table (`\' \a \b \f \v \xHH`).
+//
+// The language's literal grammar was frozen early and stayed small: integer
+// and string tokens, the hex prefix, and a six-entry escape table that still
+// refused `\'` (so a string could not name itself) and had no control codes
+// beyond `n r t 0 \ "`. This round fills the surface out:
+//
+//   * a character literal `'a'` lexes to a Char token carrying its byte value
+//     (0..255) as an i32;
+//   * a suffix pins the literal's type — `1u` is u32, `2l` is i64, `3ul` is
+//     u64 — so `0xFFFFFFFF` can be asked for as `u32` rather than folded into
+//     i64, and the value is read at the width it was written;
+//   * `_` separates digits anywhere (any base), purely cosmetic;
+//   * `0b` introduces a binary literal;
+//   * the escape table gains `\'` `\a` `\b` `\f` `\v` `\xHH`, so a string can
+//     name a quote and carry the classic control codes.
+//
+// The eight groups below each carry exactly one bit of the answer — 1, 2, 4,
+// …, 128 — so the exit status (255) says every group passed and a missing bit
+// names the group that did not, with nothing left over for the status byte's
+// mask to hide. Every witness is hand-derived and pinned by
+// tests/literals-checks.sh; the C twin (tests/literals-twin.c) returns the
+// same 255 through C's own literal rules.
+
+fn main() -> i32 {
+    let r: i32 = 0;
+
+    // 1: character literals — plain, newline, the escaped quote, BEL, and a
+    // two-hex-digit escape. Each lexes to its byte value (0..255) as an i32.
+    if ('A' == 65 && '\n' == 10 && '\'' == 39 && '\a' == 7 && '\x41' == 65) { r = r + 1; }
+
+    // 2: a suffix pins the literal's type. 0xFFFFFFFF is u32 (not folded into
+    // i64), and cast back up to u64 it zero-extends — the witness that it is
+    // genuinely a 32-bit value and not the i64 4294967295 read as signed.
+    let u: u32 = 0xFFFFFFFFu;
+    if (u == 4294967295 && u64(u) == 4294967295) { r = r + 2; }
+
+    // 3: digit separators — '_' may sit between any two digits in any base,
+    // and is invisible to the value.
+    if (1_000_000 == 1000000 && 0xFF_FF == 65535 && 1_2_3 == 123) { r = r + 4; }
+
+    // 4: binary literals — 0b introduces a run of 0/1, with an optional
+    // separator.
+    if (0b101010 == 42 && 0b1 == 1 && 0b1111_1111 == 255 && 0b1010 == 10) { r = r + 8; }
+
+    // 5: extended escapes inside a string literal. The string yields a byte
+    // pointer, and each escape is its classic ASCII control code.
+    let s: ptr<u8> = "\a\b\f\v";
+    if (s[0] == 7 && s[1] == 8 && s[2] == 12 && s[3] == 11) { r = r + 16; }
+
+    // 6: separators compose with hex and binary, so a wide literal stays
+    // readable without changing its value.
+    if (0xDEAD_BEEF == 3735928559 && 0b1111_1111_1111 == 4095) { r = r + 32; }
+
+    // 7: a character literal is an integer, so it takes part in arithmetic.
+    if ('B' - 'A' == 1 && 'a' + 1 == 'b') { r = r + 64; }
+
+    // 8: the i64 and u64 suffixes answer their full widths. -1l is an i64
+    // whose value is the machine -1, and 0xFFFFFFFFFFFFFFFFul is the u64 max.
+    let l: i64 = -1l;
+    let big: u64 = 0xFFFFFFFFFFFFFFFFul;
+    if (l == 0 - 1 && big == 18446744073709551615) { r = r + 128; }
+
+    return r;                        // 255: every group
+}

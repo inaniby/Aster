@@ -361,7 +361,7 @@ done
 # v0.23.49-dev: this round's example (switch.ast) joins the filter; fifteen of
 # the families the rounds before v0.23.5-dev know are new are excluded, and the
 # pre-existing count is the same 288 it has been since v0.23.30-dev.
-FILTER='-e ^switch\. -e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\.'
+FILTER='-e ^switch\. -e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^literals\.'
 grep -v $FILTER "$BASE" > "$OUT/expected-old.txt"
 grep -v $FILTER "$OUT/hashes.txt" > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then

@@ -65,8 +65,8 @@ fi
 printf '%s\n' '[2/10] Source guards: the u64 grid and the cast'
 # the version constant — pinned to the current dev line so a stale compiler
 # (or a forgotten version bump) fails loudly rather than silently.
-grep -qF '#define ASTER_VERSION_STRING "0.23.49-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.49-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.50-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.50-dev" >&2; exit 1; }
 # the token and the keyword
 grep -qF '    U64,' src/aster.cpp \
     || { echo "FAIL: enum class TK no longer declares U64" >&2; exit 1; }
@@ -472,7 +472,7 @@ done
 # A FAILED row is not a regression: 48 examples import symbols only a link with
 # another object or a libc can supply, and build-elf on its own has always
 # recorded FAILED for them. The comparison below is what has to hold.
-FILTER='-e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\.'
+FILTER='-e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\.'
 grep -v $FILTER "$BASE" > "$OUT/expected-old.txt"
 grep -v $FILTER "$OUT/hashes.txt" > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
