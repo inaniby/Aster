@@ -605,7 +605,16 @@ struct Expr {
                 // `a->name` is the field and `a->a` the struct; `name` stays
                 // empty, which keeps `argTypes`/`functionArities` — both keyed
                 // by name — from ever matching.
-                FieldCall } k;
+                FieldCall,
+                // v0.23.48-dev: `T(x)` — an explicit conversion between the
+                // integer types. `ty` is the target and `a` the operand; the
+                // value is the operand's bits read back at the target's width
+                // and signedness, so a narrowing truncates and a widening
+                // sign- or zero-extends. It reuses the fields sizeof already
+                // carries, so no new storage is added. There is deliberately
+                // no ptr↔integer conversion: an address is not a number in a
+                // language that will not print one.
+                Cast } k;
     uint64_t n=0; std::string name; std::unique_ptr<Expr> a,b; std::vector<std::unique_ptr<Expr>> args;
     // v0.23.35-dev: sizeof / len. `ty` + `idims` carry the *type-form* argument
     // (e.g. sizeof(i32[4])); `a` carries the *expression-form* argument
@@ -800,6 +809,21 @@ struct IncludeState {
     std::set<std::string> done;        // resolved paths already pulled in
     std::vector<std::string> stack;    // the chain currently being parsed, for cycle messages
 };
+// v0.23.48-dev: the value of a cast applied to a folded integer constant: the
+// operand's bits narrowed to the target width, then read back with the
+// target's signedness. u8/u16/u32 take the zero-extended view, i32 the
+// sign-extended one, i64/u64 keep every bit — exactly what the four
+// normalization instructions gen(Cast) emits do at run time, so the compile
+// time and run time answers cannot drift apart.
+static int64_t castConstValue(int64_t v,Ty to){
+    switch(to.k){
+        case Ty::U8:  return (int64_t)(uint64_t)(uint8_t)(uint64_t)v;
+        case Ty::U16: return (int64_t)(uint64_t)(uint16_t)(uint64_t)v;
+        case Ty::U32: return (int64_t)(uint64_t)(uint32_t)(uint64_t)v;
+        case Ty::I32: return (int64_t)(int32_t)v;
+        default:      return v;   // i64 and u64 keep every bit
+    }
+}
 class Parser {
     std::vector<Token> t; size_t p=0;
     bool requireMain=true;
@@ -1053,6 +1077,31 @@ class Parser {
             need(TK::RParen,("expected ')' after "+op+" expression").c_str());
             E x(new Expr(op=="sizeof"?Expr::SizeOf:Expr::Len));
             x->a=std::move(inner); x->line=ln; x->col=cl;
+            return x;
+        }
+        // v0.23.48-dev: an explicit integer cast, `u8(x)`, `(i64)` — the
+        // function-shaped spelling, the same one sizeof and len use. The type
+        // keywords are reserved words, so a cast is recognized with zero
+        // lookahead: an integer keyword followed by '(' can be nothing else.
+        // ptr and bool are deliberately not spellings — there is no conversion
+        // to or from an address or a bool — so `ptr(x)` falls through to the
+        // "expected expression" error below, exactly as it did before.
+        if(cur().k==TK::I32||cur().k==TK::I64||cur().k==TK::U8||cur().k==TK::U16||cur().k==TK::U32||cur().k==TK::U64){
+            const Token kw=t[p++];
+            need(TK::LParen,"expected '(' after cast type");
+            E inner=expr();
+            need(TK::RParen,"expected ')' after cast operand");
+            Ty t=Ty::I32;
+            switch(kw.k){
+                case TK::I32: t=Ty::I32; break;
+                case TK::I64: t=Ty::I64; break;
+                case TK::U8:  t=Ty::U8;  break;
+                case TK::U16: t=Ty::U16; break;
+                case TK::U32: t=Ty::U32; break;
+                default:      t=Ty::U64; break;   // the sixth keyword is u64
+            }
+            E x(new Expr(Expr::Cast));
+            x->ty=t; x->a=std::move(inner); x->line=kw.line; x->col=kw.col;
             return x;
         }
         // @embed("path") / @embed_len("path"): a file's bytes, resolved now.
@@ -1720,6 +1769,12 @@ class Parser {
         switch(e.k){
             case Expr::Num: return (int64_t)e.n;
             case Expr::SizeOf: case Expr::Len: return (int64_t)e.n;   // v0.23.35-dev: the type-form folded at parse time
+            // v0.23.48-dev: a cast of a constant expression is a constant
+            // expression: the operand folds first, then its bits are read back
+            // at the target's width and signedness. A non-constant operand
+            // fails inside the recursive call with the message below, which is
+            // the right answer for a global initializer that is not constant.
+            case Expr::Cast: return castConstValue(foldConst(*e.a),e.ty);
             case Expr::Neg: return -foldConst(*e.a);
             case Expr::Add: return foldConst(*e.a)+foldConst(*e.b);
             case Expr::Sub: return foldConst(*e.a)-foldConst(*e.b);
@@ -1761,6 +1816,7 @@ class Parser {
         switch(e.k){
             case Expr::Num: return true;
             case Expr::SizeOf: case Expr::Len: return true;   // v0.23.35-dev: a compile-time constant
+            case Expr::Cast: return isConstExpr(*e.a);        // v0.23.48-dev: a cast of a constant is a constant
             case Expr::Neg: return isConstExpr(*e.a);
             case Expr::Add: case Expr::Sub: case Expr::Mul: case Expr::Div:
             case Expr::Mod: case Expr::Shl: case Expr::Shr:
@@ -2208,6 +2264,12 @@ static bool constantInteger(const Expr& e,int64_t& out){
         // system forbids; the bool-specific readers test boolLit directly.
         case Expr::Num: if(e.boolLit)return false; out=static_cast<int64_t>(e.n); return true;
         case Expr::SizeOf: case Expr::Len: out=static_cast<int64_t>(e.n); return true;   // v0.23.35-dev
+        // v0.23.48-dev: a cast of a foldable operand folds too, narrowed the
+        // same way gen(Cast) narrows at run time.
+        case Expr::Cast: {
+            if(!constantInteger(*e.a,a))return false;
+            out=castConstValue(a,e.ty);return true;
+        }
         case Expr::Neg:
             if(!constantInteger(*e.a,a)||a==INT64_MIN)return false;
             out=-a;return true;
@@ -2673,6 +2735,10 @@ struct Codegen {
             case Expr::String: return Ty::Ptr;   // a string literal is its rodata address
             case Expr::Embed: return Ty::Ptr;    // @embed is likewise the address of its bytes
             case Expr::SizeOf: case Expr::Len: return Ty::I32;   // v0.23.35-dev: a folded compile-time i32 constant
+            // v0.23.48-dev: a cast answers its target type — the one the
+            // program wrote down. Sema's typeOf answers the same thing, which
+            // is what keeps the two passes from disagreeing about a width.
+            case Expr::Cast: return e.ty;
             case Expr::Var: {
                 const int slot=lookup(e.name);
                 if(slot>=0){
@@ -3623,6 +3689,39 @@ struct Codegen {
                 const Ty opWant=wide?Ty::I64:want;
                 int a=gen(*e.a,opWant);
                 emit((wide?0xaa200000u:0x2a200000u)|(uint32_t(a)<<16)|(31u<<5)|uint32_t(a)); // ORN Wa, WZR, Wa
+                return a;
+            }
+            // v0.23.48-dev: `T(x)` — an explicit conversion between integer
+            // types. The operand is generated at the *target* width first, so a
+            // narrower source is widened with its own signedness before any
+            // narrowing can happen: an i32 into a u64 slot sign-extends on load
+            // (which is what `(u64)(i32)-1 == 18446744073709551615` rests on),
+            // and a u8/u16/u32 zero-extends through its load form. Only when the
+            // source is wider than the target is a normalization emitted: take
+            // the low bits and read them back the way the target type would.
+            // The four forms are the run-time twin of castConstValue's four
+            // cases — UXTB/UXTH/MOV W(UXTW) for the unsigned targets, SXTW for
+            // i32 — and all four were checked against aarch64 gcc + objdump.
+            case Expr::Cast:{
+                const Ty from=exprType(*e.a);
+                int a=gen(*e.a,e.ty);
+                const uint32_t wf=tySize(from),wt=tySize(e.ty);
+                if(wf>wt){
+                    if(e.ty==Ty::U8)       emit(0x53001c00u|(uint32_t(a)<<5)|uint32_t(a)); // UXTB Wa, Wa
+                    else if(e.ty==Ty::U16) emit(0x53003c00u|(uint32_t(a)<<5)|uint32_t(a)); // UXTH Wa, Wa
+                    else if(e.ty==Ty::U32) emit(0x2a0003e0u|(uint32_t(a)<<16)|uint32_t(a)); // MOV Wa, Wa (the UXTW form)
+                    else                   emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa
+                }
+                // Answer at the width the consumer asked for, the way every
+                // other producer does: a Var load sign-extends an i32 into an
+                // i64 context, a BinOp reruns itself at 64 bits (wideOp), a
+                // literal materialises at full width. A cast that stops at 32
+                // bits leaves the upper half zeroed — the correct u32/u16/u8
+                // reading of those bits, but not the i32 one, so an i32 cast
+                // consumed at 64 bits extends here. The SXTW above already
+                // answered at 64 bits when it ran (and only it did).
+                if(tyIs64(want)&&e.ty==Ty::I32&&!(wf>wt))
+                    emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa
                 return a;
             }
             // `c ? x : y`. One result register is allocated before either arm,
@@ -5697,6 +5796,18 @@ struct Sema {
                 // expression-form folds now (sema has the binding's dims).
                 if(e.a) const_cast<Expr&>(e).n = foldSizeOfExpr(e);
                 return Ty::I32;
+            // v0.23.48-dev: `T(x)` converts between the integer types. The
+            // operand must be an integer: there is no conversion to or from a
+            // ptr (an address is not a number here), a bool (true is not 1),
+            // or a struct. The answer is the target type — the very type
+            // codegen's exprType answers, so the two passes cannot disagree
+            // about the width the value is carried at.
+            case Expr::Cast: {
+                const Ty from=typeOf(*e.a);
+                if(!tyIsInteger(from))
+                    throw Error(loc(e.line,e.col,"cannot cast "+tyNameFull(from)+" to "+tyName(e.ty)));
+                return e.ty;
+            }
             case Expr::Var: {
                 if(const Binding* b=find(e.name))return b->ty;
                 if(arrayGlobals.count(e.name))return Ty::Ptr;      // array name decays to its address
