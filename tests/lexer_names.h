@@ -30,6 +30,9 @@ enum {
     TK_I32,
     TK_Ptr,
     TK_Bool,
+    TK_Switch,
+    TK_Case,
+    TK_Default,
     TK_I64,
     TK_U8,
     TK_U16,
@@ -87,7 +90,7 @@ enum {
     TK_Amp,
 };
 
-#define TK_COUNT 73
+#define TK_COUNT 76
 static const char *const TK_NAMES[TK_COUNT] = {
     "End",
     "Ident",
@@ -107,6 +110,9 @@ static const char *const TK_NAMES[TK_COUNT] = {
     "I32",
     "Ptr",
     "Bool",
+    "Switch",
+    "Case",
+    "Default",
     "I64",
     "U8",
     "U16",
@@ -164,7 +170,7 @@ static const char *const TK_NAMES[TK_COUNT] = {
     "Amp",
 };
 
-#define KW_COUNT 23
+#define KW_COUNT 26
 static const struct { const char *spelling; int kind; } KEYWORDS[KW_COUNT] = {
     { "fn", TK_Fn },
     { "extern", TK_Extern },
@@ -177,6 +183,9 @@ static const struct { const char *spelling; int kind; } KEYWORDS[KW_COUNT] = {
     { "for", TK_For },
     { "break", TK_Break },
     { "continue", TK_Continue },
+    { "switch", TK_Switch },
+    { "case", TK_Case },
+    { "default", TK_Default },
     { "i32", TK_I32 },
     { "ptr", TK_Ptr },
     { "bool", TK_Bool },

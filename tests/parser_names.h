@@ -39,7 +39,7 @@ enum {
     E_BitXor = 29,
 };
 
-/* The 9 statement kinds (§2.2), Stmt::Kind + 64. */
+/* The 9 statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, DerefAssign, For and Switch are excluded (§12.2). */
 enum {
     S_Let = 64,
     S_Assign = 65,
@@ -49,7 +49,7 @@ enum {
     S_While = 71,
     S_Break = 73,
     S_Continue = 74,
-    S_Expr = 75,
+    S_Expr = 76,
 };
 
 /* The 5 structural kinds (§2.3). */
@@ -117,7 +117,7 @@ static const char *const EK_NAMES[EK_COUNT] = {
     "Cast",
 };
 
-#define SK_COUNT 12
+#define SK_COUNT 13
 static const char *const SK_NAMES[SK_COUNT] = {
     "Let",
     "Assign",
@@ -130,6 +130,7 @@ static const char *const SK_NAMES[SK_COUNT] = {
     "For",
     "Break",
     "Continue",
+    "Switch",
     "Expr",
 };
 

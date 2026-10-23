@@ -40,6 +40,7 @@ TOKENS = [
     "End", "Ident", "Number", "String",
     "Fn", "Extern", "Main", "Let", "Return", "If", "Else", "While", "For",
     "Break", "Continue", "I32", "Ptr", "Bool",
+    "Switch", "Case", "Default",   # v0.23.49-dev: the switch statement — Pascal semantics
     "I64", "U8", "U16", "U32",
     "U64",                 # v0.23.48-dev: the 64-bit unsigned integer
     "True", "False",
@@ -63,6 +64,7 @@ KEYWORDS = [
     ("fn", "Fn"), ("extern", "Extern"), ("main", "Main"), ("let", "Let"),
     ("return", "Return"), ("if", "If"), ("else", "Else"), ("while", "While"),
     ("for", "For"), ("break", "Break"), ("continue", "Continue"),
+    ("switch", "Switch"), ("case", "Case"), ("default", "Default"),   # v0.23.49-dev
     ("i32", "I32"), ("ptr", "Ptr"), ("bool", "Bool"),
     ("i64", "I64"), ("u8", "U8"), ("u16", "U16"), ("u32", "U32"),
     ("u64", "U64"),       # v0.23.48-dev
@@ -96,8 +98,8 @@ def die(msg):
 # Self-checks: the list must be well-formed before anything is emitted.
 # ---------------------------------------------------------------------------
 def check_list():
-    if TOKEN_COUNT != 73:
-        die("expected 73 token kinds, list has %d" % TOKEN_COUNT)
+    if TOKEN_COUNT != 76:
+        die("expected 76 token kinds, list has %d" % TOKEN_COUNT)
     if len(set(TOKENS)) != TOKEN_COUNT:
         die("duplicate token kind name")
     for name in TOKENS:
@@ -106,8 +108,8 @@ def check_list():
         if len(name) >= RECORD:
             die("token kind name %r does not fit a %d-byte record"
                 % (name, RECORD))
-    if KEYWORD_COUNT != 23:
-        die("expected 23 keywords, list has %d" % KEYWORD_COUNT)
+    if KEYWORD_COUNT != 26:
+        die("expected 26 keywords, list has %d" % KEYWORD_COUNT)
     kinds = [k for _, k in KEYWORDS]
     if len(set(kinds)) != KEYWORD_COUNT:
         die("two keywords map to the same kind")

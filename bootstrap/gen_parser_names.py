@@ -65,11 +65,13 @@ EXPR_SUBSET = [
 # `struct Stmt`; the parser's statement numbers are these + 64 (§2.2).
 STMT_KINDS = [
     "Let", "Assign", "FieldAssign", "IndexAssign", "DerefAssign",
-    "Return", "If", "While", "For", "Break", "Continue", "Expr",
+    "Return", "If", "While", "For", "Break", "Continue", "Switch", "Expr",
 ]
 
-# The kinds the bootstrap parser builds: FieldAssign, DerefAssign and For are
-# excluded (§12.2), their numbers skipped.
+# The kinds the bootstrap parser builds: FieldAssign, DerefAssign, For and
+# Switch are excluded (§12.2), their numbers skipped. Switch is excluded
+# because Pascal-semantics switch is the one control-flow shape the bootstrap
+# subset does not cover.
 STMT_SUBSET = [
     "Let", "Assign", "IndexAssign", "Return", "If", "While",
     "Break", "Continue", "Expr",
@@ -129,8 +131,8 @@ def check_list():
     if EXPR_SUBSET_COUNT != 25:
         die("expected 25 expression kinds in the subset, list has %d"
             % EXPR_SUBSET_COUNT)
-    if STMT_COUNT != 12:
-        die("expected 12 statement kinds, list has %d" % STMT_COUNT)
+    if STMT_COUNT != 13:
+        die("expected 13 statement kinds, list has %d" % STMT_COUNT)
     if STMT_SUBSET_COUNT != 9:
         die("expected 9 statement kinds in the subset, list has %d"
             % STMT_SUBSET_COUNT)
@@ -268,7 +270,7 @@ def aster_region():
     lines.append("")
     lines.append("// The %d statement kinds (§2.2), the host's Stmt::Kind"
                  % STMT_SUBSET_COUNT)
-    lines.append("// numbers + 64; FieldAssign, DerefAssign and For are")
+    lines.append("// numbers + 64; FieldAssign, DerefAssign, For and Switch are")
     lines.append("// excluded (§12.2), their numbers skipped.")
     for name in STMT_SUBSET:
         lines.append("let S_%s: i32 = %d;"
@@ -333,7 +335,8 @@ def c_header():
         lines.append("    E_%s = %d," % (name, EXPR_KINDS.index(name)))
     lines.append("};")
     lines.append("")
-    lines.append("/* The %d statement kinds (§2.2), Stmt::Kind + 64. */"
+    lines.append(        "/* The %d statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, "
+                 "DerefAssign, For and Switch are excluded (§12.2). */"
                  % STMT_SUBSET_COUNT)
     lines.append("enum {")
     for name in STMT_SUBSET:

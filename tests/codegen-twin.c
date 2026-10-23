@@ -1202,6 +1202,9 @@ static int statement(void) {
     if (k == TK_Break) {
         int bt = p;
         adv();
+        if (cur() == TK_Ident)
+            die_at("labeled break/continue is not in the bootstrap subset",
+                   tok_line(p), tok_col(p));
         int s = newnode(S_Break, bt);
         if (cur() != TK_Semi)
             die_at("expected ';' after break", tok_line(p), tok_col(p));
@@ -1211,12 +1214,23 @@ static int statement(void) {
     if (k == TK_Continue) {
         int ct = p;
         adv();
+        if (cur() == TK_Ident)
+            die_at("labeled break/continue is not in the bootstrap subset",
+                   tok_line(p), tok_col(p));
         int s = newnode(S_Continue, ct);
         if (cur() != TK_Semi)
             die_at("expected ';' after continue", tok_line(p), tok_col(p));
         adv();
         return s;
     }
+    if (k == TK_Switch)
+        die_at("switch is not in the bootstrap subset", tok_line(p), tok_col(p));
+    /* v0.23.49-dev: a labeled loop (`name: while ...`) is not in the subset —
+     * the host's label dispatch lives at the top of statement(), and the twin
+     * rejects the `Ident ':'` shape the same way. */
+    if (k == TK_Ident && ahead() == TK_Colon)
+        die_at("labeled loops are not in the bootstrap subset",
+               tok_line(p), tok_col(p));
     /* A discarded call: an identifier followed directly by '('. `main` is a
      * keyword, not an identifier, so `main();` falls through to P57 — the
      * host's isCallStatement reads the same way. */
@@ -1248,7 +1262,7 @@ static int statement(void) {
             die_at("compound assignment is not in the bootstrap subset",
                    tok_line(p + 1), tok_col(p + 1));
     }
-    die_at("expected let, assignment, return, if, while, for, break, or continue",
+    die_at("expected let, assignment, return, if, while, for, break, continue, or switch",
            tok_line(p), tok_col(p));
     return 0;                            /* unreachable */
 }
