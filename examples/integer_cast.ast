@@ -1,0 +1,73 @@
+// v0.23.48-dev — u64: the 64-bit unsigned integer, and T(x): the explicit
+// integer cast.
+//
+// Two gaps close here, and they close together:
+//
+//   * u64 — the unsigned 64-bit grid. Before this round a program that needed
+//     the full unsigned range (a hash, a wide bitmask, a byte count past 2^31)
+//     had to fake it with i64 and hope the value never crossed 2^63. u64 is a
+//     real type now: 8 bytes, unsigned comparisons (LO/LS/HI/HS), unsigned
+//     division, and literals up to 18446744073709551615.
+//   * T(x) — the explicit cast. `u8(300)` is 44, `u16(70000)` is 4464,
+//     `u32(0-1)` is 4294967295. Narrowing is no longer silent: where the
+//     language refuses to drop bits on its own, a cast is how a program asks
+//     for it, spelled like the sizeof/len it sits beside. Widening between
+//     integers was already implicit where lossless; a cast makes the
+//     same-width reinterpretation (i64's -1 read back as u64's max) say what
+//     it means. ptr and the other non-integer types have no cast — there is
+//     nothing an address and an integer could agree on.
+//
+// The eight groups below each carry exactly one bit of the answer — 1, 2, 4,
+// …, 128 — so the exit status (255) says every group passed and a missing bit
+// names the group that did not, with nothing left over for the status byte's
+// mask to hide. Every witness is hand-derived and pinned by
+// tests/integer-cast-checks.sh; the C twin (tests/integer_cast-twin.c) returns
+// the same 255 through C's own conversion rules.
+struct Box { lo: u16, hi: u64 }
+
+let gwide: u64 = 12345678901234567890;      // beyond i64: only a u64 holds it
+
+fn narrow8(v: i32) -> u8 { return u8(v); }
+fn widen64(v: i32) -> u64 { return u64(v); }
+fn passthru(v: u64) -> u64 { return v; }
+
+fn main() -> i32 {
+    let r: i32 = 0;
+    let top: u64 = 18446744073709551615;     // 2^64 - 1
+    let bit63: u64 = 9223372036854775808;    // 2^63: negative as an i64, fine here
+    let neg: i64 = 0 - 1;
+    let m: u64 = 1;
+    let b: Box;
+    b.lo = u16(70000);
+    b.hi = u64(0 - 1);
+    let xs: u64[2] = 0;
+    xs[0] = bit63;
+    xs[1] = top;
+
+    // 1: the type itself — 8 bytes, and the two literals only it can hold.
+    if (sizeof(u64) == 8 && top == 18446744073709551615 && bit63 == 9223372036854775808) { r = r + 1; }
+
+    // 2: narrowing — each width's witness, hand-derived.
+    if (u8(300) == 44 && u16(70000) == 4464 && u32(0 - 1) == 4294967295 && u8(0 - 1) == 255 && u16(0 - 1) == 65535) { r = r + 2; }
+
+    // 3: widening — sign into u64, zero up from u8, and the u32 top bit.
+    if (u64(0 - 1) == 18446744073709551615 && u64(u8(200)) == 200 && u64(u32(4294967295)) == 4294967295 && i64(i32(0 - 1)) == 0 - 1) { r = r + 4; }
+
+    // 4: narrowing off 64 bits — the sign path and the zero path.
+    if (i32(neg) == 0 - 1 && u32(neg) == 4294967295 && u64(neg) == 18446744073709551615) { r = r + 8; }
+
+    // 5: through a function, a global, a struct, an array.
+    if (narrow8(300) == 44 && widen64(0 - 1) == 18446744073709551615 && passthru(bit63) == 9223372036854775808 && gwide == 12345678901234567890 && b.lo == 4464 && b.hi == 18446744073709551615 && xs[0] == 9223372036854775808 && xs[1] == 18446744073709551615) { r = r + 16; }
+
+    // 6: what the unsigned grid is for — the comparison and the division
+    // that would have answered wrong as signed values.
+    if (bit63 > 9223372036854775807 && top / 1000000000000 == 18446744) { r = r + 32; }
+
+    // 7: casts compose, and a cast of a folded constant is a folded constant.
+    if (u8(u16(70000)) == 112 && u64(u8(300)) + 5 == 49) { r = r + 64; }
+
+    // 8: the mixed promotion — a u64 plus a small integer stays u64.
+    if (m + 1 == 2 && (m + 1) > 1) { r = r + 128; }
+
+    return r;                        // 255: every group
+}

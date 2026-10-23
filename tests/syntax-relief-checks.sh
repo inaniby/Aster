@@ -461,7 +461,10 @@ fn main() -> i32 {
     return 0;
 }
 AST
-reject 'a hex value past i64' rej_hex_overflow.ast 'integer literal exceeds i64 range at 2:18'
+# v0.23.48-dev: 0xFFFFFFFFFFFFFFFF is a legal u64 literal now, so the parser
+# takes it and the i64 slot rejects it — the diagnostic names the slot and the
+# folded (-1) view, at the let statement rather than the literal token.
+reject 'a hex value past i64' rej_hex_overflow.ast 'local initializer does not fit in i64: x (-1) at 2:9'
 cat > "$W/rej_fallthrough.ast" <<'AST'
 fn main() -> i32 {
     let x: i32 = 1;

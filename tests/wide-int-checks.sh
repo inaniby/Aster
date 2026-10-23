@@ -20,7 +20,13 @@ printf '%s\n' '[1/8] Strictly build Aster compiler'
 ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o "$OUT/aster"
 
 printf '%s\n' '[2/8] Source guard: the unified value-lattice and width helpers exist'
-grep -qF 'enum Kind { I32, U32, U8, U16, I64, Ptr, Bool, Struct };' src/aster.cpp \
+# Pinned as the head and the tail rather than the whole member list:
+# v0.23.48-dev inserted U64 after I64, and a kind added by a future round must
+# not move this guard — the lattice itself is what this suite owns (the same
+# discipline pins FieldCall in callback-table-checks.sh and SizeOf/Len in
+# sizeof-len-checks.sh).
+grep -qF 'enum Kind { I32,' src/aster.cpp \
+    && grep -qF 'Struct };' src/aster.cpp \
     || { echo 'FAIL: unified Ty lattice missing' >&2; exit 1; }
 grep -qF 'static bool tyIs64(Ty t)' src/aster.cpp \
     || { echo 'FAIL: tyIs64 helper missing' >&2; exit 1; }
@@ -88,13 +94,17 @@ printf '%s\n' "$out" | grep -qF "argument type mismatch calling f at argument 1:
     || { echo "FAIL: wrong diagnostic for i64->i32 argument: $out" >&2; exit 1; }
 
 # A literal wider than i64 cannot be materialized at all.
+# v0.23.48-dev: the ceiling moved. The parser now accepts every literal up to
+# 2^64-1 (u64 is a type), and the i64 range is enforced by the slot the value
+# is written for — so 10^19 (< 2^64-1) parses and is caught at the declaration
+# instead of at the token. Still rejected; the diagnostic names the slot.
 cat > "$OUT/lit-range.ast" <<'AST'
 fn main() -> i32 { let x: i64 = 10000000000000000000; return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/lit-range.ast" -o "$OUT/lit-range" 2>&1); then
     echo 'FAIL: compiler accepted a literal wider than i64' >&2; exit 1
 fi
-printf '%s\n' "$out" | grep -qF "integer literal exceeds i64 range" \
+printf '%s\n' "$out" | grep -qF "local initializer does not fit in i64" \
     || { echo "FAIL: wrong diagnostic for over-wide literal: $out" >&2; exit 1; }
 
 # A narrow global initializer that does not fit the slot is rejected.

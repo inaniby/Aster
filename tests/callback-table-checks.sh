@@ -60,7 +60,10 @@ grep -qF 's.fields.push_back({fn.s,fty,0,flen,std::move(dims),std::move(fieldFun
 grep -qF '"an array of function pointers is not supported: "+id.s+"."+fn.s' src/aster.cpp \
     || { echo 'FAIL: an array of fn-pointers is no longer refused' >&2; exit 1; }
 # The call through a field is its own expression kind.
-grep -qF 'FieldCall } k;' src/aster.cpp \
+# Pinned without the enum's tail: v0.23.48-dev appended Cast after FieldCall,
+# and every round that adds a kind moves the tail. The kind itself is what this
+# suite owns — sizeof-len-checks.sh documents the same discipline for SizeOf.
+grep -qF 'FieldCall,' src/aster.cpp \
     || { echo 'FAIL: Expr::FieldCall is missing from the expression kinds' >&2; exit 1; }
 grep -qF '(cur().k==TK::LParen&&x->k==Expr::Field)' src/aster.cpp \
     || { echo 'FAIL: postfix() no longer lets a `(` follow a field' >&2; exit 1; }

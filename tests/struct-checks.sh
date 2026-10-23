@@ -26,7 +26,13 @@ ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o "$O
 printf '%s\n' '[2/8] Source guard: the type lattice, the layout pass and the ABI pieces'
 # A regression that drops any one of these changes behaviour before a test that
 # exercises it gets a chance to fail, so the guards come first.
-grep -qF 'enum Kind { I32, U32, U8, U16, I64, Ptr, Bool, Struct };' src/aster.cpp \
+# Pinned as the head and the tail rather than the whole member list:
+# v0.23.48-dev inserted U64 after I64, and a kind added by a future round must
+# not move this guard — the lattice itself is what this suite owns (the same
+# discipline pins FieldCall in callback-table-checks.sh and SizeOf/Len in
+# sizeof-len-checks.sh).
+grep -qF 'enum Kind { I32,' src/aster.cpp \
+    && grep -qF 'Struct };' src/aster.cpp \
     || { echo 'FAIL: Ty::Kind no longer carries Struct' >&2; exit 1; }
 grep -qF 'static void layoutStruct(StructDef& s) {' src/aster.cpp \
     || { echo 'FAIL: layoutStruct missing' >&2; exit 1; }
@@ -70,7 +76,7 @@ reject(){
         *) echo "FAIL: $name not rejected as expected: want '$want', got: $msg" >&2; exit 1 ;;
     esac
 }
-reject unknown-struct  'expected i32, i64, u8, u16, u32, ptr, ptr<S>, bool, or a struct name' 'fn main() -> i32 { let p: Nope = Nope { 1 }; return p.x; }'
+reject unknown-struct  'expected i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name' 'fn main() -> i32 { let p: Nope = Nope { 1 }; return p.x; }'
 reject unknown-field   "struct 'P' has no field named 'y'"                 'struct P { x: i32 }
 fn main() -> i32 { let p: P = P { 1 }; return p.y; }'
 reject literal-count   "struct literal for 'P' has 2 values but the struct has 1 fields" 'struct P { x: i32 }

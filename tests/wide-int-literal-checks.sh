@@ -320,11 +320,15 @@ guard 'array init store width by esz'     'const uint32_t strBase=esz==1?0x39000
 # v0.23.38-dev added the eleventh: a call through a struct field of function
 # type (`h.cb(x)`) reads its i32 result at the declared return width, the same
 # leaf a call through a typed fn-pointer variable already used.
-guard 'total SXTW sites'                  '0x93407c00u'                                                11
+# v0.23.48-dev added the twelfth and thirteenth: the cast `T(x)` reads an i32
+# operand at 64 bits with the same leaf — once as the narrowing block's i32
+# form (`i32` of something wider) and once as the consumer-width extension an
+# i32 cast needs when it is consumed at 64 bits.
+guard 'total SXTW sites'                  '0x93407c00u'                                                13
 if grep -qF 'extendTo64' src/aster.cpp; then
     echo 'FAIL: extendTo64 (the post-hoc widening helper) must stay deleted' >&2; exit 1
 fi
-printf '%s\n' 'PASS: three width rules, ten leaf SXTW sites, slotElemTypes write and no post-hoc widening'
+printf '%s\n' 'PASS: three width rules, thirteen SXTW sites (eleven leaves plus the cast'"'"'s two), slotElemTypes write and no post-hoc widening'
 
 # ---------------------------------------------------------------------------
 # [3] Rejection matrix: the width rules must not have loosened typing.
@@ -346,9 +350,12 @@ AST
 if out=$("$OUT/aster" build-elf "$W/lit-range.ast" -o "$W/lit-range" 2>&1); then
     echo 'FAIL: compiler accepted a literal wider than i64' >&2; exit 1
 fi
-printf '%s\n' "$out" | grep -qF "integer literal exceeds i64 range" \
+# v0.23.48-dev: the message moved with the check. The parser takes literals up
+# to 2^64-1 now (u64 is a type), and the i64 ceiling is enforced at the
+# declaration site — the slot the value was written for is what rejects it.
+printf '%s\n' "$out" | grep -qF "local initializer does not fit in i64" \
     || { echo "FAIL: wrong diagnostic for over-wide literal: $out" >&2; exit 1; }
-printf '%s\n' 'PASS: i64->i32 argument and over-wide literal still rejected with the same diagnostics'
+printf '%s\n' 'PASS: i64->i32 argument and over-wide literal still rejected (the latter at the declaration site since v0.23.48-dev)'
 
 # ---------------------------------------------------------------------------
 # [4] qemu positive matrix. run_case: build one case and assert its exit code.

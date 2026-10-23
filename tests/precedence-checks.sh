@@ -591,8 +591,8 @@ done
 # `array_address.` and — from v0.23.31-dev — `multi_dim_array.` are later
 # rounds'. None was in the baseline before its own round, so none counts as
 # pre-existing.
-grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' "$BASE" > "$OUT/expected-old.txt"
-grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
+grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' "$BASE" > "$OUT/expected-old.txt"
+grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
     echo 'FAIL: a pre-existing example moved — one of the four fixes changed bytes' >&2
     sed -n '1,20p' "$OUT/old.diff" >&2
@@ -612,6 +612,10 @@ new=$(wc -l < "$OUT/got-old.txt")
 # the filter the same way, so fourteen families are skipped and the
 # pre-existing count is still 288: 330 recorded, 42 of them belonging to the
 # fourteen rounds this suite knows are new.
+# v0.23.48-dev: the u64 round's example (integer_cast.ast) joins the filter the
+# same way, so fifteen families are skipped and the pre-existing count is still
+# 288: 333 recorded, 45 of them belonging to the fifteen rounds this suite
+# knows are new.
 [ "$old" -eq 288 ] \
     || { echo "FAIL: expected 288 pre-existing baseline rows, found $old" >&2; exit 1; }
 [ "$new" -eq 288 ] \

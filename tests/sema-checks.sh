@@ -16,7 +16,13 @@ ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o "$O
 printf '%s\n' '[2/6] Source guard: a semantic pass exists and runs before codegen'
 # A regression that deletes the pass, leaves it unwired, or moves the shared
 # helpers back inside Codegen must fail here first.
-grep -qF 'enum Kind { I32, U32, U8, U16, I64, Ptr, Bool, Struct };' src/aster.cpp \
+# Pinned as the head and the tail rather than the whole member list:
+# v0.23.48-dev inserted U64 after I64, and a kind added by a future round must
+# not move this guard — the lattice itself is what this suite owns (the same
+# discipline pins FieldCall in callback-table-checks.sh and SizeOf/Len in
+# sizeof-len-checks.sh).
+grep -qF 'enum Kind { I32,' src/aster.cpp \
+    && grep -qF 'Struct };' src/aster.cpp \
     || { echo 'FAIL: semantic type lattice missing' >&2; exit 1; }
 # v0.23.28-dev: a binding also carries the array's element type, which is what
 # lets `a[i]` answer its own type instead of a hardcoded i32. v0.23.31-dev: and

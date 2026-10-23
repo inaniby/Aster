@@ -456,7 +456,15 @@ static void convert_num(int t) {
     /* the spec's own accumulator and strtoull, on the same digit run: libc
      * witnesses the subset's guard-for-guard equivalent (§6.2 step 4), and
      * the too-large checks above are what keep strtoull from ever seeing a
-     * text it would saturate on. */
+     * text it would saturate on.
+     *
+     * v0.23.48-dev: the host compiler grew a u64 type and now accepts a
+     * literal up to 2^64-1 — but the bootstrap subset has no u64 slot, so
+     * its own ceiling is unchanged: a text in (i64max, 2^64-1] still reads
+     * as saturated-above-i64max here and in bootstrap/aster.ast's
+     * accumulator, and the differential corpus carries no such literal (its
+     * widest is 9223372036854775807). The saturation below is that ceiling,
+     * not a gap to close. */
     char buf[24];
     memcpy(buf, s + i, (size_t)dcount);
     buf[dcount] = '\0';
@@ -628,6 +636,13 @@ static int unary(void) {
     if (k == TK_U32)
         die_at("type u32 is not in the bootstrap subset",
                tok_line(p), tok_col(p));
+    /* v0.23.48-dev: the host grew a u64 type and a T(x) cast; the bootstrap
+     * subset did not. Both spellings start with a type keyword where an
+     * expression is expected, so the same refusal covers them, exactly as
+     * bootstrap/aster.ast's primary path does. */
+    if (k == TK_U64)
+        die_at("type u64 is not in the bootstrap subset",
+               tok_line(p), tok_col(p));
     return primary();
 }
 
@@ -759,6 +774,12 @@ static int bad_type_spelling(int k) {
     if (k == TK_U32)
         die_at("type u32 is not in the bootstrap subset",
                tok_line(p), tok_col(p));
+    /* v0.23.48-dev: u64 joined the host's type set (bootstrap/aster.ast's
+     * bad_type_spelling refuses it there too), so the twin refuses it in
+     * both type positions: here and in ptr<...>. */
+    if (k == TK_U64)
+        die_at("type u64 is not in the bootstrap subset",
+               tok_line(p), tok_col(p));
     if (k == TK_Fn)
         die_at("fn(...) types are not in the bootstrap subset",
                tok_line(p), tok_col(p));
@@ -807,7 +828,7 @@ static int parse_type(void) {
     if (k == TK_U8)  { adv(); return TY_U8; }
     if (k == TK_Ptr) return ptr_type();
     bad_type_spelling(k);
-    die_at("expected i32, i64, u8, u16, u32, ptr, ptr<S>, bool, or a struct name",
+    die_at("expected i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name",
            tok_line(p), tok_col(p));
     return 0;                            /* unreachable */
 }
