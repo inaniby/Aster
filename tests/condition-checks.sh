@@ -60,9 +60,15 @@ grep -qF 'bool boolLit=false;' src/aster.cpp \
     || { echo 'FAIL: the Expr bool-literal flag is missing' >&2; exit 1; }
 grep -qF 'if(cur().k==TK::True||cur().k==TK::False){' src/aster.cpp \
     || { echo 'FAIL: primary() does not recognize the true/false tokens' >&2; exit 1; }
-# Both typeOf copies must read the flag: sema's and codegen's.
-[ "$(grep -cF 'case Expr::Num: return e.boolLit?Ty::Bool:Ty::I32;' src/aster.cpp)" -eq 2 ] \
+# Both typeOf copies must read the flag: sema's and codegen's. The one-liner
+# this used to pin (`case Expr::Num: return e.boolLit?Ty::Bool:Ty::I32;`)
+# became a multi-line switch when v0.23.50-dev's numeric suffix landed, so the
+# pin now reads the branch it is really about: a bool literal answers Bool
+# first, and only then does the suffix decide the width — in both copies.
+[ "$(grep -cF 'if(e.boolLit) return Ty::Bool;' src/aster.cpp)" -eq 2 ] \
     || { echo 'FAIL: both exprType copies must type a bool literal as bool' >&2; exit 1; }
+[ "$(grep -cF 'case Expr::LSU:  return Ty::U32;' src/aster.cpp)" -eq 2 ] \
+    || { echo 'FAIL: both exprType copies must answer a suffixed literal from its suffix' >&2; exit 1; }
 # The fold chokepoint: a bool literal is not an integer constant. (v0.23.28-dev:
 # every bool-literal path now carries its own type check, so this is defence in
 # depth rather than the only door — it stays pinned here, and m4 targets the

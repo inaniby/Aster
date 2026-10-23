@@ -51,11 +51,18 @@ grep -qF 'if(eat(TK::Else)){' src/aster.cpp \
 if grep -qF 'need(TK::Else,"expected else branch")' src/aster.cpp; then
     echo 'FAIL: the mandatory-else diagnostic is back — else must be optional' >&2; exit 1
 fi
-grep -qF "if(x==\"0\"&&(peek()=='x'||peek()=='X')){" src/aster.cpp \
+# v0.23.50-dev: the same condition now also admits 0b/0B for binary literals,
+# so the pin reads the hex half of it rather than the whole `if` line — the
+# 0x/0X prefix is still what it recognises, and adding a third prefix will not
+# break this pin again.
+grep -qF "peek()=='x'||peek()=='X'" src/aster.cpp \
     || { echo 'FAIL: the lexer no longer recognises the 0x/0X prefix' >&2; exit 1; }
-grep -qF 'hexadecimal literal has no digits at ' src/aster.cpp \
+# v0.23.50-dev: the bare-hex and bare-binary throws became one ternary over
+# isBin, so "hexadecimal" and " literal has no digits at " are now two literals
+# concatenated at run time. The pin reads the branch as written.
+grep -qF 'std::string(isBin?"binary":"hexadecimal")+" literal has no digits at "' src/aster.cpp \
     || { echo 'FAIL: the bare-0x diagnostic is missing' >&2; exit 1; }
-grep -qF 'const bool hex=tok.s.size()>1&&tok.s[0]=='\''0'\''&&(tok.s[1]=='\''x'\''||tok.s[1]=='\''X'\'');' src/aster.cpp \
+grep -qF 'const bool hex=digits.size()>1&&digits[0]=='\''0'\''&&(digits[1]=='\''x'\''||digits[1]=='\''X'\'');' src/aster.cpp \
     || { echo 'FAIL: unsignedLiteral no longer detects the hexadecimal prefix' >&2; exit 1; }
 grep -qF 'hex?16:10' src/aster.cpp \
     || { echo 'FAIL: unsignedLiteral no longer selects base 16 for hex' >&2; exit 1; }
@@ -509,7 +516,10 @@ if "$OUT/m1.aster" build-elf "$W/plain_no_else.ast" -o "$OUT/m1.a64" >/dev/null 
     echo 'FAIL: with else mandatory again, a plain if still compiled — the shape battery does not test it' >&2; exit 1
 fi
 printf '  %-40s the plain if is rejected again\n' 'else re-mandated (v0.23.21-dev)'
-if ! sed "s/if(x==\"0\"&&(peek()=='x'||peek()=='X')){/if(false){/" \
+# v0.23.50-dev: the prefix test grew the 0b/0B arms for binary literals, so the
+# mutant now disables the whole test — the intent is unchanged (with it gone,
+# `0x10` lexes as `0` followed by the identifier `x10` and is a parse error).
+if ! sed "s/if(x==\"0\"&&(peek()=='x'||peek()=='X'||peek()=='b'||peek()=='B')){/if(false){/" \
         src/aster.cpp > "$OUT/m2.cpp"; then
     echo 'FAIL: mutation 2 sed failed' >&2; exit 1
 fi
