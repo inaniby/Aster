@@ -85,7 +85,7 @@ apk-checks.sh array-bounds-checks.sh bool-checks.sh comment-checks.sh
 condition-checks.sh
 null-ptr-checks.sh
 embed-checks.sh error-checks.sh for-loop-checks.sh global-checks.sh
-global-deep-checks.sh gnu-hash-checks.sh icon-checks.sh icon-text-demo-checks.sh
+global-deep-checks.sh tls-checks.sh gnu-hash-checks.sh icon-checks.sh icon-text-demo-checks.sh
 indirect-call-checks.sh function-type-checks.sh
 callback-table-checks.sh function-return-fn-checks.sh discard-call-checks.sh
 linker-checks.sh local-array-checks.sh object-checks.sh operator-checks.sh pie-so-checks.sh
@@ -93,7 +93,7 @@ pixel-offset-checks.sh pointer-index-checks.sh precedence-checks.sh
 array-elem-types-checks.sh array-param-bounds-checks.sh relro-checks.sh struct-array-field-checks.sh
 array-address-checks.sh multi-dim-array-checks.sh sizeof-len-checks.sh integer-cast-checks.sh switch-checks.sh resource-table-checks.sh runtime-bounds-checks.sh sema-checks.sh signing-checks.sh
 so-argument-checks.sh so-dependency-chain-checks.sh so-dyn-checks.sh so-negative-checks.sh
-so-scope-checks.sh struct-checks.sh symtab-checks.sh wide-int-checks.sh wide-int-literal-checks.sh literals-checks.sh narrow-int-abi-checks.sh narrow-value-coverage.sh write-output-checks.sh syscall-io-checks.sh heap-checks.sh stdlib-checks.sh codegen-checks.sh syntax-relief-checks.sh narrow-memory-checks.sh compiler-other-faces-audit.sh diagnostics-checks.sh
+so-scope-checks.sh symbol-versioning-checks.sh struct-checks.sh symtab-checks.sh wide-int-checks.sh wide-int-literal-checks.sh literals-checks.sh narrow-int-abi-checks.sh narrow-value-coverage.sh write-output-checks.sh syscall-io-checks.sh heap-checks.sh stdlib-checks.sh codegen-checks.sh syntax-relief-checks.sh narrow-memory-checks.sh compiler-other-faces-audit.sh diagnostics-checks.sh
 fuzz-checks.sh debugline-checks.sh debug-info-checks.sh eh-frame-checks.sh include-checks.sh version-checks.sh
 touch-checks.sh
 e2e-c-abi-32-args.sh e2e-c-abi-32-external.sh e2e-c-abi.sh e2e-c-libc-strings.sh

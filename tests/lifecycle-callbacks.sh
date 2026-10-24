@@ -76,7 +76,11 @@ $A build-so examples/lifecycle.ast -o "$OUT/lifecycle.so" \
 NM=$(command -v aarch64-linux-gnu-nm || command -v nm)
 EXP="ANativeActivity_onCreate aster_lifecycle_count on_start on_resume on_pause \
 on_stop on_destroy on_configuration_changed on_low_memory"
-got=$($NM -D --defined-only "$OUT/lifecycle.so" 2>/dev/null | awk '{print $NF}')
+# v0.23.51-dev: symbol versioning suffixes every dynamic symbol with its
+# version (the default one prints as name@@aster). This contract is about
+# *names* — which functions the Android entry points resolve — so the suffix
+# is stripped here; the version itself is symbol-versioning-checks.sh's job.
+got=$($NM -D --defined-only "$OUT/lifecycle.so" 2>/dev/null | awk '{print $NF}' | sed 's/@@.*$//')
 for sym in $EXP; do
     printf '%s\n' "$got" | grep -qx "$sym" \
         || { echo "FAIL: lifecycle.so does not export $sym" >&2; exit 1; }

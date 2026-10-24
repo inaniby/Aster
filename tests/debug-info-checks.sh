@@ -286,9 +286,22 @@ def short(t):
 
 funcs, variables = set(), set()
 die = None
+skip_depth = None
 for line in open(sys.argv[1]):
     m = TAG.match(line)
     if m:
+        # v0.23.51-dev: each subroutine's DW_TAG_subroutine_type carries its
+        # formal_parameter children — the function's *signature*, which carries
+        # no location. The suite decoder skips that subtree (see
+        # debuginfo-decode.py), so this cross-reader must skip it too or it
+        # would collect phantom parameters. Depth is the indentation after the
+        # "0x<offset>:" prefix; a subtree ends at the first DIE at a shallower
+        # or equal depth.
+        depth = len(re.match(r'^(?:0x[0-9a-fA-F]+:)?(\s*)', line).group(1))
+        if skip_depth is not None and depth > skip_depth:
+            die = None
+            continue
+        skip_depth = depth if m.group(1) == 'subroutine_type' else None
         die = {'tag': m.group(1)}
         continue
     if die is None:

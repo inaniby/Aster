@@ -591,8 +591,12 @@ done
 # `array_address.` and — from v0.23.31-dev — `multi_dim_array.` are later
 # rounds'. None was in the baseline before its own round, so none counts as
 # pre-existing.
-grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' "$BASE" > "$OUT/expected-old.txt"
-grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
+# v0.23.51-dev: the TLS round's example (tls_demo.ast) and the symbol-versioning
+# round's example (so_verstrlen.ast) join the filter the same way, so nineteen
+# families are skipped and the pre-existing count is still 288: 345 recorded,
+# 57 of them belonging to the nineteen rounds this suite knows are new.
+grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' "$BASE" > "$OUT/expected-old.txt"
+grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
     echo 'FAIL: a pre-existing example moved — one of the four fixes changed bytes' >&2
     sed -n '1,20p' "$OUT/old.diff" >&2

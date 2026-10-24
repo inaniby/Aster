@@ -385,6 +385,13 @@ def main(argv):
                 nonlocal scope
                 if d["tag"] == 0x2e:
                     scope = num(d, 0x03, "?")
+                elif d["tag"] == 0x15:
+                    # DW_TAG_subroutine_type (v0.23.51-dev): its
+                    # formal_parameter children describe a function's
+                    # *signature* — a debugger reads them through the type,
+                    # not as slots in any frame. They carry no location, so
+                    # printing them here would invent phantom parameters.
+                    return
                 elif d["tag"] in (0x34, 0x05):
                     kind = "param" if d["tag"] == 0x05 else ("global" if d["depth"] == 1 else "local")
                     loc = u.get(d, 0x02)
