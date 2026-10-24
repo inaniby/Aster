@@ -1,0 +1,14 @@
+// tls_demo.ast — the smallest thread-local program: two `tls` globals, written
+// and read back in main, with the process exit code carrying the summed TLS
+// value (a = 10+5 = 15, b = 20*2 = 40, 15+40 = 55). Recorded in the A/B
+// baseline for build-elf and build-obj --pic; build-so records FAILED because a
+// shared object rejects `tls` (glibc-backed .so TLS is a later, separate
+// feature — see tests/tls-checks.sh for the single-thread qemu witness and the
+// rejection matrix).
+tls let a: i32 = 10;
+tls let b: i32 = 20;
+fn main() -> i32 {
+    a = a + 5;
+    b = b * 2;
+    return a + b;
+}

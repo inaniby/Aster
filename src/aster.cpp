@@ -86,7 +86,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.50-dev"
+#define ASTER_VERSION_STRING "0.23.51-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -824,7 +824,13 @@ struct Stmt {
     Stmt(Stmt&&)=default; Stmt& operator=(Stmt&&)=default;
     Stmt(const Stmt&)=delete; Stmt& operator=(const Stmt&)=delete;
 };
-struct Global { std::string name; bool external=false; int32_t init=0; uint64_t wideInit=0; Ty ty=Ty::I32; bool isArray=false; uint32_t count=1; uint64_t align=4; bool runtimeInit=false; E initExpr; bool isString=false; bool isBool=false; FuncSig funcSig; bool isFunc=false; std::vector<uint8_t> rawData;
+struct Global { std::string name; bool external=false; int32_t init=0; uint64_t wideInit=0; Ty ty=Ty::I32; bool isArray=false; uint32_t count=1; uint64_t align=4; bool runtimeInit=false; E initExpr; bool isString=false; bool isBool=false; FuncSig funcSig; bool isFunc=false;
+    // v0.23.51-dev: thread-local storage. A `tls let x : T = …` global lives in
+    // a per-thread block addressed through TPIDR_EL0 (local-exec), so each
+    // thread sees its own copy and there is no need for a dynamic loader's
+    // TLS descriptor.
+    bool tls=false;
+    std::vector<uint8_t> rawData;
     // v0.23.31-dev: the per-dimension lengths of a multi-dimensional global
     // (`T[N][M]`), outermost first. `count` stays the total element count, so
     // `.data`/`.bss` sizing and the constant image repeat are unchanged; only
@@ -2182,7 +2188,7 @@ class Parser {
     //   extern let name : T [ '[' length ']' ] ;
     // T is the element type for an array and the value type otherwise; the
     // wider integer types (v0.23.2-dev) carry their own storage width.
-    void globalDeclaration(bool external){
+    void globalDeclaration(bool external,bool tls=false){
         auto id=need(TK::Ident,"expected global variable name");
         need(TK::Colon,"expected ':'");
         const Ty ty=needType(kTypeExpected);
@@ -2199,7 +2205,7 @@ class Parser {
             // per element, filled with the same 0/1 an integer array is filled
             // with. The length used to be unreachable here: the Bool branch
             // never looked for a `[`, so a bool array was a syntax error.
-            Global g;g.name=id.s;g.external=external;g.isBool=true;g.ty=Ty::Bool;
+            Global g;g.name=id.s;g.external=external;g.isBool=true;g.ty=Ty::Bool;g.tls=tls;
             for(const auto& old:globals)if(old.name==g.name)throw Error(loc(id.line,id.col,"duplicate global variable: "+g.name));
             if(cur().k==TK::LBracket){
                 // v0.23.31-dev: one `[N]` per dimension, outermost first; the
@@ -2223,7 +2229,7 @@ class Parser {
         // constant aggregate, because there is no run-time initializer for a
         // composite, so its bytes are laid out here and copied to .data as is.
         if(tyIsStruct(ty)){
-            Global g;g.name=id.s;g.external=external;g.ty=ty;g.align=tyAlign(ty);
+            Global g;g.name=id.s;g.external=external;g.ty=ty;g.align=tyAlign(ty);g.tls=tls;
             for(const auto& old:globals)if(old.name==g.name)throw Error(loc(id.line,id.col,"duplicate global variable: "+g.name));
             // v0.23.28-dev: `let pts : Point [ 4 ] = Point { 0, 0 };` — N
             // elements laid out end to end, each a copy of the constant
@@ -2255,7 +2261,7 @@ class Parser {
             globals.push_back(std::move(g));
             return;
         }
-        Global g;g.name=id.s;g.external=external;g.ty=ty;g.funcSig=funcTypeSig;g.isFunc=isFuncType;
+        Global g;g.name=id.s;g.external=external;g.ty=ty;g.funcSig=funcTypeSig;g.isFunc=isFuncType;g.tls=tls;
         if(cur().k==TK::LBracket){
             // v0.23.31-dev: one `[N]` per dimension. The element type is the
             // type written before the first `[` and every later read, write and
@@ -2425,6 +2431,17 @@ public:
             if(eat(TK::Struct)){structDeclaration();continue;}
             if(eat(TK::Let)){globalDeclaration(false);continue;}
             if(cur().k==TK::Extern&&t[p+1].k==TK::Let){++p;eat(TK::Let);globalDeclaration(true);continue;}
+            // v0.23.51-dev: thread-local storage. `tls let x : T = …;` puts x in a
+            // per-thread block; `extern tls let x : T;` declares a thread-local
+            // defined elsewhere. `tls` is a context keyword (only special at the
+            // start of a top-level declaration) so it stays a usable identifier
+            // everywhere else and the reserved-word count does not move.
+            if(cur().k==TK::Ident&&cur().s=="tls"){
+                ++p;bool external=false;
+                if(cur().k==TK::Extern){external=true;++p;}
+                need(TK::Let,"expected 'let' after 'tls'");
+                globalDeclaration(external,true);continue;
+            }
             Function f;f.external=eat(TK::Extern);
             f.line=cur().line;f.col=cur().col;   // v0.23.12-dev: the `fn` token, for the prologue row
             need(TK::Fn,"expected fn");f.name=functionName();
@@ -2631,6 +2648,17 @@ static int comparisonCond(Expr::Kind k,bool unsignedCompare=false){
 }
 // Name of the GOT-style address slot that stands in for a global in shared-object output.
 std::string gatSymbol(const std::string& n){return "__aster_gat_"+n;}
+// v0.23.51-dev: R_AARCH64_TLSLE_ADD_TPREL_LO12-style fill for thread-local storage.
+// The codegen emits `MRS X16,TPIDR_EL0` then a `MOVZ X17,#0; MOVK X17,#0,LSL#16` pair;
+// this relocation writes the TLS offset (a link-time constant) into that pair, so the
+// access is `ADD X16, X16, X17` = TPIDR_EL0 + offset (local-exec). Declared at namespace
+// scope (and before Codegen) so both the codegen and resolveRelocations can see it.
+// v0.23.51-dev: an internal (not an ELF-standard) relocation type. The codegen
+// emits a `MOVZ/MOVK X17, #0` pair and this relocation fills the thread-local
+// offset into both immediates. 1024 is deliberately NOT used: it collides with
+// R_AARCH64_COPY and would make readelf mislabel the entry and confuse any
+// external consumer. 4096 is safely beyond the AArch64 relocation range.
+static constexpr uint32_t kRelTlsOff=4096;
 // v0.23.32-dev: one entry per parameter and per local slot, collected while a
 // function is compiled and carried out to the object's .debug_info. `slot` is
 // the whole address: every local is fbreg(slot*8) from the function's frame
@@ -2666,6 +2694,10 @@ struct Codegen {
     // one-dimensional array ever needed — while a subscript on a subscript
     // needs the inner ones too, for both the stride and the bound.
     const std::map<std::string,std::vector<uint32_t>>& globalArrayDims;
+    // v0.23.51-dev: the names of thread-local globals, so a global address can
+    // be emitted as a TPIDR_EL0-relative access instead of a .data/.bss one.
+    const std::set<std::string>& tlsGlobals;
+    bool hasTls=false;
     // v0.23.2-dev (P3.2): declared types. These used to be a pile of booleans
     // (boolGlobals, functionParamPointers, functionParamBools, pointerReturn-
     // Functions, boolReturnFunctions); the maps below carry the same facts plus
@@ -2711,13 +2743,14 @@ struct Codegen {
             const std::map<std::string,std::vector<bool>>& paramBoolMap,
             const std::map<std::string,uint32_t>& arrayLengthMap,
             const std::map<std::string,std::vector<uint32_t>>& arrayDimsMap,
+            const std::set<std::string>& tlsGlobalNames,
             bool sharedObject,bool injectInitCall,std::string initSym,bool runtimeBoundsCheck=false,bool debugLine=false)
         :functionName(std::move(name)),isMain(functionName=="main"&&!sharedObject),functionArities(arities),globals(globalNames),
          externGlobals(externalGlobals),externFunctions(externalFunctions),arrayGlobals(arrayNames),boolGlobals(boolGlobalNames),
          pointerFunctions(pointerFunctionNames),
          pointerReturnFunctions(pointerReturnFunctionNames),boolReturnFunctions(boolReturnFunctionNames),
          functionParamPointers(paramPointerMap),functionParamBools(paramBoolMap),arrayLengths(arrayLengthMap),
-         globalArrayDims(arrayDimsMap),
+         globalArrayDims(arrayDimsMap),tlsGlobals(tlsGlobalNames),hasTls(!tlsGlobalNames.empty()),
          shared(sharedObject),
          injectInit(injectInitCall),initSymbol(std::move(initSym)),boundsCheck(runtimeBoundsCheck),emitLineInfo(debugLine) {}
     std::vector<std::map<std::string,int>> scopes;
@@ -3360,6 +3393,19 @@ struct Codegen {
     // targets the slot and one extra LDR X16, [X16] loads the load-time address the dynamic loader
     // stored there through the slot's R_AARCH64_RELATIVE relocation.
     void emitGlobalAddress(const std::string& name){
+        // v0.23.51-dev: thread-local storage, local-exec model. The variable
+        // lives at TPIDR_EL0 + offset, where the offset is a link-time constant
+        // the linker fills into the MOVZ/MOVK pair below (kRelTlsOff). TPIDR_EL0
+        // itself is pointed at the image's thread-local block by main's entry
+        // stub, so this is a self-contained per-thread access with no GOT.
+        if(tlsGlobals.count(name)){
+            emit(0xd53bd050u);                                // MRS X16, TPIDR_EL0
+            const size_t mz=code.size(); emit(0xd2800011u);    // MOVZ X17, #0
+            emit(0xf2a00011u);                                // MOVK X17, #0, LSL #16
+            emit(0x8b110210u);                                // ADD X16, X16, X17
+            relocations.push_back({uint64_t(mz)*4,"__aster_tls_"+name,kRelTlsOff});
+            return;
+        }
         const std::string target=shared?gatSymbol(name):name;
         size_t adrp=code.size();emit(0x90000000u|(uint32_t(kGlobalBase)));relocations.push_back({uint64_t(adrp)*4,target,kRelAdrp});
         size_t add=code.size();emit(0x91000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(kGlobalBase));relocations.push_back({uint64_t(add)*4,target,kRelAddLo});
@@ -5384,6 +5430,20 @@ struct Codegen {
         }
         nextSlot=slot;
         emit(0); // fixed 8 KiB frame: locals, caller-save spills, and nested call argument scratch
+        // v0.23.51-dev: point TPIDR_EL0 at this image's thread-local block before
+        // any TLS access. The block's base is a link-time constant resolved by
+        // ADRP/ADD against __aster_tls_block, materialized into X17 so the MSR
+        // can take it directly (no extra move). The stub sits after the frame
+        // placeholder so the SUB SP fixup at code[0] (below) leaves it intact.
+        if(isMain&&hasTls){
+            size_t adrp=code.size();
+            emit(0x90000000u|17u);                            // ADRP X17, __aster_tls_block
+            relocations.push_back({uint64_t(adrp)*4,"__aster_tls_block",kRelAdrp});
+            size_t add=code.size();
+            emit(0x91000000u|(17u<<5)|17u);                   // ADD  X17, X17, #lo12:__aster_tls_block
+            relocations.push_back({uint64_t(add)*4,"__aster_tls_block",kRelAddLo});
+            emit(0xd51bd051u);                                // MSR TPIDR_EL0, X17
+        }
         if(!isMain) emit(0xf90003feu|(uint32_t(1023)<<10)); // STR X30, [SP, #8184]: preserve return address
         // A struct larger than 16 bytes is returned through the buffer the
         // caller handed over in X8. Every return writes through it, and X8 is
@@ -5490,7 +5550,12 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
                    const std::vector<uint8_t>& debugInfo={},const std::vector<uint8_t>& debugAbbrev={},
                    const std::vector<uint8_t>& ehFrame={},
                    const std::vector<std::pair<uint64_t,uint64_t>>& ehFramePatches={},
-                   const std::vector<std::pair<uint64_t,uint64_t>>& ehFrameFdes={}){
+                   const std::vector<std::pair<uint64_t,uint64_t>>& ehFrameFdes={},
+                   // v0.23.51-dev: the thread-local block and its link-time
+                   // virtual address. tlsVaddr is the base of the PT_TLS image;
+                   // the .tdata section is placed at file offset (tlsVaddr-base)
+                   // inside the data PT_LOAD so a single thread sees one copy.
+                   const std::vector<uint8_t>& tls={},uint64_t tlsVaddr=0,uint64_t tlsAlign=16){
     constexpr uint64_t off=0x1000;
     if(text.empty()||entryOffset>=text.size()||(entryOffset%4)!=0)throw Error("invalid entry offset for executable");
     if(base%0x1000)throw Error("internal error: executable base must be page aligned");
@@ -5499,11 +5564,18 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     const uint64_t rodataFileOff=hasRodataSection?alignUp(textFileEnd,0x1000):0;
     const uint64_t rodataVaddr=hasRodataSection?base+rodataFileOff:0;
     const uint64_t afterRodata=hasRodataSection?rodataFileOff+rodata.size():textFileEnd;
-    const bool hasData=!data.empty()||bssSize>0;
+    // v0.23.51-dev: the thread-local block rides in the data PT_LOAD, so the
+    // segment exists even when there is no ordinary .data/.bss.
+    const bool hasTlsSection=!tls.empty();
+    const bool hasData=!data.empty()||bssSize>0||hasTlsSection;
     const bool hasDataSection=!data.empty();
     const bool hasBssSection=bssSize>0;
     uint64_t dataFileOff=0,dataVaddr=0;
     if(hasData){dataFileOff=alignUp(afterRodata,0x1000);dataVaddr=base+dataFileOff;}
+    // v0.23.51-dev: the PT_TLS image sits in the data PT_LOAD at file offset
+    // (tlsVaddr-base), so the loader maps one copy per thread.
+    uint64_t tlsFileOff=0;
+    if(hasTlsSection){tlsFileOff=tlsVaddr-base; if(tlsFileOff<dataFileOff)throw Error("internal error: thread-local block must follow .data in the file");}
     // v0.23.32-dev: .debug_info and .debug_abbrev, numbered after .debug_line.
     const bool hasDebugLine=!debugLine.empty();
     const bool hasDebugInfo=!debugInfo.empty();
@@ -5517,15 +5589,21 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     const bool hasEhFrame=!ehFrame.empty();
     uint16_t idxEhFrame=0,idxEhFrameHdr=0;
     if(hasEhFrame){idxEhFrame=next++;idxEhFrameHdr=next++;}
+    uint16_t idxTdata=0;if(hasTlsSection)idxTdata=next++; // .tdata: the thread-local block
     const uint16_t idxText=1,idxSym=next++,idxStr=next++,idxShstr=next++,shnum=next;
     const SymTable st=buildSymbolTable(symbols,base+off,dataVaddr,dataVaddr+data.size(),idxText,idxData,idxBss,rodataVaddr,idxRodata);
     const std::string shstr(std::string("\0.text",6)+(hasRodataSection?std::string("\0.rodata",8):std::string())
-        +(hasDataSection?std::string("\0.data",6):std::string())+(hasBssSection?std::string("\0.bss",5):std::string())+std::string("\0.symtab",8)
+        +(hasDataSection?std::string("\0.data",6):std::string())+(hasBssSection?std::string("\0.bss",5):std::string())+(hasTlsSection?std::string("\0.tdata",7):std::string())+std::string("\0.symtab",8)
         +std::string("\0.strtab",8)+std::string("\0.shstrtab",10)+(hasDebugLine?std::string("\0.debug_line",12):std::string())
         +(hasDebugInfo?std::string("\0.debug_abbrev",15)+std::string("\0.debug_info",13):std::string())
         +(hasEhFrame?std::string("\0.eh_frame",10)+std::string("\0.eh_frame_hdr",15):std::string())+std::string("\0",1));
     auto nameAt=[&](const char* want)->uint32_t{size_t i=0;while(i<shstr.size()){std::string cur=shstr.c_str()+i;if(cur==want)return (uint32_t)i;i+=cur.size()+1;}throw Error("internal ELF layout error: missing section name");};
-    const uint64_t tailStart=hasData?dataFileOff+data.size():(hasRodataSection?rodataFileOff+rodata.size():textFileEnd);
+    // v0.23.51-dev: the thread-local block rides at the tail of the data
+    // PT_LOAD, so the debug sections and symbol table must start after it, not
+    // just after .data/.bss. tailStart is the highest occupied file offset.
+    const uint64_t dataEnd=hasData?dataFileOff+data.size():(hasRodataSection?rodataFileOff+rodata.size():textFileEnd);
+    const uint64_t tlsEnd=hasTlsSection?tlsFileOff+tls.size():0;
+    const uint64_t tailStart=std::max(dataEnd,tlsEnd);
     const uint64_t debugLineOff=hasDebugLine?alignUp(tailStart,8):0;
     const uint64_t afterDebugLine=hasDebugLine?debugLineOff+debugLine.size():tailStart;
     const uint64_t debugAbbrevOff=hasDebugInfo?alignUp(afterDebugLine,8):0;
@@ -5568,11 +5646,19 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     const uint64_t symOff=alignUp(ehFrameEnd,8),symSize=uint64_t(st.syms.size())*sizeof(Sym);
     const uint64_t strOff=symOff+symSize,shstrOff=strOff+st.strtab.size();
     const uint64_t shoff=alignUp(shstrOff+shstr.size(),8);
-    Ehdr h{};initIdent(h,etype);h.entry=base+off+entryOffset;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)(1+(hasRodataSection?1:0)+(hasData?1:0)+(hasEhFrame?2:0));
+    Ehdr h{};initIdent(h,etype);h.entry=base+off+entryOffset;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)(1+(hasRodataSection?1:0)+(hasData?1:0)+(hasTlsSection?1:0)+(hasEhFrame?2:0));
     h.shoff=shoff;h.shentsize=sizeof(Shdr);h.shnum=shnum;h.shstrndx=idxShstr;
     Phdr p{};p.type=1;p.flags=5;p.offset=0;p.vaddr=base;p.paddr=base;p.filesz=textFileEnd;p.memsz=textFileEnd;p.align=0x1000;
     Phdr r{};if(hasRodataSection){r.type=1;r.flags=4;r.offset=rodataFileOff;r.vaddr=rodataVaddr;r.paddr=rodataVaddr;r.filesz=rodata.size();r.memsz=rodata.size();r.align=0x1000;}
-    Phdr d{};if(hasData){d.type=1;d.flags=6;d.offset=dataFileOff;d.vaddr=dataVaddr;d.paddr=dataVaddr;d.filesz=data.size();d.memsz=data.size()+bssSize;d.align=0x1000;}
+    Phdr d{};if(hasData){d.type=1;d.flags=6;d.offset=dataFileOff;d.vaddr=dataVaddr;d.paddr=dataVaddr;
+        // v0.23.51-dev: the thread-local block lives in this PT_LOAD, after the
+        // (zero-filled) .bss gap, so its file size reaches the end of .tdata.
+        d.filesz=hasTlsSection?(tlsFileOff+tls.size()-dataFileOff):data.size();
+        d.memsz=hasTlsSection?(tlsFileOff+tls.size()-dataFileOff):data.size()+bssSize;
+        d.align=0x1000;}
+    // v0.23.51-dev: the thread-local storage segment. One copy is mapped per
+    // thread; main's entry stub points TPIDR_EL0 at its base (tlsVaddr).
+    Phdr tl{};if(hasTlsSection){tl.type=7;tl.flags=6;tl.offset=tlsFileOff;tl.vaddr=tlsVaddr;tl.paddr=tlsVaddr;tl.filesz=tls.size();tl.memsz=tls.size();tl.align=tlsAlign;}
     // PT_LOAD covering both unwind sections, and PT_GNU_EH_FRAME naming the
     // header inside it — the pair an unwinder looks for.
     Phdr ef{};if(hasEhFrame){ef.type=1;ef.flags=4;ef.offset=ehFrameOff;ef.vaddr=ehFrameVaddr;ef.paddr=ehFrameVaddr;ef.filesz=ehFrameEnd-ehFrameOff;ef.memsz=ehFrameEnd-ehFrameOff;ef.align=0x1000;}
@@ -5582,6 +5668,7 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     if(hasRodataSection){Shdr& e=sh[idxRodata];e.name=nameAt(".rodata");e.type=1;e.flags=0x2;e.addr=rodataVaddr;e.offset=rodataFileOff;e.size=rodata.size();e.addralign=rodataAlign;}
     if(hasDataSection){Shdr& e=sh[idxData];e.name=nameAt(".data");e.type=1;e.flags=0x3;e.addr=dataVaddr;e.offset=dataFileOff;e.size=data.size();e.addralign=dataAlign;}
     if(hasBssSection){Shdr& e=sh[idxBss];e.name=nameAt(".bss");e.type=8;e.flags=0x3;e.addr=dataVaddr+data.size();e.offset=tailStart;e.size=bssSize;e.addralign=bssAlign;}
+    if(hasTlsSection){Shdr& e=sh[idxTdata];e.name=nameAt(".tdata");e.type=1;e.flags=0x2|0x400;e.addr=tlsVaddr;e.offset=tlsFileOff;e.size=tls.size();e.addralign=tlsAlign;}
     {Shdr& e=sh[idxSym];e.name=nameAt(".symtab");e.type=2;e.offset=symOff;e.size=symSize;e.link=idxStr;e.info=st.syms.size()>1?1u:0u;e.addralign=8;e.entsize=sizeof(Sym);}
     {Shdr& e=sh[idxStr];e.name=nameAt(".strtab");e.type=3;e.offset=strOff;e.size=st.strtab.size();e.addralign=1;}
     {Shdr& e=sh[idxShstr];e.name=nameAt(".shstrtab");e.type=3;e.offset=shstrOff;e.size=shstr.size();e.addralign=1;}
@@ -5597,11 +5684,13 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     std::ofstream o(path,std::ios::binary);if(!o)throw Error("cannot create output: "+path);
     auto pad=[&](uint64_t target){auto pos=(uint64_t)o.tellp();if(pos>target)throw Error("internal ELF layout error");std::vector<char> z((size_t)(target-pos),0);if(!z.empty())o.write(z.data(),z.size());};
     o.write((char*)&h,sizeof h);o.write((char*)&p,sizeof p);if(hasRodataSection)o.write((char*)&r,sizeof r);if(hasData)o.write((char*)&d,sizeof d);
+    if(hasTlsSection)o.write((char*)&tl,sizeof tl);
     if(hasEhFrame){o.write((char*)&ef,sizeof ef);o.write((char*)&efh,sizeof efh);}
     pad(off);
     o.write((const char*)text.data(),text.size());
     if(hasRodataSection){pad(rodataFileOff);o.write((const char*)rodata.data(),rodata.size());}
     if(hasData){pad(dataFileOff);if(!data.empty())o.write((const char*)data.data(),data.size());}
+    if(hasTlsSection){pad(tlsFileOff);o.write((const char*)tls.data(),tls.size());}
     if(hasDebugLine){pad(debugLineOff);o.write((const char*)debugLine.data(),debugLine.size());}
     if(hasDebugInfo){pad(debugAbbrevOff);o.write((const char*)debugAbbrev.data(),debugAbbrev.size());
         pad(debugInfoOff);o.write((const char*)debugInfo.data(),debugInfo.size());}
@@ -6975,6 +7064,9 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
     // and shared by Sema and every Codegen instance.
     std::map<std::string,FuncSig> globalFuncSigMap;
     for(const auto& g:globals)if(g.isFunc)globalFuncSigMap[g.name]=g.funcSig;
+    // v0.23.51-dev: the thread-local globals, threaded into every Codegen so a
+    // global address can be emitted as a TPIDR_EL0-relative access.
+    std::set<std::string> tlsGlobalNames;for(const auto& g:globals)if(g.tls)tlsGlobalNames.insert(g.name);
     // v0.23.38-dev: the function type each function returns (by name), and the
     // one each of its parameters asks for (by name and position). Collected
     // once here, beside the maps they parallel, and shared by every check.
@@ -7005,7 +7097,7 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
     std::vector<CompiledFunction> out;out.reserve(order.size()+1);
     for(const Function* f:order){
         sema.check(*f);
-        Codegen cg(f->name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,sharedObject,needInit&&f->name=="main",kInitSymbol,boundsCheck,debugLine);
+        Codegen cg(f->name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,tlsGlobalNames,sharedObject,needInit&&f->name=="main",kInitSymbol,boundsCheck,debugLine);
         cg.globalTypes=globalTypeMap;cg.argTypes=argTypeMap;cg.returnTypes=returnTypeMap;cg.globalFuncSig=globalFuncSigMap;
         CompiledFunction cf;cf.name=f->name;cf.code=cg.run(*f);cf.relocs=std::move(cg.relocations);cf.lineRows=std::move(cg.lineRows);cf.debugVars=std::move(cg.debugVars);
         cf.preservesRa=!cg.isMain;out.push_back(std::move(cf));}
@@ -7028,7 +7120,7 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
         else r.expr=E(new Expr(Expr::Num,0));
         init.body.push_back(std::move(r));
         sema.check(init);   // the synthetic initializer is type-checked too
-        Codegen cg(init.name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,sharedObject,false,kInitSymbol,boundsCheck,debugLine);
+        Codegen cg(init.name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,tlsGlobalNames,sharedObject,false,kInitSymbol,boundsCheck,debugLine);
         cg.globalTypes=globalTypeMap;cg.argTypes=argTypeMap;cg.returnTypes=returnTypeMap;cg.globalFuncSig=globalFuncSigMap;
         CompiledFunction cf;cf.name=init.name;cf.code=cg.run(init);cf.relocs=std::move(cg.relocations);cf.lineRows=std::move(cg.lineRows);cf.debugVars=std::move(cg.debugVars);
         cf.preservesRa=!cg.isMain;
@@ -7042,7 +7134,11 @@ struct ObjectLayout {
     std::vector<uint8_t> data;
     std::vector<uint8_t> rodata;
     uint64_t bssSize=0;
-    struct GlobalDef { std::string name; int kind; uint64_t offset; uint64_t size; }; // kind 1 = .data, 2 = .bss, 3 = .rodata
+    // v0.23.51-dev: the thread-local block, one copy per thread. `tls` globals
+    // are laid out here (kind 4) and reached through TPIDR_EL0; the static image
+    // carries one block as a PT_TLS segment, so single-threaded programs see it.
+    std::vector<uint8_t> tls; uint64_t tlsSize=0;
+    struct GlobalDef { std::string name; int kind; uint64_t offset; uint64_t size; }; // kind 1 = .data, 2 = .bss, 3 = .rodata, 4 = .tls
     std::vector<GlobalDef> globals;
     // -g: (text byte offset, source line) pairs in ascending address order —
     // one per statement boundary, plus one per function prologue. Empty unless
@@ -7058,6 +7154,27 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
         L.ins.insert(L.ins.end(),f.code.begin(),f.code.end());}
     for(const auto& g:globals){
         if(g.external)continue;
+        // v0.23.51-dev: a thread-local global goes into the per-thread block
+        // (kind 4), not .data/.bss. It is laid out exactly like a scalar slot —
+        // its initializer bytes copied in when non-zero — and later reached by
+        // `TPIDR_EL0 + offset` (local-exec), so the linker's 4-byte slot and
+        // 4-byte alignment invariants still hold.
+        if(g.tls){
+            const uint64_t a=std::max<uint64_t>(g.align<4?4:g.align,tySize(g.ty));
+            const uint64_t esz=tySize(g.ty);
+            const uint64_t sz=g.isArray?uint64_t(g.count)*esz:esz;
+            const uint64_t slot=alignUp(sz,4);
+            const uint64_t off=alignUp(L.tlsSize,a);
+            L.tls.resize((size_t)(off+slot),0);
+            if(!(tyIs64(g.ty)?g.wideInit==0:g.init==0)){
+                const uint64_t v=tyIs64(g.ty)?g.wideInit:(uint64_t)(uint32_t)g.init;
+                const uint64_t n=g.isArray?g.count:1;
+                for(uint64_t i=0;i<n;++i)for(uint64_t b=0;b<esz;++b)L.tls[(size_t)(off+i*esz+b)]=uint8_t(v>>(8*b));
+            }
+            L.tlsSize=off+slot;
+            L.globals.push_back({g.name,4,off,slot});
+            continue;
+        }
         // A global is aligned to at least its own storage width: an i64 sits on
         // an 8-byte boundary. For i32/bool/u8/u16 the width is <= the previous
         // floor of 4, so every pre-existing layout is unchanged.
@@ -7123,6 +7240,7 @@ static void dbgSleb(std::vector<uint8_t>& o,int64_t v){
 // R_AARCH64_ABS64: the only relocation .debug_line needs. Every address in the
 // line program is one 64-bit field, so a plain absolute write is enough.
 static constexpr uint32_t kRelAbs64=257;
+// v0.23.51-dev: R_AARCH64_TLSLE_ADD_TPREL_LO12-style fill for thread-local
 // v0.23.33-dev: R_AARCH64_PREL32, for an .eh_frame FDE's initial_location in a
 // relocatable object — the field is a 32-bit PC-relative displacement, which
 // is exactly what "S + A - P" writes.
@@ -7230,7 +7348,12 @@ struct DebugInfoBlob {
 enum : uint8_t {
     kAbbrCu=1,kAbbrBaseType=2,kAbbrPointer=3,kAbbrArray=4,kAbbrSubrange=5,
     kAbbrStruct=6,kAbbrMember=7,kAbbrSubprogram=8,kAbbrGlobalVar=9,
-    kAbbrLocalVar=10,kAbbrParam=11,kAbbrUnspecified=12
+    kAbbrLocalVar=10,kAbbrParam=11,kAbbrUnspecified=12,
+    // v0.23.51-dev: a function's type is a DW_TAG_subroutine_type that names its
+    // return type and parameter types — not the bare return type — so a debugger
+    // reads `p foo` as the whole signature, and DW_AT_decl_file names the source
+    // file (index 1, the one entry the line table emits).
+    kAbbrSubroutineType=13,kAbbrFormalParam=14
 };
 // DWARF v4, 64-bit addresses: unit_length, version, debug_abbrev_offset,
 // address_size. A DW_FORM_ref4 is an offset from the byte after this header,
@@ -7242,7 +7365,8 @@ static const std::vector<uint8_t>& debugAbbrevTable(){
         // Attributes
         const uint16_t kName=0x03,kLoc=0x02,kStmt=0x10,kLowPc=0x11,kHighPc=0x12,kLang=0x13,
             kCompDir=0x1b,kProducer=0x25,kByteSize=0x0b,kEncoding=0x3e,kType=0x49,
-            kUpper=0x2f,kMemberLoc=0x38,kDeclLine=0x3b,kExternal=0x3f,kFrameBase=0x40;
+            kUpper=0x2f,kMemberLoc=0x38,kDeclLine=0x3b,kExternal=0x3f,kFrameBase=0x40,
+            kDeclFile=0x3a;
         // Forms
         const uint16_t fAddr=0x01,fData1=0x0b,fData2=0x05,fData4=0x06,fData8=0x07,
             fStr=0x08,fRef4=0x13,fExpr=0x18,fFlagPresent=0x19;
@@ -7256,7 +7380,13 @@ static const std::vector<uint8_t>& debugAbbrevTable(){
             {kAbbrStruct,0x13,1,{{kName,fStr},{kByteSize,fData2}}},
             {kAbbrMember,0x0d,0,{{kName,fStr},{kType,fRef4},{kMemberLoc,fData4}}},
             {kAbbrSubprogram,0x2e,1,{{kName,fStr},{kLowPc,fAddr},{kHighPc,fData8},{kFrameBase,fExpr},
-                                     {kType,fRef4},{kDeclLine,fData4},{kExternal,fFlagPresent}}},
+                                     {kType,fRef4},{kDeclFile,fData1},{kDeclLine,fData4},{kExternal,fFlagPresent}}},
+            // v0.23.51-dev: DW_TAG_subroutine_type — the type a subprogram's
+            // DW_AT_type points at. It names the return type and carries one
+            // DW_TAG_formal_parameter child per parameter; a function with no
+            // parameters is simply a subroutine_type with no children.
+            {kAbbrSubroutineType,0x15,1,{{kType,fRef4}}},
+            {kAbbrFormalParam,0x05,0,{{kName,fStr},{kType,fRef4}}},
             {kAbbrGlobalVar,0x34,0,{{kName,fStr},{kType,fRef4},{kLoc,fExpr},{kExternal,fFlagPresent}}},
             {kAbbrLocalVar,0x34,0,{{kName,fStr},{kType,fRef4},{kLoc,fExpr},{kDeclLine,fData4}}},
             {kAbbrParam,0x05,0,{{kName,fStr},{kType,fRef4},{kLoc,fExpr},{kDeclLine,fData4}}},
@@ -7402,6 +7532,26 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         if(g.external||g.isString||g.fromEmbed)continue;
         w.typeRef(g.ty,g.dims.empty()?(g.isArray?std::vector<uint32_t>{g.count}:std::vector<uint32_t>{}):g.dims);
     }
+    // v0.23.51-dev: one DW_TAG_subroutine_type per function, emitted before
+    // the subprograms that name it (a DW_FORM_ref4 is a forward offset). Its
+    // DW_AT_type is the return type and its children are the formal parameters,
+    // so a subprogram's DW_AT_type reads as the whole signature, not just the
+    // return type.
+    std::map<std::string,uint32_t> subprogType;
+    for(const auto& f:funcs){
+        auto it=byName.find(f.name);if(it==byName.end())continue;
+        const Function& src=*it->second;
+        const uint32_t off=w.dieOffset();
+        dbgUleb(w.info,kAbbrSubroutineType);
+        dbgPut32(w.info,w.typeRef(src.retType,{}));
+        for(size_t i=0;i<src.params.size();++i){
+            dbgUleb(w.info,kAbbrFormalParam);
+            w.name(src.params[i]);
+            dbgPut32(w.info,w.typeRef(src.paramTypes[i],src.paramDims[i]));
+        }
+        dbgUleb(w.info,0);                                  // end of subroutine_type's children
+        subprogType[f.name]=off;
+    }
     // ---- globals: one DW_TAG_variable per object with an address ----------
     for(const auto& g:globals){
         if(g.external||g.isString||g.fromEmbed)continue;
@@ -7410,7 +7560,10 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         dbgUleb(w.info,kAbbrGlobalVar);
         w.name(g.name);
         dbgPut32(w.info,w.typeRef(g.ty,dims));
-        w.addrOps(g.name,0);
+        // v0.23.51-dev: a thread-local global is laid out in .tdata under its
+        // __aster_tls_<name> symbol (the bare name carries no definition), so the
+        // debugger's DW_OP_addr must name that symbol to land on its slot.
+        w.addrOps(g.tls?("__aster_tls_"+g.name):g.name,0);
     }
     // ---- one DW_TAG_subprogram per function -------------------------------
     for(const auto& f:funcs){
@@ -7424,7 +7577,8 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         w.patches.push_back({(uint64_t)w.info.size()-8,f.name,0});
         dbgPut64(w.info,size);                             // DW_AT_high_pc: a length
         w.expr(DwarfDieWriter::frameBaseOps());
-        dbgPut32(w.info,w.typeRef(src.retType,{}));
+        dbgPut32(w.info,subprogType.count(f.name)?subprogType.at(f.name):w.typeRef(src.retType,{}));
+        w.info.push_back(1);                                // DW_AT_decl_file: index 1
         dbgPut32(w.info,(uint32_t)src.line);
         for(const DebugVar& v:f.debugVars){
             const bool param=v.isParam;
@@ -7546,6 +7700,11 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     auto nameOf=[&](const std::string& n)->std::string{return pic?n:elfNameOf(n);};
     ObjectLayout L=layoutObject(funcs,globals);
     const bool hasData=!L.data.empty(), hasBss=L.bssSize>0, hasRodata=!L.rodata.empty();
+    // v0.23.51-dev: the thread-local block, one copy per thread. When a program
+    // has `tls` globals the object carries a .tdata section holding their
+    // initializers and one __aster_tls_<name> symbol each, plus a __aster_tls_block
+    // symbol at offset 0; a static image links them into a PT_TLS segment.
+    const bool hasTls=!L.tls.empty();
     const bool hasDebugLine=!debugLine.bytes.empty();
     // v0.23.32-dev: .debug_info and its table of abbreviations. The three new
     // sections are numbered after every section that existed before, and only
@@ -7563,26 +7722,45 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     const bool hasEhFrame=!ehFrame.bytes.empty();
     uint16_t idxEhFrame=0,idxRelaEhFrame=0;
     if(hasEhFrame){idxEhFrame=next++;idxRelaEhFrame=next++;}
+    uint16_t idxTdata=0;if(hasTls)idxTdata=next++; // .tdata: the thread-local block
     const uint16_t idxRela=next++,idxSym=next++,idxStr=next++,idxShstr=next++,shnum=next;
     std::vector<Rela> relas,relasDl,relasDi,relasEh;
     std::string strtab(1,'\0');
     std::map<std::string,uint32_t> nameOff;
     auto addName=[&](const std::string& n)->uint32_t{auto it=nameOff.find(n);if(it!=nameOff.end())return it->second;uint32_t o=(uint32_t)strtab.size();strtab+=n;strtab.push_back('\0');nameOff[n]=o;return o;};
     std::set<std::string> defined,needed;std::map<std::string,uint32_t> neededType; // 1 = OBJECT, 2 = FUNC
+    uint32_t nonTlsGlobals=0;for(const auto& g:L.globals)if(g.kind!=4)++nonTlsGlobals;
+    uint32_t tlsSymCount=0;for(const auto& g:L.globals)if(g.kind==4)++tlsSymCount;if(hasTls)++tlsSymCount;
     for(const auto& f:funcs)defined.insert(nameOf(f.name));
-    for(const auto& g:L.globals)defined.insert(g.name);
+    // v0.23.51-dev: thread-local globals are not defined under their bare name —
+    // the codegen references __aster_tls_<name>, so that symbol (and the block
+    // base) is what carries the definition. The bare name is left undefined here.
+    for(const auto& g:L.globals)if(g.kind!=4)defined.insert(g.name);
+    if(hasTls){defined.insert("__aster_tls_block");for(const auto& g:L.globals)if(g.kind==4)defined.insert("__aster_tls_"+g.name);}
     for(const auto& f:funcs)for(const auto& r:f.relocs){std::string n=(r.type==Codegen::kRelCall26)?nameOf(r.symbol):r.symbol;needed.insert(n);neededType[n]=(r.type==Codegen::kRelCall26)?2u:1u;}
     std::vector<std::string> undefined;for(const auto& n:needed)if(!defined.count(n))undefined.push_back(n);
-    std::vector<Sym> syms(1+funcs.size()+L.globals.size()+undefined.size()+((hasDebugLine||hasDebugInfo)?1u:0u));std::map<std::string,uint32_t> symIndex;
+    const uint32_t dbgSym=((hasDebugLine||hasDebugInfo)?1u:0u);
+    std::vector<Sym> syms(1+funcs.size()+nonTlsGlobals+undefined.size()+dbgSym+tlsSymCount);std::map<std::string,uint32_t> symIndex;
     for(size_t i=0;i<funcs.size();++i){const auto& f=funcs[i];Sym& s=syms[i+1];std::string en=nameOf(f.name);s.name=addName(en);s.info=0x12;s.shndx=idxText;s.value=L.functions.at(f.name).first;s.size=L.functions.at(f.name).second;symIndex[en]=(uint32_t)i+1;}
-    for(size_t i=0;i<L.globals.size();++i){const auto& g=L.globals[i];Sym& s=syms[1+funcs.size()+i];s.name=addName(g.name);s.info=0x11;s.shndx=g.kind==1?idxData:(g.kind==3?idxRodata:idxBss);s.value=g.offset;s.size=g.size;symIndex[g.name]=(uint32_t)(1+funcs.size()+i);}
-    for(size_t i=0;i<undefined.size();++i){Sym& s=syms[1+funcs.size()+L.globals.size()+i];s.name=addName(undefined[i]);s.info=(neededType.at(undefined[i])==2)?0x12:0x11;s.shndx=0;symIndex[undefined[i]]=(uint32_t)(1+funcs.size()+L.globals.size()+i);}
+    {uint32_t gi=0;for(size_t i=0;i<L.globals.size();++i){const auto& g=L.globals[i];if(g.kind==4)continue;Sym& s=syms[1+funcs.size()+gi];s.name=addName(g.name);s.info=0x11;s.shndx=g.kind==1?idxData:(g.kind==3?idxRodata:idxBss);s.value=g.offset;s.size=g.size;symIndex[g.name]=(uint32_t)(1+funcs.size()+gi);++gi;}}
+    for(size_t i=0;i<undefined.size();++i){Sym& s=syms[1+funcs.size()+nonTlsGlobals+i];s.name=addName(undefined[i]);s.info=(neededType.at(undefined[i])==2)?0x12:0x11;s.shndx=0;symIndex[undefined[i]]=(uint32_t)(1+funcs.size()+nonTlsGlobals+i);}
+    // v0.23.51-dev: the thread-local symbols. Each __aster_tls_<name> lives in
+    // .tdata at its layout offset; __aster_tls_block marks the block's base.
+    if(hasTls){
+        uint32_t ti=0;
+        for(const auto& g:L.globals)if(g.kind==4){const uint32_t slot=1+funcs.size()+nonTlsGlobals+undefined.size()+dbgSym+ti;Sym& s=syms[slot];s.name=addName("__aster_tls_"+g.name);s.info=0x11;s.shndx=idxTdata;s.value=g.offset;s.size=g.size;symIndex["__aster_tls_"+g.name]=slot;++ti;}
+        {const uint32_t slot=1+funcs.size()+nonTlsGlobals+undefined.size()+dbgSym+ti;Sym& s=syms[slot];s.name=addName("__aster_tls_block");s.info=0x11;s.shndx=idxTdata;s.value=0;s.size=L.tlsSize;symIndex["__aster_tls_block"]=slot;}
+    }
     // A local STT_SECTION symbol for .text, so .rela.debug_line and
     // .rela.debug_info can say "the address this unit's text starts at" the
     // way any ELF object would.
     uint32_t textSymIndex=0;
     if(hasDebugLine||hasDebugInfo){
-        const uint32_t i=(uint32_t)(1+funcs.size()+L.globals.size()+undefined.size());
+        // v0.23.51-dev: the .text section symbol must not collide with the
+        // thread-local symbols, which are laid out separately and start at slot
+        // (1+funcs+nonTlsGlobals+undefined+dbgSym). The section symbol fills the
+        // dbgSym slot just before them, so count only the non-TLS globals.
+        const uint32_t i=(uint32_t)(1+funcs.size()+nonTlsGlobals+undefined.size());
         Sym& s=syms[i];s.name=addName(".text");s.info=0x03;s.shndx=idxText;s.value=0;s.size=0;
         symIndex[".text"]=i;textSymIndex=i;
         for(uint64_t site:debugLine.patchSites){Rela rel{};rel.offset=site;rel.info=(uint64_t)textSymIndex<<32|kRelAbs64;rel.addend=0;relasDl.push_back(rel);}
@@ -7607,6 +7785,7 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
         Rela rel{};rel.offset=p.offset;rel.info=(uint64_t)it->second<<32|kRelPrel32;rel.addend=p.addend;relasEh.push_back(rel);
     }
     const std::string shstr(std::string("\0.text",6)+(hasData?std::string("\0.data",6):std::string())+(hasBss?std::string("\0.bss",5):std::string())+(hasRodata?std::string("\0.rodata",8):std::string())
+        +(hasTls?std::string("\0.tdata",7):std::string())
         +(hasDebugLine?std::string("\0.debug_line",12)+std::string("\0.rela.debug_line",18):std::string())
         +(hasDebugInfo?std::string("\0.debug_abbrev",15)+std::string("\0.debug_info",13)+std::string("\0.rela.debug_info",18):std::string())
         +(hasEhFrame?std::string("\0.eh_frame",10)+std::string("\0.rela.eh_frame",16):std::string())
@@ -7619,9 +7798,13 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     const uint64_t dataOff=hasData?alignUp(textOff+textSize,dataAlign>8?dataAlign:8):0;
     const uint64_t rodataOff=hasRodata?alignUp((hasData?dataOff+L.data.size():textOff+textSize),1):0;
     const uint64_t afterLast=hasRodata?rodataOff+L.rodata.size():(hasData?dataOff+L.data.size():textOff+textSize);
-    const uint64_t debugLineOff=hasDebugLine?align8(afterLast):0,debugLineSize=debugLine.bytes.size();
+    // v0.23.51-dev: the thread-local block sits right after the last ordinary
+    // section, 16-byte aligned; debug sections and the symbol table follow it.
+    const uint64_t tdataOff=hasTls?alignUp(afterLast,16):0,tdataSize=L.tls.size();
+    const uint64_t afterTls=hasTls?tdataOff+tdataSize:afterLast;
+    const uint64_t debugLineOff=hasDebugLine?align8(afterTls):0,debugLineSize=debugLine.bytes.size();
     const uint64_t relaDebugLineOff=hasDebugLine?align8(debugLineOff+debugLineSize):0,relaDebugLineSize=relasDl.size()*sizeof(Rela);
-    const uint64_t afterDebugLine=hasDebugLine?relaDebugLineOff+relaDebugLineSize:afterLast;
+    const uint64_t afterDebugLine=hasDebugLine?relaDebugLineOff+relaDebugLineSize:afterTls;
     const uint64_t debugAbbrevOff=hasDebugInfo?align8(afterDebugLine):0,debugAbbrevSize=debugInfo.abbrev.size();
     const uint64_t debugInfoOff=hasDebugInfo?align8(debugAbbrevOff+debugAbbrevSize):0,debugInfoSize=debugInfo.bytes.size();
     const uint64_t relaDebugInfoOff=hasDebugInfo?align8(debugInfoOff+debugInfoSize):0,relaDebugInfoSize=relasDi.size()*sizeof(Rela);
@@ -7637,6 +7820,7 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     if(hasData){sh[idxData].name=nameAt(".data");sh[idxData].type=1;sh[idxData].flags=0x3;sh[idxData].offset=dataOff;sh[idxData].size=L.data.size();sh[idxData].addralign=dataAlign;}
     if(hasBss){sh[idxBss].name=nameAt(".bss");sh[idxBss].type=8;sh[idxBss].flags=0x3;sh[idxBss].offset=hasRodata?rodataOff+L.rodata.size():(hasData?dataOff+L.data.size():textOff+textSize);sh[idxBss].size=L.bssSize;sh[idxBss].addralign=bssAlign;}
     if(hasRodata){sh[idxRodata].name=nameAt(".rodata");sh[idxRodata].type=1;sh[idxRodata].flags=0x2;sh[idxRodata].offset=rodataOff;sh[idxRodata].size=L.rodata.size();sh[idxRodata].addralign=1;}
+    if(hasTls){sh[idxTdata].name=nameAt(".tdata");sh[idxTdata].type=1;sh[idxTdata].flags=0x2|0x400;sh[idxTdata].offset=tdataOff;sh[idxTdata].size=tdataSize;sh[idxTdata].addralign=16;}
     if(hasDebugLine){
         sh[idxDebugLine].name=nameAt(".debug_line");sh[idxDebugLine].type=1;sh[idxDebugLine].offset=debugLineOff;sh[idxDebugLine].size=debugLineSize;sh[idxDebugLine].addralign=1;
         Shdr& e0=sh[idxRelaDebugLine];e0.name=nameAt(".rela.debug_line");e0.type=4;e0.offset=relaDebugLineOff;e0.size=relaDebugLineSize;e0.link=idxSym;e0.info=idxDebugLine;e0.addralign=8;e0.entsize=sizeof(Rela);
@@ -7659,6 +7843,7 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     pad(textOff);auto bytes=instructionBytes(L.ins);o.write((const char*)bytes.data(),bytes.size());
     if(hasData){pad(dataOff);o.write((const char*)L.data.data(),L.data.size());}
     if(hasRodata){pad(rodataOff);o.write((const char*)L.rodata.data(),L.rodata.size());}
+    if(hasTls){pad(tdataOff);o.write((const char*)L.tls.data(),tdataSize);}
     if(hasDebugLine){pad(debugLineOff);o.write((const char*)debugLine.bytes.data(),debugLine.bytes.size());
         pad(relaDebugLineOff);if(!relasDl.empty())o.write((const char*)relasDl.data(),relaDebugLineSize);}
     if(hasDebugInfo){pad(debugAbbrevOff);o.write((const char*)debugInfo.abbrev.data(),debugAbbrevSize);
@@ -7692,6 +7877,9 @@ struct ParsedSymbol { std::string name; uint64_t value=0,size=0; uint8_t info=0;
 struct ParsedReloc { uint64_t offset=0; std::string symbol; uint32_t type=0; int64_t addend=0; };
 struct ParsedObject {
     std::vector<uint8_t> text; std::vector<uint8_t> data; std::vector<uint8_t> rodata; uint64_t bssSize=0;
+    // v0.23.51-dev: the thread-local block, carried as a .tdata section (SHF_TLS)
+    // so a static link places one copy per thread into a PT_TLS segment.
+    std::vector<uint8_t> tdata; uint64_t tdataAlign=16;
     std::vector<ParsedSymbol> symbols; std::vector<ParsedReloc> relocs;
     // -g: the object's DWARF line program and the offsets in it that hold an
     // address, which the linker rewrites to the final text virtual address.
@@ -7716,7 +7904,9 @@ struct ParsedObject {
         // v0.23.33-dev: .eh_frame is SHF_ALLOC — it has to be, because an
         // unwinder reads it out of the running image — so it needs a branch
         // here or the "unsupported allocated section" guard below rejects it.
-        ehFrameIndex=-1,relaEhFrameIndex=-1;
+        // v0.23.51-dev: .tdata carries the thread-local block, so it needs a
+        // branch here too, before the "unsupported allocated section" guard.
+        ehFrameIndex=-1,relaEhFrameIndex=-1,tlsIndex=-1;
 };
 ParsedObject parseObject(const std::string& input){
     auto fileText=readFile(input);std::vector<uint8_t> file(fileText.begin(),fileText.end());
@@ -7737,6 +7927,7 @@ ParsedObject parseObject(const std::string& input){
         else if(n==".data"){if(result.dataIndex>=0)throw Error(input+": duplicate .data section");result.dataIndex=(int)i;}
         else if(n==".bss"){if(result.bssIndex>=0)throw Error(input+": duplicate .bss section");result.bssIndex=(int)i;}
         else if(n==".rodata"){if(result.rodataIndex>=0)throw Error(input+": duplicate .rodata section");result.rodataIndex=(int)i;}
+        else if(n==".tdata"){if(result.tlsIndex>=0)throw Error(input+": duplicate .tdata section");result.tlsIndex=(int)i;}
         else if(n==".symtab"){if(symIndex>=0)throw Error(input+": duplicate .symtab section");symIndex=(int)i;}
         else if(n==".strtab"){if(strIndex>=0)throw Error(input+": duplicate .strtab section");strIndex=(int)i;}
         else if(n==".rela.text"){if(relaIndex>=0)throw Error(input+": duplicate .rela.text section");relaIndex=(int)i;}
@@ -7757,6 +7948,7 @@ ParsedObject parseObject(const std::string& input){
     if(result.dataIndex>=0){const Shdr& d=sections[result.dataIndex];if(d.type!=1||(d.flags&0x3)!=0x3||d.addralign<4||d.size%4||d.size==0)throw Error(input+": unsupported .data section attributes");result.dataAlign=d.addralign;result.data.assign(file.begin()+d.offset,file.begin()+d.offset+d.size);}
     if(result.rodataIndex>=0){const Shdr& r=sections[result.rodataIndex];if(r.type!=1||(r.flags&0x2)==0||(r.flags&0x1)!=0||r.size==0)throw Error(input+": unsupported .rodata section attributes");result.rodataAlign=r.addralign<1?1:r.addralign;result.rodata.assign(file.begin()+r.offset,file.begin()+r.offset+r.size);}
     if(result.bssIndex>=0){const Shdr& b=sections[result.bssIndex];if(b.type!=8||(b.flags&0x3)!=0x3||b.addralign<4||b.size%4||b.size==0)throw Error(input+": unsupported .bss section attributes");result.bssAlign=b.addralign;result.bssSize=b.size;}
+    if(result.tlsIndex>=0){const Shdr& t=sections[result.tlsIndex];if(t.type!=1||(t.flags&0x2u)==0||(t.flags&0x400u)==0||t.addralign<4||t.size%4)throw Error(input+": unsupported .tdata section attributes");result.tdataAlign=t.addralign<4?16:t.addralign;result.tdata.assign(file.begin()+t.offset,file.begin()+t.offset+t.size);}
     checkedEnd(text.offset,text.size,file.size(),".text data");result.text.assign(file.begin()+text.offset,file.begin()+text.offset+text.size);
     std::vector<std::string> namesByIndex;
     for(uint64_t off=0;off<sym.size;off+=sizeof(Sym)){Sym s{};std::memcpy(&s,file.data()+sym.offset+off,sizeof s);std::string name=symbolName(file,str,s.name);namesByIndex.push_back(name);ParsedSymbol ps{name,s.value,s.size,s.info,s.shndx};result.symbols.push_back(ps);
@@ -7775,11 +7967,16 @@ ParsedObject parseObject(const std::string& input){
             } else if(result.bssIndex>=0&&shndx==(uint16_t)result.bssIndex){
                 if((s.info&0x0f)!=1)throw Error(input+": global symbol in .bss must be an object: "+name);
                 if(s.value%4||s.size==0||s.size%4||s.value>result.bssSize||s.size>result.bssSize-s.value)throw Error(input+": global object must be defined and in bounds in .bss: "+name);
+            } else if(result.tlsIndex>=0&&shndx==(uint16_t)result.tlsIndex){
+                // v0.23.51-dev: a thread-local object — kind 4, merged into the
+                // image's PT_TLS block by the linker.
+                if((s.info&0x0f)!=1)throw Error(input+": global symbol in .tdata must be an object: "+name);
+                if(s.value%4||s.size==0||s.size%4||s.value>result.tdata.size()||s.size>result.tdata.size()-s.value)throw Error(input+": thread-local object must be defined and in bounds in .tdata: "+name);
             } else throw Error(input+": global symbol in an unsupported section: "+name);
         }
     }
     if(relaIndex>=0){const Shdr& rela=sections[relaIndex];if(rela.type!=4||rela.entsize!=sizeof(Rela)||rela.size%sizeof(Rela)||rela.link!=(uint32_t)symIndex||rela.info!=(uint32_t)result.textIndex)throw Error(input+": malformed .rela.text section");
-        for(uint64_t off=0;off<rela.size;off+=sizeof(Rela)){Rela r{};std::memcpy(&r,file.data()+rela.offset+off,sizeof r);uint32_t si=(uint32_t)(r.info>>32),type=(uint32_t)r.info;if(type!=283&&type!=275&&type!=277)throw Error(input+": unsupported AArch64 relocation type "+std::to_string(type));if(si>=namesByIndex.size()||namesByIndex[si].empty())throw Error(input+": relocation references an invalid symbol");        if(r.offset+4>result.text.size()||r.offset%4)throw Error(input+": relocation offset is out of bounds or unaligned");result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}
+        for(uint64_t off=0;off<rela.size;off+=sizeof(Rela)){Rela r{};std::memcpy(&r,file.data()+rela.offset+off,sizeof r);uint32_t si=(uint32_t)(r.info>>32),type=(uint32_t)r.info;if(type!=283&&type!=275&&type!=277&&type!=kRelTlsOff)throw Error(input+": unsupported AArch64 relocation type "+std::to_string(type));if(si>=namesByIndex.size()||namesByIndex[si].empty())throw Error(input+": relocation references an invalid symbol");        if(r.offset+4>result.text.size()||r.offset%4)throw Error(input+": relocation offset is out of bounds or unaligned");result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}
     }
     if(result.debugLineIndex>=0){
         const Shdr& dl=sections[result.debugLineIndex];
@@ -7890,7 +8087,7 @@ struct LinkPending { uint64_t patch; std::string symbol; int64_t addend; uint32_
 // raw function symbol is a bug, and the check below catches it.
 void resolveRelocations(std::vector<uint8_t>& text,const std::vector<LinkPending>& pending,
                         const std::map<std::string,uint64_t>& symbolVaddr,const std::map<std::string,int>& symbolKind,
-                        uint64_t textVaddr,bool funcAddrDirect=false){
+                        uint64_t textVaddr,bool funcAddrDirect=false,uint64_t tlsVaddr=0){
     for(const auto& r:pending){auto it=symbolVaddr.find(r.symbol);
         if(it==symbolVaddr.end()){
             if(r.type==283)throw Error("undefined function symbol '"+r.symbol+"'");
@@ -7899,6 +8096,22 @@ void resolveRelocations(std::vector<uint8_t>& text,const std::vector<LinkPending
         const int kind=symbolKind.at(r.symbol);
         uint64_t target=it->second+uint64_t(r.addend);
         uint32_t ins=0;for(int i=0;i<4;++i)ins|=uint32_t(text[(size_t)r.patch+i])<<(i*8);
+        if(r.type==kRelTlsOff){
+            // v0.23.51-dev: fill the TLS offset into the MOVZ/MOVK pair the
+            // codegen emitted (lo16 then hi16, both in the immediate field
+            // bits[20:5]). The symbol's vaddr is its absolute address
+            // (tlsVaddr + offset); local-exec addresses a variable as
+            // TPIDR_EL0 + offset, so the relocation carries the offset alone.
+            // bits[20:5]); the access becomes TPIDR_EL0 + offset (local-exec).
+            const uint32_t val=uint32_t((target-tlsVaddr)&0xffffffffu);
+            uint32_t movz=0;for(int i=0;i<4;++i)movz|=uint32_t(text[(size_t)r.patch+i])<<(i*8);
+            movz=(movz&~0x1fffe0u)|((val&0xffffu)<<5);
+            for(int i=0;i<4;++i)text[(size_t)r.patch+i]=uint8_t(movz>>(i*8));
+            uint32_t movk=0;for(int i=0;i<4;++i)movk|=uint32_t(text[(size_t)r.patch+4+i])<<(i*8);
+            movk=(movk&~0x1fffe0u)|((val>>16)<<5);
+            for(int i=0;i<4;++i)text[(size_t)r.patch+4+i]=uint8_t(movk>>(i*8));
+            continue;
+        }
         if(r.type==283){
             if(kind!=0)throw Error("CALL26 relocation references a non-function symbol '"+r.symbol+"'");
             int64_t delta=(int64_t)target-(int64_t)(textVaddr+r.patch);
@@ -7961,8 +8174,33 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     std::string dynstr(1,'\0');
     std::vector<uint32_t> nameOff(exports.size());
     for(size_t i=0;i<exports.size();++i){nameOff[i]=(uint32_t)dynstr.size();dynstr+=exports[i].name;dynstr.push_back('\0');}
+    // v0.23.51-dev: symbol-versioning string pool. The default version name and the
+    // libc version requirement live in .dynstr so VERDEF/VERNEED can name them.
+    auto addVerStr=[&](const std::string& s)->uint32_t{uint32_t o=(uint32_t)dynstr.size();dynstr+=s;dynstr.push_back('\0');return o;};
+    // v0.23.51-dev: the BASE version name. ld names a library's BASE verdef after its
+    // soname; this writer emits no DT_SONAME, so — exactly as ld does for `gcc -shared`
+    // without `-soname` (checked against the linker: the BASE name is the output file's
+    // basename) — the output file's basename plays that role.
+    std::string baseName=path;
+    if(size_t slash=baseName.find_last_of('/');slash!=std::string::npos)baseName=baseName.substr(slash+1);
+    const uint32_t verBaseStr=addVerStr(baseName);
+    const uint32_t verAsterStr=addVerStr("aster");
+    const uint32_t verLibcStr=addVerStr("libc.so.6");
+    const uint32_t verGlibcStr=addVerStr("GLIBC_2.17");
+    auto elfHash=[&](const char* q)->uint32_t{uint32_t h=0,g;for(;*q;++q){h=(h<<4)+((uint32_t)(unsigned char)*q);if((g=h&0xf0000000u))h^=g>>24;h&=~g;}return h;};
     std::vector<Sym> dynsym(1+exports.size());
     for(size_t i=0;i<exports.size();++i){Sym& s=dynsym[i+1];s.name=nameOff[i];s.info=0x12;s.other=0;s.shndx=S_TEXT;s.value=exports[i].offset;s.size=exports[i].size;}
+    // v0.23.51-dev: .gnu.version — one 16-bit version index per .dynsym entry. The null
+    // symbol is VER_NDX_LOCAL (0); every exported symbol belongs to the default "aster"
+    // version (index 2). A shared object written here has no undefined imports, so no
+    // symbol needs the libc VERNEED (index 3). Index 1 is reserved for the BASE verdef:
+    // glibc's _dl_check_map_versions (elf/dl-version.c) skips entries with
+    // VER_FLG_BASE, so l_versions[1] stays zeroed and _dl_fixup reads versym 1 as
+    // "no version" — an import left at index 1 therefore binds whatever default
+    // version the defining object offers (libc's for a C symbol, "aster" for another
+    // Aster .so).
+    std::vector<uint8_t> gnuVersion(dynsym.size()*2,0);
+    for(size_t i=1;i<dynsym.size();++i)gnuVersion[i*2]=2;
     // .hash: DT_HASH / SysV hash table so the loader can resolve the exported names.
     const uint32_t nchain=(uint32_t)dynsym.size();
     const uint32_t nbucket=nchain<3?3:nchain;
@@ -7978,14 +8216,24 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t dynstrOff=dynsymOff+dynsymSize,dynstrSize=dynstr.size();
     const uint64_t hashOff=alignUp(dynstrOff+dynstrSize,4),hashSize=uint64_t(hash.size())*4;
     const uint64_t relaOff=alignUp(hashOff+hashSize,8),relaSize=uint64_t(nglobals+(hasInit?1u:0u))*sizeof(Rela);
-    const uint64_t seg0End=relaOff+relaSize;
+    uint64_t seg0End=relaOff+relaSize;
+    // v0.23.51-dev: place the three GNU version sections right after .rela.dyn, inside the
+    // read-only PT_LOAD, so no existing offset or vaddr moves. .gnu.version is one 2-byte
+    // index per .dynsym entry; .gnu.version_d holds the BASE and the default "aster"
+    // VERDEFs; .gnu.version_r holds the libc.so.6 / GLIBC_2.17 VERNEED.
+    const uint64_t gnuVersionOff=seg0End,gnuVersionSize=gnuVersion.size();
+    const uint64_t verDefOff=alignUp(gnuVersionOff+gnuVersionSize,8);
+    const uint64_t verDefSize=56;                                    // two (Elf64_Verdef(20) + Elf64_Verdaux(8)) records
+    const uint64_t verNeedOff=alignUp(verDefOff+verDefSize,8);
+    const uint64_t verNeedSize=32;                                   // Elf64_Verneed(16) + Elf64_Vernaux(16)
+    seg0End=verNeedOff+verNeedSize;
     const uint64_t dataVaddr=alignUp(seg0End,0x1000),dataSize=data.size();
     // Keep user .data writable, but put init_array/GOT/.dynamic on dedicated pages so
     // PT_GNU_RELRO can protect them without accidentally making ordinary globals read-only.
     const uint64_t relroVaddr=alignUp(dataVaddr+dataSize,0x1000);
     const uint64_t initArrVaddr=relroVaddr,initArrSize=hasInit?8:0;
     const uint64_t gotVaddr=initArrVaddr+initArrSize,gotSize=uint64_t(nglobals)*8;
-    const uint32_t kDynEntries=10u+(hasInit?2u:0u); // nine tags (eleven with DT_INIT_ARRAY) plus DT_NULL
+    const uint32_t kDynEntries=15u+(hasInit?2u:0u); // nine tags + five version tags + DT_NULL (DT_INIT_ARRAY adds two)
     const uint64_t dynOff=alignUp(gotVaddr+gotSize,8),dynSize=uint64_t(kDynEntries)*sizeof(Elf64Dyn);
     const uint64_t seg1End=dynOff+dynSize;
     const uint64_t relroEnd=alignUp(seg1End,0x1000);
@@ -8007,6 +8255,44 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     if(hasInit){Rela& r=relas[nglobals];r.offset=initArrVaddr;r.info=1027;r.addend=(int64_t)(textVaddr+uint64_t(initOffset));}
     for(const auto& e:exports){symbolVaddr[e.name]=textVaddr+e.offset;symbolKind[e.name]=0;}
     resolveRelocations(text,pending,symbolVaddr,symbolKind,textVaddr);
+    // v0.23.51-dev: the two version tables. .gnu.version_d declares the BASE version
+    // (VER_FLG_BASE, hash 0 — glibc deliberately drops it from l_versions, which is
+    // what makes versym 1 mean "unversioned") followed by the default "aster" version;
+    // .gnu.version_r declares this object's need for libc.so.6 at GLIBC_2.17.
+    // Structures are the little-endian ELF64 Verdef/Verdaux and Verneed/Vernaux
+    // layouts; the version names are SysV-hashed into vd_hash/vna_hash. This is the
+    // exact shape ld emits (checked against gcc): BASE@1 + named@2 + verneed aux@3.
+    std::vector<uint8_t> verDef(verDefSize,0),verNeed(verNeedSize,0);
+    auto pv32=[&](std::vector<uint8_t>& v,size_t o,uint32_t x){for(int k=0;k<4;++k)v[o+(size_t)k]=uint8_t(x>>(8*k));};
+    auto pv16=[&](std::vector<uint8_t>& v,size_t o,uint32_t x){v[o]=uint8_t(x);v[o+1]=uint8_t(x>>8);};
+    pv16(verDef,0,1);            // vd_version = 1
+    pv16(verDef,2,1);            // vd_flags = VER_FLG_BASE
+    pv16(verDef,4,1);            // vd_ndx = 1 (the BASE version index)
+    pv16(verDef,6,1);            // vd_cnt = 1 (one auxiliary string)
+    pv32(verDef,8,0);            // vd_hash = 0 (BASE versions hash to nothing)
+    pv32(verDef,12,20);          // vd_aux = offset to Verdaux (right after Verdef)
+    pv32(verDef,16,28);          // vd_next = 28 (the "aster" Verdef follows)
+    pv32(verDef,20,verBaseStr);  // vda_name -> the library's BASE name
+    pv32(verDef,24,0);           // vda_next = 0
+    pv16(verDef,28,1);           // vd_version = 1
+    pv16(verDef,30,0);           // vd_flags = 0
+    pv16(verDef,32,2);           // vd_ndx = 2 (the default version index)
+    pv16(verDef,34,1);           // vd_cnt = 1 (one auxiliary string)
+    pv32(verDef,36,elfHash("aster"));  // vd_hash
+    pv32(verDef,40,20);          // vd_aux = offset to Verdaux (right after Verdef)
+    pv32(verDef,44,0);           // vd_next = 0 (last Verdef)
+    pv32(verDef,48,verAsterStr); // vda_name -> "aster"
+    pv32(verDef,52,0);           // vda_next = 0
+    pv16(verNeed,0,1);           // vn_version = 1
+    pv16(verNeed,2,1);           // vn_cnt = 1 (one auxiliary entry)
+    pv32(verNeed,4,verLibcStr);  // vn_file -> "libc.so.6"
+    pv32(verNeed,8,16);          // vn_aux = offset to Vernaux (right after Verneed)
+    pv32(verNeed,12,0);          // vn_next = 0 (only one Verneed)
+    pv32(verNeed,16,elfHash("GLIBC_2.17"));  // vna_hash
+    pv16(verNeed,20,0);          // vna_flags = 0
+    pv16(verNeed,22,3);          // vna_other = 3 (the VERNEED version index)
+    pv32(verNeed,24,verGlibcStr);  // vna_name -> "GLIBC_2.17"
+    pv16(verNeed,28,0);          // vna_next = 0
     // .dynamic
     std::vector<Elf64Dyn> dyn;
     dyn.push_back({4,(uint64_t)hashOff});              // DT_HASH
@@ -8019,6 +8305,11 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     dyn.push_back({9,sizeof(Rela)});                   // DT_RELAENT
     if(hasInit){dyn.push_back({25,(uint64_t)initArrVaddr});dyn.push_back({27,(uint64_t)initArrSize});} // DT_INIT_ARRAY / DT_INIT_ARRAYSZ
     dyn.push_back({1879048185,(uint64_t)(nglobals+(hasInit?1u:0u))});    // DT_RELACOUNT
+    dyn.push_back({0x6ffffffc,(uint64_t)verDefOff});   // DT_VERDEF -> .gnu.version_d
+    dyn.push_back({0x6ffffffd,2});                     // DT_VERDEFNUM (BASE + "aster")
+    dyn.push_back({0x6ffffffe,(uint64_t)verNeedOff});  // DT_VERNEED -> .gnu.version_r
+    dyn.push_back({0x6fffffff,1});                     // DT_VERNEEDNUM
+    dyn.push_back({0x6ffffff0,(uint64_t)gnuVersionOff}); // DT_VERSYM -> .gnu.version
     dyn.push_back({0,0});                              // DT_NULL
     // Section headers (the string table and the header table itself are not loaded).
     std::string shstr(1,'\0');
@@ -8027,6 +8318,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
                    nRela=addShName(".rela.dyn"),nData=addShName(".data"),nGot=addShName(".got"),nDynamic=addShName(".dynamic"),
                    nBss=addShName(".bss");
     const uint32_t nInitArray=hasInit?addShName(".init_array"):0;
+    const uint32_t nGnuVersion=addShName(".gnu.version"),nGnuVersionD=addShName(".gnu.version_d"),nGnuVersionR=addShName(".gnu.version_r");
     const uint32_t nSymtab=addShName(".symtab"),nStrtab=addShName(".strtab"),nShstr=addShName(".shstrtab");
     const uint32_t nDebugLine=hasDebugLine?addShName(".debug_line"):0;
     const uint32_t nDebugAbbrev=hasDebugInfo?addShName(".debug_abbrev"):0;
@@ -8046,7 +8338,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // sections here that a running program reads — so unlike the debug sections
     // they ride in a PT_LOAD of their own.
     const int kEfIdx=kDiIdx+1,kEfhIdx=kDiIdx+2;
-    const int kShnumAll=kShnum+(hasDebugLine?1:0)+(hasDebugInfo?2:0)+(hasEhFrame?2:0);
+    const int kShnumAll=kShnum+(hasDebugLine?1:0)+(hasDebugInfo?2:0)+(hasEhFrame?2:0)+3;
     // Source-level symbols: every exported function and every defined global/array. Synthetic
     // internal routines (__aster_init*) are already in .dynsym but are not source-level names.
     std::vector<OutSym> outSymbols;outSymbols.reserve(exports.size()+nglobals);
@@ -8140,6 +8432,13 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
         setSh(kEfIdx,nEhFrame,1,0x2,ehFrameOff,ehFrameOff,ehFrameBytes.size(),0,0,4,0);
         setSh(kEfhIdx,nEhFrameHdr,1,0x2,ehFrameHdrOff,ehFrameHdrOff,ehFrameHdr.size(),0,0,4,0);
     }
+    // v0.23.51-dev: the three GNU version sections. They ride in the read-only PT_LOAD
+    // (addr == file offset, like every other loaded section here), so only the section
+    // table grows. .gnu.version links to .dynsym; the other two link to .dynstr and carry
+    // the single VERDEF / VERNEED count in sh_info.
+    setSh(kShnumAll-3,nGnuVersion,0x6fffffff,0x2,gnuVersionOff,gnuVersionOff,gnuVersionSize,S_DYNSYM,0,2,2);
+    setSh(kShnumAll-2,nGnuVersionD,0x6ffffffd,0x2,verDefOff,verDefOff,verDefSize,S_DYNSTR,2,8,0);
+    setSh(kShnumAll-1,nGnuVersionR,0x6ffffffe,0x2,verNeedOff,verNeedOff,verNeedSize,S_DYNSTR,1,8,0);
     Ehdr h{};initIdent(h,3);h.entry=0;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)(4+(hasEhFrame?2:0));
     h.shoff=shoff;h.shentsize=sizeof(Shdr);h.shnum=kShnumAll;h.shstrndx=kShstrIdx;
     Phdr p0{};p0.type=1;p0.flags=5;p0.offset=0;p0.vaddr=0;p0.paddr=0;p0.filesz=seg0End;p0.memsz=seg0End;p0.align=0x1000;
@@ -8161,6 +8460,11 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     o.write(dynstr.data(),(std::streamsize)dynstrSize);
     pad(dynstrOff+dynstrSize,hashOff);o.write((const char*)hash.data(),(std::streamsize)hashSize);
     pad(hashOff+hashSize,relaOff);o.write((const char*)relas.data(),(std::streamsize)relaSize);
+    // v0.23.51-dev: write the three GNU version sections immediately after .rela.dyn,
+    // still inside the read-only PT_LOAD.
+    o.write((const char*)gnuVersion.data(),(std::streamsize)gnuVersionSize);
+    pad(gnuVersionOff+gnuVersionSize,verDefOff);o.write((const char*)verDef.data(),(std::streamsize)verDefSize);
+    pad(verDefOff+verDefSize,verNeedOff);o.write((const char*)verNeed.data(),(std::streamsize)verNeedSize);
     pad(seg0End,dataVaddr);o.write((const char*)data.data(),(std::streamsize)dataSize);
     if(hasInit){pad(dataVaddr+dataSize,initArrVaddr);std::vector<uint8_t> ia(8,0);for(int k=0;k<8;++k)ia[k]=uint8_t((textVaddr+uint64_t(initOffset))>>(k*8));o.write((const char*)ia.data(),8);}
     pad((uint64_t)o.tellp(),gotVaddr);o.write((const char*)got.data(),(std::streamsize)gotSize);
@@ -8303,6 +8607,19 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     for(size_t i=0;i<nIO;++i)ioName[i]=addDynStr(spec.importObjects[i]);
     const uint32_t sonameOff=spec.soname.empty()?0:addDynStr(spec.soname);
     std::vector<uint32_t> neededOff;for(const auto& n:spec.needed)neededOff.push_back(addDynStr(n));
+    // v0.23.51-dev: symbol-versioning string pool. The default version name and the libc
+    // version requirement live in .dynstr so VERDEF/VERNEED can name them.
+    // v0.23.51-dev: the BASE version name. ld names a library's BASE verdef after its
+    // soname (or, when `-soname` is absent, after the output file's basename — both
+    // shapes checked against gcc); a DT_SONAME is optional here, so fall back the
+    // same way.
+    std::string baseName=!spec.soname.empty()?spec.soname:std::string(path);
+    if(spec.soname.empty()){if(size_t slash=baseName.find_last_of('/');slash!=std::string::npos)baseName=baseName.substr(slash+1);}
+    const uint32_t verBaseStr=addDynStr(baseName);
+    const uint32_t verAsterStr=addDynStr("aster");
+    const uint32_t verLibcStr=addDynStr("libc.so.6");
+    const uint32_t verGlibcStr=addDynStr("GLIBC_2.17");
+    auto elfHash=[&](const char* q)->uint32_t{uint32_t h=0,g;for(;*q;++q){h=(h<<4)+((uint32_t)(unsigned char)*q);if((g=h&0xf0000000u))h^=g>>24;h&=~g;}return h;};
 
     // ---- section names and indices -----------------------------------------------------------
     std::vector<std::string> shnames(1,std::string());
@@ -8326,6 +8643,8 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const bool hasEhFrame=!spec.ehFrame.empty();
     const uint16_t S_EHFRAME=hasEhFrame?addSec(".eh_frame"):0;
     const uint16_t S_EHFRAMEHDR=hasEhFrame?addSec(".eh_frame_hdr"):0;
+    // v0.23.51-dev: the three GNU version sections, appended so no earlier index moves.
+    const uint16_t S_GNUVERSION=addSec(".gnu.version"),S_GNUVERSIOND=addSec(".gnu.version_d"),S_GNUVERSIONR=addSec(".gnu.version_r");
     const uint16_t shnum=(uint16_t)shnames.size();
     std::string shstr(1,'\0');std::vector<uint32_t> shNameOff(shnum,0);
     for(uint16_t i=1;i<shnum;++i){shNameOff[i]=(uint32_t)shstr.size();shstr+=shnames[i];shstr.push_back('\0');}
@@ -8345,7 +8664,20 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t nRelaDyn=nRel+nIO;                      // + one R_AARCH64_GLOB_DAT per data import
     const uint64_t relaDynOff=alignUp(gnuHashOff+gnuHashSize,8),relaDynSize=nRelaDyn*sizeof(Rela);
     const uint64_t relaPltOff=alignUp(relaDynOff+relaDynSize,8),relaPltSize=uint64_t(nIF)*sizeof(Rela);
-    const uint64_t seg0End=relaPltOff+relaPltSize;
+    uint64_t seg0End=relaPltOff+relaPltSize;
+    // v0.23.51-dev: the three GNU version sections ride in the read-only PT_LOAD right
+    // after .rela.plt, so no earlier offset or vaddr moves. .gnu.version is one 2-byte
+    // index per .dynsym entry; .gnu.version_d declares the BASE and the default "aster"
+    // version; .gnu.version_r declares the libc.so.6 / GLIBC_2.17 need.
+    const uint64_t gnuVersionOff=seg0End;
+    // .gnu.version itself is sized once the .dynsym order is known (below); the two
+    // version tables have fixed layouts (56 / 32 bytes). Reserve the offsets now.
+    const uint64_t gnuVersionSize=nsym*2;
+    const uint64_t verDefOff=alignUp(gnuVersionOff+gnuVersionSize,8);
+    const uint64_t verDefSize=56;                                    // two (Elf64_Verdef(20) + Elf64_Verdaux(8)) records
+    const uint64_t verNeedOff=alignUp(verDefOff+verDefSize,8);
+    const uint64_t verNeedSize=32;                                   // Elf64_Verneed(16) + Elf64_Vernaux(16)
+    seg0End=verNeedOff+verNeedSize;
     const uint64_t rodataVaddr=alignUp(seg0End,0x1000),rodataSize=spec.rodata.size();
     const uint64_t dataVaddr=alignUp(rodataVaddr+rodataSize,0x1000),dataSize=spec.data.size();
     // Dedicated page boundary between ordinary writable globals and loader-relocated data.
@@ -8379,6 +8711,11 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
         dyn.push_back({30,0x8});                           // DT_FLAGS = DF_BIND_NOW
     }
     if(hasInit){dyn.push_back({25,initArrVaddr});dyn.push_back({27,initArrSize});}
+    dyn.push_back({0x6ffffffc,(uint64_t)verDefOff});   // DT_VERDEF -> .gnu.version_d
+    dyn.push_back({0x6ffffffd,2});                     // DT_VERDEFNUM (BASE + "aster")
+    dyn.push_back({0x6ffffffe,(uint64_t)verNeedOff});  // DT_VERNEED -> .gnu.version_r
+    dyn.push_back({0x6fffffff,1});                     // DT_VERNEEDNUM
+    dyn.push_back({0x6ffffff0,(uint64_t)gnuVersionOff}); // DT_VERSYM -> .gnu.version
     dyn.push_back({0,0});
     const uint64_t dynSize=dyn.size()*sizeof(Elf64Dyn);
     const uint64_t seg1End=dynOff+dynSize;
@@ -8441,6 +8778,59 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
             sym.value=g.kind==1?dataVaddr+g.offset:(g.kind==3?rodataVaddr+g.offset:bssVaddr+g.offset);sym.size=g.size;}}
     for(size_t i=0;i<nIF;++i){Sym& sym=dynsym[dynIndex.at(spec.importFuncs[i])];sym.name=ifName[i];sym.info=0x12;sym.shndx=0;sym.value=0;sym.size=0;}
     for(size_t i=0;i<nIO;++i){Sym& sym=dynsym[dynIndex.at(spec.importObjects[i])];sym.name=ioName[i];sym.info=0x11;sym.shndx=0;sym.value=0;sym.size=0;}
+
+    // v0.23.51-dev: .gnu.version — one 16-bit version index per .dynsym entry. The null
+    // symbol is VER_NDX_LOCAL (0); every defined symbol (export or global) belongs to the
+    // default "aster" version (index 2). Index 1 is the BASE verdef: glibc's
+    // _dl_check_map_versions (elf/dl-version.c) skips VER_FLG_BASE entries, so
+    // l_versions[1] stays zeroed and _dl_fixup (elf/dl-runtime.c) reads versym 1 as
+    // "no version" — so an undefined import left at index 1 binds the defining object's
+    // default version: libc's default for a C-library symbol, this project's "aster"
+    // for a symbol another Aster .so exports. That is exactly why imports carry 1 and
+    // not 2: the writer cannot tell a libc import from a cross-.so one (`extern let
+    // counter` is satisfied by libdyn.so, not by libc), and pinning imports to the
+    // libc VERNEED (index 3) is fatal at load when the symbol is not libc's
+    // ("undefined symbol: counter, version GLIBC_2.17"). The libc.so.6 VERNEED below is
+    // the declared build baseline (the round's triad); no symbol references it, so it
+    // cannot mis-bind anything.
+    std::vector<uint8_t> gnuVersion(gnuVersionSize,0);
+    for(size_t j=0;j<gnuDefs.size();++j)gnuVersion[(gnuSymOffset+(uint32_t)j)*2]=2;
+    for(size_t i=0;i<nIF;++i)gnuVersion[dynIndex.at(spec.importFuncs[i])*2]=1;
+    for(size_t i=0;i<nIO;++i)gnuVersion[dynIndex.at(spec.importObjects[i])*2]=1;
+    // v0.23.51-dev: the two version tables, laid out little-endian as in writeSharedObject:
+    // BASE (VER_FLG_BASE, hash 0) at index 1, "aster" at index 2, verneed aux at 3 —
+    // the shape ld itself emits (checked against gcc).
+    std::vector<uint8_t> verDef(verDefSize,0),verNeed(verNeedSize,0);
+    auto pv32=[&](std::vector<uint8_t>& v,size_t o,uint32_t x){for(int k=0;k<4;++k)v[o+(size_t)k]=uint8_t(x>>(8*k));};
+    auto pv16=[&](std::vector<uint8_t>& v,size_t o,uint32_t x){v[o]=uint8_t(x);v[o+1]=uint8_t(x>>8);};
+    pv16(verDef,0,1);                 // vd_version = 1
+    pv16(verDef,2,1);                 // vd_flags = VER_FLG_BASE
+    pv16(verDef,4,1);                 // vd_ndx = 1
+    pv16(verDef,6,1);                 // vd_cnt = 1
+    pv32(verDef,8,0);                 // vd_hash = 0 (BASE versions hash to nothing)
+    pv32(verDef,12,20);               // vd_aux
+    pv32(verDef,16,28);               // vd_next = 28 (the "aster" Verdef follows)
+    pv32(verDef,20,verBaseStr);       // vda_name -> the library's BASE name
+    pv32(verDef,24,0);                // vda_next
+    pv16(verDef,28,1);                // vd_version = 1
+    pv16(verDef,30,0);                // vd_flags = 0
+    pv16(verDef,32,2);                // vd_ndx = 2
+    pv16(verDef,34,1);                // vd_cnt = 1
+    pv32(verDef,36,elfHash("aster")); // vd_hash
+    pv32(verDef,40,20);               // vd_aux
+    pv32(verDef,44,0);                // vd_next
+    pv32(verDef,48,verAsterStr);      // vda_name -> "aster"
+    pv32(verDef,52,0);                // vda_next
+    pv16(verNeed,0,1);                // vn_version = 1
+    pv16(verNeed,2,1);                // vn_cnt = 1
+    pv32(verNeed,4,verLibcStr);       // vn_file -> "libc.so.6"
+    pv32(verNeed,8,16);               // vn_aux
+    pv32(verNeed,12,0);               // vn_next
+    pv32(verNeed,16,elfHash("GLIBC_2.17"));  // vna_hash
+    pv16(verNeed,20,0);               // vna_flags
+    pv16(verNeed,22,3);               // vna_other = 3
+    pv32(verNeed,24,verGlibcStr);     // vna_name -> "GLIBC_2.17"
+    pv16(verNeed,28,0);               // vna_next
 
     // ---- DT_HASH over every dynamic symbol ---------------------------------------------------
     std::vector<uint32_t> hash((size_t)(2+uint64_t(nbucket)+uint64_t(nchain)),0u);
@@ -8582,6 +8972,10 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     // binary-searches, and .eh_frame is what it lands on.
     if(hasEhFrame){setSh(S_EHFRAME,1,0x2,ehFrameOff,ehFrameOff,ehFrameBytes.size(),0,0,4,0);
         setSh(S_EHFRAMEHDR,1,0x2,ehFrameHdrOff,ehFrameHdrOff,ehFrameHdr.size(),0,0,4,0);}
+    // v0.23.51-dev: the three GNU version sections (addr == file offset, loaded read-only).
+    setSh(S_GNUVERSION,0x6fffffff,0x2,gnuVersionOff,gnuVersionOff,gnuVersionSize,S_DYNSYM,0,2,2);
+    setSh(S_GNUVERSIOND,0x6ffffffd,0x2,verDefOff,verDefOff,verDefSize,S_DYNSTR,2,8,0);
+    setSh(S_GNUVERSIONR,0x6ffffffe,0x2,verNeedOff,verNeedOff,verNeedSize,S_DYNSTR,1,8,0);
 
     // ---- emit --------------------------------------------------------------------------------
     std::ofstream o(path,std::ios::binary);if(!o)throw Error("cannot create output: "+path);
@@ -8596,6 +8990,10 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     pad(gnuHashOff);o.write((const char*)gnuHash.data(),(std::streamsize)gnuHashSize);
     pad(relaDynOff);if(relaDynSize)o.write((const char*)relas.data(),(std::streamsize)relaDynSize);
     pad(relaPltOff);if(relaPltSize)o.write((const char*)relasPlt.data(),(std::streamsize)relaPltSize);
+    // v0.23.51-dev: the three GNU version sections, immediately after .rela.plt.
+    o.write((const char*)gnuVersion.data(),(std::streamsize)gnuVersionSize);
+    pad(verDefOff);o.write((const char*)verDef.data(),(std::streamsize)verDefSize);
+    pad(verNeedOff);o.write((const char*)verNeed.data(),(std::streamsize)verNeedSize);
     pad(rodataVaddr);if(rodataSize)o.write((const char*)spec.rodata.data(),(std::streamsize)spec.rodata.size());
     pad(dataVaddr);if(dataSize)o.write((const char*)spec.data.data(),(std::streamsize)spec.data.size());
     if(hasInit){pad(initArrVaddr);uint64_t v=textVaddr+uint64_t(spec.initOffset);for(int k=0;k<8;++k)o.put((char)uint8_t(v>>(k*8)));}
@@ -8648,6 +9046,11 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         return name;
     };
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
+        // v0.23.51-dev: thread-local storage is a static-image feature (one
+        // PT_TLS block per process). A shared object has no fixed load address
+        // and no single owner thread, so it cannot materialize TPIDR_EL0
+        // access; reject it at link time rather than producing a broken .so.
+        if(obj.tlsIndex>=0)throw Error(input+": thread-local storage (`tls`) is not supported in shared objects; use a plain `let` or pass the value explicitly");
         while(obj.dataAlign>1&&mergedData.size()%obj.dataAlign)mergedData.push_back(0);
         while(obj.bssAlign>1&&mergedBss%obj.bssAlign)++mergedBss;
         while(obj.rodataAlign>1&&mergedRodata.size()%obj.rodataAlign)mergedRodata.push_back(0);
@@ -8764,6 +9167,9 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     if(base%0x1000)throw Error("internal error: link base must be page aligned");
     if(inputs.empty())throw Error("link-obj requires at least one input object");
     std::vector<uint8_t> mergedText,mergedData,mergedRodata;uint64_t mergedBss=0;
+    // v0.23.51-dev: the thread-local block — one copy per thread, placed in a
+    // PT_TLS segment. Every input object's .tdata is concatenated in link order.
+    std::vector<uint8_t> mergedTls;uint64_t maxTlsAlign=16;
     // -g: each input object carries its own DWARF line program, so they are
     // concatenated (one unit per object) and every address in each is then
     // raised to that object's final text virtual address.
@@ -8781,7 +9187,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     std::vector<uint8_t> ehCie;
     struct EhEntry { std::string symbol; int64_t addend=0; uint64_t range=0; std::vector<uint8_t> cfi; size_t inputIndex=0; };
     std::vector<EhEntry> ehEntries;
-    struct Def{uint64_t off;uint32_t kind;uint64_t size;}; // 0 = .text, 1 = .data, 2 = .bss, 3 = .rodata
+    struct Def{uint64_t off;uint32_t kind;uint64_t size;}; // 0 = .text, 1 = .data, 2 = .bss, 3 = .rodata, 4 = .tls
     std::map<std::string,Def> definitions;
     std::vector<LinkPending> pending;uint64_t entryOffset=0;size_t startCount=0;uint64_t maxAlign=4;
     uint64_t maxDataAlign=4,maxBssAlign=4;
@@ -8797,6 +9203,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
             else if(obj.dataIndex>=0&&s.shndx==(uint16_t)obj.dataIndex){def.kind=1;def.off=dataBase+s.value;def.size=s.size;}
             else if(obj.bssIndex>=0&&s.shndx==(uint16_t)obj.bssIndex){def.kind=2;def.off=bssBase+s.value;def.size=s.size;}
             else if(obj.rodataIndex>=0&&s.shndx==(uint16_t)obj.rodataIndex){def.kind=3;def.off=rodataBase+s.value;def.size=s.size;}
+            else if(obj.tlsIndex>=0&&s.shndx==(uint16_t)obj.tlsIndex){def.kind=4;def.off=mergedTls.size()+s.value;def.size=s.size;}
             else throw Error(input+": global symbol in an unsupported section: "+s.name);
             std::string defName=s.name;
             if(defName==kInitSymbol){defName=initNameByInput.empty()?std::string(kInitSymbol):std::string(kInitSymbol)+"$"+std::to_string(initNameByInput.size());initNameByInput[i]=defName;}
@@ -8831,6 +9238,14 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         mergedBss+=obj.bssSize;
         if(obj.dataAlign>maxAlign)maxAlign=obj.dataAlign;
         if(obj.bssAlign>maxAlign)maxAlign=obj.bssAlign;
+        // v0.23.51-dev: append this object's thread-local block to the merged
+        // one, 16-byte aligned. The symbol loop above already offset each
+        // __aster_tls_<name> relative to the pre-append block base.
+        if(!obj.tdata.empty()){
+            while(mergedTls.size()%obj.tdataAlign)mergedTls.push_back(0);
+            if(obj.tdataAlign>maxTlsAlign)maxTlsAlign=obj.tdataAlign;
+            mergedTls.insert(mergedTls.end(),obj.tdata.begin(),obj.tdata.end());
+        }
         if(obj.dataAlign>maxDataAlign)maxDataAlign=obj.dataAlign;
         if(obj.bssAlign>maxBssAlign)maxBssAlign=obj.bssAlign;
         if(obj.rodataAlign>maxRodataAlign)maxRodataAlign=obj.rodataAlign;
@@ -8851,10 +9266,13 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     const uint64_t rodataFileOff=hasRodata?alignUp(0x1000+mergedText.size(),0x1000):0;
     const uint64_t rodataVaddr=hasRodata?base+rodataFileOff:0;
     const uint64_t afterRodata=hasRodata?rodataFileOff+mergedRodata.size():0x1000+mergedText.size();
-    uint64_t dataVaddr=0,bssVaddr=0;
-    if(!mergedData.empty()||mergedBss>0){uint64_t dataFileOff=alignUp(afterRodata,0x1000);dataVaddr=base+dataFileOff;bssVaddr=dataVaddr+mergedData.size();}
+    uint64_t dataVaddr=0,bssVaddr=0,tlsVaddr=0;
+    // v0.23.51-dev: a TLS block lives in the data PT_LOAD too, so the segment
+    // exists even when there is no ordinary .data/.bss — only thread-local globals.
+    if(!mergedData.empty()||mergedBss>0||!mergedTls.empty()){uint64_t dataFileOff=alignUp(afterRodata,0x1000);dataVaddr=base+dataFileOff;bssVaddr=dataVaddr+mergedData.size();}
+    if(!mergedTls.empty())tlsVaddr=alignUp(bssVaddr+mergedBss,maxTlsAlign);
     std::map<std::string,uint64_t> symbolVaddr;std::map<std::string,int> symbolKind;
-    for(const auto& d:definitions){uint64_t a=d.second.kind==0?textVaddr+d.second.off:d.second.kind==1?dataVaddr+d.second.off:d.second.kind==3?rodataVaddr+d.second.off:bssVaddr+d.second.off;symbolVaddr[d.first]=a;symbolKind[d.first]=int(d.second.kind);}
+    for(const auto& d:definitions){uint64_t a=d.second.kind==0?textVaddr+d.second.off:d.second.kind==1?dataVaddr+d.second.off:d.second.kind==3?rodataVaddr+d.second.off:d.second.kind==4?tlsVaddr+d.second.off:bssVaddr+d.second.off;symbolVaddr[d.first]=a;symbolKind[d.first]=int(d.second.kind);}
     if(hasInitEnd){symbolVaddr["__aster_init_end"]=textVaddr+initEndOff;symbolKind["__aster_init_end"]=0;}
     // A unit's low_pc is written against .text, so .text needs an address here
     // too — the section symbol the object used is not a definition the link
@@ -8863,7 +9281,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     // A static image (ET_EXEC at a fixed base, or a static PIE whose text is
     // PC-relative throughout) may address a function directly — this is what
     // makes `let fp: ptr = f; f(…)` work outside a shared object.
-    resolveRelocations(mergedText,pending,symbolVaddr,symbolKind,textVaddr,/*funcAddrDirect=*/true);
+    resolveRelocations(mergedText,pending,symbolVaddr,symbolKind,textVaddr,/*funcAddrDirect=*/true,tlsVaddr);
     // Now that the image has addresses, fill in the ones the line programs were
     // written with placeholders for. A unit's rows are relative to its own text,
     // so each patch site gets the virtual address that object's text starts at.
@@ -8917,7 +9335,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         outSymbols.push_back({d.first,int(d.second.kind),d.second.off,d.second.size});
         if(d.first=="_start")outSymbols.push_back({std::string("main"),int(d.second.kind),d.second.off,d.second.size});
     }
-    writeElfBytes(output,mergedText,entryOffset,mergedData,mergedBss,base,etype,outSymbols,maxDataAlign,maxBssAlign,mergedRodata,maxRodataAlign,mergedDebugLine,mergedDebugInfo,mergedDebugAbbrev,mergedEhFrame,ehFramePatches,ehFrameTable);
+    writeElfBytes(output,mergedText,entryOffset,mergedData,mergedBss,base,etype,outSymbols,maxDataAlign,maxBssAlign,mergedRodata,maxRodataAlign,mergedDebugLine,mergedDebugInfo,mergedDebugAbbrev,mergedEhFrame,ehFramePatches,ehFrameTable,mergedTls,tlsVaddr,maxTlsAlign);
     size_t callCount=0;for(const auto& r:pending)if(r.type==283)++callCount;
     std::cout<<"Aster v"<<kVersion<<": linked "<<inputs.size()<<" AArch64 ET_REL object(s), applied "<<pending.size()<<" relocation(s) ("<<callCount<<" CALL26) to ELF64 "<<(etype==2?"ET_EXEC":"ET_DYN")<<" ("<<mergedText.size()<<" text bytes, "<<mergedRodata.size()<<" rodata bytes, "<<mergedData.size()<<" data bytes, "<<mergedBss<<" bss bytes): "<<output<<"\n";
 }
@@ -11038,7 +11456,12 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
                              const std::string& soname, const std::vector<std::string>& needed,
                              bool boundsCheck=false,
                              bool debugLine=false, const std::string& sourcePath=""){
-    Parser p(src,false,dirNameOf(sourcePath));p.parse();auto funcs=compileProgram(p.functions,p.globals,true,false,boundsCheck,debugLine);
+    Parser p(src,false,dirNameOf(sourcePath));p.parse();
+    // v0.23.51-dev: thread-local storage needs a static image with a single
+    // owner thread and a fixed PT_TLS block, neither of which a shared object
+    // (build-so / build-apk) has. Reject it up front with a clear message.
+    for(const auto& g:p.globals)if(g.tls)throw Error("thread-local storage (`tls`) is not supported in shared objects: global '"+g.name+"'");
+    auto funcs=compileProgram(p.functions,p.globals,true,false,boundsCheck,debugLine);
     if(funcs.empty())throw Error("shared object must define at least one function");
     ObjectLayout L=layoutObject(funcs,p.globals);
     std::vector<uint8_t> text=instructionBytes(L.ins);

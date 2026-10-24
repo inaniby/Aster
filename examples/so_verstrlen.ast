@@ -1,0 +1,10 @@
+// v0.23.51-dev: the symbol-versioning example. A shared object that imports a
+// libc function and re-exports a wrapper: the import carries the libc.so.6
+// VERNEED (GLIBC_2.17) in .gnu.version, while the wrapper itself belongs to
+// this object's default "aster" VERDEF. Build it as a PIC object and link it
+// with `link-so --needed libc.so.6` so DT_NEEDED and the VERNEED file agree;
+// tests/symbol-versioning-checks.sh dlopens the result and calls the wrapper,
+// which is what proves the versioned import really binds.
+extern fn strlen(s: ptr) -> i32;
+fn len() -> i32 { return strlen("hello world"); }
+fn len_empty() -> i32 { return strlen(""); }
