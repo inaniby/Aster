@@ -106,7 +106,10 @@ grep -qF 'uint64_t textVaddr,bool funcAddrDirect=false' src/aster.cpp \
 if [ "$(grep -cF 'if(kind==0&&!funcAddrDirect)' src/aster.cpp)" -ne 2 ]; then
     echo 'FAIL: the two ADRP/ADD sites no longer guard on funcAddrDirect' >&2; exit 1
 fi
-grep -qF 'resolveRelocations(mergedText,pending,symbolVaddr,symbolKind,textVaddr,/*funcAddrDirect=*/true);' src/aster.cpp \
+# v0.23.51-dev: the TLS round added resolveRelocations' trailing tlsVaddr
+# parameter (the kRelTlsOff fill needs the PT_TLS base); the call site carries
+# it after the funcAddrDirect flag.
+grep -qF 'resolveRelocations(mergedText,pending,symbolVaddr,symbolKind,textVaddr,/*funcAddrDirect=*/true,tlsVaddr);' src/aster.cpp \
     || { echo 'FAIL: the static linker no longer permits a direct function address' >&2; exit 1; }
 # A direct call must keep its relocated BL — the indirect path is an addition,
 # not a replacement.
@@ -698,7 +701,7 @@ build_mutant m5 's/return indirect?Ty::I64:/return indirect?Ty::I32:/'
 must_diverge m5 call_wide_shift
 build_mutant m6 's/emit(loadGlobalT(reg,Ty::Ptr));/emit(movX(reg,kGlobalBase));/'
 must_diverge m6 call_global
-build_mutant m7 's/resolveRelocations(mergedText,pending,symbolVaddr,symbolKind,textVaddr,\/\*funcAddrDirect=\*\/true);/resolveRelocations(mergedText,pending,symbolVaddr,symbolKind,textVaddr);/'
+build_mutant m7 's/resolveRelocations(mergedText,pending,symbolVaddr,symbolKind,textVaddr,\/\*funcAddrDirect=\*\/true,tlsVaddr);/resolveRelocations(mergedText,pending,symbolVaddr,symbolKind,textVaddr);/'
 must_not_compile m7 call_local
 # The struct-argument refusal is a diagnostic layer, not the only guard:
 # codegen's struct-as-value rule refuses the same program with a worse
