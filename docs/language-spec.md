@@ -1369,13 +1369,17 @@ The contract is `bootstrap/LEXER-SPEC.md` (13 sections, frozen); this section
 is the summary a reader of the language needs, and where the two disagree the
 frozen document wins.
 
-**72 token kinds**, numbered in the exact order of `enum class TK` in this
-compiler: `End`(0), `Ident`(1), `Number`(2), `String`(3), the 22 keywords
-(`Fn`(4) … `False`(23), in the order `fn extern main let return if else while
-for break continue i32 ptr bool i64 u8 u16 u32 struct include true false`),
-then the operators and punctuation (`LParen`(26) … `Amp`(71)). The dump
+**77 token kinds**, numbered in the exact order of `enum class TK` in this
+compiler: `End`(0), `Ident`(1), `Number`(2), `String`(3), `Char`(4), the 26
+keywords (`Fn`(5) … `Include`(30), in the order `fn extern main let return if
+else while for break continue i32 ptr bool switch case default i64 u8 u16 u32
+u64 true false struct include`), then the operators and punctuation
+(`LParen`(31) … `Amp`(76)). The dump
 prints the *name*; the number is part of the contract both implementations
-key off.
+key off. (The count was 72 through v0.23.50-dev: the switch keywords, the
+`u64` type keyword and the `Char` token each joined `enum class TK` after the
+frozen LEXER-SPEC was written, and this section is what carries the current
+numbering — the frozen document's own table is the v0.23.43-dev one.)
 
 **Character classes** are the C locale's, as exact byte ranges — the source
 is required to be ASCII, and the classes must not drift with locale: space is
@@ -1392,7 +1396,10 @@ is after all trailing whitespace and comments — `"a\n"` ends with
 **The rules** are the host compiler's, deliberately: `//` to end-of-line and
 `/* … */` block comments that do not nest (`/*/` is unterminated — after
 consuming `/*` the scanner sits on `/`); identifiers `[A-Za-z_][A-Za-z0-9_]*`
-with the 22 keywords recognised by exact match; numbers decimal with one
+with the 26 keywords recognised by exact match (the frozen LEXER-SPEC.md
+lists 22 — the `switch` keywords and `u64` joined `enum class TK` later, and
+`bootstrap/gen_lexer_names.py` keeps the bootstrap tables equal to the host's);
+numbers decimal with one
 hexadecimal form (`0` alone followed by `x`/`X`, then at least one xdigit —
 the prefix stays in the token text, so `0x1F` is one `Number`); string
 literals decode the six escapes `\n \r \t \0 \\ \"` into a separate pool and
@@ -1445,7 +1452,7 @@ stage reads its own source, the library's and every example), the 1 MiB and
 
 One spelling note for anyone extending `bootstrap/aster.ast`: it is compiled
 by the host compiler, so its identifiers must avoid the names the host
-compiler already claims — the 22 keywords and the builtins
+compiler already claims — the 26 keywords and the builtins
 `read write openat close fstat mmap brk load_u8 store_u8 load_u16 store_u16
 load_i64 store_i64 load_ptr sizeof len`. `len` in particular is the
 element-count operator wherever it appears as a callee name, which is why the

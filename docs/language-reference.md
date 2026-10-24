@@ -1,9 +1,9 @@
 # Aster Language Reference
 
-**Applies to: v0.23.50-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.51-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
-source and then **checked against the v0.23.50-dev binary**. Where a rule says a
+source and then **checked against the v0.23.51-dev binary**. Where a rule says a
 construct is rejected, the message quoted is the compiler's own. Where Aster
 differs from C, it is called out explicitly — §9 records four such places, all
 of them closed in v0.23.27-dev and kept there because each row is still the
@@ -71,6 +71,12 @@ and so is `sizeof(len)` with `len` a variable, because the expression form
 re-enters the same rule. In practice: do not name a variable `len` or `sizeof`.
 The type names are likewise ordinary identifiers, which is what lets
 `sizeof(i32)` parse a type in `primary()` at all.
+
+**Contextual, not reserved** (since v0.23.51-dev): `tls`. It is an ordinary
+identifier everywhere except at the **start of a top-level declaration**, where
+`tls let name: type …;` declares a thread-local global (§8). `let tls: i32 = 1;`
+compiles — a variable named `tls` is fine; only the declaration prefix is
+special. The reserved-word count therefore stays **26**.
 
 ### Identifiers
 
@@ -632,6 +638,7 @@ program   ::= decl*
 decl      ::= 'include' string ';'
             | struct-decl
             | 'let' ident ':' type [ '[' length ']' ] [ '@align' '(' n ')' ] '=' expr ';'
+            | 'tls' [ 'extern' ] 'let' ident ':' type [ '[' length ']' ] '=' expr ';'
             | 'extern' 'let' ident ':' type [ '[' length ']' ] ';'
             | [ 'extern' ] 'fn' name '(' params ')' '->' type ( block | ';' )
 struct-decl ::= 'struct' ident '{' field (',' field)* '}'
@@ -651,6 +658,31 @@ name      ::= ident | 'main'
   A `ptr` field cannot be given a constant value
   (`global struct field 'S.p' cannot be initialized by a constant`).
 - Duplicate names → `duplicate global variable: g`.
+
+### Thread-local storage (`tls let`) (v0.23.51-dev)
+
+- `tls` is a **context keyword**: it is only special at the start of a
+  top-level declaration, so it stays a usable identifier everywhere else
+  (`let tls: i32 = 5;` is an ordinary local). The reserved-word count does
+  not move — still 26.
+- Same shapes as a plain global — scalars and arrays, the same types, the
+  same constant-initializer rules, the same length bounds — and `tls extern
+  let name: type;` declares one defined elsewhere, exactly like `extern let`.
+- Storage is a per-thread block. A static image (build-elf / build-pie /
+  link-obj / link-pie) carries it as one `PT_TLS` segment plus a `SHF_TLS`
+  `.tdata` section, and main's entry stub points `TPIDR_EL0` at the block's
+  base (`__aster_tls_block`), so a single-threaded program reads and writes
+  a `tls` global like any other global.
+- Accesses are local-exec: `MRS Xt,TPIDR_EL0` then `ADD Xt,Xt,#offset`,
+  where the offset is a link-time constant filled into the MOVZ/MOVK pair.
+  The block is one per process this round — there is no `.tbss` and no
+  multi-thread TLS yet.
+- A shared object rejects `tls` at link time:
+  `thread-local storage (`tls`) is not supported in shared objects; use a
+  plain `let` or pass the value explicitly` (link-so), or
+  `thread-local storage (`tls`) is not supported in shared objects: global
+  'x'` (build-so / build-apk). A `.so` has no fixed load address and no
+  single owner thread, so it cannot materialize a TPIDR_EL0 access.
 
 ### Functions
 
@@ -825,7 +857,7 @@ aster verify-apk <app.apk>
 | `-o PATH` | output file |
 | `--pic` | position-independent object (only with `build-obj`, for `link-so`) |
 | `--bounds-check` | lower every dynamic array index — into a global, a local, or an array parameter — into `CMP` + `B.LO` over `BRK #1`, so an out-of-range access raises SIGTRAP. **Off by default**; constant indexes are proved at compile time either way |
-| `-g`, `--debug-line` | emit `.debug_line` (v0.23.12-dev), `.debug_info` (v0.23.32-dev) **and `.eh_frame`** (v0.23.33-dev) — the line program and a compilation unit per object (a `DW_TAG_subprogram` per function, a `DW_TAG_variable` per global, local and parameter), plus a call-frame table: a CIE identical to `aarch64-linux-gnu-gcc`'s and one FDE per function (`CFA = SP + 8192` one instruction in; `r30` at `CFA − 8` for every returning body, not the entry), carried by `R_AARCH64_PREL32` in an object and raised through `link-obj`/`link-so`. **Off by default**; no section moves a byte of `.text` |
+| `-g`, `--debug-line` | emit `.debug_line` (v0.23.12-dev), `.debug_info` (v0.23.32-dev) **and `.eh_frame`** (v0.23.33-dev) — the line program and a compilation unit per object (a `DW_TAG_subprogram` per function, a `DW_TAG_variable` per global, local and parameter), plus a call-frame table: a CIE identical to `aarch64-linux-gnu-gcc`'s and one FDE per function (`CFA = SP + 8192` one instruction in; `r30` at `CFA − 8` for every returning body, not the entry), carried by `R_AARCH64_PREL32` in an object and raised through `link-obj`/`link-so`. **Off by default**; no section moves a byte of `.text`. Since v0.23.51-dev each subprogram's `DW_AT_type` names a `DW_TAG_subroutine_type` — its return type and parameter types, so a debugger reads `p foo` as the whole signature — and each DIE carries a `DW_AT_decl_file` (index 1, the one entry the line table emits) |
 | `--soname NAME` | `DT_SONAME` for `build-so` / `link-so` |
 | `--needed LIB` | add a `DT_NEEDED` entry |
 | `--embed-dir DIR` | where `@embed("…")` resolves relative paths |
@@ -835,6 +867,15 @@ Output is always AArch64 ELF64: `build-elf` an `ET_EXEC` at 0x400000,
 `build-pie` a static `ET_DYN` PIE with no interpreter, `build-obj` an
 `ET_REL` object, `build-so` an `ET_DYN` shared object with SysV `DT_HASH` and
 GNU `DT_GNU_HASH`.
+
+Both `.so` writers carry **symbol versioning** (v0.23.51-dev): a `DT_VERDEF`
+BASE entry (index 1, `VER_FLG_BASE` — the form glibc's loader skips, so an
+import's `versym` of 1 means "no version") plus a named `aster` version
+(index 2) for the exports, a `DT_VERNEED` against `GLIBC_2.17` (aux index 3)
+for libc imports, and the `.gnu.version` / `.gnu.version_d` / `.gnu.version_r`
+sections with the five `DT_VER*` tags. Exported symbols answer `name@@aster`
+under `readelf --version-info`, exactly as a `gcc -shared` link with a
+version script does.
 
 ## 12. The standard library (v0.23.42-dev)
 
@@ -901,7 +942,12 @@ and folded into `tests/parser-checks.sh`, which reuses the same lexer twin over
 the full lex→parse→dump pipeline. Two limits are specific to the bootstrap
 (fixed global arrays, no allocator): the source is capped at 1 MiB (E8) and
 the token stream at 65536 stored tokens, the `End` token excluded (E9). Full
-semantics: `docs/language-spec.md`'s *The bootstrap lexer stage*.
+semantics: `docs/language-spec.md`'s *The bootstrap lexer stage*. (The frozen
+document's §2 table is the v0.23.43-dev numbering — 72 kinds, 22 keywords. The
+host compiler's `enum class TK` has since grown to **77 kinds and 26
+keywords** (`Char`, the `switch` keywords, `u64`); `docs/language-spec.md`
+carries the current numbering, and the generator cross-check keeps both
+implementations' tables equal to the source.)
 
 ## 13b. The bootstrap parser stage (v0.23.44-dev)
 
