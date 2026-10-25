@@ -26,6 +26,13 @@
 # real hash and whose build-elf row is FAILED by design (it has no main — it is
 # a library, like so_verstrlen). Its three rows are the only new ones.
 #
+# Post-round refinement: so_tls_demo.ast now also carries two thread-local
+# ARRAYS (a mutable .tdata one exercised by `accsum`, a mutable .tbss one by
+# `zerosum`), closing the "scalar + array" TLS claim for the .so path. The
+# example's source changed, so its two real-hash rows (build-so,
+# build-obj --pic) moved; the build-elf row is still FAILED. Example count is
+# unchanged at 116, so the 348-row identity below still holds.
+#
 # The byte comparison is a line-by-line comparison of two files written in the
 # order `examples/*.ast` globs, so it is only reproducible if that order is
 # fixed: in an en_US.UTF-8 locale the shell sorts `condition.ast` before

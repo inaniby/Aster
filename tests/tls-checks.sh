@@ -38,7 +38,8 @@
 # Layers (the project 9-layer shape): strict build, source guards, parse
 # acceptance, static-image ELF structure, the two access models' relocations,
 # independent readers, the rejection matrix, qemu self-checks plus a dlopen
-# witness from three threads, and mutations that prove the suite can still fail.
+# witness from three threads (scalars AND tls arrays), and mutations that prove
+# the suite can still fail.
 set -eu
 cd "$(dirname "$0")/.."
 OUT=${OUT:-tmp-tls-checks}
@@ -245,7 +246,7 @@ for path in sys.argv[1:]:
     tls = [s for s in segs if s[0] == 7]
     assert len(tls) == 1, ('expected exactly one PT_TLS per .so', path)
     t = tls[0]
-    assert t[5] == 8 and t[6] == 0x14, ('PT_TLS must be 0x8/0x14', path, t[5], hex(t[6]))
+    assert t[5] == 16 and t[6] == 0x20, ('PT_TLS must be 0x10/0x20', path, t[5], hex(t[6]))
     shoff = struct.unpack_from('<Q', b, 40)[0]
     shentsize, shnum, shstrndx = struct.unpack_from('<HHH', b, 58)
     raw = [struct.unpack_from('<IIQQQQIIQQ', b, shoff + i*shentsize) for i in range(shnum)]
@@ -253,18 +254,19 @@ for path in sys.argv[1:]:
     def nm(s): return names[s[0]:names.index(b'\0', s[0])].decode()
     sec = {nm(s): s for s in raw}
     assert sec['.tdata'][1] == 1 and sec['.tdata'][2] == (0x1|0x2|0x400), ('.tdata', path)
-    assert sec['.tbss'][1] == 8 and sec['.tbss'][2] == (0x1|0x2|0x400), ('.tbss', path)
+    assert sec['.tbss'][1] == 8 and sec['.tbss'][2] == (0x1|0x2|0x400) and sec['.tbss'][5] == 16, ('.tbss', path)
     assert sec['.tbss'][3] == sec['.tdata'][3] + 0x10, ('.tbss must follow .tdata', path)
     rela = sec['.rela.dyn']
     tp = []
     for off in range(rela[4], rela[4]+rela[5], 24):
         r_off, r_info, r_add = struct.unpack_from('<QQq', b, off)
         if (r_info & 0xffffffff) == 1030: tp.append((r_info >> 32, r_add))
-    assert len(tp) == 3, ('expected one TPREL64 per thread-local', path, len(tp))
+    assert len(tp) == 5, ('expected one TPREL64 per thread-local (scalars + 2 arrays)', path, len(tp))
     assert all(sym == 0 for sym, _ in tp), ('TPREL64 must reference STN_UNDEF', path, tp)
-    # hits at 0, total at 4, spare at 0x10 (past .tdata, block-aligned).
-    assert sorted(a for _, a in tp) == [0, 4, 0x10], ('addends must be block offsets', path, tp)
-print('PASS: both .so writers carry 3 TPREL64 (sym 0, addends 0 / 4 / 0x10)')
+    # hits at 0, total at 4, acc (i32[2] base) at 8, spare at 0x10, zeros
+    # (i32[3] base) at 0x14 — each TPREL is the array's base, not per element.
+    assert sorted(a for _, a in tp) == [0, 4, 8, 0x10, 0x14], ('addends must be block offsets', path, tp)
+print('PASS: both .so writers carry 5 TPREL64 (sym 0, addends 0 / 4 / 8 / 0x10 / 0x14)')
 PY
 
 # ---------------------------------------------------------------- 6. independent readers
@@ -371,18 +373,23 @@ fi
 if [ "$can_run" = yes ] && command -v "$HOSTCC" >/dev/null 2>&1 \
    && echo 'int main(){return 0;}' | "$HOSTCC" -x c - -o "$OUT/probe" 2>/dev/null; then
     "$HOSTCC" -O2 -o "$OUT/so-tls-host" tests/so-tls-host.c -ldl -lpthread
-    # The dlopen trio: the main thread twice (33 then 36) and each of two
-    # pthreads getting a fresh block (33 then 36 again). A shared block would
-    # give the later threads 39, 42, ...
+    # The dlopen trio, three times over: a scalar (bump: 33 then 36), a mutable
+    # .tdata array (accsum: 13 then 16) and a mutable .tbss array (zerosum: 1
+    # then 2). Each runs on the main thread twice and on each of two pthreads;
+    # every one of those six calls must match, so the block is per-thread for
+    # scalars AND arrays alike. A shared block would make the later threads
+    # continue where the main thread left off (39, 42, ... or 19, 22, ...).
     for lib in "$OUT/demo.so" "$OUT/demo-linked.so"; do
-        set +e
-        out=$("$PWD/$RUNNER" "$OUT/so-tls-host" "$lib" bump 33 36 2>&1); rc=$?
-        set -e
-        [ "$rc" = 0 ] || fail "dlopen witness failed for $lib (rc=$rc): $out"
-        printf '%s\n' "$out" | grep -q 'PASS: every thread got its own block' \
-            || fail "the dlopen witness did not report per-thread state for $lib: $out"
+        for trip in "bump 33 36" "accsum 13 16" "zerosum 1 2"; do
+            set +e
+            out=$("$PWD/$RUNNER" "$OUT/so-tls-host" "$lib" $trip 2>&1); rc=$?
+            set -e
+            [ "$rc" = 0 ] || fail "dlopen witness failed for $lib $trip (rc=$rc): $out"
+            printf '%s\n' "$out" | grep -q 'PASS: every thread got its own block' \
+                || fail "the dlopen witness did not report per-thread state for $lib $trip: $out"
+        done
     done
-    printf '  %-40s %s\n' 'dlopen: main + 2 pthreads each see 33 then 36' 'ok'
+    printf '  %-40s %s\n' 'dlopen: scalars + tls arrays per-thread (3 syms x 2 libs)' 'ok'
 else
     printf '  %-40s %s\n' 'dlopen witness' 'skipped (no AArch64 host toolchain)'
 fi
@@ -430,7 +437,7 @@ adds = []
 for off in range(rela[4], rela[4]+rela[5], 24):
     r_off, r_info, r_add = struct.unpack_from('<QQq', b, off)
     if (r_info & 0xffffffff) == 1030: adds.append(r_add)
-sys.exit(0 if sorted(adds) == [0, 4, 0x10] else 1)
+sys.exit(0 if sorted(adds) == [0, 4, 8, 0x10, 0x14] else 1)
 PY
 then
     fail "the zeroed-addend mutation still wrote block offsets — layer 5 is not really checking it"
