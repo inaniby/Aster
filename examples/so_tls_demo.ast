@@ -1,0 +1,25 @@
+// v0.23.52-dev: thread-local storage in a shared object.
+//
+// The static examples carry `tls` as one PT_TLS block owned by the process; this
+// one carries it the way a dlopen'd module has to — a PT_TLS block every thread
+// gets its own copy of, reached through a GOT slot the loader fills with that
+// thread's offset (initial-exec, one R_AARCH64_TLS_TPREL64 per variable).
+//
+// `hits` starts at 10 and `total` at 20, so both live in .tdata; `spare` is
+// zero-initialized, so it lives in .tbss — the part of the block that owns no
+// file bytes and is zeroed per thread instead. `bump` is what a host calls: it
+// advances both counters and returns hits + total + spare, so a second thread
+// that calls it twice sees exactly what the first one did (33 then 36) rather
+// than inheriting another thread's state.
+//
+// Build it with `build-so` (or `build-obj --pic` + `link-so`); tests/tls-checks.sh
+// dlopens the result from two pthreads and a main thread, which is what proves
+// the block really is per-thread.
+tls let hits: i32 = 10;
+tls let total: i32 = 20;
+tls let spare: i32 = 0;
+fn bump() -> i32 {
+    hits = hits + 1;
+    total = total + 2;
+    return hits + total + spare;
+}

@@ -86,7 +86,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.51-dev"
+#define ASTER_VERSION_STRING "0.23.52-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -2402,6 +2402,12 @@ public:
             Global d;
             d.name=g.name;d.ty=g.ty;d.isArray=g.isArray;d.count=g.count;d.isBool=g.isBool;d.align=g.align;
             d.external=true;d.fromInclude=true;
+            // v0.23.52-dev: `tls` travels across an include too. It was the one
+            // field the copy dropped, so a `tls let` declared in an included
+            // file arrived here as an ordinary global and was laid out in
+            // .data/.bss — one copy shared by every thread — while the file
+            // that used it still addressed it through TPIDR_EL0.
+            d.tls=g.tls;
             globals.push_back(std::move(d));
         }
     }
@@ -2648,6 +2654,25 @@ static int comparisonCond(Expr::Kind k,bool unsignedCompare=false){
 }
 // Name of the GOT-style address slot that stands in for a global in shared-object output.
 std::string gatSymbol(const std::string& n){return "__aster_gat_"+n;}
+// v0.23.52-dev: the same slot for a thread-local global in shared-object output.
+// Initial-exec addresses a TLS variable as `TPIDR_EL0 + offset`, and in a shared
+// object the offset is not a link-time constant — the loader computes it once per
+// module — so it lives in a GOT slot filled by an R_AARCH64_TLS_TPREL64
+// relocation instead of in an immediate. The slot's name is deliberately its own:
+// a TLS slot must never be confused with the ordinary `__aster_gat_` one, which
+// holds an absolute address and is filled by R_AARCH64_RELATIVE.
+// Like gatSymbol above it names a local slot, not a dynamic symbol: the TPREL
+// relocation carries the block offset in its addend and references STN_UNDEF,
+// which is exactly what GNU ld emits for a local `static __thread` (checked
+// against `-fPIC -shared -ftls-model=initial-exec`), so nothing here reaches
+// .dynsym and the version/hash sections built in v0.23.51-dev stay untouched.
+// v0.23.52-dev: it is spelled as a GAT of the TLS symbol, not as a sibling of
+// it. A PIC object carries a thread-local under `__aster_tls_<name>`, so the
+// slot that names it is the ordinary `__aster_gat_` of that name — which keeps
+// the "strip `__aster_gat_`, then strip `__aster_tls_`" rule a link already
+// applies intact, and keeps a TLS slot out of the same namespace as a plain
+// `__aster_tlsgat_` name would have been ambiguous about.
+std::string gatTlsSymbol(const std::string& n){return gatSymbol("__aster_tls_"+n);}
 // v0.23.51-dev: R_AARCH64_TLSLE_ADD_TPREL_LO12-style fill for thread-local storage.
 // The codegen emits `MRS X16,TPIDR_EL0` then a `MOVZ X17,#0; MOVK X17,#0,LSL#16` pair;
 // this relocation writes the TLS offset (a link-time constant) into that pair, so the
@@ -2659,6 +2684,31 @@ std::string gatSymbol(const std::string& n){return "__aster_gat_"+n;}
 // R_AARCH64_COPY and would make readelf mislabel the entry and confuse any
 // external consumer. 4096 is safely beyond the AArch64 relocation range.
 static constexpr uint32_t kRelTlsOff=4096;
+// v0.23.52-dev: R_AARCH64_TLS_TPREL64. The real AArch64 TLS relocation, used in
+// shared-object output where the thread-local offset is a load-time value: it
+// asks the loader to store (module's TLS offset + addend) into a GOT slot, and
+// the code adds that to TPIDR_EL0. Unlike the local-exec pair above this is a
+// standard relocation type, so readelf names it and an external consumer can
+// read it. Emitting it here needs no .dynsym entry: GNU ld itself writes
+// TPREL64 against STN_UNDEF with the offset in r_addend whenever the thread-
+// local symbol is local (verified on this machine against
+// `aarch64-linux-gnu-gcc -fPIC -shared -ftls-model=initial-exec`).
+static constexpr uint32_t kRelTlsTprel=1030;
+// v0.23.52-dev: the alignment the thread-local block is placed on, and the
+// p_align PT_TLS reports. 16 is the value every writer here has used since
+// v0.23.51-dev and it is an over-alignment for every type Aster has (the widest
+// scalar is 8 bytes), which is the safe direction: a block aligned more
+// strictly than its contents needs is still correctly aligned. It is kept at 16
+// rather than tightened to the block's real requirement so that the static
+// images in the A/B baseline do not shift.
+static constexpr uint64_t kTlsBlockAlign=16;
+// v0.23.52-dev: no compile-time cap on a shared object's TLS block. The loader
+// allocates a dlopen'd module's block out of the process TLS area and reports
+// "cannot allocate memory in static TLS block" at load time if it genuinely
+// cannot; a fixed surplus constant would only reject modules that load fine on
+// modern glibc (2.35+ allocates the block dynamically, so even a megabyte
+// dlopens cleanly here), while still being unable to see the *host* process's
+// own TLS footprint at compile time. The runtime error is the honest contract.
 // v0.23.32-dev: one entry per parameter and per local slot, collected while a
 // function is compiled and carried out to the object's .debug_info. `slot` is
 // the whole address: every local is fbreg(slot*8) from the function's frame
@@ -3400,6 +3450,25 @@ struct Codegen {
         // stub, so this is a self-contained per-thread access with no GOT.
         if(tlsGlobals.count(name)){
             emit(0xd53bd050u);                                // MRS X16, TPIDR_EL0
+            // v0.23.52-dev: shared objects use the initial-exec model instead.
+            // A .so has no link-time TLS offset — the loader decides it when the
+            // module is loaded, and it differs per module — so the offset cannot
+            // be an immediate. It goes in a GOT slot that an
+            // R_AARCH64_TLS_TPREL64 relocation fills with (module TLS offset +
+            // block offset), and the code adds that to TPIDR_EL0. This is the
+            // sequence GNU ld emits for `-ftls-model=initial-exec`, read back off
+            // this machine: `mrs x1,tpidr_el0; adrp x0,…; ldr x0,[x0,#lo12];
+            // add x0,x1,x0` — the final ADD is what proves the slot holds an
+            // offset from TP and not an absolute address.
+            if(shared){
+                size_t adrp=code.size();emit(0x90000011u);   // ADRP X17, slot
+                relocations.push_back({uint64_t(adrp)*4,gatTlsSymbol(name),kRelAdrp});
+                size_t add=code.size();emit(0x91000231u);    // ADD  X17, X17, #:lo12:slot
+                relocations.push_back({uint64_t(add)*4,gatTlsSymbol(name),kRelAddLo});
+                emit(0xf9400231u);                            // LDR  X17, [X17]
+                emit(0x8b110210u);                            // ADD  X16, X16, X17
+                return;
+            }
             const size_t mz=code.size(); emit(0xd2800011u);    // MOVZ X17, #0
             emit(0xf2a00011u);                                // MOVK X17, #0, LSL #16
             emit(0x8b110210u);                                // ADD X16, X16, X17
@@ -5555,7 +5624,12 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
                    // virtual address. tlsVaddr is the base of the PT_TLS image;
                    // the .tdata section is placed at file offset (tlsVaddr-base)
                    // inside the data PT_LOAD so a single thread sees one copy.
-                   const std::vector<uint8_t>& tls={},uint64_t tlsVaddr=0,uint64_t tlsAlign=16){
+                   // v0.23.52-dev: tbssSize is the zero-initialized tail of the
+                   // block. It owns no file bytes — PT_TLS reports it as the
+                   // part of p_memsz that lies past p_filesz, and the kernel
+                   // zeroes it when it maps the PT_LOAD (there is no loader in
+                   // a static image to do it).
+                   const std::vector<uint8_t>& tls={},uint64_t tlsVaddr=0,uint64_t tlsAlign=16,uint64_t tbssSize=0){
     constexpr uint64_t off=0x1000;
     if(text.empty()||entryOffset>=text.size()||(entryOffset%4)!=0)throw Error("invalid entry offset for executable");
     if(base%0x1000)throw Error("internal error: executable base must be page aligned");
@@ -5566,7 +5640,11 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     const uint64_t afterRodata=hasRodataSection?rodataFileOff+rodata.size():textFileEnd;
     // v0.23.51-dev: the thread-local block rides in the data PT_LOAD, so the
     // segment exists even when there is no ordinary .data/.bss.
-    const bool hasTlsSection=!tls.empty();
+    // v0.23.52-dev: .tbss makes that true of a block with no initialized bytes
+    // at all, so the test is "any thread-local storage", not "any .tdata bytes".
+    const bool hasTdataSection=!tls.empty();
+    const bool hasTbssSection=tbssSize>0;
+    const bool hasTlsSection=hasTdataSection||hasTbssSection;
     const bool hasData=!data.empty()||bssSize>0||hasTlsSection;
     const bool hasDataSection=!data.empty();
     const bool hasBssSection=bssSize>0;
@@ -5576,6 +5654,12 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     // (tlsVaddr-base), so the loader maps one copy per thread.
     uint64_t tlsFileOff=0;
     if(hasTlsSection){tlsFileOff=tlsVaddr-base; if(tlsFileOff<dataFileOff)throw Error("internal error: thread-local block must follow .data in the file");}
+    // v0.23.52-dev: where the block ends, in file terms and in memory terms.
+    // They differ precisely by .tbss: it starts at the block-aligned end of
+    // .tdata and occupies address space only, so it moves memsz and not filesz.
+    const uint64_t tlsFileEnd=hasTdataSection?tlsFileOff+tls.size():tlsFileOff;
+    const uint64_t tbssFileOff=hasTbssSection?alignUp(tlsFileEnd,kTlsBlockAlign):tlsFileEnd;
+    const uint64_t tlsMemEnd=hasTbssSection?tbssFileOff+tbssSize:tlsFileEnd;
     // v0.23.32-dev: .debug_info and .debug_abbrev, numbered after .debug_line.
     const bool hasDebugLine=!debugLine.empty();
     const bool hasDebugInfo=!debugInfo.empty();
@@ -5589,11 +5673,12 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     const bool hasEhFrame=!ehFrame.empty();
     uint16_t idxEhFrame=0,idxEhFrameHdr=0;
     if(hasEhFrame){idxEhFrame=next++;idxEhFrameHdr=next++;}
-    uint16_t idxTdata=0;if(hasTlsSection)idxTdata=next++; // .tdata: the thread-local block
+    uint16_t idxTdata=0;if(hasTdataSection)idxTdata=next++; // .tdata: the initialized part of the thread-local block
+    uint16_t idxTbss=0;if(hasTbssSection)idxTbss=next++;    // v0.23.52-dev: .tbss, the zeroed tail (no file bytes)
     const uint16_t idxText=1,idxSym=next++,idxStr=next++,idxShstr=next++,shnum=next;
     const SymTable st=buildSymbolTable(symbols,base+off,dataVaddr,dataVaddr+data.size(),idxText,idxData,idxBss,rodataVaddr,idxRodata);
     const std::string shstr(std::string("\0.text",6)+(hasRodataSection?std::string("\0.rodata",8):std::string())
-        +(hasDataSection?std::string("\0.data",6):std::string())+(hasBssSection?std::string("\0.bss",5):std::string())+(hasTlsSection?std::string("\0.tdata",7):std::string())+std::string("\0.symtab",8)
+        +(hasDataSection?std::string("\0.data",6):std::string())+(hasBssSection?std::string("\0.bss",5):std::string())+(hasTdataSection?std::string("\0.tdata",7):std::string())+(hasTbssSection?std::string("\0.tbss",6):std::string())+std::string("\0.symtab",8)
         +std::string("\0.strtab",8)+std::string("\0.shstrtab",10)+(hasDebugLine?std::string("\0.debug_line",12):std::string())
         +(hasDebugInfo?std::string("\0.debug_abbrev",15)+std::string("\0.debug_info",13):std::string())
         +(hasEhFrame?std::string("\0.eh_frame",10)+std::string("\0.eh_frame_hdr",15):std::string())+std::string("\0",1));
@@ -5602,7 +5687,9 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     // PT_LOAD, so the debug sections and symbol table must start after it, not
     // just after .data/.bss. tailStart is the highest occupied file offset.
     const uint64_t dataEnd=hasData?dataFileOff+data.size():(hasRodataSection?rodataFileOff+rodata.size():textFileEnd);
-    const uint64_t tlsEnd=hasTlsSection?tlsFileOff+tls.size():0;
+    // .tbss owns no file bytes, so it does not push tailStart out — the file
+    // still ends where .tdata ends.
+    const uint64_t tlsEnd=hasTdataSection?tlsFileOff+tls.size():0;
     const uint64_t tailStart=std::max(dataEnd,tlsEnd);
     const uint64_t debugLineOff=hasDebugLine?alignUp(tailStart,8):0;
     const uint64_t afterDebugLine=hasDebugLine?debugLineOff+debugLine.size():tailStart;
@@ -5653,12 +5740,16 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     Phdr d{};if(hasData){d.type=1;d.flags=6;d.offset=dataFileOff;d.vaddr=dataVaddr;d.paddr=dataVaddr;
         // v0.23.51-dev: the thread-local block lives in this PT_LOAD, after the
         // (zero-filled) .bss gap, so its file size reaches the end of .tdata.
-        d.filesz=hasTlsSection?(tlsFileOff+tls.size()-dataFileOff):data.size();
-        d.memsz=hasTlsSection?(tlsFileOff+tls.size()-dataFileOff):data.size()+bssSize;
+        // v0.23.52-dev: .tbss is past that, and is the reason memsz now runs past
+        // filesz — the kernel zeroes that tail when it maps the segment, which is
+        // what makes a zero-initialized thread-local read as zero in a fresh
+        // thread. A static image has no loader to do it.
+        d.filesz=hasTlsSection?(tlsFileEnd-dataFileOff):data.size();
+        d.memsz=hasTlsSection?(tlsMemEnd-dataFileOff):data.size()+bssSize;
         d.align=0x1000;}
     // v0.23.51-dev: the thread-local storage segment. One copy is mapped per
     // thread; main's entry stub points TPIDR_EL0 at its base (tlsVaddr).
-    Phdr tl{};if(hasTlsSection){tl.type=7;tl.flags=6;tl.offset=tlsFileOff;tl.vaddr=tlsVaddr;tl.paddr=tlsVaddr;tl.filesz=tls.size();tl.memsz=tls.size();tl.align=tlsAlign;}
+    Phdr tl{};if(hasTlsSection){tl.type=7;tl.flags=6;tl.offset=tlsFileOff;tl.vaddr=tlsVaddr;tl.paddr=tlsVaddr;tl.filesz=tls.size();tl.memsz=tlsMemEnd-tlsFileOff;tl.align=tlsAlign;}
     // PT_LOAD covering both unwind sections, and PT_GNU_EH_FRAME naming the
     // header inside it — the pair an unwinder looks for.
     Phdr ef{};if(hasEhFrame){ef.type=1;ef.flags=4;ef.offset=ehFrameOff;ef.vaddr=ehFrameVaddr;ef.paddr=ehFrameVaddr;ef.filesz=ehFrameEnd-ehFrameOff;ef.memsz=ehFrameEnd-ehFrameOff;ef.align=0x1000;}
@@ -5668,7 +5759,8 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     if(hasRodataSection){Shdr& e=sh[idxRodata];e.name=nameAt(".rodata");e.type=1;e.flags=0x2;e.addr=rodataVaddr;e.offset=rodataFileOff;e.size=rodata.size();e.addralign=rodataAlign;}
     if(hasDataSection){Shdr& e=sh[idxData];e.name=nameAt(".data");e.type=1;e.flags=0x3;e.addr=dataVaddr;e.offset=dataFileOff;e.size=data.size();e.addralign=dataAlign;}
     if(hasBssSection){Shdr& e=sh[idxBss];e.name=nameAt(".bss");e.type=8;e.flags=0x3;e.addr=dataVaddr+data.size();e.offset=tailStart;e.size=bssSize;e.addralign=bssAlign;}
-    if(hasTlsSection){Shdr& e=sh[idxTdata];e.name=nameAt(".tdata");e.type=1;e.flags=0x2|0x400;e.addr=tlsVaddr;e.offset=tlsFileOff;e.size=tls.size();e.addralign=tlsAlign;}
+    if(hasTdataSection){Shdr& e=sh[idxTdata];e.name=nameAt(".tdata");e.type=1;e.flags=0x1|0x2|0x400;e.addr=tlsVaddr;e.offset=tlsFileOff;e.size=tls.size();e.addralign=tlsAlign;}
+    if(hasTbssSection){Shdr& e=sh[idxTbss];e.name=nameAt(".tbss");e.type=8;e.flags=0x1|0x2|0x400;e.addr=base+tbssFileOff;e.offset=tailStart;e.size=tbssSize;e.addralign=tlsAlign;}
     {Shdr& e=sh[idxSym];e.name=nameAt(".symtab");e.type=2;e.offset=symOff;e.size=symSize;e.link=idxStr;e.info=st.syms.size()>1?1u:0u;e.addralign=8;e.entsize=sizeof(Sym);}
     {Shdr& e=sh[idxStr];e.name=nameAt(".strtab");e.type=3;e.offset=strOff;e.size=st.strtab.size();e.addralign=1;}
     {Shdr& e=sh[idxShstr];e.name=nameAt(".shstrtab");e.type=3;e.offset=shstrOff;e.size=shstr.size();e.addralign=1;}
@@ -5690,7 +5782,7 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     o.write((const char*)text.data(),text.size());
     if(hasRodataSection){pad(rodataFileOff);o.write((const char*)rodata.data(),rodata.size());}
     if(hasData){pad(dataFileOff);if(!data.empty())o.write((const char*)data.data(),data.size());}
-    if(hasTlsSection){pad(tlsFileOff);o.write((const char*)tls.data(),tls.size());}
+    if(hasTdataSection){pad(tlsFileOff);o.write((const char*)tls.data(),tls.size());}
     if(hasDebugLine){pad(debugLineOff);o.write((const char*)debugLine.data(),debugLine.size());}
     if(hasDebugInfo){pad(debugAbbrevOff);o.write((const char*)debugAbbrev.data(),debugAbbrev.size());
         pad(debugInfoOff);o.write((const char*)debugInfo.data(),debugInfo.size());}
@@ -7135,10 +7227,26 @@ struct ObjectLayout {
     std::vector<uint8_t> rodata;
     uint64_t bssSize=0;
     // v0.23.51-dev: the thread-local block, one copy per thread. `tls` globals
-    // are laid out here (kind 4) and reached through TPIDR_EL0; the static image
-    // carries one block as a PT_TLS segment, so single-threaded programs see it.
-    std::vector<uint8_t> tls; uint64_t tlsSize=0;
-    struct GlobalDef { std::string name; int kind; uint64_t offset; uint64_t size; }; // kind 1 = .data, 2 = .bss, 3 = .rodata, 4 = .tls
+    // are laid out here and reached through TPIDR_EL0; the static image carries
+    // one block as a PT_TLS segment, so single-threaded programs see it.
+    // v0.23.52-dev: the block is two sections, not one. `tls` bytes that are not
+    // all zero go in .tdata (kind 4), which occupies file bytes; zero-initialized
+    // ones go in .tbss (kind 5), which occupies only address space — exactly the
+    // .data/.bss split, applied to the per-thread block. `tlsSize` is the size of
+    // the .tdata part alone; `tbssSize` is the size of the .tbss part, which
+    // starts at the block-aligned end of .tdata. PT_TLS reports filesz = tlsSize
+    // and memsz = the whole block, so a loader copies the initializers and zeroes
+    // the rest — the `p_memsz > p_filesz` contract, verified against libgomp.so
+    // (filesz 0x0, memsz 0x88) on this machine.
+    std::vector<uint8_t> tls; uint64_t tlsSize=0,tbssSize=0;
+    // v0.23.52-dev: where the .tbss part begins inside the block. A global's
+    // `offset` is its block offset either way — that is what both access models
+    // need — but a relocatable object stores a symbol's value relative to its
+    // own section (checked against gcc: `__thread int a = 7; __thread int b;`
+    // gives a at 0 in .tdata and b at 0 in .tbss), so emitting `.tbss` symbols
+    // is the one place that wants the section-relative form.
+    uint64_t tbssBase=0;
+    struct GlobalDef { std::string name; int kind; uint64_t offset; uint64_t size; }; // kind 1 = .data, 2 = .bss, 3 = .rodata, 4 = .tdata (TLS), 5 = .tbss (TLS)
     std::vector<GlobalDef> globals;
     // -g: (text byte offset, source line) pairs in ascending address order —
     // one per statement boundary, plus one per function prologue. Empty unless
@@ -7147,6 +7255,19 @@ struct ObjectLayout {
 };
 ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::vector<Global>& globals){
     ObjectLayout L;
+    // v0.23.52-dev: does this thread-local global carry any non-zero byte?
+    // `rawData` is the folded initializer of an array or a struct — it is what
+    // says `tls let a : [i32;3] = [1,2,3];` is initialized. Until this release
+    // only the scalar `init`/`wideInit` was consulted, so an initialized array
+    // was silently treated as all zeroes and landed in .bss-with-a-TPIDR_EL0
+    // address: the bytes the program wrote were lost.
+    auto tlsHasInit=[](const Global& g)->bool{
+        if(!g.rawData.empty())return true;
+        return tyIs64(g.ty)?g.wideInit!=0:g.init!=0;
+    };
+    // Collected in source order, then placed .tdata-first — see the comment at
+    // the `if (g.tls)` branch below for why the placement is not in source order.
+    std::vector<const Global*> tlsInit,tlsZero;
     for(const auto& f:funcs){uint64_t off=L.ins.size()*4;L.functions[f.name]={off,uint64_t(f.code.size())*4};
         // A row whose instruction index is past the end of the function would
         // point into the next one, so it is dropped rather than mis-attributed.
@@ -7159,22 +7280,15 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
         // its initializer bytes copied in when non-zero — and later reached by
         // `TPIDR_EL0 + offset` (local-exec), so the linker's 4-byte slot and
         // 4-byte alignment invariants still hold.
-        if(g.tls){
-            const uint64_t a=std::max<uint64_t>(g.align<4?4:g.align,tySize(g.ty));
-            const uint64_t esz=tySize(g.ty);
-            const uint64_t sz=g.isArray?uint64_t(g.count)*esz:esz;
-            const uint64_t slot=alignUp(sz,4);
-            const uint64_t off=alignUp(L.tlsSize,a);
-            L.tls.resize((size_t)(off+slot),0);
-            if(!(tyIs64(g.ty)?g.wideInit==0:g.init==0)){
-                const uint64_t v=tyIs64(g.ty)?g.wideInit:(uint64_t)(uint32_t)g.init;
-                const uint64_t n=g.isArray?g.count:1;
-                for(uint64_t i=0;i<n;++i)for(uint64_t b=0;b<esz;++b)L.tls[(size_t)(off+i*esz+b)]=uint8_t(v>>(8*b));
-            }
-            L.tlsSize=off+slot;
-            L.globals.push_back({g.name,4,off,slot});
-            continue;
-        }
+        // v0.23.52-dev: a thread-local global is collected rather than laid out
+        // here. Its block offset is no longer its source position: .tdata holds
+        // the initialized ones and .tbss the zero-initialized ones, .tbss starts
+        // where .tdata ends, and the two are placed in that order — which is
+        // what GNU ld does (`__thread int a = 7; __thread int b;` gives a at 0 in
+        // .tdata and b at 8 in .tbss, checked on this machine). Laying them out
+        // in source order would interleave the two sections and make a single
+        // pair of contiguous .tdata/.tbss sections impossible.
+        if(g.tls){ (tlsHasInit(g)?tlsInit:tlsZero).push_back(&g); continue; }
         // A global is aligned to at least its own storage width: an i64 sits on
         // an 8-byte boundary. For i32/bool/u8/u16 the width is <= the previous
         // floor of 4, so every pre-existing layout is unchanged.
@@ -7210,6 +7324,52 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
             const uint64_t n=g.isArray?g.count:1;
             for(uint64_t i=0;i<n;++i)for(uint64_t b=0;b<esz;++b)L.data.push_back(uint8_t(v>>(8*b)));
             L.data.resize((size_t)(off+slot),0);}
+    }
+    // ---- v0.23.52-dev: place the thread-local block ------------------------
+    if(!tlsInit.empty()||!tlsZero.empty()){
+        // The same 4-byte slot rule the ordinary globals follow: every object is
+        // a multiple of 4 bytes so the object linker's invariants hold, and the
+        // offset recorded is the block offset — which is what both access models
+        // need (local-exec adds it to TPIDR_EL0 directly; initial-exec asks the
+        // loader to add it to this module's TLS offset and store the sum in a
+        // GOT slot).
+        auto place=[&](const Global& g,int kind,uint64_t& cur){
+            const uint64_t a=std::max<uint64_t>(g.align<4?4:g.align,tySize(g.ty));
+            const uint64_t esz=tySize(g.ty);
+            const uint64_t sz=g.isArray?uint64_t(g.count)*esz:esz;
+            const uint64_t slot=alignUp(sz,4);
+            const uint64_t off=alignUp(cur,a);
+            if(kind==4){
+                L.tls.resize((size_t)(off+slot),0);
+                if(!g.rawData.empty()){
+                    // An array or struct initializer: its folded bytes, repeated
+                    // once per element exactly as .data does it.
+                    const uint64_t n=g.isArray?g.count:1;
+                    for(uint64_t i=0;i<n;++i){
+                        const uint64_t at=off+i*g.rawData.size();
+                        if(at+g.rawData.size()>off+slot)break;
+                        for(size_t b=0;b<g.rawData.size();++b)L.tls[(size_t)at+b]=g.rawData[b];
+                    }
+                } else {
+                    const uint64_t v=tyIs64(g.ty)?g.wideInit:(uint64_t)(uint32_t)g.init;
+                    const uint64_t n=g.isArray?g.count:1;
+                    for(uint64_t i=0;i<n;++i)for(uint64_t b=0;b<esz;++b)L.tls[(size_t)(off+i*esz+b)]=uint8_t(v>>(8*b));
+                }
+            }
+            cur=off+slot;
+            L.globals.push_back({g.name,kind,off,slot});
+        };
+        uint64_t cur=0;
+        for(const Global* g:tlsInit)place(*g,4,cur);
+        L.tlsSize=cur;
+        // .tbss begins at the first block-aligned offset past .tdata. The gap is
+        // part of the block — PT_TLS's memsz covers it — but it holds no bytes.
+        cur=alignUp(cur,kTlsBlockAlign);
+        const uint64_t tbssBase=cur;
+        L.tbssBase=tbssBase;
+        for(const Global* g:tlsZero)place(*g,5,cur);
+        L.tbssSize=cur-tbssBase;
+        L.tls.resize((size_t)L.tlsSize,0);
     }
     return L;
 }
@@ -7704,7 +7864,12 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     // has `tls` globals the object carries a .tdata section holding their
     // initializers and one __aster_tls_<name> symbol each, plus a __aster_tls_block
     // symbol at offset 0; a static image links them into a PT_TLS segment.
-    const bool hasTls=!L.tls.empty();
+    // v0.23.52-dev: the block is two sections. Zero-initialized thread-locals go
+    // in .tbss, which is SHT_NOBITS — it occupies no file bytes, only address
+    // space — the same split .data/.bss makes, applied to the per-thread block.
+    const bool hasTdata=!L.tls.empty();
+    const bool hasTbss=L.tbssSize>0;
+    const bool hasTls=hasTdata||hasTbss;
     const bool hasDebugLine=!debugLine.bytes.empty();
     // v0.23.32-dev: .debug_info and its table of abbreviations. The three new
     // sections are numbered after every section that existed before, and only
@@ -7722,34 +7887,41 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     const bool hasEhFrame=!ehFrame.bytes.empty();
     uint16_t idxEhFrame=0,idxRelaEhFrame=0;
     if(hasEhFrame){idxEhFrame=next++;idxRelaEhFrame=next++;}
-    uint16_t idxTdata=0;if(hasTls)idxTdata=next++; // .tdata: the thread-local block
+    uint16_t idxTdata=0;if(hasTdata)idxTdata=next++; // .tdata: the initialized part of the thread-local block
+    uint16_t idxTbss=0;if(hasTbss)idxTbss=next++;    // v0.23.52-dev: .tbss, the zero-initialized part (no file bytes)
     const uint16_t idxRela=next++,idxSym=next++,idxStr=next++,idxShstr=next++,shnum=next;
     std::vector<Rela> relas,relasDl,relasDi,relasEh;
     std::string strtab(1,'\0');
     std::map<std::string,uint32_t> nameOff;
     auto addName=[&](const std::string& n)->uint32_t{auto it=nameOff.find(n);if(it!=nameOff.end())return it->second;uint32_t o=(uint32_t)strtab.size();strtab+=n;strtab.push_back('\0');nameOff[n]=o;return o;};
     std::set<std::string> defined,needed;std::map<std::string,uint32_t> neededType; // 1 = OBJECT, 2 = FUNC
-    uint32_t nonTlsGlobals=0;for(const auto& g:L.globals)if(g.kind!=4)++nonTlsGlobals;
-    uint32_t tlsSymCount=0;for(const auto& g:L.globals)if(g.kind==4)++tlsSymCount;if(hasTls)++tlsSymCount;
+    uint32_t nonTlsGlobals=0;for(const auto& g:L.globals)if(g.kind!=4&&g.kind!=5)++nonTlsGlobals;
+    uint32_t tlsSymCount=0;for(const auto& g:L.globals)if(g.kind==4||g.kind==5)++tlsSymCount;if(hasTls)++tlsSymCount;
     for(const auto& f:funcs)defined.insert(nameOf(f.name));
     // v0.23.51-dev: thread-local globals are not defined under their bare name —
     // the codegen references __aster_tls_<name>, so that symbol (and the block
     // base) is what carries the definition. The bare name is left undefined here.
-    for(const auto& g:L.globals)if(g.kind!=4)defined.insert(g.name);
-    if(hasTls){defined.insert("__aster_tls_block");for(const auto& g:L.globals)if(g.kind==4)defined.insert("__aster_tls_"+g.name);}
+    for(const auto& g:L.globals)if(g.kind!=4&&g.kind!=5)defined.insert(g.name);
+    if(hasTls){defined.insert("__aster_tls_block");for(const auto& g:L.globals)if(g.kind==4||g.kind==5)defined.insert("__aster_tls_"+g.name);}
     for(const auto& f:funcs)for(const auto& r:f.relocs){std::string n=(r.type==Codegen::kRelCall26)?nameOf(r.symbol):r.symbol;needed.insert(n);neededType[n]=(r.type==Codegen::kRelCall26)?2u:1u;}
     std::vector<std::string> undefined;for(const auto& n:needed)if(!defined.count(n))undefined.push_back(n);
     const uint32_t dbgSym=((hasDebugLine||hasDebugInfo)?1u:0u);
     std::vector<Sym> syms(1+funcs.size()+nonTlsGlobals+undefined.size()+dbgSym+tlsSymCount);std::map<std::string,uint32_t> symIndex;
     for(size_t i=0;i<funcs.size();++i){const auto& f=funcs[i];Sym& s=syms[i+1];std::string en=nameOf(f.name);s.name=addName(en);s.info=0x12;s.shndx=idxText;s.value=L.functions.at(f.name).first;s.size=L.functions.at(f.name).second;symIndex[en]=(uint32_t)i+1;}
-    {uint32_t gi=0;for(size_t i=0;i<L.globals.size();++i){const auto& g=L.globals[i];if(g.kind==4)continue;Sym& s=syms[1+funcs.size()+gi];s.name=addName(g.name);s.info=0x11;s.shndx=g.kind==1?idxData:(g.kind==3?idxRodata:idxBss);s.value=g.offset;s.size=g.size;symIndex[g.name]=(uint32_t)(1+funcs.size()+gi);++gi;}}
+    {uint32_t gi=0;for(size_t i=0;i<L.globals.size();++i){const auto& g=L.globals[i];if(g.kind==4||g.kind==5)continue;Sym& s=syms[1+funcs.size()+gi];s.name=addName(g.name);s.info=0x11;s.shndx=g.kind==1?idxData:(g.kind==3?idxRodata:idxBss);s.value=g.offset;s.size=g.size;symIndex[g.name]=(uint32_t)(1+funcs.size()+gi);++gi;}}
     for(size_t i=0;i<undefined.size();++i){Sym& s=syms[1+funcs.size()+nonTlsGlobals+i];s.name=addName(undefined[i]);s.info=(neededType.at(undefined[i])==2)?0x12:0x11;s.shndx=0;symIndex[undefined[i]]=(uint32_t)(1+funcs.size()+nonTlsGlobals+i);}
-    // v0.23.51-dev: the thread-local symbols. Each __aster_tls_<name> lives in
-    // .tdata at its layout offset; __aster_tls_block marks the block's base.
+    // v0.23.51-dev: the thread-local symbols. Each __aster_tls_<name> lives at
+    // its block offset, in .tdata (kind 4) or in .tbss (kind 5);
+    // __aster_tls_block marks the block's base and spans the whole block, so a
+    // static image's PT_TLS gets its size from it.
     if(hasTls){
         uint32_t ti=0;
-        for(const auto& g:L.globals)if(g.kind==4){const uint32_t slot=1+funcs.size()+nonTlsGlobals+undefined.size()+dbgSym+ti;Sym& s=syms[slot];s.name=addName("__aster_tls_"+g.name);s.info=0x11;s.shndx=idxTdata;s.value=g.offset;s.size=g.size;symIndex["__aster_tls_"+g.name]=slot;++ti;}
-        {const uint32_t slot=1+funcs.size()+nonTlsGlobals+undefined.size()+dbgSym+ti;Sym& s=syms[slot];s.name=addName("__aster_tls_block");s.info=0x11;s.shndx=idxTdata;s.value=0;s.size=L.tlsSize;symIndex["__aster_tls_block"]=slot;}
+        for(const auto& g:L.globals)if(g.kind==4||g.kind==5){const uint32_t slot=1+funcs.size()+nonTlsGlobals+undefined.size()+dbgSym+ti;Sym& s=syms[slot];s.name=addName("__aster_tls_"+g.name);s.info=0x11;s.shndx=g.kind==4?idxTdata:idxTbss;s.value=g.kind==4?g.offset:g.offset-L.tbssBase;s.size=g.size;symIndex["__aster_tls_"+g.name]=slot;++ti;}
+        // The block marker: the address the entry stub points TPIDR_EL0 at. Its
+        // size is its own section's, not the whole block's — an object's symbol
+        // has to be in bounds of the section it names, and the block's extent
+        // travels in .tdata's and .tbss's own sizes instead.
+        {const uint32_t slot=1+funcs.size()+nonTlsGlobals+undefined.size()+dbgSym+ti;Sym& s=syms[slot];s.name=addName("__aster_tls_block");s.info=0x11;s.shndx=hasTdata?idxTdata:idxTbss;s.value=0;s.size=hasTdata?L.tlsSize:L.tbssSize;symIndex["__aster_tls_block"]=slot;}
     }
     // A local STT_SECTION symbol for .text, so .rela.debug_line and
     // .rela.debug_info can say "the address this unit's text starts at" the
@@ -7785,7 +7957,7 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
         Rela rel{};rel.offset=p.offset;rel.info=(uint64_t)it->second<<32|kRelPrel32;rel.addend=p.addend;relasEh.push_back(rel);
     }
     const std::string shstr(std::string("\0.text",6)+(hasData?std::string("\0.data",6):std::string())+(hasBss?std::string("\0.bss",5):std::string())+(hasRodata?std::string("\0.rodata",8):std::string())
-        +(hasTls?std::string("\0.tdata",7):std::string())
+        +(hasTdata?std::string("\0.tdata",7):std::string())+(hasTbss?std::string("\0.tbss",6):std::string())
         +(hasDebugLine?std::string("\0.debug_line",12)+std::string("\0.rela.debug_line",18):std::string())
         +(hasDebugInfo?std::string("\0.debug_abbrev",15)+std::string("\0.debug_info",13)+std::string("\0.rela.debug_info",18):std::string())
         +(hasEhFrame?std::string("\0.eh_frame",10)+std::string("\0.rela.eh_frame",16):std::string())
@@ -7799,9 +7971,11 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     const uint64_t rodataOff=hasRodata?alignUp((hasData?dataOff+L.data.size():textOff+textSize),1):0;
     const uint64_t afterLast=hasRodata?rodataOff+L.rodata.size():(hasData?dataOff+L.data.size():textOff+textSize);
     // v0.23.51-dev: the thread-local block sits right after the last ordinary
-    // section, 16-byte aligned; debug sections and the symbol table follow it.
-    const uint64_t tdataOff=hasTls?alignUp(afterLast,16):0,tdataSize=L.tls.size();
-    const uint64_t afterTls=hasTls?tdataOff+tdataSize:afterLast;
+    // section, block aligned; debug sections and the symbol table follow it.
+    // v0.23.52-dev: .tbss owns no file bytes at all — it begins where .tdata
+    // ends and its size lives only in the section header, exactly like .bss.
+    const uint64_t tdataOff=hasTdata?alignUp(afterLast,kTlsBlockAlign):0,tdataSize=L.tls.size();
+    const uint64_t afterTls=hasTdata?tdataOff+tdataSize:afterLast;
     const uint64_t debugLineOff=hasDebugLine?align8(afterTls):0,debugLineSize=debugLine.bytes.size();
     const uint64_t relaDebugLineOff=hasDebugLine?align8(debugLineOff+debugLineSize):0,relaDebugLineSize=relasDl.size()*sizeof(Rela);
     const uint64_t afterDebugLine=hasDebugLine?relaDebugLineOff+relaDebugLineSize:afterTls;
@@ -7820,7 +7994,12 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     if(hasData){sh[idxData].name=nameAt(".data");sh[idxData].type=1;sh[idxData].flags=0x3;sh[idxData].offset=dataOff;sh[idxData].size=L.data.size();sh[idxData].addralign=dataAlign;}
     if(hasBss){sh[idxBss].name=nameAt(".bss");sh[idxBss].type=8;sh[idxBss].flags=0x3;sh[idxBss].offset=hasRodata?rodataOff+L.rodata.size():(hasData?dataOff+L.data.size():textOff+textSize);sh[idxBss].size=L.bssSize;sh[idxBss].addralign=bssAlign;}
     if(hasRodata){sh[idxRodata].name=nameAt(".rodata");sh[idxRodata].type=1;sh[idxRodata].flags=0x2;sh[idxRodata].offset=rodataOff;sh[idxRodata].size=L.rodata.size();sh[idxRodata].addralign=1;}
-    if(hasTls){sh[idxTdata].name=nameAt(".tdata");sh[idxTdata].type=1;sh[idxTdata].flags=0x2|0x400;sh[idxTdata].offset=tdataOff;sh[idxTdata].size=tdataSize;sh[idxTdata].addralign=16;}
+    // WAT (SHF_WRITE|SHF_ALLOC|SHF_TLS) is the flag combination GNU ld gives
+    // both sections, read off this machine's own compiler output. .tdata is the
+    // initializer template for one thread's block and .tbss is the zeroed tail
+    // of it; neither is read-only in a running thread, which is what WRITE says.
+    if(hasTdata){sh[idxTdata].name=nameAt(".tdata");sh[idxTdata].type=1;sh[idxTdata].flags=0x1|0x2|0x400;sh[idxTdata].offset=tdataOff;sh[idxTdata].size=tdataSize;sh[idxTdata].addralign=kTlsBlockAlign;}
+    if(hasTbss){sh[idxTbss].name=nameAt(".tbss");sh[idxTbss].type=8;sh[idxTbss].flags=0x1|0x2|0x400;sh[idxTbss].offset=afterTls;sh[idxTbss].size=L.tbssSize;sh[idxTbss].addralign=kTlsBlockAlign;}
     if(hasDebugLine){
         sh[idxDebugLine].name=nameAt(".debug_line");sh[idxDebugLine].type=1;sh[idxDebugLine].offset=debugLineOff;sh[idxDebugLine].size=debugLineSize;sh[idxDebugLine].addralign=1;
         Shdr& e0=sh[idxRelaDebugLine];e0.name=nameAt(".rela.debug_line");e0.type=4;e0.offset=relaDebugLineOff;e0.size=relaDebugLineSize;e0.link=idxSym;e0.info=idxDebugLine;e0.addralign=8;e0.entsize=sizeof(Rela);
@@ -7843,7 +8022,7 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     pad(textOff);auto bytes=instructionBytes(L.ins);o.write((const char*)bytes.data(),bytes.size());
     if(hasData){pad(dataOff);o.write((const char*)L.data.data(),L.data.size());}
     if(hasRodata){pad(rodataOff);o.write((const char*)L.rodata.data(),L.rodata.size());}
-    if(hasTls){pad(tdataOff);o.write((const char*)L.tls.data(),tdataSize);}
+    if(hasTdata){pad(tdataOff);o.write((const char*)L.tls.data(),tdataSize);}
     if(hasDebugLine){pad(debugLineOff);o.write((const char*)debugLine.bytes.data(),debugLine.bytes.size());
         pad(relaDebugLineOff);if(!relasDl.empty())o.write((const char*)relasDl.data(),relaDebugLineSize);}
     if(hasDebugInfo){pad(debugAbbrevOff);o.write((const char*)debugInfo.abbrev.data(),debugAbbrevSize);
@@ -7879,7 +8058,11 @@ struct ParsedObject {
     std::vector<uint8_t> text; std::vector<uint8_t> data; std::vector<uint8_t> rodata; uint64_t bssSize=0;
     // v0.23.51-dev: the thread-local block, carried as a .tdata section (SHF_TLS)
     // so a static link places one copy per thread into a PT_TLS segment.
-    std::vector<uint8_t> tdata; uint64_t tdataAlign=16;
+    // v0.23.52-dev: split in two. .tdata holds the initialized bytes; .tbss
+    // (SHT_NOBITS) holds the zero-initialized tail and contributes no bytes to
+    // the object at all, only a size the link turns into the part of PT_TLS that
+    // is past p_filesz.
+    std::vector<uint8_t> tdata; uint64_t tdataAlign=16,tbssSize=0;
     std::vector<ParsedSymbol> symbols; std::vector<ParsedReloc> relocs;
     // -g: the object's DWARF line program and the offsets in it that hold an
     // address, which the linker rewrites to the final text virtual address.
@@ -7906,7 +8089,7 @@ struct ParsedObject {
         // here or the "unsupported allocated section" guard below rejects it.
         // v0.23.51-dev: .tdata carries the thread-local block, so it needs a
         // branch here too, before the "unsupported allocated section" guard.
-        ehFrameIndex=-1,relaEhFrameIndex=-1,tlsIndex=-1;
+        ehFrameIndex=-1,relaEhFrameIndex=-1,tlsIndex=-1,tbssIndex=-1;
 };
 ParsedObject parseObject(const std::string& input){
     auto fileText=readFile(input);std::vector<uint8_t> file(fileText.begin(),fileText.end());
@@ -7928,6 +8111,11 @@ ParsedObject parseObject(const std::string& input){
         else if(n==".bss"){if(result.bssIndex>=0)throw Error(input+": duplicate .bss section");result.bssIndex=(int)i;}
         else if(n==".rodata"){if(result.rodataIndex>=0)throw Error(input+": duplicate .rodata section");result.rodataIndex=(int)i;}
         else if(n==".tdata"){if(result.tlsIndex>=0)throw Error(input+": duplicate .tdata section");result.tlsIndex=(int)i;}
+        // v0.23.52-dev: .tbss, the zero-initialized half of the thread-local
+        // block. It needs its own branch here for the same reason .tdata does —
+        // it is SHF_ALLOC, so without one the "unsupported allocated section"
+        // guard at the bottom of this loop would reject it.
+        else if(n==".tbss"){if(result.tbssIndex>=0)throw Error(input+": duplicate .tbss section");result.tbssIndex=(int)i;}
         else if(n==".symtab"){if(symIndex>=0)throw Error(input+": duplicate .symtab section");symIndex=(int)i;}
         else if(n==".strtab"){if(strIndex>=0)throw Error(input+": duplicate .strtab section");strIndex=(int)i;}
         else if(n==".rela.text"){if(relaIndex>=0)throw Error(input+": duplicate .rela.text section");relaIndex=(int)i;}
@@ -7949,6 +8137,10 @@ ParsedObject parseObject(const std::string& input){
     if(result.rodataIndex>=0){const Shdr& r=sections[result.rodataIndex];if(r.type!=1||(r.flags&0x2)==0||(r.flags&0x1)!=0||r.size==0)throw Error(input+": unsupported .rodata section attributes");result.rodataAlign=r.addralign<1?1:r.addralign;result.rodata.assign(file.begin()+r.offset,file.begin()+r.offset+r.size);}
     if(result.bssIndex>=0){const Shdr& b=sections[result.bssIndex];if(b.type!=8||(b.flags&0x3)!=0x3||b.addralign<4||b.size%4||b.size==0)throw Error(input+": unsupported .bss section attributes");result.bssAlign=b.addralign;result.bssSize=b.size;}
     if(result.tlsIndex>=0){const Shdr& t=sections[result.tlsIndex];if(t.type!=1||(t.flags&0x2u)==0||(t.flags&0x400u)==0||t.addralign<4||t.size%4)throw Error(input+": unsupported .tdata section attributes");result.tdataAlign=t.addralign<4?16:t.addralign;result.tdata.assign(file.begin()+t.offset,file.begin()+t.offset+t.size);}
+    // v0.23.52-dev: .tbss must be SHT_NOBITS — that is the whole point of it, it
+    // is the part of the per-thread block that has no bytes to carry. An object
+    // whose .tbss were PROGBITS would be claiming file bytes for zeroes.
+    if(result.tbssIndex>=0){const Shdr& t=sections[result.tbssIndex];if(t.type!=8||(t.flags&0x2u)==0||(t.flags&0x400u)==0||t.addralign<4||t.size%4)throw Error(input+": unsupported .tbss section attributes");result.tbssSize=t.size;}
     checkedEnd(text.offset,text.size,file.size(),".text data");result.text.assign(file.begin()+text.offset,file.begin()+text.offset+text.size);
     std::vector<std::string> namesByIndex;
     for(uint64_t off=0;off<sym.size;off+=sizeof(Sym)){Sym s{};std::memcpy(&s,file.data()+sym.offset+off,sizeof s);std::string name=symbolName(file,str,s.name);namesByIndex.push_back(name);ParsedSymbol ps{name,s.value,s.size,s.info,s.shndx};result.symbols.push_back(ps);
@@ -7972,11 +8164,16 @@ ParsedObject parseObject(const std::string& input){
                 // image's PT_TLS block by the linker.
                 if((s.info&0x0f)!=1)throw Error(input+": global symbol in .tdata must be an object: "+name);
                 if(s.value%4||s.size==0||s.size%4||s.value>result.tdata.size()||s.size>result.tdata.size()-s.value)throw Error(input+": thread-local object must be defined and in bounds in .tdata: "+name);
+            } else if(result.tbssIndex>=0&&shndx==(uint16_t)result.tbssIndex){
+                // v0.23.52-dev: the zero-initialized half — kind 5. Same checks
+                // against .tbss's size, which is the only extent it has.
+                if((s.info&0x0f)!=1)throw Error(input+": global symbol in .tbss must be an object: "+name);
+                if(s.value%4||s.size==0||s.size%4||s.value>result.tbssSize||s.size>result.tbssSize-s.value)throw Error(input+": thread-local object must be defined and in bounds in .tbss: "+name);
             } else throw Error(input+": global symbol in an unsupported section: "+name);
         }
     }
     if(relaIndex>=0){const Shdr& rela=sections[relaIndex];if(rela.type!=4||rela.entsize!=sizeof(Rela)||rela.size%sizeof(Rela)||rela.link!=(uint32_t)symIndex||rela.info!=(uint32_t)result.textIndex)throw Error(input+": malformed .rela.text section");
-        for(uint64_t off=0;off<rela.size;off+=sizeof(Rela)){Rela r{};std::memcpy(&r,file.data()+rela.offset+off,sizeof r);uint32_t si=(uint32_t)(r.info>>32),type=(uint32_t)r.info;if(type!=283&&type!=275&&type!=277&&type!=kRelTlsOff)throw Error(input+": unsupported AArch64 relocation type "+std::to_string(type));if(si>=namesByIndex.size()||namesByIndex[si].empty())throw Error(input+": relocation references an invalid symbol");        if(r.offset+4>result.text.size()||r.offset%4)throw Error(input+": relocation offset is out of bounds or unaligned");result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}
+        for(uint64_t off=0;off<rela.size;off+=sizeof(Rela)){Rela r{};std::memcpy(&r,file.data()+rela.offset+off,sizeof r);uint32_t si=(uint32_t)(r.info>>32),type=(uint32_t)r.info;if(type!=283&&type!=275&&type!=277&&type!=kRelTlsOff&&type!=kRelTlsTprel)throw Error(input+": unsupported AArch64 relocation type "+std::to_string(type));if(si>=namesByIndex.size()||namesByIndex[si].empty())throw Error(input+": relocation references an invalid symbol");        if(r.offset+4>result.text.size()||r.offset%4)throw Error(input+": relocation offset is out of bounds or unaligned");result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}
     }
     if(result.debugLineIndex>=0){
         const Shdr& dl=sections[result.debugLineIndex];
@@ -8154,12 +8351,20 @@ struct SoExport { std::string name; uint64_t offset=0, size=0; };
 void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
                        const std::vector<LinkPending>& pending,const std::vector<SoExport>& exports,
                        const std::vector<uint8_t>& data,uint64_t bssSize,
-                       const std::vector<ObjectLayout::GlobalDef>& globals,int64_t initOffset=-1,
+                       const std::vector<ObjectLayout::GlobalDef>& globalsIn,int64_t initOffset=-1,
                        const DebugLineBlob& debugLine=DebugLineBlob{},
                        const DebugInfoBlob& debugInfo=DebugInfoBlob{},
                        const std::vector<uint8_t>& ehFrame={},
                        const std::vector<EhFrameBlob::Patch>& ehFramePatches={},
-                       const std::vector<std::pair<std::string,uint64_t>>& ehFrameFdes={}){
+                       const std::vector<std::pair<std::string,uint64_t>>& ehFrameFdes={},
+                       // v0.23.52-dev: the thread-local block. `tls` is the .tdata
+                       // bytes (may be empty when every thread-local is
+                       // zero-initialized); `tbssSize` is the .tbss tail, which
+                       // owns no file bytes at all. The per-variable block offsets
+                       // travel inside `globalsIn` as kind 4 (.tdata) and kind 5
+                       // (.tbss), the same ObjectLayout entries the object writer
+                       // emits, so nothing here has to recompute an offset.
+                       const std::vector<uint8_t>& tls={},uint64_t tbssSize=0){
     enum { S_NULL=0,S_TEXT=1,S_DYNSYM=2,S_DYNSTR=3,S_HASH=4,S_RELA=5,S_DATA=6,S_GOT=7,S_DYNAMIC=8,S_BSS=9,S_INIT_ARRAY=10,S_SYMTAB=11,S_STRTAB=12,S_SHSTR=13,S_NUM=14 };
     const bool hasInit=initOffset>=0;
     const bool hasDebugLine=!debugLine.bytes.empty();
@@ -8169,7 +8374,17 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     const bool hasEhFrame=!ehFrame.empty();
     if(text.empty())throw Error("cannot write a shared object without code");
     if(exports.empty())throw Error("shared object must export at least one function");
-    const size_t nglobals=globals.size();
+    // v0.23.52-dev: split the incoming globals into the ordinary ones and the
+    // thread-local ones. A thread-local must not get a .dynsym entry, a RELATIVE
+    // GOT slot or a place in .data/.bss — it is addressed through TPIDR_EL0 plus
+    // a loader-computed offset — so it is taken out of the list before anything
+    // below counts or indexes it. Doing the split here rather than at the call
+    // site means a caller cannot forget it.
+    std::vector<ObjectLayout::GlobalDef> globals;
+    std::vector<ObjectLayout::GlobalDef> tlsGlobals;
+    for(const auto& g:globalsIn){ if(g.kind==4||g.kind==5) tlsGlobals.push_back(g); else globals.push_back(g); }
+    const size_t nglobals=globals.size(),nTls=tlsGlobals.size();
+    const bool hasTdata=!tls.empty(),hasTbss=tbssSize>0,hasTls=hasTdata||hasTbss||nTls>0;
     // .dynstr / .dynsym: index 0 is the reserved null symbol, then one GLOBAL FUNC per export.
     std::string dynstr(1,'\0');
     std::vector<uint32_t> nameOff(exports.size());
@@ -8215,7 +8430,11 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t dynsymOff=alignUp(textEnd,8),dynsymSize=uint64_t(dynsym.size())*sizeof(Sym);
     const uint64_t dynstrOff=dynsymOff+dynsymSize,dynstrSize=dynstr.size();
     const uint64_t hashOff=alignUp(dynstrOff+dynstrSize,4),hashSize=uint64_t(hash.size())*4;
-    const uint64_t relaOff=alignUp(hashOff+hashSize,8),relaSize=uint64_t(nglobals+(hasInit?1u:0u))*sizeof(Rela);
+    // v0.23.52-dev: + one R_AARCH64_TLS_TPREL64 per thread-local. They go at the
+    // end of the table, never before the RELATIVE block, because DT_RELACOUNT
+    // below counts the run of RELATIVE entries the loader may skip in one go —
+    // interleaving a TPREL would make that count a lie.
+    const uint64_t relaOff=alignUp(hashOff+hashSize,8),relaSize=uint64_t(nglobals+nTls+(hasInit?1u:0u))*sizeof(Rela);
     uint64_t seg0End=relaOff+relaSize;
     // v0.23.51-dev: place the three GNU version sections right after .rela.dyn, inside the
     // read-only PT_LOAD, so no existing offset or vaddr moves. .gnu.version is one 2-byte
@@ -8232,18 +8451,28 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // PT_GNU_RELRO can protect them without accidentally making ordinary globals read-only.
     const uint64_t relroVaddr=alignUp(dataVaddr+dataSize,0x1000);
     const uint64_t initArrVaddr=relroVaddr,initArrSize=hasInit?8:0;
-    const uint64_t gotVaddr=initArrVaddr+initArrSize,gotSize=uint64_t(nglobals)*8;
+    // v0.23.52-dev: one more GOT slot per thread-local, after every ordinary
+    // one, so no existing slot moves. The slot holds the offset from TPIDR_EL0,
+    // not an address — the loader fills it and the code adds it to TPIDR_EL0.
+    const uint64_t gotVaddr=initArrVaddr+initArrSize,gotSize=uint64_t(nglobals+nTls)*8;
     const uint32_t kDynEntries=15u+(hasInit?2u:0u); // nine tags + five version tags + DT_NULL (DT_INIT_ARRAY adds two)
     const uint64_t dynOff=alignUp(gotVaddr+gotSize,8),dynSize=uint64_t(kDynEntries)*sizeof(Elf64Dyn);
     const uint64_t seg1End=dynOff+dynSize;
     const uint64_t relroEnd=alignUp(seg1End,0x1000);
     const uint64_t bssVaddr=relroEnd;
+    // v0.23.52-dev: the thread-local block, past .bss and outside RELRO. .tdata
+    // is SHF_WRITE — it is the initializer template for one thread's copy, and a
+    // running thread writes its own — and RELRO is a read-only region, so the
+    // block cannot go inside it. .tbss follows .tdata and owns no file bytes.
+    const uint64_t tdataVaddr=hasTls?alignUp(bssVaddr+bssSize,kTlsBlockAlign):0,tdataSize=tls.size();
+    const uint64_t tbssVaddr=alignUp(tdataVaddr+tdataSize,kTlsBlockAlign);
+    const uint64_t tlsMemEnd=hasTbss?tbssVaddr+tbssSize:(hasTls?tdataVaddr+tdataSize:bssVaddr+bssSize);
     const uint64_t textVaddr=textOff;
     // .dynsym values are virtual addresses, not .text-relative offsets.
     for(size_t i=0;i<exports.size();++i)dynsym[i+1].value=textVaddr+exports[i].offset;
     // .got slots and their R_AARCH64_RELATIVE relocations (addend = the global's link-time address).
     std::vector<uint8_t> got((size_t)gotSize,0);
-    std::vector<Rela> relas(nglobals+(hasInit?1u:0u));
+    std::vector<Rela> relas(nglobals+nTls+(hasInit?1u:0u));
     std::map<std::string,uint64_t> symbolVaddr;std::map<std::string,int> symbolKind;
     for(size_t i=0;i<nglobals;++i){
         const uint64_t v=globals[i].kind==1?dataVaddr+globals[i].offset:bssVaddr+globals[i].offset;
@@ -8253,6 +8482,21 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
         symbolVaddr[slot]=gotVaddr+uint64_t(i)*8;symbolKind[slot]=3;
     }
     if(hasInit){Rela& r=relas[nglobals];r.offset=initArrVaddr;r.info=1027;r.addend=(int64_t)(textVaddr+uint64_t(initOffset));}
+    // v0.23.52-dev: the thread-local GOT slots and their R_AARCH64_TLS_TPREL64
+    // relocations. The addend is the variable's offset inside the block — not an
+    // address — and the symbol index is 0 (STN_UNDEF). That is not a shortcut:
+    // it is the only form available, because a thread-local has no .dynsym entry
+    // here, and it is the form GNU ld itself emits for a local `static __thread`
+    // (read off this machine's own `-ftls-model=initial-exec` output). The loader
+    // computes (module TLS offset + addend) and stores it, and the code adds it
+    // to TPIDR_EL0. No TCB size enters into it: the loader's module offset
+    // already accounts for the thread pointer sitting at the TCB.
+    for(size_t i=0;i<nTls;++i){
+        const uint64_t slot=gotVaddr+(nglobals+i)*8;
+        Rela& r=relas[nglobals+(hasInit?1u:0u)+i];
+        r.offset=slot;r.info=kRelTlsTprel;r.addend=(int64_t)tlsGlobals[i].offset;
+        symbolVaddr[gatTlsSymbol(tlsGlobals[i].name)]=slot;symbolKind[gatTlsSymbol(tlsGlobals[i].name)]=3;
+    }
     for(const auto& e:exports){symbolVaddr[e.name]=textVaddr+e.offset;symbolKind[e.name]=0;}
     resolveRelocations(text,pending,symbolVaddr,symbolKind,textVaddr);
     // v0.23.51-dev: the two version tables. .gnu.version_d declares the BASE version
@@ -8319,6 +8563,9 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
                    nBss=addShName(".bss");
     const uint32_t nInitArray=hasInit?addShName(".init_array"):0;
     const uint32_t nGnuVersion=addShName(".gnu.version"),nGnuVersionD=addShName(".gnu.version_d"),nGnuVersionR=addShName(".gnu.version_r");
+    // v0.23.52-dev: the thread-local sections. Named last so no other name offset
+    // moves when they are absent.
+    const uint32_t nTdata=hasTdata?addShName(".tdata"):0,nTbss=hasTbss?addShName(".tbss"):0;
     const uint32_t nSymtab=addShName(".symtab"),nStrtab=addShName(".strtab"),nShstr=addShName(".shstrtab");
     const uint32_t nDebugLine=hasDebugLine?addShName(".debug_line"):0;
     const uint32_t nDebugAbbrev=hasDebugInfo?addShName(".debug_abbrev"):0;
@@ -8338,7 +8585,14 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // sections here that a running program reads — so unlike the debug sections
     // they ride in a PT_LOAD of their own.
     const int kEfIdx=kDiIdx+1,kEfhIdx=kDiIdx+2;
-    const int kShnumAll=kShnum+(hasDebugLine?1:0)+(hasDebugInfo?2:0)+(hasEhFrame?2:0)+3;
+    // v0.23.52-dev: .tdata and .tbss take the two slots just before the three GNU
+    // version sections. They are numbered from the end backwards for the same
+    // reason everything else here is: the sections that already existed keep the
+    // indices they had, and only shnum grows.
+    const int nTlsSec=(hasTdata?1:0)+(hasTbss?1:0);
+    const int kShnumAll=kShnum+(hasDebugLine?1:0)+(hasDebugInfo?2:0)+(hasEhFrame?2:0)+3+nTlsSec;
+    const int kVerBase=kShnumAll-3;
+    const int kTdataIdx=kVerBase-nTlsSec,kTbssIdx=hasTdata?kTdataIdx+1:kTdataIdx;
     // Source-level symbols: every exported function and every defined global/array. Synthetic
     // internal routines (__aster_init*) are already in .dynsym but are not source-level names.
     std::vector<OutSym> outSymbols;outSymbols.reserve(exports.size()+nglobals);
@@ -8347,7 +8601,9 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     const SymTable st=buildSymbolTable(outSymbols,textVaddr,dataVaddr,bssVaddr,S_TEXT,S_DATA,S_BSS);
     // .symtab/.strtab and the section-header table are appended past the end of the loaded
     // segments, so no PT_LOAD boundary, no tag and no loaded byte changes.
-    const uint64_t symOff=alignUp(relroEnd,8),symSize=uint64_t(st.syms.size())*sizeof(Sym);
+    // v0.23.52-dev: "past the end of the loaded segments" now includes .tdata,
+    // which is the last thing in the writable PT_LOAD that has file bytes.
+    const uint64_t symOff=alignUp(hasTdata?tdataVaddr+tdataSize:relroEnd,8),symSize=uint64_t(st.syms.size())*sizeof(Sym);
     const uint64_t strOff=symOff+symSize,shstrOff=strOff+st.strtab.size();
     const uint64_t shoff=alignUp(shstrOff+shstr.size(),8);
     // The line program is laid out past the section-header table, so nothing
@@ -8432,18 +8688,36 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
         setSh(kEfIdx,nEhFrame,1,0x2,ehFrameOff,ehFrameOff,ehFrameBytes.size(),0,0,4,0);
         setSh(kEfhIdx,nEhFrameHdr,1,0x2,ehFrameHdrOff,ehFrameHdrOff,ehFrameHdr.size(),0,0,4,0);
     }
+    // v0.23.52-dev: the thread-local sections. .tdata is PROGBITS and holds the
+    // initializer template; .tbss is NOBITS and holds nothing, its size living
+    // only in the part of PT_TLS that is past p_filesz. Both are WAT
+    // (SHF_WRITE|SHF_ALLOC|SHF_TLS) — the flags GNU ld gives them, read off this
+    // machine's own compiler — and .tbss's file offset is where the file ends,
+    // because it contributes no bytes.
+    if(hasTdata)setSh(kTdataIdx,nTdata,1,0x1|0x2|0x400,tdataVaddr,tdataVaddr,tdataSize,0,0,kTlsBlockAlign,0);
+    if(hasTbss) setSh(kTbssIdx,nTbss,8,0x1|0x2|0x400,tbssVaddr,tdataVaddr+tdataSize,tbssSize,0,0,kTlsBlockAlign,0);
     // v0.23.51-dev: the three GNU version sections. They ride in the read-only PT_LOAD
     // (addr == file offset, like every other loaded section here), so only the section
     // table grows. .gnu.version links to .dynsym; the other two link to .dynstr and carry
     // the single VERDEF / VERNEED count in sh_info.
-    setSh(kShnumAll-3,nGnuVersion,0x6fffffff,0x2,gnuVersionOff,gnuVersionOff,gnuVersionSize,S_DYNSYM,0,2,2);
-    setSh(kShnumAll-2,nGnuVersionD,0x6ffffffd,0x2,verDefOff,verDefOff,verDefSize,S_DYNSTR,2,8,0);
-    setSh(kShnumAll-1,nGnuVersionR,0x6ffffffe,0x2,verNeedOff,verNeedOff,verNeedSize,S_DYNSTR,1,8,0);
-    Ehdr h{};initIdent(h,3);h.entry=0;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)(4+(hasEhFrame?2:0));
+    setSh(kVerBase,nGnuVersion,0x6fffffff,0x2,gnuVersionOff,gnuVersionOff,gnuVersionSize,S_DYNSYM,0,2,2);
+    setSh(kVerBase+1,nGnuVersionD,0x6ffffffd,0x2,verDefOff,verDefOff,verDefSize,S_DYNSTR,2,8,0);
+    setSh(kVerBase+2,nGnuVersionR,0x6ffffffe,0x2,verNeedOff,verNeedOff,verNeedSize,S_DYNSTR,1,8,0);
+    Ehdr h{};initIdent(h,3);h.entry=0;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)(4+(hasEhFrame?2:0)+(hasTls?1:0));
     h.shoff=shoff;h.shentsize=sizeof(Shdr);h.shnum=kShnumAll;h.shstrndx=kShstrIdx;
     Phdr p0{};p0.type=1;p0.flags=5;p0.offset=0;p0.vaddr=0;p0.paddr=0;p0.filesz=seg0End;p0.memsz=seg0End;p0.align=0x1000;
-    Phdr p1{};p1.type=1;p1.flags=6;p1.offset=dataVaddr;p1.vaddr=dataVaddr;p1.paddr=dataVaddr;p1.filesz=relroEnd-dataVaddr;p1.memsz=(bssVaddr-dataVaddr)+bssSize;p1.align=0x1000;
+    // v0.23.52-dev: the writable PT_LOAD now reaches past .bss to the end of the
+    // thread-local block. .tdata extends its filesz; .tbss extends only its memsz,
+    // and the loader zeroes that tail for every thread it gives a block to.
+    Phdr p1{};p1.type=1;p1.flags=6;p1.offset=dataVaddr;p1.vaddr=dataVaddr;p1.paddr=dataVaddr;
+    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=tlsMemEnd-dataVaddr;p1.align=0x1000;
     Phdr p2{};p2.type=2;p2.flags=6;p2.offset=dynOff;p2.vaddr=dynOff;p2.paddr=dynOff;p2.filesz=dynSize;p2.memsz=dynSize;p2.align=8;
+    // v0.23.52-dev: PT_TLS. p_filesz is the part with bytes, p_memsz the whole
+    // block; the difference is .tbss, zeroed per thread. p_align is what the
+    // loader aligns each thread's copy to. It sits after PT_DYNAMIC in the
+    // program header table and before PT_GNU_RELRO, which describes a region
+    // this segment is deliberately outside.
+    Phdr ptls{};if(hasTls){ptls.type=7;ptls.flags=6;ptls.offset=tdataVaddr;ptls.vaddr=tdataVaddr;ptls.paddr=tdataVaddr;ptls.filesz=tdataSize;ptls.memsz=tlsMemEnd-tdataVaddr;ptls.align=kTlsBlockAlign;}
     Phdr p3{};p3.type=0x6474e552;p3.flags=4;p3.offset=relroVaddr;p3.vaddr=relroVaddr;p3.paddr=relroVaddr;p3.filesz=relroEnd-relroVaddr;p3.memsz=relroEnd-relroVaddr;p3.align=1;
     // The unwind table is read out of the running image, so it needs a PT_LOAD
     // of its own past every other segment — appending it to an existing one
@@ -8452,7 +8726,9 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     Phdr p5{};if(hasEhFrame){p5.type=0x6474e550u;p5.flags=4;p5.offset=ehFrameHdrOff;p5.vaddr=ehFrameHdrOff;p5.paddr=ehFrameHdrOff;p5.filesz=ehFrameHdr.size();p5.memsz=ehFrameHdr.size();p5.align=4;}
     std::ofstream o(path,std::ios::binary);if(!o)throw Error("cannot create output: "+path);
     auto pad=[&](uint64_t from,uint64_t to){if(to>from){std::vector<char> z((size_t)(to-from),0);o.write(z.data(),(std::streamsize)z.size());}};
-    o.write((char*)&h,sizeof h);o.write((char*)&p0,sizeof p0);o.write((char*)&p1,sizeof p1);o.write((char*)&p2,sizeof p2);o.write((char*)&p3,sizeof p3);
+    o.write((char*)&h,sizeof h);o.write((char*)&p0,sizeof p0);o.write((char*)&p1,sizeof p1);o.write((char*)&p2,sizeof p2);
+    if(hasTls)o.write((char*)&ptls,sizeof ptls);
+    o.write((char*)&p3,sizeof p3);
     if(hasEhFrame){o.write((char*)&p4,sizeof p4);o.write((char*)&p5,sizeof p5);}
     pad(sizeof(Ehdr)+h.phnum*sizeof(Phdr),textOff);
     o.write((const char*)text.data(),(std::streamsize)text.size());
@@ -8469,6 +8745,10 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     if(hasInit){pad(dataVaddr+dataSize,initArrVaddr);std::vector<uint8_t> ia(8,0);for(int k=0;k<8;++k)ia[k]=uint8_t((textVaddr+uint64_t(initOffset))>>(k*8));o.write((const char*)ia.data(),8);}
     pad((uint64_t)o.tellp(),gotVaddr);o.write((const char*)got.data(),(std::streamsize)gotSize);
     pad(gotVaddr+gotSize,dynOff);o.write((const char*)dyn.data(),(std::streamsize)dynSize);
+    // v0.23.52-dev: .tdata, after .bss and therefore after RELRO — and after
+    // .dynamic in the file, so the offsets keep ascending. .tbss writes nothing;
+    // every byte of it is zero by definition.
+    if(hasTdata){pad((uint64_t)o.tellp(),tdataVaddr);o.write((const char*)tls.data(),(std::streamsize)tdataSize);}
     pad((uint64_t)o.tellp(),symOff);o.write((const char*)st.syms.data(),(std::streamsize)symSize);
     o.write(st.strtab.data(),(std::streamsize)st.strtab.size());o.write(shstr.data(),(std::streamsize)shstr.size());
     pad((uint64_t)o.tellp(),shoff);o.write((const char*)sh.data(),(std::streamsize)(kShnumAll*sizeof(Shdr)));
@@ -8553,6 +8833,11 @@ struct SoDynSpec {
     std::vector<std::string> funcAddrRefs;         // defined functions referenced by address (callback tables)
     std::vector<uint8_t> data;
     std::vector<uint8_t> rodata;
+    // v0.23.52-dev: the thread-local block. `tls` is its .tdata bytes (empty when
+    // every thread-local is zero-initialized); `tbssSize` is the .tbss tail, which
+    // owns no file bytes. Which globals are thread-local travels in `globals` as
+    // kind 4 (.tdata) / kind 5 (.tbss) and the writer separates them out.
+    std::vector<uint8_t> tls; uint64_t tbssSize=0;
     // -g: already-relocated .debug_line bytes for the whole image.
     std::vector<uint8_t> debugLine;
     // v0.23.32-dev: .debug_info, its abbreviation table, and the addresses in
@@ -8575,7 +8860,17 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
                           const std::vector<LinkPending>& pendingIn,const SoDynSpec& spec){
     if(text.empty())throw Error("cannot write a shared object without code");
     if(spec.exports.empty())throw Error("shared object must export at least one function");
-    const size_t nExp=spec.exports.size(),nDef=spec.globals.size();
+    // v0.23.52-dev: split the incoming globals the same way the SysV writer does.
+    // A thread-local must not reach .dynsym (it has no version index, no hash
+    // bucket and no address the loader can bind) — it is reached through TPIDR_EL0
+    // plus a loader-computed offset — so it leaves the list before anything below
+    // counts, hashes or indexes it.
+    std::vector<ObjectLayout::GlobalDef> globals;
+    std::vector<ObjectLayout::GlobalDef> tlsGlobals;
+    for(const auto& g:spec.globals){ if(g.kind==4||g.kind==5) tlsGlobals.push_back(g); else globals.push_back(g); }
+    const size_t nTls=tlsGlobals.size();
+    const bool hasTdata=!spec.tls.empty(),hasTbss=spec.tbssSize>0,hasTls=hasTdata||hasTbss||nTls>0;
+    const size_t nExp=spec.exports.size(),nDef=globals.size();
     const size_t nIF=spec.importFuncs.size(),nIO=spec.importObjects.size(),nFunc=spec.funcAddrRefs.size();
     const bool hasDebugLine=!spec.debugLine.empty();
     const uint32_t gnuSymOffset=1, gnuBloomShift=6;
@@ -8585,7 +8880,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const uint32_t gnuBloomCount=[&](){uint32_t n=1;while(n<std::max<size_t>(1,(nExp+nDef+7)/8))n<<=1;return n;}();
     std::vector<GnuDef> gnuDefs; gnuDefs.reserve(nExp+nDef);
     for(size_t i=0;i<nExp;++i){uint32_t h=gnuHashName(spec.exports[i].name.c_str());gnuDefs.push_back({false,i,h,h%gnuBucketCount,spec.exports[i].name});}
-    for(size_t i=0;i<nDef;++i){uint32_t h=gnuHashName(spec.globals[i].name.c_str());gnuDefs.push_back({true,i,h,h%gnuBucketCount,spec.globals[i].name});}
+    for(size_t i=0;i<nDef;++i){uint32_t h=gnuHashName(globals[i].name.c_str());gnuDefs.push_back({true,i,h,h%gnuBucketCount,globals[i].name});}
     std::stable_sort(gnuDefs.begin(),gnuDefs.end(),[](const GnuDef& a,const GnuDef& b){return a.bucket<b.bucket;});
     std::map<std::string,uint32_t> dynIndex;
     for(size_t i=0;i<gnuDefs.size();++i)dynIndex[gnuDefs[i].name]=gnuSymOffset+(uint32_t)i;
@@ -8602,7 +8897,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     auto addDynStr=[&](const std::string& s)->uint32_t{uint32_t o=(uint32_t)dynstr.size();dynstr+=s;dynstr.push_back('\0');return o;};
     std::vector<uint32_t> expName(nExp),glName(nDef),ifName(nIF),ioName(nIO);
     for(size_t i=0;i<nExp;++i)expName[i]=addDynStr(spec.exports[i].name);
-    for(size_t i=0;i<nDef;++i)glName[i]=addDynStr(spec.globals[i].name);
+    for(size_t i=0;i<nDef;++i)glName[i]=addDynStr(globals[i].name);
     for(size_t i=0;i<nIF;++i)ifName[i]=addDynStr(spec.importFuncs[i]);
     for(size_t i=0;i<nIO;++i)ioName[i]=addDynStr(spec.importObjects[i]);
     const uint32_t sonameOff=spec.soname.empty()?0:addDynStr(spec.soname);
@@ -8645,6 +8940,9 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const uint16_t S_EHFRAMEHDR=hasEhFrame?addSec(".eh_frame_hdr"):0;
     // v0.23.51-dev: the three GNU version sections, appended so no earlier index moves.
     const uint16_t S_GNUVERSION=addSec(".gnu.version"),S_GNUVERSIOND=addSec(".gnu.version_d"),S_GNUVERSIONR=addSec(".gnu.version_r");
+    // v0.23.52-dev: the thread-local sections, after them for the same reason —
+    // every index above keeps the value it had.
+    const uint16_t S_TDATA=hasTdata?addSec(".tdata"):0,S_TBSS=hasTbss?addSec(".tbss"):0;
     const uint16_t shnum=(uint16_t)shnames.size();
     std::string shstr(1,'\0');std::vector<uint32_t> shNameOff(shnum,0);
     for(uint16_t i=1;i<shnum;++i){shNameOff[i]=(uint32_t)shstr.size();shstr+=shnames[i];shstr.push_back('\0');}
@@ -8661,7 +8959,10 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t gnuHashOff=alignUp(hashOff+hashSize,8);
     const uint64_t gnuHashSize=16+8*uint64_t(gnuBloomCount)+4*uint64_t(gnuBucketCount)+4*uint64_t(gnuDefs.size());
     const uint64_t nRel=1+nDef+nFunc+(hasInit?1u:0u);  // R_AARCH64_RELATIVE entries come first
-    const uint64_t nRelaDyn=nRel+nIO;                      // + one R_AARCH64_GLOB_DAT per data import
+    // v0.23.52-dev: + one R_AARCH64_TLS_TPREL64 per thread-local. They go last:
+    // DT_RELACOUNT below counts the run of RELATIVE entries the loader may apply
+    // in one pass, and that only holds while nothing else is interleaved with it.
+    const uint64_t nRelaDyn=nRel+nIO+nTls;             // + one R_AARCH64_GLOB_DAT per data import
     const uint64_t relaDynOff=alignUp(gnuHashOff+gnuHashSize,8),relaDynSize=nRelaDyn*sizeof(Rela);
     const uint64_t relaPltOff=alignUp(relaDynOff+relaDynSize,8),relaPltSize=uint64_t(nIF)*sizeof(Rela);
     uint64_t seg0End=relaPltOff+relaPltSize;
@@ -8685,7 +8986,10 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t relroVaddr=alignUp(dataVaddr+dataSize,0x1000);
     const uint64_t initArrVaddr=relroVaddr,initArrSize=hasInit?8:0;
     const uint64_t gotPltVaddr=initArrVaddr+initArrSize,gotPltSize=8*(3+nIF);
-    const uint64_t gotVaddr=gotPltVaddr+gotPltSize,gotSize=8*(nDef+nIO+nFunc);
+    // v0.23.52-dev: one more GOT slot per thread-local, after every other kind,
+    // so no existing slot moves. The slot holds an offset from TPIDR_EL0, not an
+    // address, and the loader is what fills it.
+    const uint64_t gotVaddr=gotPltVaddr+gotPltSize,gotSize=8*(nDef+nIO+nFunc+nTls);
     const uint64_t dynOff=alignUp(gotVaddr+gotSize,8);
 
     // ---- .dynamic ----------------------------------------------------------------------------
@@ -8721,6 +9025,12 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t seg1End=dynOff+dynSize;
     const uint64_t relroEnd=alignUp(seg1End,0x1000);
     const uint64_t bssVaddr=relroEnd;
+    // v0.23.52-dev: the thread-local block, past .bss and outside RELRO. .tdata is
+    // SHF_WRITE — a running thread writes its own copy — and RELRO is read-only,
+    // so the block cannot go inside it. .tbss follows and owns no file bytes.
+    const uint64_t tdataVaddr=hasTls?alignUp(bssVaddr+spec.bssSize,kTlsBlockAlign):0,tdataSize=spec.tls.size();
+    const uint64_t tbssVaddr=alignUp(tdataVaddr+tdataSize,kTlsBlockAlign);
+    const uint64_t tlsMemEnd=hasTbss?tbssVaddr+spec.tbssSize:(hasTls?tdataVaddr+tdataSize:bssVaddr+spec.bssSize);
 
     // ---- .got.plt / .got and the dynamic relocations -----------------------------------------
     std::vector<uint8_t> gotPlt((size_t)gotPltSize,0),got((size_t)gotSize,0);
@@ -8730,10 +9040,10 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     {Rela r{};r.offset=gotPltVaddr;r.info=1027;r.addend=(int64_t)dynOff;relas.push_back(r);}
     std::map<std::string,uint64_t> gatAddr;
     for(size_t i=0;i<nDef;++i){
-        const uint64_t v=spec.globals[i].kind==1?dataVaddr+spec.globals[i].offset:(spec.globals[i].kind==3?rodataVaddr+spec.globals[i].offset:bssVaddr+spec.globals[i].offset);
+        const uint64_t v=globals[i].kind==1?dataVaddr+globals[i].offset:(globals[i].kind==3?rodataVaddr+globals[i].offset:bssVaddr+globals[i].offset);
         put64(got,8*i,v);
         Rela r{};r.offset=gotVaddr+8*i;r.info=1027;r.addend=(int64_t)v;relas.push_back(r);
-        gatAddr[gatSymbol(spec.globals[i].name)]=gotVaddr+8*i;
+        gatAddr[gatSymbol(globals[i].name)]=gotVaddr+8*i;
     }
     if(hasInit){Rela r{};r.offset=initArrVaddr;r.info=1027;r.addend=(int64_t)(textVaddr+uint64_t(spec.initOffset));relas.push_back(r);}
     // Functions referenced by address (e.g. NativeActivity callback tables) each get a GOT slot
@@ -8756,6 +9066,19 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
         Rela r{};r.offset=slot;r.info=((uint64_t)dynIndex.at(spec.importObjects[i])<<32)|1025;r.addend=0;relas.push_back(r); // R_AARCH64_GLOB_DAT
         gatAddr[gatSymbol(spec.importObjects[i])]=slot;
     }
+    // v0.23.52-dev: the thread-local GOT slots, appended past every GLOB_DAT so
+    // the RELATIVE run the loader fast-paths stays unbroken. The addend is the
+    // variable's block offset and the symbol index is 0 (STN_UNDEF): a
+    // thread-local has no .dynsym entry here, and this is the form GNU ld emits
+    // for a local `static __thread` under `-ftls-model=initial-exec` — read off
+    // this machine's own compiler. The loader stores (its module TLS offset +
+    // addend); the code adds that to TPIDR_EL0. No TCB size is added: the
+    // loader's module offset already accounts for TP sitting at the TCB.
+    for(size_t i=0;i<nTls;++i){
+        const uint64_t slot=gotVaddr+8*(nDef+nIO+nFunc+i);
+        Rela r{};r.offset=slot;r.info=kRelTlsTprel;r.addend=(int64_t)tlsGlobals[i].offset;relas.push_back(r);
+        gatAddr[gatTlsSymbol(tlsGlobals[i].name)]=slot;
+    }
     std::vector<uint8_t> plt((size_t)pltSize,0);
     for(size_t i=0;i<nIF;++i){
         const uint64_t slot=gotPltVaddr+8*(3+i);
@@ -8774,7 +9097,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     std::vector<Sym> dynsym((size_t)nsym);
     for(size_t j=0;j<gnuDefs.size();++j){const auto& d=gnuDefs[j];Sym& sym=dynsym[gnuSymOffset+j];
         if(!d.isGlobal){const auto& e=spec.exports[d.sourceIndex];sym.name=expName[d.sourceIndex];sym.info=0x12;sym.shndx=S_TEXT;sym.value=textVaddr+e.offset;sym.size=e.size;}
-        else {const auto& g=spec.globals[d.sourceIndex];sym.name=glName[d.sourceIndex];sym.info=0x11;sym.shndx=g.kind==1?S_DATA:(g.kind==3?S_RODATA:S_BSS);
+        else {const auto& g=globals[d.sourceIndex];sym.name=glName[d.sourceIndex];sym.info=0x11;sym.shndx=g.kind==1?S_DATA:(g.kind==3?S_RODATA:S_BSS);
             sym.value=g.kind==1?dataVaddr+g.offset:(g.kind==3?rodataVaddr+g.offset:bssVaddr+g.offset);sym.size=g.size;}}
     for(size_t i=0;i<nIF;++i){Sym& sym=dynsym[dynIndex.at(spec.importFuncs[i])];sym.name=ifName[i];sym.info=0x12;sym.shndx=0;sym.value=0;sym.size=0;}
     for(size_t i=0;i<nIO;++i){Sym& sym=dynsym[dynIndex.at(spec.importObjects[i])];sym.name=ioName[i];sym.info=0x11;sym.shndx=0;sym.value=0;sym.size=0;}
@@ -8869,9 +9192,9 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     // ---- source-level .symtab/.strtab --------------------------------------------------------
     std::vector<OutSym> outSymbols;
     for(size_t i=0;i<nExp;++i)if(spec.exports[i].name.compare(0,8,"__aster_")!=0)outSymbols.push_back({spec.exports[i].name,0,spec.exports[i].offset,spec.exports[i].size});
-    for(size_t i=0;i<nDef;++i)outSymbols.push_back({spec.globals[i].name,spec.globals[i].kind,spec.globals[i].offset,spec.globals[i].size});
+    for(size_t i=0;i<nDef;++i)outSymbols.push_back({globals[i].name,globals[i].kind,globals[i].offset,globals[i].size});
     const SymTable st=buildSymbolTable(outSymbols,textVaddr,dataVaddr,bssVaddr,S_TEXT,S_DATA,S_BSS,rodataVaddr,S_RODATA);
-    const uint64_t symOff=alignUp(relroEnd,8),symSize=uint64_t(st.syms.size())*sizeof(Sym);
+    const uint64_t symOff=alignUp(hasTdata?tdataVaddr+tdataSize:relroEnd,8),symSize=uint64_t(st.syms.size())*sizeof(Sym);
     const uint64_t strOff=symOff+symSize,shstrOff=strOff+st.strtab.size();
     const uint64_t shoff=alignUp(shstrOff+shstr.size(),8);
     // Past the section-header table, as in writeSharedObject: no earlier offset moves.
@@ -8887,7 +9210,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
         std::map<std::string,uint64_t> symVaddr;
         symVaddr[".text"]=kSharedTextVaddr;
         for(const auto& e:spec.exports)symVaddr[e.name]=kSharedTextVaddr+e.offset;
-        for(const auto& g:spec.globals)symVaddr[g.name]=(g.kind==1?dataVaddr:(g.kind==3?rodataVaddr:bssVaddr))+g.offset;
+        for(const auto& g:globals)symVaddr[g.name]=(g.kind==1?dataVaddr:(g.kind==3?rodataVaddr:bssVaddr))+g.offset;
         for(const auto& p:spec.debugInfoPatches){
             auto it=symVaddr.find(p.symbol);
             if(it==symVaddr.end())throw Error("internal error: .debug_info references a symbol the shared object does not define: "+p.symbol);
@@ -8906,7 +9229,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
         std::map<std::string,uint64_t> symVaddr;
         symVaddr[".text"]=kSharedTextVaddr;
         for(const auto& e:spec.exports)symVaddr[e.name]=kSharedTextVaddr+e.offset;
-        for(const auto& g:spec.globals)symVaddr[g.name]=(g.kind==1?dataVaddr:(g.kind==3?rodataVaddr:bssVaddr))+g.offset;
+        for(const auto& g:globals)symVaddr[g.name]=(g.kind==1?dataVaddr:(g.kind==3?rodataVaddr:bssVaddr))+g.offset;
         for(const auto& p:spec.ehFramePatches){
             auto it=symVaddr.find(p.symbol);
             if(it==symVaddr.end())throw Error("internal error: .eh_frame references a symbol the shared object does not define: "+p.symbol);
@@ -8931,13 +9254,18 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     }
 
     // ---- program and section headers ---------------------------------------------------------
-    Ehdr h{};initIdent(h,3);h.entry=0;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)((spec.rodata.empty()?4:5)+(hasEhFrame?2:0));
+    Ehdr h{};initIdent(h,3);h.entry=0;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)((spec.rodata.empty()?4:5)+(hasEhFrame?2:0)+(hasTls?1:0));
     h.shoff=shoff;h.shentsize=sizeof(Shdr);h.shnum=shnum;h.shstrndx=S_SHSTR;
     Phdr p0{};p0.type=1;p0.flags=5;p0.offset=0;p0.vaddr=0;p0.paddr=0;p0.filesz=seg0End;p0.memsz=seg0End;p0.align=0x1000;
     Phdr pr{};pr.type=1;pr.flags=4;pr.offset=rodataVaddr;pr.vaddr=rodataVaddr;pr.paddr=rodataVaddr;pr.filesz=rodataSize;pr.memsz=rodataSize;pr.align=0x1000;
+    // v0.23.52-dev: the writable PT_LOAD reaches past .bss to the end of the
+    // thread-local block: .tdata extends its filesz, .tbss only its memsz.
     Phdr p1{};p1.type=1;p1.flags=6;p1.offset=dataVaddr;p1.vaddr=dataVaddr;p1.paddr=dataVaddr;
-    p1.filesz=relroEnd-dataVaddr;p1.memsz=(bssVaddr-dataVaddr)+spec.bssSize;p1.align=0x1000;
+    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=tlsMemEnd-dataVaddr;p1.align=0x1000;
     Phdr p2{};p2.type=2;p2.flags=6;p2.offset=dynOff;p2.vaddr=dynOff;p2.paddr=dynOff;p2.filesz=dynSize;p2.memsz=dynSize;p2.align=8;
+    // v0.23.52-dev: PT_TLS, after PT_DYNAMIC and before PT_GNU_RELRO — the region
+    // it describes is deliberately outside RELRO, because .tdata is SHF_WRITE.
+    Phdr ptls{};if(hasTls){ptls.type=7;ptls.flags=6;ptls.offset=tdataVaddr;ptls.vaddr=tdataVaddr;ptls.paddr=tdataVaddr;ptls.filesz=tdataSize;ptls.memsz=tlsMemEnd-tdataVaddr;ptls.align=kTlsBlockAlign;}
     Phdr p3{};p3.type=0x6474e552;p3.flags=4;p3.offset=relroVaddr;p3.vaddr=relroVaddr;p3.paddr=relroVaddr;p3.filesz=relroEnd-relroVaddr;p3.memsz=relroEnd-relroVaddr;p3.align=1;
     // v0.23.33-dev: the unwind table is read out of the running image, so it
     // rides in a PT_LOAD of its own past every other segment.
@@ -8960,6 +9288,11 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     setSh(S_GOT,1,0x3,gotVaddr,gotVaddr,gotSize,0,0,8,0);
     setSh(S_DYNAMIC,6,0x3,dynOff,dynOff,dynSize,S_DYNSTR,0,8,sizeof(Elf64Dyn));
     setSh(S_BSS,8,0x3,bssVaddr,relroEnd,spec.bssSize,0,0,8,0);
+    // v0.23.52-dev: the thread-local sections. .tdata carries the initialized
+    // bytes; .tbss is SHT_NOBITS, so its sh_offset is where those bytes end and
+    // it owns none — the loader zeroes it for every thread instead.
+    if(hasTdata)setSh(S_TDATA,1,0x1|0x2|0x400,tdataVaddr,tdataVaddr,tdataSize,0,0,kTlsBlockAlign,0);
+    if(hasTbss) setSh(S_TBSS,8,0x1|0x2|0x400,tbssVaddr,tdataVaddr+tdataSize,spec.tbssSize,0,0,kTlsBlockAlign,0);
     if(hasInit)setSh(S_INITARR,1,0x3,initArrVaddr,initArrVaddr,initArrSize,0,0,8,0);
     setSh(S_SYMTAB,2,0,0,symOff,symSize,S_STRTAB,outSymbols.empty()?0u:1u,8,sizeof(Sym));
     setSh(S_STRTAB,3,0,0,strOff,st.strtab.size(),0,0,1,0);
@@ -8980,7 +9313,9 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     // ---- emit --------------------------------------------------------------------------------
     std::ofstream o(path,std::ios::binary);if(!o)throw Error("cannot create output: "+path);
     auto pad=[&](uint64_t target){auto pos=(uint64_t)o.tellp();if(pos>target)throw Error("internal ELF layout error");std::vector<char> z((size_t)(target-pos),0);if(!z.empty())o.write(z.data(),z.size());};
-    o.write((char*)&h,sizeof h);o.write((char*)&p0,sizeof p0);if(!spec.rodata.empty())o.write((char*)&pr,sizeof pr);o.write((char*)&p1,sizeof p1);o.write((char*)&p2,sizeof p2);o.write((char*)&p3,sizeof p3);
+    o.write((char*)&h,sizeof h);o.write((char*)&p0,sizeof p0);if(!spec.rodata.empty())o.write((char*)&pr,sizeof pr);o.write((char*)&p1,sizeof p1);o.write((char*)&p2,sizeof p2);
+    if(hasTls)o.write((char*)&ptls,sizeof ptls);
+    o.write((char*)&p3,sizeof p3);
     if(hasEhFrame){o.write((char*)&p4,sizeof p4);o.write((char*)&p5,sizeof p5);}
     pad(textOff);o.write((const char*)text.data(),(std::streamsize)text.size());
     pad(pltOff);if(pltSize)o.write((const char*)plt.data(),(std::streamsize)plt.size());
@@ -9000,6 +9335,10 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     pad(gotPltVaddr);o.write((const char*)gotPlt.data(),(std::streamsize)gotPlt.size());
     pad(gotVaddr);if(gotSize)o.write((const char*)got.data(),(std::streamsize)got.size());
     pad(dynOff);o.write((const char*)dyn.data(),(std::streamsize)dynSize);
+    // v0.23.52-dev: .tdata, after .dynamic. It sits past .bss and therefore past
+    // RELRO in both the address space and the file, so the file offsets keep
+    // ascending. .tbss writes nothing — every byte of it is zero by definition.
+    if(hasTdata){pad(tdataVaddr);o.write((const char*)spec.tls.data(),(std::streamsize)tdataSize);}
     pad(symOff);o.write((const char*)st.syms.data(),(std::streamsize)symSize);
     o.write(st.strtab.data(),(std::streamsize)st.strtab.size());o.write(shstr.data(),(std::streamsize)shstr.size());
     pad(shoff);o.write((const char*)sh.data(),(std::streamsize)(shnum*sizeof(Shdr)));
@@ -9017,8 +9356,8 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
 void linkSharedObjects(const std::vector<std::string>& inputs,const std::string& output,
                        const std::string& sonameIn,const std::vector<std::string>& needed){
     if(inputs.empty())throw Error("link-so requires at least one input object");
-    std::vector<uint8_t> mergedText,mergedData,mergedRodata;uint64_t mergedBss=0;
-    struct Def{uint64_t off;uint32_t kind;uint64_t size;}; // 0 = .text, 1 = .data, 2 = .bss, 3 = .rodata
+    std::vector<uint8_t> mergedText,mergedData,mergedRodata,mergedTls;uint64_t mergedBss=0,mergedTbss=0,maxTlsAlign=kTlsBlockAlign;
+    struct Def{uint64_t off;uint32_t kind;uint64_t size;}; // 0 = .text, 1 = .data, 2 = .bss, 3 = .rodata, 4 = .tdata (TLS), 5 = .tbss (TLS)
     std::map<std::string,Def> definitions;
     std::vector<LinkPending> pending;
     std::map<size_t,std::string> initNameByInput;
@@ -9046,23 +9385,38 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         return name;
     };
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
-        // v0.23.51-dev: thread-local storage is a static-image feature (one
-        // PT_TLS block per process). A shared object has no fixed load address
-        // and no single owner thread, so it cannot materialize TPIDR_EL0
-        // access; reject it at link time rather than producing a broken .so.
-        if(obj.tlsIndex>=0)throw Error(input+": thread-local storage (`tls`) is not supported in shared objects; use a plain `let` or pass the value explicitly");
         while(obj.dataAlign>1&&mergedData.size()%obj.dataAlign)mergedData.push_back(0);
         while(obj.bssAlign>1&&mergedBss%obj.bssAlign)++mergedBss;
         while(obj.rodataAlign>1&&mergedRodata.size()%obj.rodataAlign)mergedRodata.push_back(0);
+        // v0.23.52-dev: the thread-local block, merged exactly as linkObjects
+        // does — the alignment padding has to be part of this object's base
+        // before any symbol is offset against it.
+        while(obj.tdataAlign>1&&mergedTls.size()%obj.tdataAlign)mergedTls.push_back(0);
+        const uint64_t tlsBase=mergedTls.size();
         const uint64_t textBase=mergedText.size(),dataBase=mergedData.size(),bssBase=mergedBss,rodataBase=mergedRodata.size();
+        // v0.23.52-dev: `__aster_tls_block` is the marker a static image reads
+        // PT_TLS's size from. A shared object's PT_TLS is sized by the writer
+        // from the merged block, so the marker is dropped rather than becoming
+        // a stray thread-local named "block".
+        auto isTlsMarker=[](const std::string& n){return n=="__aster_tls_block";};
         for(const auto& s:obj.symbols){if((s.info>>4)!=1||s.name.empty()||s.shndx==0)continue;Def def{};
             if(s.shndx==(uint16_t)obj.textIndex){def.kind=0;def.off=textBase+s.value;def.size=s.size;}
             else if(obj.dataIndex>=0&&s.shndx==(uint16_t)obj.dataIndex){def.kind=1;def.off=dataBase+s.value;def.size=s.size;}
             else if(obj.bssIndex>=0&&s.shndx==(uint16_t)obj.bssIndex){def.kind=2;def.off=bssBase+s.value;def.size=s.size;}
             else if(obj.rodataIndex>=0&&s.shndx==(uint16_t)obj.rodataIndex){def.kind=3;def.off=rodataBase+s.value;def.size=s.size;}
+            // v0.23.52-dev: the zero-initialized half, against the .tbss bytes
+            // merged so far; the block-aligned .tbss base is added after the
+            // loop, once every object's .tdata has been merged.
+            else if(obj.tlsIndex>=0&&s.shndx==(uint16_t)obj.tlsIndex){def.kind=4;def.off=tlsBase+s.value;def.size=s.size;}
+            else if(obj.tbssIndex>=0&&s.shndx==(uint16_t)obj.tbssIndex){def.kind=5;def.off=mergedTbss+s.value;def.size=s.size;}
             else throw Error(input+": global symbol in an unsupported section: "+s.name);
+            if(isTlsMarker(s.name))continue;
             if(s.name=="_start")throw Error(input+": a shared object must not define _start; build the object with --pic");
             std::string defName=remapPrivateStringSymbol(s.name,i);
+            // A PIC object carries a thread-local as `__aster_tls_<name>`; the
+            // writer wants the source-level name, which is what build-so hands
+            // it, so the two paths lay out the same block from the same names.
+            if((def.kind==4||def.kind==5)&&s.name.compare(0,12,"__aster_tls_")==0)defName=s.name.substr(12);
             if(defName==kInitSymbol){defName=initNameByInput.empty()?std::string(kInitSymbol):std::string(kInitSymbol)+"$"+std::to_string(initNameByInput.size());initNameByInput[i]=defName;}
             auto inserted=definitions.emplace(defName,def);if(!inserted.second)throw Error("duplicate global symbol '"+defName+"' across input objects");
         }
@@ -9087,7 +9441,16 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         mergedData.insert(mergedData.end(),obj.data.begin(),obj.data.end());
         mergedRodata.insert(mergedRodata.end(),obj.rodata.begin(),obj.rodata.end());
         mergedBss+=obj.bssSize;
+        // v0.23.52-dev: the thread-local bytes and the zeroed tail after them.
+        // The tail carries no bytes anywhere; the loader zeroes it per thread.
+        mergedTls.insert(mergedTls.end(),obj.tdata.begin(),obj.tdata.end());
+        mergedTbss+=obj.tbssSize;
+        if(obj.tdataAlign>maxTlsAlign)maxTlsAlign=obj.tdataAlign;
     }
+    // v0.23.52-dev: the .tbss base of the merged block, added now that every
+    // object's .tdata has been merged and the .tbss part's start is final.
+    if(!mergedTls.empty()||mergedTbss>0){const uint64_t tb=alignUp(mergedTls.size(),kTlsBlockAlign);
+        for(auto& kv:definitions)if(kv.second.kind==5)kv.second.off+=tb;}
     // Chain per-object run-time global initializers in input order (same rule as link-obj).
     uint64_t initEndOff=0;bool hasInitEnd=false;std::string firstInit;
     if(!initNameByInput.empty()){
@@ -9099,6 +9462,11 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
     }
     SoDynSpec spec;spec.soname=sonameIn.empty()?baseNameOf(output):sonameIn;spec.needed=needed;
     spec.data=mergedData;spec.rodata=mergedRodata;spec.bssSize=mergedBss;
+    // v0.23.52-dev: the merged thread-local block. .tbss starts at the first
+    // block-aligned offset past the merged .tdata, which the writer recomputes
+    // from these two sizes — an object's own .tbss offsets already sit past its
+    // .tdata, so nothing here is added twice.
+    spec.tls=mergedTls;spec.tbssSize=mergedTbss;
     std::set<std::string> defFuncs,defObjs,impF,impO;
     for(const auto& d:definitions){
         if(d.second.kind==0){defFuncs.insert(d.first);spec.exports.push_back({d.first,d.second.off,d.second.size});}
@@ -9114,8 +9482,11 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         } else {
             if(r.symbol.compare(0,12,"__aster_gat_")!=0)throw Error("PIC object relocation references unexpected symbol: "+r.symbol);
             const std::string src=r.symbol.substr(12);
-            if(defObjs.count(src))continue;
-            if(impO.insert(src).second)spec.importObjects.push_back(src);
+            // v0.23.52-dev: a thread-local's slot is the GAT of `__aster_tls_<name>`,
+            // so the name a definition was recorded under is one prefix shorter.
+            const std::string base=(src.compare(0,12,"__aster_tls_")==0)?src.substr(12):src;
+            if(defObjs.count(base))continue;
+            if(impO.insert(base).second)spec.importObjects.push_back(base);
         }
     }
     if(spec.exports.empty())throw Error("shared object must export at least one function");
@@ -9169,7 +9540,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     std::vector<uint8_t> mergedText,mergedData,mergedRodata;uint64_t mergedBss=0;
     // v0.23.51-dev: the thread-local block — one copy per thread, placed in a
     // PT_TLS segment. Every input object's .tdata is concatenated in link order.
-    std::vector<uint8_t> mergedTls;uint64_t maxTlsAlign=16;
+    std::vector<uint8_t> mergedTls;uint64_t maxTlsAlign=16,mergedTbss=0;
     // -g: each input object carries its own DWARF line program, so they are
     // concatenated (one unit per object) and every address in each is then
     // raised to that object's final text virtual address.
@@ -9197,13 +9568,26 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         while(obj.dataAlign>1&&mergedData.size()%obj.dataAlign)mergedData.push_back(0);
         while(obj.bssAlign>1&&mergedBss%obj.bssAlign)++mergedBss;
         while(obj.rodataAlign>1&&mergedRodata.size()%obj.rodataAlign)mergedRodata.push_back(0);
+        // v0.23.52-dev: the offset this object's thread-local block starts at in
+        // the merged block, computed *before* the symbol loop reads it. The
+        // alignment padding has to be part of the base: it used to be applied
+        // after the symbols had already been offset against the unpadded size,
+        // so a second object whose block needed stricter alignment than the
+        // first placed every one of its thread-locals too low.
+        while(obj.tdataAlign>1&&mergedTls.size()%obj.tdataAlign)mergedTls.push_back(0);
+        const uint64_t tlsBase=mergedTls.size();
         uint64_t textBase=mergedText.size(),dataBase=mergedData.size(),bssBase=mergedBss,rodataBase=mergedRodata.size();
         for(const auto& s:obj.symbols){if((s.info>>4)!=1||s.name.empty()||s.shndx==0)continue;Def def{};
             if(s.shndx==(uint16_t)obj.textIndex){def.kind=0;def.off=textBase+s.value;def.size=s.size;}
             else if(obj.dataIndex>=0&&s.shndx==(uint16_t)obj.dataIndex){def.kind=1;def.off=dataBase+s.value;def.size=s.size;}
             else if(obj.bssIndex>=0&&s.shndx==(uint16_t)obj.bssIndex){def.kind=2;def.off=bssBase+s.value;def.size=s.size;}
             else if(obj.rodataIndex>=0&&s.shndx==(uint16_t)obj.rodataIndex){def.kind=3;def.off=rodataBase+s.value;def.size=s.size;}
-            else if(obj.tlsIndex>=0&&s.shndx==(uint16_t)obj.tlsIndex){def.kind=4;def.off=mergedTls.size()+s.value;def.size=s.size;}
+            else if(obj.tlsIndex>=0&&s.shndx==(uint16_t)obj.tlsIndex){def.kind=4;def.off=tlsBase+s.value;def.size=s.size;}
+            // v0.23.52-dev: the zero-initialized half. An object's .tbss offsets
+            // are relative to its own .tbss, so what is added here is the .tbss
+            // bytes merged so far — the whole .tdata part still follows every
+            // object, so the block-aligned .tbss base is added after the loop.
+            else if(obj.tbssIndex>=0&&s.shndx==(uint16_t)obj.tbssIndex){def.kind=5;def.off=mergedTbss+s.value;def.size=s.size;}
             else throw Error(input+": global symbol in an unsupported section: "+s.name);
             std::string defName=s.name;
             if(defName==kInitSymbol){defName=initNameByInput.empty()?std::string(kInitSymbol):std::string(kInitSymbol)+"$"+std::to_string(initNameByInput.size());initNameByInput[i]=defName;}
@@ -9239,13 +9623,15 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         if(obj.dataAlign>maxAlign)maxAlign=obj.dataAlign;
         if(obj.bssAlign>maxAlign)maxAlign=obj.bssAlign;
         // v0.23.51-dev: append this object's thread-local block to the merged
-        // one, 16-byte aligned. The symbol loop above already offset each
-        // __aster_tls_<name> relative to the pre-append block base.
+        // one. The symbol loop above already offset each __aster_tls_<name>
+        // against tlsBase, which includes this object's alignment padding.
+        // v0.23.52-dev: .tbss contributes no bytes, only a size — it is the part
+        // of the merged block that lives past p_filesz.
         if(!obj.tdata.empty()){
-            while(mergedTls.size()%obj.tdataAlign)mergedTls.push_back(0);
             if(obj.tdataAlign>maxTlsAlign)maxTlsAlign=obj.tdataAlign;
             mergedTls.insert(mergedTls.end(),obj.tdata.begin(),obj.tdata.end());
         }
+        mergedTbss+=obj.tbssSize;
         if(obj.dataAlign>maxDataAlign)maxDataAlign=obj.dataAlign;
         if(obj.bssAlign>maxBssAlign)maxBssAlign=obj.bssAlign;
         if(obj.rodataAlign>maxRodataAlign)maxRodataAlign=obj.rodataAlign;
@@ -9259,6 +9645,12 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         initEndOff=mergedText.size();for(int k=0;k<4;++k)mergedText.push_back(uint8_t(0xd65f03c0u>>(k*8)));hasInitEnd=true; // RET
     }
     while(maxAlign>1&&mergedData.size()%maxAlign)mergedData.push_back(0);
+    // v0.23.52-dev: every .tbss offset was recorded against the .tbss bytes
+    // merged before it, so the merged block's .tbss base — the first
+    // block-aligned offset past the whole .tdata part — is added here, once the
+    // last object has been merged and that part's size is final.
+    if(!mergedTls.empty()||mergedTbss>0){const uint64_t tb=alignUp(mergedTls.size(),kTlsBlockAlign);
+        for(auto& kv:definitions)if(kv.second.kind==5)kv.second.off+=tb;}
     if(startCount==0) throw Error("no input object defines global _start");
     if(startCount>1) throw Error("multiple input objects define global _start");
     const uint64_t textVaddr=base+0x1000;
@@ -9269,10 +9661,17 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     uint64_t dataVaddr=0,bssVaddr=0,tlsVaddr=0;
     // v0.23.51-dev: a TLS block lives in the data PT_LOAD too, so the segment
     // exists even when there is no ordinary .data/.bss — only thread-local globals.
-    if(!mergedData.empty()||mergedBss>0||!mergedTls.empty()){uint64_t dataFileOff=alignUp(afterRodata,0x1000);dataVaddr=base+dataFileOff;bssVaddr=dataVaddr+mergedData.size();}
-    if(!mergedTls.empty())tlsVaddr=alignUp(bssVaddr+mergedBss,maxTlsAlign);
+    // v0.23.52-dev: .tbss makes that "only thread-locals" case larger: the block
+    // can now be entirely zero-initialized, with no .tdata bytes at all.
+    if(!mergedData.empty()||mergedBss>0||!mergedTls.empty()||mergedTbss>0){uint64_t dataFileOff=alignUp(afterRodata,0x1000);dataVaddr=base+dataFileOff;bssVaddr=dataVaddr+mergedData.size();}
+    if(!mergedTls.empty()||mergedTbss>0)tlsVaddr=alignUp(bssVaddr+mergedBss,maxTlsAlign);
+    // .tbss starts at the first block-aligned offset past .tdata. A static image
+    // has no loader to zero it: the kernel does, as the part of the PT_LOAD that
+    // lies past p_filesz — which is exactly what the memsz arithmetic below asks
+    // for.
+    const uint64_t tbssVaddr=alignUp(tlsVaddr+mergedTls.size(),kTlsBlockAlign);
     std::map<std::string,uint64_t> symbolVaddr;std::map<std::string,int> symbolKind;
-    for(const auto& d:definitions){uint64_t a=d.second.kind==0?textVaddr+d.second.off:d.second.kind==1?dataVaddr+d.second.off:d.second.kind==3?rodataVaddr+d.second.off:d.second.kind==4?tlsVaddr+d.second.off:bssVaddr+d.second.off;symbolVaddr[d.first]=a;symbolKind[d.first]=int(d.second.kind);}
+    for(const auto& d:definitions){uint64_t a=d.second.kind==0?textVaddr+d.second.off:d.second.kind==1?dataVaddr+d.second.off:d.second.kind==3?rodataVaddr+d.second.off:d.second.kind==4?tlsVaddr+d.second.off:d.second.kind==5?tbssVaddr+d.second.off:bssVaddr+d.second.off;symbolVaddr[d.first]=a;symbolKind[d.first]=int(d.second.kind);}
     if(hasInitEnd){symbolVaddr["__aster_init_end"]=textVaddr+initEndOff;symbolKind["__aster_init_end"]=0;}
     // A unit's low_pc is written against .text, so .text needs an address here
     // too — the section symbol the object used is not a definition the link
@@ -9335,7 +9734,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         outSymbols.push_back({d.first,int(d.second.kind),d.second.off,d.second.size});
         if(d.first=="_start")outSymbols.push_back({std::string("main"),int(d.second.kind),d.second.off,d.second.size});
     }
-    writeElfBytes(output,mergedText,entryOffset,mergedData,mergedBss,base,etype,outSymbols,maxDataAlign,maxBssAlign,mergedRodata,maxRodataAlign,mergedDebugLine,mergedDebugInfo,mergedDebugAbbrev,mergedEhFrame,ehFramePatches,ehFrameTable,mergedTls,tlsVaddr,maxTlsAlign);
+    writeElfBytes(output,mergedText,entryOffset,mergedData,mergedBss,base,etype,outSymbols,maxDataAlign,maxBssAlign,mergedRodata,maxRodataAlign,mergedDebugLine,mergedDebugInfo,mergedDebugAbbrev,mergedEhFrame,ehFramePatches,ehFrameTable,mergedTls,tlsVaddr,maxTlsAlign,mergedTbss);
     size_t callCount=0;for(const auto& r:pending)if(r.type==283)++callCount;
     std::cout<<"Aster v"<<kVersion<<": linked "<<inputs.size()<<" AArch64 ET_REL object(s), applied "<<pending.size()<<" relocation(s) ("<<callCount<<" CALL26) to ELF64 "<<(etype==2?"ET_EXEC":"ET_DYN")<<" ("<<mergedText.size()<<" text bytes, "<<mergedRodata.size()<<" rodata bytes, "<<mergedData.size()<<" data bytes, "<<mergedBss<<" bss bytes): "<<output<<"\n";
 }
@@ -11457,10 +11856,12 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
                              bool boundsCheck=false,
                              bool debugLine=false, const std::string& sourcePath=""){
     Parser p(src,false,dirNameOf(sourcePath));p.parse();
-    // v0.23.51-dev: thread-local storage needs a static image with a single
-    // owner thread and a fixed PT_TLS block, neither of which a shared object
-    // (build-so / build-apk) has. Reject it up front with a clear message.
-    for(const auto& g:p.globals)if(g.tls)throw Error("thread-local storage (`tls`) is not supported in shared objects: global '"+g.name+"'");
+    // v0.23.52-dev: `tls let` is a first-class global in a shared object too —
+    // each thread that dlopen's the module gets its own copy out of PT_TLS, and
+    // the Initial-Exec GOT slot is what makes that work without a `__tls_get_addr`
+    // call. `extern tls let` still has no meaning here: there is no way to name
+    // another module's thread-local through .dynsym, so it stays rejected above.
+    for(const auto& g:p.globals)if(g.tls&&g.external)throw Error("an external thread-local (`extern tls let`) is not supported in a shared object: global '"+g.name+"'");
     auto funcs=compileProgram(p.functions,p.globals,true,false,boundsCheck,debugLine);
     if(funcs.empty())throw Error("shared object must define at least one function");
     ObjectLayout L=layoutObject(funcs,p.globals);
@@ -11473,6 +11874,9 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
     // Split the still-undefined references into functions (PLT) and objects (GOT).
     SoDynSpec spec;spec.soname=soname;spec.needed=needed;spec.exports=exports;spec.globals=L.globals;
     spec.data=L.data;spec.rodata=L.rodata;spec.bssSize=L.bssSize;spec.initOffset=initOffset;
+    // v0.23.52-dev: the thread-local block, handed to the writer the same way a
+    // link-so does — .tdata bytes plus the size of the .tbss tail behind them.
+    spec.tls=L.tls;spec.tbssSize=L.tbssSize;
     std::set<std::string> defFuncs,defObjs,ifSeen,ioSeen,funcAddrSeen;
     for(const auto& e:exports)defFuncs.insert(e.name);
     for(const auto& g:L.globals)defObjs.insert(g.name);
@@ -11482,7 +11886,11 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
             if(ifSeen.insert(r.symbol).second)spec.importFuncs.push_back(r.symbol);
         } else {
             if(r.symbol.compare(0,12,"__aster_gat_")!=0)throw Error("internal error: unexpected shared-object relocation symbol: "+r.symbol);
-            const std::string base=r.symbol.substr(12);
+            const std::string src=r.symbol.substr(12);
+            // v0.23.52-dev: a thread-local's slot is the GAT of `__aster_tls_<name>`;
+            // the global itself is defined under its source name, so the prefix is
+            // stripped before the definition is looked up.
+            const std::string base=(src.compare(0,12,"__aster_tls_")==0)?src.substr(12):src;
             if(defObjs.count(base))continue;
             if(defFuncs.count(base)){ if(funcAddrSeen.insert(base).second) spec.funcAddrRefs.push_back(base); continue; }
             if(ioSeen.insert(base).second)spec.importObjects.push_back(base);
@@ -11531,7 +11939,10 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
             <<L.globals.size()<<" globals, "<<spec.importFuncs.size()<<" PLT imports, "<<spec.importObjects.size()<<" GOT imports, SONAME "<<spec.soname<<"): "<<output<<"\n";
     } else {
         writeSharedObject(output,text,pending,exports,L.data,L.bssSize,L.globals,initOffset,dl,di,
-                          ef.bytes,ef.patches,ehFrameFdeList(ef));
+                          ef.bytes,ef.patches,ehFrameFdeList(ef),
+                          // v0.23.52-dev: the thread-local block, same as the
+                          // dynamic writer gets.
+                          L.tls,L.tbssSize);
         std::cout<<"Aster v"<<kVersion<<": emitted AArch64 ELF64 ET_DYN shared object ("<<L.ins.size()<<" instructions, "<<exports.size()<<" exported functions, "<<L.globals.size()<<" globals, "<<L.data.size()<<" data bytes, "<<L.bssSize<<" bss bytes): "<<output<<"\n";
     }
     return 0;
