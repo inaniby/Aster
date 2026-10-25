@@ -659,30 +659,45 @@ name      ::= ident | 'main'
   (`global struct field 'S.p' cannot be initialized by a constant`).
 - Duplicate names → `duplicate global variable: g`.
 
-### Thread-local storage (`tls let`) (v0.23.51-dev)
+### Thread-local storage (`tls let`) (v0.23.51-dev; shared objects since v0.23.52-dev)
 
 - `tls` is a **context keyword**: it is only special at the start of a
   top-level declaration, so it stays a usable identifier everywhere else
   (`let tls: i32 = 5;` is an ordinary local). The reserved-word count does
   not move — still 26.
 - Same shapes as a plain global — scalars and arrays, the same types, the
-  same constant-initializer rules, the same length bounds — and `tls extern
-  let name: type;` declares one defined elsewhere, exactly like `extern let`.
-- Storage is a per-thread block. A static image (build-elf / build-pie /
-  link-obj / link-pie) carries it as one `PT_TLS` segment plus a `SHF_TLS`
-  `.tdata` section, and main's entry stub points `TPIDR_EL0` at the block's
-  base (`__aster_tls_block`), so a single-threaded program reads and writes
-  a `tls` global like any other global.
-- Accesses are local-exec: `MRS Xt,TPIDR_EL0` then `ADD Xt,Xt,#offset`,
-  where the offset is a link-time constant filled into the MOVZ/MOVK pair.
-  The block is one per process this round — there is no `.tbss` and no
-  multi-thread TLS yet.
-- A shared object rejects `tls` at link time:
-  `thread-local storage (`tls`) is not supported in shared objects; use a
-  plain `let` or pass the value explicitly` (link-so), or
-  `thread-local storage (`tls`) is not supported in shared objects: global
-  'x'` (build-so / build-apk). A `.so` has no fixed load address and no
-  single owner thread, so it cannot materialize a TPIDR_EL0 access.
+  same constant-initializer rules, the same length bounds. `tls extern let
+  name: type;` declares one defined elsewhere, exactly like `extern let` —
+  except inside a shared object, where it is refused (there is no way to
+  name another module's thread-local through `.dynsym`).
+- Storage is a per-thread block, split the way GNU ld splits it: `.tdata`
+  holds the non-zero initializers and owns file bytes; `.tbss` holds the
+  zero-initialized tail, starts at the first 16-byte-aligned offset past
+  `.tdata`, and owns none. `PT_TLS` reports `p_filesz` = `.tdata` and
+  `p_memsz` = the whole block; the difference is `.tbss`, which a loader
+  (or, in a static image, the kernel) zeroes for every block it hands out.
+- **In a static image** (build-elf / build-pie / link-obj / link-pie) the
+  entry stub points `TPIDR_EL0` at the block's base (`__aster_tls_block`),
+  and an access is **local-exec**: `MRS Xt,TPIDR_EL0` then
+  `ADD Xt,Xt,#offset`, the offset being a link-time constant filled into
+  the MOVZ/MOVK pair.
+- **In a shared object** (build-so / link-so / build-apk) the loader
+  decides where this module's block sits, so an access is
+  **initial-exec**: `MRS X16,TPIDR_EL0` / `ADRP X17,slot` /
+  `ADD X17,X17,#:lo12:slot` / `LDR X17,[X17]` / `ADD X16,X16,X17`. The
+  slot holds an *offset from TP*, not an address — that is what the final
+  `ADD` means — and it is filled at load time by one
+  `R_AARCH64_TLS_TPREL64` per variable (symbol `STN_UNDEF`, addend the
+  variable's block offset). This is the shape GNU ld emits for a local
+  `static __thread` under `-ftls-model=initial-exec`. Every thread that
+  dlopens the module gets its own copy.
+- There is **no compile-time size cap** on a shared object's TLS block. glibc
+  2.35+ allocates a dlopen'd module's block dynamically, so even a megabyte
+  dlopens cleanly on this machine; if a block genuinely cannot be placed, the
+  loader reports `cannot allocate memory in static TLS block` at load time. A
+  fixed surplus constant would only reject modules that load fine, and could
+  not see the *host* process's own TLS footprint at compile time, so the
+  runtime error is the honest contract.
 
 ### Functions
 
