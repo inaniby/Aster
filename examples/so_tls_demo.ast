@@ -12,14 +12,32 @@
 // that calls it twice sees exactly what the first one did (33 then 36) rather
 // than inheriting another thread's state.
 //
+// `acc` is a thread-local ARRAY (two i32, both 5) living in .tdata, exercised by
+// `accsum`, which mutates it so each thread proves it owns its own copy of the
+// whole array (13 then 16, not 19+). `zeros` is a thread-local ARRAY
+// (three i32) living in .tbss, exercised by `zerosum`, which proves a zeroed
+// .tbss array is handed out per thread (1 then 2 — the per-thread zero seed,
+// not a shared block's running total).
+//
 // Build it with `build-so` (or `build-obj --pic` + `link-so`); tests/tls-checks.sh
 // dlopens the result from two pthreads and a main thread, which is what proves
-// the block really is per-thread.
+// the block really is per-thread — scalars and arrays alike.
 tls let hits: i32 = 10;
 tls let total: i32 = 20;
 tls let spare: i32 = 0;
+tls let acc: i32[2] = 5;
+tls let zeros: i32[3] = 0;
 fn bump() -> i32 {
     hits = hits + 1;
     total = total + 2;
     return hits + total + spare;
+}
+fn accsum() -> i32 {
+    acc[0] = acc[0] + 1;
+    acc[1] = acc[1] + 2;
+    return acc[0] + acc[1];
+}
+fn zerosum() -> i32 {
+    zeros[0] = zeros[0] + 1;
+    return zeros[0] + zeros[1] + zeros[2];
 }
