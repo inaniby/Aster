@@ -92,9 +92,9 @@ grep -qF 'const uint32_t verAsterStr=addVerStr("aster");' src/aster.cpp \
     || fail "the SysV writer no longer puts the version name in .dynstr"
 grep -qF 'for(size_t i=1;i<dynsym.size();++i)gnuVersion[i*2]=2;' src/aster.cpp \
     || fail "the SysV writer no longer marks every defined symbol with index 2"
-grep -qF 'setSh(kShnumAll-3,nGnuVersion,0x6fffffff,0x2,gnuVersionOff,gnuVersionOff,gnuVersionSize,S_DYNSYM,0,2,2);' src/aster.cpp \
+grep -qF 'setSh(kVerBase,nGnuVersion,0x6fffffff,0x2,gnuVersionOff,gnuVersionOff,gnuVersionSize,S_DYNSYM,0,2,2);' src/aster.cpp \
     || fail "the SysV writer no longer describes .gnu.version as SHT_GNU_VERSYM linked to .dynsym"
-grep -qF 'setSh(kShnumAll-2,nGnuVersionD,0x6ffffffd,0x2,verDefOff,verDefOff,verDefSize,S_DYNSTR,2,8,0);' src/aster.cpp \
+grep -qF 'setSh(kVerBase+1,nGnuVersionD,0x6ffffffd,0x2,verDefOff,verDefOff,verDefSize,S_DYNSTR,2,8,0);' src/aster.cpp \
     || fail "the SysV writer no longer describes .gnu.version_d with sh_info = two verdefs"
 grep -qF 'const uint32_t kDynEntries=15u+(hasInit?2u:0u);' src/aster.cpp \
     || fail "kDynEntries lost the five version tags (the .dynamic truncation bug is back)"

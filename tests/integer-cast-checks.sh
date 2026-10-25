@@ -65,8 +65,8 @@ fi
 printf '%s\n' '[2/10] Source guards: the u64 grid and the cast'
 # the version constant — pinned to the current dev line so a stale compiler
 # (or a forgotten version bump) fails loudly rather than silently.
-grep -qF '#define ASTER_VERSION_STRING "0.23.51-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.51-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.52-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.52-dev" >&2; exit 1; }
 # the token and the keyword
 grep -qF '    U64,' src/aster.cpp \
     || { echo "FAIL: enum class TK no longer declares U64" >&2; exit 1; }
@@ -473,12 +473,13 @@ done
 # another object or a libc can supply, and build-elf on its own has always
 # recorded FAILED for them. The comparison below is what has to hold.
 # v0.23.51-dev: the TLS round's example (tls_demo.ast) and the symbol-versioning
-# round's example (so_verstrlen.ast) join the filter the same way, so nineteen
-# families are skipped and the pre-existing count is still 288: 345 recorded,
-# 57 of them belonging to the nineteen rounds this suite knows are new.
-FILTER='-e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^tls_demo\. -e ^so_verstrlen\.'
-grep -v $FILTER "$BASE" > "$OUT/expected-old.txt"
-grep -v $FILTER "$OUT/hashes.txt" > "$OUT/got-old.txt"
+# round's example (so_verstrlen.ast) join the filter the same way; v0.23.52-dev
+# adds so_tls_demo.ast beside them, so twenty families are skipped and the
+# pre-existing count is still 288: 348 recorded, 60 of them belonging to the
+# twenty rounds this suite knows are new.
+FILTER='-e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^tls_demo\. -e ^so_verstrlen\. -e ^so_tls_demo\.'
+grep -v $FILTER "$BASE" | LC_ALL=C sort > "$OUT/expected-old.txt"
+grep -v $FILTER "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
     echo 'FAIL: a pre-existing example moved — the round changed bytes' >&2
     sed -n '1,20p' "$OUT/old.diff" >&2
