@@ -1,3 +1,25 @@
+## v0.23.55-dev — Android 16 KB-page support, completed: the `.so` ZIP-entry alignment
+
+- **The gap.** v0.23.54-dev made the *ELF load segments* 16 KB-aligned, but it
+  still emitted the `.so` entry at a hard-coded 4 KB boundary inside the APK.
+  Android mmaps the shared object straight out of the archive, so the `.so`'s
+  data offset *inside the ZIP* must also be congruent to the device page size —
+  otherwise a 16 KB-page device cannot load it even though the ELF itself is
+  correctly aligned.
+- **The fix.** `buildApk()` now takes `pageSize` and the ZIP `append()` lambda
+  pads the `.so` entry to that page size (default 4096, unchanged bytes; 16384
+  for 16 KB devices). `main()`'s `build-apk` path forwards the parsed
+  `--page-size`. `validate_apk.py` gains `--page-size 4096|16384` and asserts
+  every `lib/*.so` entry's offset is congruent to it.
+- **Why no baseline drift.** Only the inter-entry padding moves with `pageSize`;
+  at `4096` the formula reduces exactly to the prior computation, so the APK —
+  embedded `.so` and signature included — is byte-identical to v0.23.54-dev.
+- **Test.** `tests/page-size-checks.sh` `[6/6]` builds a real NativeActivity APK
+  at both page sizes and asserts (a) the embedded `.so`'s `PT_LOAD` `Align` is
+  `0x1000`/`0x4000`, (b) the `.so`'s ZIP data offset is `0 (mod 4096)` /
+  `0 (mod 16384)`, (c) the two APKs differ, and (d) `validate_apk.py` accepts
+  each at its own page size (and would reject the 4 KB APK if asked for 16384).
+
 ## v0.23.54-dev — Android 15+ 16 KB-page support: a `--page-size` flag (4096 default, 16384 for 16 KB devices) threaded through every ELF writer, with the default path byte-identical to before
 
 - **Where this came from.** A user building an Aster app for Android 15+ reported that both `PT_LOAD` segments carried `Align 0x1000`, and that a `targetSdk >= 35` app on a 16 KB-page device needs `0x4000`: bionic's dynamic linker rejects any ELF whose load segments are not aligned to the device page size. Aster's three ELF writers (`writeElfBytes`, `writeSharedObject`, `writeSharedObjectDyn`) hard-coded `0x1000` for every segment's align/offset/vaddr, and there was no way to emit anything else. Bumping the constant was rejected on purpose — the Linux output is pinned by a 348-row byte baseline, and one platform's requirement must not move a byte of the default path — so the change is a **parameter**, not a constant.
