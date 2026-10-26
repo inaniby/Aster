@@ -87,7 +87,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.53-dev"
+#define ASTER_VERSION_STRING "0.23.54-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -5666,13 +5666,23 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
                    // part of p_memsz that lies past p_filesz, and the kernel
                    // zeroes it when it maps the PT_LOAD (there is no loader in
                    // a static image to do it).
-                   const std::vector<uint8_t>& tls={},uint64_t tlsVaddr=0,uint64_t tlsAlign=16,uint64_t tbssSize=0){
-    constexpr uint64_t off=0x1000;
+                   const std::vector<uint8_t>& tls={},uint64_t tlsVaddr=0,uint64_t tlsAlign=16,uint64_t tbssSize=0,
+                   // v0.23.54-dev: page size for the loadable segments. 4096 is the
+                   // historical (and default) value; 16384 is required so an app with
+                   // targetSdk >= 35 loads on Android 15+ 16 KB-page devices (the
+                   // dynamic linker rejects a LOAD segment whose p_align or vaddr/offset
+                   // is not page-aligned). The ADRP relocation math stays 4 KB-granular
+                   // (its immediate is scaled by 4096 in the encoding), and 16 KB is a
+                   // superset of 4 KB, so no codegen changes. Default 4096 keeps every
+                   // emitted byte identical to before.
+                   uint64_t pageSize=4096){
+    if(pageSize!=4096&&pageSize!=16384)throw Error("internal error: unsupported page size "+std::to_string(pageSize));
+    const uint64_t off=pageSize;
     if(text.empty()||entryOffset>=text.size()||(entryOffset%4)!=0)throw Error("invalid entry offset for executable");
-    if(base%0x1000)throw Error("internal error: executable base must be page aligned");
+    if(base%pageSize)throw Error("internal error: executable base must be page aligned");
     const uint64_t textFileEnd=off+text.size();
     const bool hasRodataSection=!rodata.empty();
-    const uint64_t rodataFileOff=hasRodataSection?alignUp(textFileEnd,0x1000):0;
+    const uint64_t rodataFileOff=hasRodataSection?alignUp(textFileEnd,pageSize):0;
     const uint64_t rodataVaddr=hasRodataSection?base+rodataFileOff:0;
     const uint64_t afterRodata=hasRodataSection?rodataFileOff+rodata.size():textFileEnd;
     // v0.23.51-dev: the thread-local block rides in the data PT_LOAD, so the
@@ -5686,7 +5696,7 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     const bool hasDataSection=!data.empty();
     const bool hasBssSection=bssSize>0;
     uint64_t dataFileOff=0,dataVaddr=0;
-    if(hasData){dataFileOff=alignUp(afterRodata,0x1000);dataVaddr=base+dataFileOff;}
+    if(hasData){dataFileOff=alignUp(afterRodata,pageSize);dataVaddr=base+dataFileOff;}
     // v0.23.51-dev: the PT_TLS image sits in the data PT_LOAD at file offset
     // (tlsVaddr-base), so the loader maps one copy per thread.
     uint64_t tlsFileOff=0;
@@ -5736,7 +5746,7 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     // The unwind table has to be readable at run time, so it rides in a PT_LOAD
     // of its own — a PT_GNU_EH_FRAME that pointed outside every loadable
     // segment would be invisible to an unwinder that maps the image.
-    const uint64_t ehFrameOff=hasEhFrame?alignUp(afterDebugInfo,0x1000):0,ehFrameVaddr=hasEhFrame?base+ehFrameOff:0;
+    const uint64_t ehFrameOff=hasEhFrame?alignUp(afterDebugInfo,pageSize):0,ehFrameVaddr=hasEhFrame?base+ehFrameOff:0;
     const uint64_t ehFrameHdrOff=hasEhFrame?alignUp(ehFrameOff+ehFrame.size(),8):0,ehFrameHdrVaddr=hasEhFrame?base+ehFrameHdrOff:0;
     // An FDE says where its function is with a displacement from the field that
     // says it, so the table has to be at its final address before a single one
@@ -5772,8 +5782,8 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     const uint64_t shoff=alignUp(shstrOff+shstr.size(),8);
     Ehdr h{};initIdent(h,etype);h.entry=base+off+entryOffset;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)(1+(hasRodataSection?1:0)+(hasData?1:0)+(hasTlsSection?1:0)+(hasEhFrame?2:0));
     h.shoff=shoff;h.shentsize=sizeof(Shdr);h.shnum=shnum;h.shstrndx=idxShstr;
-    Phdr p{};p.type=1;p.flags=5;p.offset=0;p.vaddr=base;p.paddr=base;p.filesz=textFileEnd;p.memsz=textFileEnd;p.align=0x1000;
-    Phdr r{};if(hasRodataSection){r.type=1;r.flags=4;r.offset=rodataFileOff;r.vaddr=rodataVaddr;r.paddr=rodataVaddr;r.filesz=rodata.size();r.memsz=rodata.size();r.align=0x1000;}
+    Phdr p{};p.type=1;p.flags=5;p.offset=0;p.vaddr=base;p.paddr=base;p.filesz=textFileEnd;p.memsz=textFileEnd;p.align=pageSize;
+    Phdr r{};if(hasRodataSection){r.type=1;r.flags=4;r.offset=rodataFileOff;r.vaddr=rodataVaddr;r.paddr=rodataVaddr;r.filesz=rodata.size();r.memsz=rodata.size();r.align=pageSize;}
     Phdr d{};if(hasData){d.type=1;d.flags=6;d.offset=dataFileOff;d.vaddr=dataVaddr;d.paddr=dataVaddr;
         // v0.23.51-dev: the thread-local block lives in this PT_LOAD, after the
         // (zero-filled) .bss gap, so its file size reaches the end of .tdata.
@@ -5783,13 +5793,13 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
         // thread. A static image has no loader to do it.
         d.filesz=hasTlsSection?(tlsFileEnd-dataFileOff):data.size();
         d.memsz=hasTlsSection?(tlsMemEnd-dataFileOff):data.size()+bssSize;
-        d.align=0x1000;}
+        d.align=pageSize;}
     // v0.23.51-dev: the thread-local storage segment. One copy is mapped per
     // thread; main's entry stub points TPIDR_EL0 at its base (tlsVaddr).
     Phdr tl{};if(hasTlsSection){tl.type=7;tl.flags=6;tl.offset=tlsFileOff;tl.vaddr=tlsVaddr;tl.paddr=tlsVaddr;tl.filesz=tls.size();tl.memsz=tlsMemEnd-tlsFileOff;tl.align=tlsAlign;}
     // PT_LOAD covering both unwind sections, and PT_GNU_EH_FRAME naming the
     // header inside it — the pair an unwinder looks for.
-    Phdr ef{};if(hasEhFrame){ef.type=1;ef.flags=4;ef.offset=ehFrameOff;ef.vaddr=ehFrameVaddr;ef.paddr=ehFrameVaddr;ef.filesz=ehFrameEnd-ehFrameOff;ef.memsz=ehFrameEnd-ehFrameOff;ef.align=0x1000;}
+    Phdr ef{};if(hasEhFrame){ef.type=1;ef.flags=4;ef.offset=ehFrameOff;ef.vaddr=ehFrameVaddr;ef.paddr=ehFrameVaddr;ef.filesz=ehFrameEnd-ehFrameOff;ef.memsz=ehFrameEnd-ehFrameOff;ef.align=pageSize;}
     Phdr efh{};if(hasEhFrame){efh.type=0x6474e550u;efh.flags=4;efh.offset=ehFrameHdrOff;efh.vaddr=ehFrameHdrVaddr;efh.paddr=ehFrameHdrVaddr;efh.filesz=ehFrameHdr.size();efh.memsz=ehFrameHdr.size();efh.align=4;}
     std::vector<Shdr> sh(shnum);
     sh[idxText].name=nameAt(".text");sh[idxText].type=1;sh[idxText].flags=0x6;sh[idxText].addr=base+off;sh[idxText].offset=off;sh[idxText].size=text.size();sh[idxText].addralign=4;
@@ -7461,7 +7471,6 @@ static constexpr uint32_t kRelAbs64=257;
 static constexpr uint32_t kRelPrel32=261;
 // Both shared-object writers put .text at this offset with a link base of 0,
 // so it is the address a linked .so's line table is written against.
-static constexpr uint64_t kSharedTextVaddr=0x1000;
 struct DebugLineBlob {
     std::vector<uint8_t> bytes;
     std::vector<uint64_t> patchSites;   // byte offset of each 8-byte address field
@@ -8418,7 +8427,10 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
                        // travel inside `globalsIn` as kind 4 (.tdata) and kind 5
                        // (.tbss), the same ObjectLayout entries the object writer
                        // emits, so nothing here has to recompute an offset.
-                       const std::vector<uint8_t>& tls={},uint64_t tbssSize=0){
+                       const std::vector<uint8_t>& tls={},uint64_t tbssSize=0,
+                       // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
+                       // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
+                       uint64_t pageSize=4096){
     enum { S_NULL=0,S_TEXT=1,S_DYNSYM=2,S_DYNSTR=3,S_HASH=4,S_RELA=5,S_DATA=6,S_GOT=7,S_DYNAMIC=8,S_BSS=9,S_INIT_ARRAY=10,S_SYMTAB=11,S_STRTAB=12,S_SHSTR=13,S_NUM=14 };
     const bool hasInit=initOffset>=0;
     const bool hasDebugLine=!debugLine.bytes.empty();
@@ -8480,7 +8492,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
         for(const char* q=n;*q;++q){hsh=(hsh<<4)+((unsigned char)*q);if((g=hsh&0xf0000000ul))hsh^=g>>24;hsh&=~g;}
         const uint32_t b=uint32_t(hsh%nbucket);chains[i]=buckets[b];buckets[b]=i;}
     // Section / segment layout. Only the two PT_LOAD boundaries are page aligned.
-    const uint64_t textOff=0x1000,textEnd=textOff+text.size();
+    const uint64_t textOff=pageSize,textEnd=textOff+text.size();
     const uint64_t dynsymOff=alignUp(textEnd,8),dynsymSize=uint64_t(dynsym.size())*sizeof(Sym);
     const uint64_t dynstrOff=dynsymOff+dynsymSize,dynstrSize=dynstr.size();
     const uint64_t hashOff=alignUp(dynstrOff+dynstrSize,4),hashSize=uint64_t(hash.size())*4;
@@ -8500,10 +8512,10 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t verNeedOff=alignUp(verDefOff+verDefSize,8);
     const uint64_t verNeedSize=32;                                   // Elf64_Verneed(16) + Elf64_Vernaux(16)
     seg0End=verNeedOff+verNeedSize;
-    const uint64_t dataVaddr=alignUp(seg0End,0x1000),dataSize=data.size();
+    const uint64_t dataVaddr=alignUp(seg0End,pageSize),dataSize=data.size();
     // Keep user .data writable, but put init_array/GOT/.dynamic on dedicated pages so
     // PT_GNU_RELRO can protect them without accidentally making ordinary globals read-only.
-    const uint64_t relroVaddr=alignUp(dataVaddr+dataSize,0x1000);
+    const uint64_t relroVaddr=alignUp(dataVaddr+dataSize,pageSize);
     const uint64_t initArrVaddr=relroVaddr,initArrSize=hasInit?8:0;
     // v0.23.52-dev: one more GOT slot per thread-local, after every ordinary
     // one, so no existing slot moves. The slot holds the offset from TPIDR_EL0,
@@ -8512,7 +8524,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     const uint32_t kDynEntries=15u+(hasInit?2u:0u); // nine tags + five version tags + DT_NULL (DT_INIT_ARRAY adds two)
     const uint64_t dynOff=alignUp(gotVaddr+gotSize,8),dynSize=uint64_t(kDynEntries)*sizeof(Elf64Dyn);
     const uint64_t seg1End=dynOff+dynSize;
-    const uint64_t relroEnd=alignUp(seg1End,0x1000);
+    const uint64_t relroEnd=alignUp(seg1End,pageSize);
     const uint64_t bssVaddr=relroEnd;
     // v0.23.52-dev: the thread-local block, past .bss and outside RELRO. .tdata
     // is SHF_WRITE — it is the initializer template for one thread's copy, and a
@@ -8759,12 +8771,12 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     setSh(kVerBase+2,nGnuVersionR,0x6ffffffe,0x2,verNeedOff,verNeedOff,verNeedSize,S_DYNSTR,1,8,0);
     Ehdr h{};initIdent(h,3);h.entry=0;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)(4+(hasEhFrame?2:0)+(hasTls?1:0));
     h.shoff=shoff;h.shentsize=sizeof(Shdr);h.shnum=kShnumAll;h.shstrndx=kShstrIdx;
-    Phdr p0{};p0.type=1;p0.flags=5;p0.offset=0;p0.vaddr=0;p0.paddr=0;p0.filesz=seg0End;p0.memsz=seg0End;p0.align=0x1000;
+    Phdr p0{};p0.type=1;p0.flags=5;p0.offset=0;p0.vaddr=0;p0.paddr=0;p0.filesz=seg0End;p0.memsz=seg0End;p0.align=pageSize;
     // v0.23.52-dev: the writable PT_LOAD now reaches past .bss to the end of the
     // thread-local block. .tdata extends its filesz; .tbss extends only its memsz,
     // and the loader zeroes that tail for every thread it gives a block to.
     Phdr p1{};p1.type=1;p1.flags=6;p1.offset=dataVaddr;p1.vaddr=dataVaddr;p1.paddr=dataVaddr;
-    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=tlsMemEnd-dataVaddr;p1.align=0x1000;
+    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=tlsMemEnd-dataVaddr;p1.align=pageSize;
     Phdr p2{};p2.type=2;p2.flags=6;p2.offset=dynOff;p2.vaddr=dynOff;p2.paddr=dynOff;p2.filesz=dynSize;p2.memsz=dynSize;p2.align=8;
     // v0.23.52-dev: PT_TLS. p_filesz is the part with bytes, p_memsz the whole
     // block; the difference is .tbss, zeroed per thread. p_align is what the
@@ -8776,7 +8788,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // The unwind table is read out of the running image, so it needs a PT_LOAD
     // of its own past every other segment — appending it to an existing one
     // would move a boundary every other offset in this file is computed from.
-    Phdr p4{};if(hasEhFrame){p4.type=1;p4.flags=4;p4.offset=ehFrameOff;p4.vaddr=ehFrameOff;p4.paddr=ehFrameOff;p4.filesz=ehFrameHdrOff+ehFrameHdr.size()-ehFrameOff;p4.memsz=ehFrameHdrOff+ehFrameHdr.size()-ehFrameOff;p4.align=0x1000;}
+    Phdr p4{};if(hasEhFrame){p4.type=1;p4.flags=4;p4.offset=ehFrameOff;p4.vaddr=ehFrameOff;p4.paddr=ehFrameOff;p4.filesz=ehFrameHdrOff+ehFrameHdr.size()-ehFrameOff;p4.memsz=ehFrameHdrOff+ehFrameHdr.size()-ehFrameOff;p4.align=pageSize;}
     Phdr p5{};if(hasEhFrame){p5.type=0x6474e550u;p5.flags=4;p5.offset=ehFrameHdrOff;p5.vaddr=ehFrameHdrOff;p5.paddr=ehFrameHdrOff;p5.filesz=ehFrameHdr.size();p5.memsz=ehFrameHdr.size();p5.align=4;}
     std::ofstream o(path,std::ios::binary);if(!o)throw Error("cannot create output: "+path);
     auto pad=[&](uint64_t from,uint64_t to){if(to>from){std::vector<char> z((size_t)(to-from),0);o.write(z.data(),(std::streamsize)z.size());}};
@@ -8911,7 +8923,10 @@ struct SoDynSpec {
 };
 
 void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
-                          const std::vector<LinkPending>& pendingIn,const SoDynSpec& spec){
+                          const std::vector<LinkPending>& pendingIn,const SoDynSpec& spec,
+                          // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
+                          // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
+                          uint64_t pageSize=4096){
     if(text.empty())throw Error("cannot write a shared object without code");
     if(spec.exports.empty())throw Error("shared object must export at least one function");
     // v0.23.52-dev: split the incoming globals the same way the SysV writer does.
@@ -9002,7 +9017,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     for(uint16_t i=1;i<shnum;++i){shNameOff[i]=(uint32_t)shstr.size();shstr+=shnames[i];shstr.push_back('\0');}
 
     // ---- fixed layout (link-time vaddr == file offset, load base 0) ---------------------------
-    const uint64_t textVaddr=0x1000,textOff=0x1000,textEnd=textOff+text.size();
+    const uint64_t textVaddr=pageSize,textOff=pageSize,textEnd=textOff+text.size();
     const uint64_t pltOff=alignUp(textEnd,16),pltSize=16*nIF;
     const uint64_t nsym=1+nExp+nDef+nIF+nIO;
     const uint64_t dynsymOff=alignUp(pltOff+pltSize,8),dynsymSize=nsym*sizeof(Sym);
@@ -9033,11 +9048,11 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t verNeedOff=alignUp(verDefOff+verDefSize,8);
     const uint64_t verNeedSize=32;                                   // Elf64_Verneed(16) + Elf64_Vernaux(16)
     seg0End=verNeedOff+verNeedSize;
-    const uint64_t rodataVaddr=alignUp(seg0End,0x1000),rodataSize=spec.rodata.size();
-    const uint64_t dataVaddr=alignUp(rodataVaddr+rodataSize,0x1000),dataSize=spec.data.size();
+    const uint64_t rodataVaddr=alignUp(seg0End,pageSize),rodataSize=spec.rodata.size();
+    const uint64_t dataVaddr=alignUp(rodataVaddr+rodataSize,pageSize),dataSize=spec.data.size();
     // Dedicated page boundary between ordinary writable globals and loader-relocated data.
     // This prevents page-granular RELRO from changing .data permissions.
-    const uint64_t relroVaddr=alignUp(dataVaddr+dataSize,0x1000);
+    const uint64_t relroVaddr=alignUp(dataVaddr+dataSize,pageSize);
     const uint64_t initArrVaddr=relroVaddr,initArrSize=hasInit?8:0;
     const uint64_t gotPltVaddr=initArrVaddr+initArrSize,gotPltSize=8*(3+nIF);
     // v0.23.52-dev: one more GOT slot per thread-local, after every other kind,
@@ -9077,7 +9092,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     dyn.push_back({0,0});
     const uint64_t dynSize=dyn.size()*sizeof(Elf64Dyn);
     const uint64_t seg1End=dynOff+dynSize;
-    const uint64_t relroEnd=alignUp(seg1End,0x1000);
+    const uint64_t relroEnd=alignUp(seg1End,pageSize);
     const uint64_t bssVaddr=relroEnd;
     // v0.23.52-dev: the thread-local block, past .bss and outside RELRO. .tdata is
     // SHF_WRITE — a running thread writes its own copy — and RELRO is read-only,
@@ -9262,8 +9277,8 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     std::vector<uint8_t> debugInfo=spec.debugInfo;
     if(hasDebugInfo){
         std::map<std::string,uint64_t> symVaddr;
-        symVaddr[".text"]=kSharedTextVaddr;
-        for(const auto& e:spec.exports)symVaddr[e.name]=kSharedTextVaddr+e.offset;
+        symVaddr[".text"]=textVaddr;
+        for(const auto& e:spec.exports)symVaddr[e.name]=textVaddr+e.offset;
         for(const auto& g:globals)symVaddr[g.name]=(g.kind==1?dataVaddr:(g.kind==3?rodataVaddr:bssVaddr))+g.offset;
         for(const auto& p:spec.debugInfoPatches){
             auto it=symVaddr.find(p.symbol);
@@ -9281,8 +9296,8 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     std::vector<uint8_t> ehFrameBytes=spec.ehFrame,ehFrameHdr;
     if(hasEhFrame){
         std::map<std::string,uint64_t> symVaddr;
-        symVaddr[".text"]=kSharedTextVaddr;
-        for(const auto& e:spec.exports)symVaddr[e.name]=kSharedTextVaddr+e.offset;
+        symVaddr[".text"]=textVaddr;
+        for(const auto& e:spec.exports)symVaddr[e.name]=textVaddr+e.offset;
         for(const auto& g:globals)symVaddr[g.name]=(g.kind==1?dataVaddr:(g.kind==3?rodataVaddr:bssVaddr))+g.offset;
         for(const auto& p:spec.ehFramePatches){
             auto it=symVaddr.find(p.symbol);
@@ -9310,12 +9325,12 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     // ---- program and section headers ---------------------------------------------------------
     Ehdr h{};initIdent(h,3);h.entry=0;h.phoff=sizeof(Ehdr);h.phentsize=sizeof(Phdr);h.phnum=(uint16_t)((spec.rodata.empty()?4:5)+(hasEhFrame?2:0)+(hasTls?1:0));
     h.shoff=shoff;h.shentsize=sizeof(Shdr);h.shnum=shnum;h.shstrndx=S_SHSTR;
-    Phdr p0{};p0.type=1;p0.flags=5;p0.offset=0;p0.vaddr=0;p0.paddr=0;p0.filesz=seg0End;p0.memsz=seg0End;p0.align=0x1000;
-    Phdr pr{};pr.type=1;pr.flags=4;pr.offset=rodataVaddr;pr.vaddr=rodataVaddr;pr.paddr=rodataVaddr;pr.filesz=rodataSize;pr.memsz=rodataSize;pr.align=0x1000;
+    Phdr p0{};p0.type=1;p0.flags=5;p0.offset=0;p0.vaddr=0;p0.paddr=0;p0.filesz=seg0End;p0.memsz=seg0End;p0.align=pageSize;
+    Phdr pr{};pr.type=1;pr.flags=4;pr.offset=rodataVaddr;pr.vaddr=rodataVaddr;pr.paddr=rodataVaddr;pr.filesz=rodataSize;pr.memsz=rodataSize;pr.align=pageSize;
     // v0.23.52-dev: the writable PT_LOAD reaches past .bss to the end of the
     // thread-local block: .tdata extends its filesz, .tbss only its memsz.
     Phdr p1{};p1.type=1;p1.flags=6;p1.offset=dataVaddr;p1.vaddr=dataVaddr;p1.paddr=dataVaddr;
-    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=tlsMemEnd-dataVaddr;p1.align=0x1000;
+    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=tlsMemEnd-dataVaddr;p1.align=pageSize;
     Phdr p2{};p2.type=2;p2.flags=6;p2.offset=dynOff;p2.vaddr=dynOff;p2.paddr=dynOff;p2.filesz=dynSize;p2.memsz=dynSize;p2.align=8;
     // v0.23.52-dev: PT_TLS, after PT_DYNAMIC and before PT_GNU_RELRO — the region
     // it describes is deliberately outside RELRO, because .tdata is SHF_WRITE.
@@ -9323,7 +9338,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     Phdr p3{};p3.type=0x6474e552;p3.flags=4;p3.offset=relroVaddr;p3.vaddr=relroVaddr;p3.paddr=relroVaddr;p3.filesz=relroEnd-relroVaddr;p3.memsz=relroEnd-relroVaddr;p3.align=1;
     // v0.23.33-dev: the unwind table is read out of the running image, so it
     // rides in a PT_LOAD of its own past every other segment.
-    Phdr p4{};if(hasEhFrame){p4.type=1;p4.flags=4;p4.offset=ehFrameOff;p4.vaddr=ehFrameOff;p4.paddr=ehFrameOff;p4.filesz=ehFrameHdrOff+ehFrameHdr.size()-ehFrameOff;p4.memsz=ehFrameHdrOff+ehFrameHdr.size()-ehFrameOff;p4.align=0x1000;}
+    Phdr p4{};if(hasEhFrame){p4.type=1;p4.flags=4;p4.offset=ehFrameOff;p4.vaddr=ehFrameOff;p4.paddr=ehFrameOff;p4.filesz=ehFrameHdrOff+ehFrameHdr.size()-ehFrameOff;p4.memsz=ehFrameHdrOff+ehFrameHdr.size()-ehFrameOff;p4.align=pageSize;}
     Phdr p5{};if(hasEhFrame){p5.type=0x6474e550u;p5.flags=4;p5.offset=ehFrameHdrOff;p5.vaddr=ehFrameHdrOff;p5.paddr=ehFrameHdrOff;p5.filesz=ehFrameHdr.size();p5.memsz=ehFrameHdr.size();p5.align=4;}
     std::vector<Shdr> sh(shnum);
     auto setSh=[&](uint16_t i,uint32_t type,uint64_t flags,uint64_t addr,uint64_t off,uint64_t size,uint32_t link,uint32_t info,uint64_t al,uint64_t es){
@@ -9408,7 +9423,10 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
 // Symbols still undefined after the merge become cross-.so imports: functions through a PLT stub
 // and JUMP_SLOT relocation, objects through a GOT slot and GLOB_DAT relocation.
 void linkSharedObjects(const std::vector<std::string>& inputs,const std::string& output,
-                       const std::string& sonameIn,const std::vector<std::string>& needed){
+                       const std::string& sonameIn,const std::vector<std::string>& needed,
+                       // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
+                       // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
+                       uint64_t pageSize=4096){
     if(inputs.empty())throw Error("link-so requires at least one input object");
     std::vector<uint8_t> mergedText,mergedData,mergedRodata,mergedTls;uint64_t mergedBss=0,mergedTbss=0,maxTlsAlign=kTlsBlockAlign;
     struct Def{uint64_t off;uint32_t kind;uint64_t size;}; // 0 = .text, 1 = .data, 2 = .bss, 3 = .rodata, 4 = .tdata (TLS), 5 = .tbss (TLS)
@@ -9544,7 +9562,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         }
     }
     if(spec.exports.empty())throw Error("shared object must export at least one function");
-    for(const auto& f:debugLineFixups)dbgPatchAddress(mergedDebugLine,f.first,kSharedTextVaddr+f.second);
+    for(const auto& f:debugLineFixups)dbgPatchAddress(mergedDebugLine,f.first,pageSize+f.second);
     spec.debugLine=mergedDebugLine;
     // v0.23.32-dev: the same units, still holding zeroes; the addresses are
     // filled in where the segment addresses are decided.
@@ -9580,7 +9598,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         if(ehFdes.empty())mergedEhFrame.clear();
     }
     spec.ehFrame=mergedEhFrame;spec.ehFramePatches=ehPatches;spec.ehFrameFdes=ehFdes;
-    writeSharedObjectDyn(output,mergedText,pending,spec);
+    writeSharedObjectDyn(output,mergedText,pending,spec,pageSize);
     std::cout<<"Aster v"<<kVersion<<": linked "<<inputs.size()<<" AArch64 ET_REL PIC object(s) into shared object ("<<spec.exports.size()<<" exports, "
         <<spec.importFuncs.size()<<" PLT function imports, "<<spec.importObjects.size()<<" GOT data imports, "<<spec.needed.size()<<" DT_NEEDED, SONAME "<<spec.soname<<"): "<<output<<"\n";
 }
@@ -9588,8 +9606,11 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
 // Link one or more ET_REL objects. base 0x400000 / etype 2 (ET_EXEC) is the v0.13.1/v0.14.0
 // fixed-address behaviour; base 0 / etype 3 (ET_DYN) produces a static PIE whose virtual
 // addresses equal file offsets and whose entry point is a plain offset from that base.
-void linkObjects(const std::vector<std::string>& inputs,const std::string& output,uint64_t base=0x400000,uint16_t etype=2){
-    if(base%0x1000)throw Error("internal error: link base must be page aligned");
+void linkObjects(const std::vector<std::string>& inputs,const std::string& output,uint64_t base=0x400000,uint16_t etype=2,
+                  // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
+                  // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
+                  uint64_t pageSize=4096){
+    if(base%pageSize)throw Error("internal error: link base must be page aligned");
     if(inputs.empty())throw Error("link-obj requires at least one input object");
     std::vector<uint8_t> mergedText,mergedData,mergedRodata;uint64_t mergedBss=0;
     // v0.23.51-dev: the thread-local block — one copy per thread, placed in a
@@ -9707,17 +9728,17 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         for(auto& kv:definitions)if(kv.second.kind==5)kv.second.off+=tb;}
     if(startCount==0) throw Error("no input object defines global _start");
     if(startCount>1) throw Error("multiple input objects define global _start");
-    const uint64_t textVaddr=base+0x1000;
+    const uint64_t textVaddr=base+pageSize;
     const bool hasRodata=!mergedRodata.empty();
-    const uint64_t rodataFileOff=hasRodata?alignUp(0x1000+mergedText.size(),0x1000):0;
+    const uint64_t rodataFileOff=hasRodata?alignUp(pageSize+mergedText.size(),pageSize):0;
     const uint64_t rodataVaddr=hasRodata?base+rodataFileOff:0;
-    const uint64_t afterRodata=hasRodata?rodataFileOff+mergedRodata.size():0x1000+mergedText.size();
+    const uint64_t afterRodata=hasRodata?rodataFileOff+mergedRodata.size():pageSize+mergedText.size();
     uint64_t dataVaddr=0,bssVaddr=0,tlsVaddr=0;
     // v0.23.51-dev: a TLS block lives in the data PT_LOAD too, so the segment
     // exists even when there is no ordinary .data/.bss — only thread-local globals.
     // v0.23.52-dev: .tbss makes that "only thread-locals" case larger: the block
     // can now be entirely zero-initialized, with no .tdata bytes at all.
-    if(!mergedData.empty()||mergedBss>0||!mergedTls.empty()||mergedTbss>0){uint64_t dataFileOff=alignUp(afterRodata,0x1000);dataVaddr=base+dataFileOff;bssVaddr=dataVaddr+mergedData.size();}
+    if(!mergedData.empty()||mergedBss>0||!mergedTls.empty()||mergedTbss>0){uint64_t dataFileOff=alignUp(afterRodata,pageSize);dataVaddr=base+dataFileOff;bssVaddr=dataVaddr+mergedData.size();}
     if(!mergedTls.empty()||mergedTbss>0)tlsVaddr=alignUp(bssVaddr+mergedBss,maxTlsAlign);
     // .tbss starts at the first block-aligned offset past .tdata. A static image
     // has no loader to zero it: the kernel does, as the part of the PT_LOAD that
@@ -9788,7 +9809,11 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         outSymbols.push_back({d.first,int(d.second.kind),d.second.off,d.second.size});
         if(d.first=="_start")outSymbols.push_back({std::string("main"),int(d.second.kind),d.second.off,d.second.size});
     }
-    writeElfBytes(output,mergedText,entryOffset,mergedData,mergedBss,base,etype,outSymbols,maxDataAlign,maxBssAlign,mergedRodata,maxRodataAlign,mergedDebugLine,mergedDebugInfo,mergedDebugAbbrev,mergedEhFrame,ehFramePatches,ehFrameTable,mergedTls,tlsVaddr,maxTlsAlign,mergedTbss);
+    // v0.23.54-dev: forward the page size so writeElfBytes lays the file out
+    // (text file offset, every segment .align) with the same granularity the
+    // symbol addresses above were computed against — a mismatch would put the
+    // text at a different address than the relocations/entry point expect.
+    writeElfBytes(output,mergedText,entryOffset,mergedData,mergedBss,base,etype,outSymbols,maxDataAlign,maxBssAlign,mergedRodata,maxRodataAlign,mergedDebugLine,mergedDebugInfo,mergedDebugAbbrev,mergedEhFrame,ehFramePatches,ehFrameTable,mergedTls,tlsVaddr,maxTlsAlign,mergedTbss,pageSize);
     size_t callCount=0;for(const auto& r:pending)if(r.type==283)++callCount;
     std::cout<<"Aster v"<<kVersion<<": linked "<<inputs.size()<<" AArch64 ET_REL object(s), applied "<<pending.size()<<" relocation(s) ("<<callCount<<" CALL26) to ELF64 "<<(etype==2?"ET_EXEC":"ET_DYN")<<" ("<<mergedText.size()<<" text bytes, "<<mergedRodata.size()<<" rodata bytes, "<<mergedData.size()<<" data bytes, "<<mergedBss<<" bss bytes): "<<output<<"\n";
 }
@@ -9808,6 +9833,8 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "  link-obj   link ET_REL objects into a fixed-address ET_EXEC\n"
     "  link-pie   link ET_REL objects into a static PIE (ET_DYN)\n"
     "  link-so    link ET_REL PIC objects into one shared object (cross-.so imports via PLT/GOT)\n"
+    "  --page-size N  load-segment page size for build*/link* (4096 default; 16384 for\n"
+    "               Android 15+ 16 KB-page devices, required when targetSdk >= 35)\n"
     "  build-apk  <input.so|input.ast> -o <app.apk> --package PKG [--libname NAME] [--abi ABI]\n"
     "            [--label TXT] [--string NAME=VALUE] [--min-sdk N] [--target-sdk N] [--version-code N] [--version-name T]\n"
     "            [--emit-so PATH] (keep the .so compiled from .ast input)\n"
@@ -11908,7 +11935,10 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
 static int buildSoFromSource(const std::string& src, const std::string& output,
                              const std::string& soname, const std::vector<std::string>& needed,
                              bool boundsCheck=false,
-                             bool debugLine=false, const std::string& sourcePath=""){
+                             bool debugLine=false, const std::string& sourcePath="",
+                             // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
+                             // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
+                             uint64_t pageSize=4096){
     Parser p(src,false,dirNameOf(sourcePath));p.parse();
     // v0.23.52-dev: `tls let` is a first-class global in a shared object too —
     // each thread that dlopen's the module gets its own copy out of PT_TLS, and
@@ -11963,7 +11993,7 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
         dl=encodeDebugLine(L.lineRows,L.ins.size()*4,sl==std::string::npos?std::string():sourcePath.substr(0,sl),baseNameOf(sourcePath));
     }
     spec.debugLine=dl.bytes;
-    for(uint64_t site:dl.patchSites)dbgPatchAddress(spec.debugLine,site,kSharedTextVaddr);
+    for(uint64_t site:dl.patchSites)dbgPatchAddress(spec.debugLine,site,pageSize);
     // v0.23.32-dev: the same unit's names and types. Its addresses are left as
     // placeholders: a shared object's segment addresses are decided inside
     // writeSharedObjectDyn, which is where the patches are resolved.
@@ -11988,7 +12018,7 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
     const bool dynamic=!spec.importFuncs.empty()||!spec.importObjects.empty()||!spec.needed.empty()||!soname.empty()||!spec.rodata.empty();
     if(dynamic){
         if(spec.soname.empty())spec.soname=baseNameOf(output);
-        writeSharedObjectDyn(output,text,pending,spec);
+        writeSharedObjectDyn(output,text,pending,spec,pageSize);
         std::cout<<"Aster v"<<kVersion<<": emitted AArch64 ELF64 ET_DYN shared object ("<<L.ins.size()<<" instructions, "<<exports.size()<<" exported functions, "
             <<L.globals.size()<<" globals, "<<spec.importFuncs.size()<<" PLT imports, "<<spec.importObjects.size()<<" GOT imports, SONAME "<<spec.soname<<"): "<<output<<"\n";
     } else {
@@ -11996,7 +12026,7 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
                           ef.bytes,ef.patches,ehFrameFdeList(ef),
                           // v0.23.52-dev: the thread-local block, same as the
                           // dynamic writer gets.
-                          L.tls,L.tbssSize);
+                          L.tls,L.tbssSize,pageSize);
         std::cout<<"Aster v"<<kVersion<<": emitted AArch64 ELF64 ET_DYN shared object ("<<L.ins.size()<<" instructions, "<<exports.size()<<" exported functions, "<<L.globals.size()<<" globals, "<<L.data.size()<<" data bytes, "<<L.bssSize<<" bss bytes): "<<output<<"\n";
     }
     return 0;
@@ -12005,6 +12035,10 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
 int main(int argc,char**argv){
     const std::string cmd=argc>1?argv[1]:"";
     std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false;
+    // v0.23.54-dev: load-segment page size. 4096 is the default (and the historical
+    // value); 16384 is required so an app with targetSdk >= 35 loads on Android 15+
+    // 16 KB-page devices. Only these two are accepted.
+    uint64_t pageSize=4096;
     // Where @embed("...") and `include "..."` resolve their relative paths:
     // --embed-dir / --include-dir when given, otherwise the directory the file
     // that wrote the path lives in.
@@ -12030,11 +12064,14 @@ int main(int argc,char**argv){
             else if(a.rfind("--embed-dir=",0)==0)embedDir=a.substr(12);
             else if(a=="--include-dir"){if(i+1>=argc)return false;includeDir=argv[++i];}
             else if(a.rfind("--include-dir=",0)==0)includeDir=a.substr(14);
+            else if(a=="--page-size"){if(i+1>=argc){std::cerr<<"aster: --page-size requires an argument\n";return false;} pageSize=(uint64_t)strtoull(argv[++i],nullptr,10);}
+            else if(a.rfind("--page-size=",0)==0)pageSize=(uint64_t)strtoull(a.substr(12).c_str(),nullptr,10);
             else if(!a.empty()&&a[0]=='-')return false;
             else sources.push_back(a);
         }
         if(haveSoname&&soname.empty()){std::cerr<<"Aster: --soname requires a non-empty library name\n";return false;}
         for(const auto& lib:needed)if(lib.empty()){std::cerr<<"Aster: --needed requires a non-empty library name\n";return false;}
+        if(pageSize!=4096&&pageSize!=16384){std::cerr<<"Aster: --page-size must be 4096 or 16384 (got "<<pageSize<<")\n";return false;}
         publishPathOpts();
         return haveOutput;
     };
@@ -12059,6 +12096,8 @@ int main(int argc,char**argv){
                 else if(a.rfind("--embed-dir=",0)==0)embedDir=a.substr(12);
                 else if(a=="--include-dir"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --include-dir requires an argument\n";return 2;} includeDir=v;}
                 else if(a.rfind("--include-dir=",0)==0)includeDir=a.substr(14);
+                else if(a=="--page-size"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --page-size requires an argument\n";return 2;} pageSize=(uint64_t)strtoull(v,nullptr,10);}
+                else if(a.rfind("--page-size=",0)==0)pageSize=(uint64_t)strtoull(a.substr(12).c_str(),nullptr,10);
                 else if(a=="--version-name"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --version-name requires an argument\n";return 2;} verName=v;}
                 else if(a=="--min-sdk"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --min-sdk requires an argument\n";return 2;} minSdk=atoi(v);}
                 else if(a=="--target-sdk"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --target-sdk requires an argument\n";return 2;} targetSdk=atoi(v);}
@@ -12096,6 +12135,7 @@ int main(int argc,char**argv){
             if(!haveOutput){std::cerr<<"aster: build-apk: missing -o <output.apk>\n";return 2;}
             if(!havePkg){std::cerr<<"aster: build-apk: missing --package <android.package.name>\n";return 2;}
             if(inSo.empty()){std::cerr<<"aster: build-apk: missing input .so or .ast file\n";return 2;}
+            if(pageSize!=4096&&pageSize!=16384){std::cerr<<"aster: build-apk: --page-size must be 4096 or 16384 (got "<<pageSize<<")\n";return 2;}
             if(libname.empty()){libname=baseNameOf(output); size_t dp=libname.rfind(".apk"); if(dp==libname.size()-4) libname=libname.substr(0,dp);}
             if(!emitSo.empty()&&emitSo==output){std::cerr<<"aster: build-apk: --emit-so must differ from -o\n";return 2;}
             if(signMode!="debug"&&signMode!="release"){
@@ -12121,7 +12161,7 @@ int main(int argc,char**argv){
                 std::string src=readFile(inSo);
                 setSourceCache(inSo, src);
                 std::string soPath=emitSo.empty()?(output+".aster-tmp.so"):emitSo;
-                try{ buildSoFromSource(src,soPath,soSoname.empty()?("lib"+libname+".so"):soSoname,{},boundsCheck,debugLine,inSo); }
+                try{ buildSoFromSource(src,soPath,soSoname.empty()?("lib"+libname+".so"):soSoname,{},boundsCheck,debugLine,inSo,pageSize); }
                 catch(...){ if(emitSo.empty())std::remove(soPath.c_str()); throw; }
                 std::string soText=readFile(soPath); so.assign(soText.begin(),soText.end());
                 if(emitSo.empty())std::remove(soPath.c_str());
@@ -12168,7 +12208,7 @@ int main(int argc,char**argv){
         }
         if(cmd=="link-obj"||cmd=="link-pie"){
             if(!parseArgs(2)||sources.empty()||pic||boundsCheck||!soname.empty()||!needed.empty()){std::cerr<<kUsage;return 2;}
-            if(cmd=="link-obj")linkObjects(sources,output);else linkObjects(sources,output,0,3);
+            if(cmd=="link-obj")linkObjects(sources,output,0x400000,2,pageSize);else linkObjects(sources,output,0,3,pageSize);
             return 0;
         }
         if(cmd=="link-so"){
@@ -12182,7 +12222,7 @@ int main(int argc,char**argv){
         if((!soname.empty()||!needed.empty())&&cmd!="build-so"){std::cerr<<kUsage;return 2;}
         auto src=readFile(sources[0]);
         setSourceCache(sources[0], src);
-        if(cmd=="build-so") return buildSoFromSource(src,output,soname,needed,boundsCheck,debugLine,sources[0]);
+        if(cmd=="build-so") return buildSoFromSource(src,output,soname,needed,boundsCheck,debugLine,sources[0],pageSize);
         Parser p(src,true,dirNameOf(sources[0]));p.parse();auto funcs=compileProgram(p.functions,p.globals,pic,true,boundsCheck,debugLine);
         // -g: one DWARF line program for this translation unit, from the rows
         // codegen collected. Its addresses stay relative to the object's own
@@ -12210,7 +12250,7 @@ int main(int argc,char**argv){
             return encodeEhFrame(L,funcs);
         };
         if(cmd=="build-obj"){writeObject(output,funcs,p.globals,pic,makeDebugLine(),makeDebugInfo(),makeEhFrame());size_t n=0;for(const auto&f:funcs)n+=f.code.size();size_t g=0;for(const auto&x:p.globals)if(!x.external)++g;std::cout<<"Aster v"<<kVersion<<": emitted AArch64 ELF64 ET_REL object"<<" ("<<n<<" instructions, "<<funcs.size()<<" functions, "<<g<<" globals"<<(pic?", PIC":"")<<(debugLine?", with .debug_line":"")<<"): "<<output<<"\n";}
-        else {std::string temp=output+".aster-tmp.o";writeObject(temp,funcs,p.globals,false,makeDebugLine(),makeDebugInfo(),makeEhFrame());try{if(cmd=="build-pie")linkObjects({temp},output,0,3);else linkObjects({temp},output);}catch(...){std::remove(temp.c_str());throw;}std::remove(temp.c_str());}
+        else {std::string temp=output+".aster-tmp.o";writeObject(temp,funcs,p.globals,false,makeDebugLine(),makeDebugInfo(),makeEhFrame());try{if(cmd=="build-pie")linkObjects({temp},output,0,3,pageSize);else linkObjects({temp},output,0x400000,2,pageSize);}catch(...){std::remove(temp.c_str());throw;}std::remove(temp.c_str());}
         return 0;
     }catch(const std::exception&e){reportError(e.what());return 1;}
 }
