@@ -46,8 +46,8 @@ fi
 printf '%s\n' '[2/9] Source guards: the literal surface'
 # the version constant — pinned to the current dev line so a stale compiler
 # (or a forgotten version bump) fails loudly rather than silently.
-grep -qF '#define ASTER_VERSION_STRING "0.23.53-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.53-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.54-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.54-dev" >&2; exit 1; }
 # the character-literal token, sitting beside the other value tokens
 grep -qF '    Char,                // v0.23.50-dev: the character literal' src/aster.cpp \
     || { echo "FAIL: TK no longer declares Char" >&2; exit 1; }
