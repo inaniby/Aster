@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <functional>            // AXML builder uses std::function
+#include <cassert>              // Typed IR guard (P3.1 follow-up)
 
 // The directory a path lives in, or "" when it has none. A relative path
 // written inside a source file — @embed's, or `include`'s — resolves against
@@ -86,7 +87,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.52-dev"
+#define ASTER_VERSION_STRING "0.23.53-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -704,6 +705,11 @@ struct Expr {
     // (e.g. sizeof(x)). The folded i32 result lives in `n` (set at parse time
     // for the type-form, during sema for the expression-form).
     Ty ty=Ty::I32; std::vector<uint32_t> idims;
+    // Typed IR (P3.1 follow-up): the resolved type of this node, filled by
+    // Sema::annotate during the semantic pass and read by Codegen so it no
+    // longer recomputes typeOf. Distinct from `ty`, which only carries the
+    // sizeof/len type-form argument and the Cast target type.
+    Ty type=Ty::I32;
     // v0.23.25-dev: this Num node is a Bool literal (true/false), not the
     // integer 0 or 1. Every type rule reads the flag: the literal types as
     // bool, folds as no integer constant at all, and initializes a bool slot
@@ -3540,6 +3546,29 @@ struct Codegen {
         return d;
     }
     int gen(const Expr& e,Ty want=Ty::I32){
+        // Typed IR (P3.1 follow-up): guard. Every node gen reaches must carry
+        // a resolved type agreeing with Codegen's exprType -- the "two
+        // resolvers, one contract" check made mechanical: annotate must have
+        // visited this node and reached the same answer. The integer
+        // arithmetic family is exempt: Sema types those i32 while Codegen
+        // promotes to the operand width (promoteInt), a deliberate
+        // long-standing difference -- Sema is weak about arithmetic width and
+        // checkCall rejects narrowing, so unifying the two is a separate
+        // decision (see VALIDATION-v0.23.53-dev.md). annotate still fills
+        // those nodes' `type` with the Sema answer; they are simply not
+        // asserted here, and Codegen must keep reading exprType for them.
+        switch(e.k){
+            case Expr::Add: case Expr::Sub: case Expr::Mul: case Expr::Div:
+            case Expr::Neg: case Expr::Mod:
+            case Expr::BitAnd: case Expr::BitOr: case Expr::BitXor:
+                break;
+            default:
+                if(e.type!=exprType(e)){
+                    std::fprintf(stderr,"TypedIR MISMATCH kind=%d type=%s exprType=%s\n",
+                                 (int)e.k,tyName(e.type),tyName(exprType(e)));
+                    std::abort();
+                }
+        }
         switch(e.k){
             case Expr::String:{emitGlobalAddress(e.name);int d=temp();emit(0xaa1003e0u|uint32_t(d));return d;}
             // @embed: the same thing as a string literal — the address of a
@@ -3886,7 +3915,11 @@ struct Codegen {
                 return a;
             }
             case Expr::Field:{
-                const Ty base=exprType(*e.a);
+                // Typed IR (P3.1 follow-up): the base is a struct lvalue or a
+                // ptr<S> -- never arithmetic -- so its resolved type (filled by
+                // annotate, verified by gen's entry guard) is read directly
+                // instead of recomputing exprType.
+                const Ty base=e.a->type;
                 const StructField* f=structFieldOf(base,e.name);
                 if(!f)throw Error("struct '"+structOf(structBaseId(base,e.name)).name+"' has no field named '"+e.name+"'");
                 emitStructAddr(e);
@@ -3935,7 +3968,8 @@ struct Codegen {
                 // ptr element reads at its own width; a struct element has no
                 // register form, refused exactly as a struct variable is.
                 if(e.a->k==Expr::Field){
-                    const StructField* af=arrayFieldOf(exprType(*e.a->a),*e.a);
+                    // base is a struct or ptr<S> lvalue -- never arithmetic
+                    const StructField* af=arrayFieldOf(e.a->a->type,*e.a);
                     if(af){
                         const Ty elem=af->ty;
                         if(tyIsStruct(elem))
@@ -3955,7 +3989,8 @@ struct Codegen {
                 // `&` — and naming which shape this is keeps a future one from
                 // falling into the named-array path by accident.
                 if(e.name.empty()&&e.a->k!=Expr::Index){
-                    const Ty at=exprType(*e.a);
+                    // base is an '&' or a ptr expression -- never arithmetic
+                    const Ty at=e.a->type;
                     if(tyIsPtrToElem(at)){
                         const Ty elem=ptrElemType(at);
                         if(tyIsStruct(elem))
@@ -4101,7 +4136,9 @@ struct Codegen {
                 // used to materialize -5 at 32 bits and move it with MOV W,
                 // leaving 4294967291 in the i64 slot — and a literal that does
                 // not fit in 32 bits was truncated before it ever got there.
-                const Ty armTy=tyIs64(want)?Ty::I64:exprType(e);
+                // Typed IR (P3.1 follow-up): the conditional's own resolved
+                // type (its two arms agree) instead of recomputing exprType.
+                const Ty armTy=tyIs64(want)?Ty::I64:e.type;
                 const bool wide=tyIs64(armTy);
                 int t=temp();
                 size_t toElse;const int cond=emitCondition(*e.a,toElse);
@@ -6290,6 +6327,22 @@ struct Sema {
         if(value<0||static_cast<uint64_t>(value)>=length)
             throw Error(loc(index.line,index.col,"array index out of bounds for '"+name+"': index "+std::to_string(value)+", length "+std::to_string(length)));
     }
+    // Typed IR (P3.1 follow-up): resolve this node's type and every
+    // descendant's, writing the answer into each node's `type` field so
+    // Codegen reads it instead of recomputing typeOf. It runs from checkStmt
+    // while the scope in which the node's names resolve is live (a let's
+    // binding is registered before its initializer is annotated), and it
+    // recurses over a/b/args itself because typeOf does not visit every
+    // child -- an Index's Field base and a StructLit's field values among
+    // them.
+    Ty annotateExpr(Expr& e){
+        const Ty t=typeOf(e);
+        e.type=t;
+        if(e.a)annotateExpr(*e.a);
+        if(e.b)annotateExpr(*e.b);
+        for(auto& x:e.args)if(x)annotateExpr(*x);
+        return t;
+    }
     Ty typeOf(const Expr& e){
         switch(e.k){
             case Expr::Num:
@@ -6796,10 +6849,10 @@ struct Sema {
                     // Everything else is the constant-integer path, range
                     // checked exactly as a global array initializer is.
                     if(tyIsStruct(s.ty)){
-                        const Ty actual=typeOf(*s.expr);
+                        const Ty actual=annotateExpr(*s.expr);
                         checkValue(s.ty,*s.expr,actual,"array initializer type mismatch");
                     } else if(s.ty==Ty::Ptr){
-                        const Ty actual=typeOf(*s.expr);
+                        const Ty actual=annotateExpr(*s.expr);
                         if(actual.k!=Ty::Ptr&&!isNullConstant(*s.expr))
                             throw Error(loc(s.line,s.col,"array initializer type mismatch: expected ptr, got "+tyNameFull(actual)+": "+s.name));
                     } else if(s.ty==Ty::Bool){
@@ -6808,7 +6861,7 @@ struct Sema {
                         // second and refuses the first, so the value is read
                         // from whichever spelling is there and the range check
                         // is the same one a global bool initializer has.
-                        const Ty actual=typeOf(*s.expr);
+                        const Ty actual=annotateExpr(*s.expr);
                         if(actual.k==Ty::Ptr||tyIsStruct(actual))
                             throw Error(loc(s.line,s.col,"array initializer type mismatch: expected bool, got "+tyNameFull(actual)+": "+s.name));
                         int64_t v=0;
@@ -6817,7 +6870,7 @@ struct Sema {
                         if(!initializerFits(s.ty,*s.expr,v))
                             throw Error(loc(s.line,s.col,"local array initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(v)+")"));
                     } else {
-                        const Ty actual=typeOf(*s.expr);
+                        const Ty actual=annotateExpr(*s.expr);
                         if(actual==Ty::Bool)
                             throw Error(loc(s.line,s.col,"array initializer type mismatch: expected "+tyNameFull(s.ty)+", got bool: "+s.name));
                         if(actual.k==Ty::Ptr)
@@ -6843,7 +6896,7 @@ struct Sema {
                     // binding and move on. (Only a struct local may omit `=`;
                     // every other kind is required to have one by the parser.)
                     if(!s.expr){scopes.back()[s.name]=Binding{s.ty,0,Ty::I32,{},FuncSig(),false};return;}
-                    const Ty actual=typeOf(*s.expr);
+                    const Ty actual=annotateExpr(*s.expr);
                     if(tyIsStruct(s.ty)||tyIsStruct(actual))
                         checkValue(s.ty,*s.expr,actual,"type mismatch initializing '"+s.name+"'");
                     else if(s.isBool){
@@ -6902,7 +6955,7 @@ struct Sema {
                 return;
             }
             case Stmt::Assign: {
-                const Ty actual=typeOf(*s.expr);
+                const Ty actual=annotateExpr(*s.expr);
                 if(const Binding* b=find(s.name)){
                     if(b->len)throw Error(loc(s.line,s.col,"cannot assign to an array as a whole: "+s.name));
                     if(tyIsStruct(b->ty)||tyIsStruct(actual))
@@ -6957,7 +7010,7 @@ struct Sema {
                 // the element type like any other store. It used to be refused
                 // outright whenever it was a ptr, which is what kept `a[0] = p`
                 // out of a `ptr[N]` — and what left `i32arr[0] = true` accepted.
-                if(typeOf(*s.idx)==Ty::Ptr)throw Error(loc(s.line,s.col,"pointer indexing is not supported yet"));
+                if(annotateExpr(*s.idx)==Ty::Ptr)throw Error(loc(s.line,s.col,"pointer indexing is not supported yet"));
                 const Binding* b=find(s.name);
                 if(b){
                     if(b->len)checkArrayBounds(s.name,*s.idx);
@@ -6968,7 +7021,7 @@ struct Sema {
                     checkArrayBounds(s.name,*s.idx);
                 }
                 const Ty elem=arrayElemTypeOf(s.name);
-                const Ty actual=typeOf(*s.expr);
+                const Ty actual=annotateExpr(*s.expr);
                 checkValue(elem,*s.expr,actual,"type mismatch assigning array element of '"+s.name+"'");
                 return;
             }
@@ -6981,8 +7034,8 @@ struct Sema {
                     throw Error(loc(s.line,s.col,"cannot assign to "+rowWhat+"[i]: it addresses a row, not an element"));
                 // The target is a Field expression: typeOf both proves the base
                 // is a struct or ptr<S> and yields the field's declared type.
-                const Ty field=typeOf(*s.idx);
-                const Ty actual=typeOf(*s.expr);
+                const Ty field=annotateExpr(*s.idx);
+                const Ty actual=annotateExpr(*s.expr);
                 checkValue(field,*s.expr,actual,"type mismatch assigning field '"+s.idx->name+"'");
                 // v0.23.38-dev: `h.onClick = inc;` — a fn-pointer field is
                 // stored by signature, which is the difference between a
@@ -6997,8 +7050,8 @@ struct Sema {
                 return;
             }
             case Stmt::DerefAssign: {
-                if(typeOf(*s.idx)!=Ty::Ptr)throw Error(loc(s.line,s.col,"dereference assignment requires a ptr expression"));
-                typeOf(*s.expr);   // a ptr value is legal here (64-bit store)
+                if(annotateExpr(*s.idx)!=Ty::Ptr)throw Error(loc(s.line,s.col,"dereference assignment requires a ptr expression"));
+                annotateExpr(*s.expr);   // a ptr value is legal here (64-bit store)
                 return;
             }
             case Stmt::Return: {
@@ -7007,7 +7060,7 @@ struct Sema {
                     if(b&&b->len)
                         throw Error(loc(s.line,s.col,"cannot return a local array (its frame storage does not outlive the call): "+s.expr->name));
                 }
-                const Ty actual=typeOf(*s.expr);
+                const Ty actual=annotateExpr(*s.expr);
                 if(tyIsStruct(retType)||tyIsStruct(actual))
                     checkValue(retType,*s.expr,actual,"return type mismatch in function "+fn);
                 else if(retBool){
@@ -7034,22 +7087,22 @@ struct Sema {
                 // value expression would (argument count, signature, width),
                 // then throw the result away. Only a Call or FieldCall reaches
                 // here; the parser guarantees it.
-                typeOf(*s.expr);
+                annotateExpr(*s.expr);
                 return;
             }
             case Stmt::If:
-                checkCondition(*s.expr);
+                annotateExpr(*s.expr);checkCondition(*s.expr);
                 checkBlock(s.thenBody,true);
                 checkBlock(s.elseBody,true);
                 return;
             case Stmt::While:
-                checkCondition(*s.expr);
+                annotateExpr(*s.expr);checkCondition(*s.expr);
                 ++loopDepth;loopNames.push_back(s.label);checkBlock(s.thenBody,true);loopNames.pop_back();--loopDepth;
                 return;
             case Stmt::For:
                 scopes.emplace_back();
                 for(const auto& init:s.forInit)checkStmt(init);
-                checkCondition(*s.expr);
+                annotateExpr(*s.expr);checkCondition(*s.expr);
                 ++loopDepth;loopNames.push_back(s.label);checkBlock(s.thenBody,true);loopNames.pop_back();--loopDepth;
                 for(const auto& step:s.forStep)checkStmt(step);
                 scopes.pop_back();
@@ -7072,11 +7125,12 @@ struct Sema {
             // its own scope, so a `let` inside one case cannot be seen by the
             // next (there is no fallthrough to carry it anyway).
             case Stmt::Switch: {
-                const Ty subj=typeOf(*s.expr);
+                const Ty subj=annotateExpr(*s.expr);
                 if(!tyIsInteger(subj))
                     throw Error(loc(s.expr->line,s.expr->col,"switch subject must be an integer, not "+tyNameFull(subj)));
                 std::set<int64_t> seen;
                 for(size_t i=0;i<s.caseExprs.size();++i){
+                    annotateExpr(*s.caseExprs[i]);
                     const Expr& c=*s.caseExprs[i];
                     int64_t v=0;
                     if(!constantInteger(c,v))
