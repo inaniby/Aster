@@ -361,7 +361,7 @@ def decode_png(b):
 
 # ---------------------------------------------------------------- main validation
 def validate(path, want_pkg=None, want_lib=None, want_abi="arm64-v8a", want_label=None,
-             want_label_literal=False, want_label_reference=False):
+             want_label_literal=False, want_label_reference=False, want_page_size=4096):
     allok = True
     print("[1] ZIP integrity / CRC-32")
     with zipfile.ZipFile(path) as z:
@@ -384,7 +384,7 @@ def validate(path, want_pkg=None, want_lib=None, want_abi="arm64-v8a", want_labe
         if m not in names: allok = fail("missing %s" % m)
         else: ok("%s present" % m)
 
-    print("[3] .so 4K alignment")
+    print("[3] .so %d-byte alignment" % want_page_size)
     # need raw zip to read local-header offsets
     raw = open(path, "rb").read()
     so_align_ok = True
@@ -402,9 +402,12 @@ def validate(path, want_pkg=None, want_lib=None, want_abi="arm64-v8a", want_labe
             idx = raw.find(b"PK\x03\x04", idx + 4)
         if off is None:
             allok = fail("cannot locate local header for %s" % n); so_align_ok = False; break
-        if off % 4096 != 0:
-            allok = fail("%s data starts at %d (not 4K-aligned)" % (n, off)); so_align_ok = False
-    if so_align_ok: ok("all .so entries 4K-aligned")
+        # Android's loader mmaps the .so straight out of the APK, so the entry's
+        # data offset must be congruent to the device page size. 4096 is the
+        # historical floor; 16384 is required on 16 KB-page devices.
+        if off % want_page_size != 0:
+            allok = fail("%s data starts at %d (not %d-aligned)" % (n, off, want_page_size)); so_align_ok = False
+    if so_align_ok: ok("all .so entries %d-byte aligned" % want_page_size)
 
     print("[3b] NativeActivity .so DT_NEEDED / external imports")
     # Guard against the classic launch crash: a NativeActivity .so that calls
@@ -1276,11 +1279,14 @@ def main():
     ap.add_argument("--label-reference", action="store_true",
                     help="require android:label to be a TYPE_REFERENCE into "
                          "resources.arsc (what build-apk --label-as-reference produces)")
+    ap.add_argument("--page-size", type=int, default=4096, choices=(4096, 16384),
+                    help="require every lib/*.so entry to be aligned to this page "
+                         "size inside the ZIP (4096 default; 16384 for 16 KB-page devices)")
     args = ap.parse_args()
     if not os.path.exists(args.apk):
         print("error: %s not found" % args.apk); sys.exit(2)
     ok = validate(args.apk, args.package, args.libname, args.abi, args.label,
-                  args.label_literal, args.label_reference)
+                  args.label_literal, args.label_reference, args.page_size)
     print("\n=== RESULT: %s ===" % ("ALL CHECKS PASSED" if ok else "SOME CHECKS FAILED"))
     sys.exit(0 if ok else 1)
 
