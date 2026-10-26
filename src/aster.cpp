@@ -87,7 +87,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.54-dev"
+#define ASTER_VERSION_STRING "0.23.55-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -11780,7 +11780,8 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
                     const std::string& abi, const std::vector<uint8_t>& so, int minSdk, int targetSdk,
                     const std::string& label, int verCode, const std::string& verName,
                     const std::vector<std::pair<std::string,std::string>>& extraStrings,
-                    const SigningKey& key, bool selfVerify, bool labelAsReference) {
+                    const SigningKey& key, bool selfVerify, bool labelAsReference,
+                    uint64_t pageSize = 4096) {
     // The icon is part of the package rather than an option: a launcher entry
     // with no icon falls back to the system default, which is the thing this
     // exists to fix. res/drawable-nodpi keeps the bitmap exact — Android will
@@ -11812,7 +11813,10 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     std::vector<ZIP::Entry> entries; std::vector<uint8_t> apk;
     auto append=[&](const std::string& name, const std::vector<uint8_t>& data, bool align){
         uint32_t crc=crc32(data.data(), data.size()); size_t off=apk.size();
-        if (align) { size_t lh = 30 + name.size(); size_t pad = (4096 - ((off + lh) % 4096)) % 4096; if (pad) apk.insert(apk.end(), pad, 0); off = apk.size(); }
+        // v0.23.55-dev: the shared-object entry must be aligned to the page size
+        // so Android's 16 KB-page loader can mmap it straight out of the APK. The
+        // default 4096 keeps the historical byte-for-byte APK layout unchanged.
+        if (align) { size_t lh = 30 + name.size(); size_t pad = (pageSize - ((off + lh) % pageSize)) % pageSize; if (pad) apk.insert(apk.end(), pad, 0); off = apk.size(); }
         auto lh=ZIP::localHeader(name, crc, data.size());
         apk.insert(apk.end(), lh.begin(), lh.end()); apk.insert(apk.end(), data.begin(), data.end());
         ZIP::Entry e; e.name=name; e.data=data; e.crc=crc; e.offset=off; entries.push_back(e);
@@ -12171,7 +12175,7 @@ int main(int argc,char**argv){
                     std::cerr<<"aster: build-apk: input is not an ELF shared object (expected a .so or a .ast): "<<inSo<<"\n";return 2;
                 }
             }
-            int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference);
+            int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,pageSize);
             if(r==0)std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2 dual-signed, "
                 <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n";
             return r;
