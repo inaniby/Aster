@@ -62,7 +62,10 @@ grep -qF 'Stmt s(Stmt::Expr);s.expr=std::move(e);' src/aster.cpp \
 # The Sema check — a discarded call is type-checked like a value.
 grep -qF 'a discarded call — type-check it exactly as a' src/aster.cpp \
     || { echo 'FAIL: sema no longer checks a discarded call' >&2; exit 1; }
-grep -qF 'typeOf(*s.expr);' src/aster.cpp \
+# v0.23.53-dev: the check enters through annotateExpr, which answers typeOf
+# for the node (and recurses into its children) and throws exactly where the
+# direct typeOf call did — the discarded call is still type-checked as a value.
+grep -qF 'annotateExpr(*s.expr);' src/aster.cpp \
     || { echo 'FAIL: sema no longer type-checks the discarded call expression' >&2; exit 1; }
 # The codegen — generate the call, then drop the result register.
 grep -qF '} else if(s.k==Stmt::Expr){' src/aster.cpp \
@@ -436,7 +439,7 @@ must_not_compile m1 m_probe
 # only in Sema (codegen does not re-check the field's kind), so dropping the
 # check opens exactly that hole. (Argument-count is enforced independently in
 # codegen too, so it is not the probe here.)
-build_mutant m2 's|^                typeOf(\*s.expr);$|                ;|'
+build_mutant m2 's|^                annotateExpr(\*s.expr);$|                ;|'
 must_accept m2 rej_notfunc
 # m3: codegen no longer emits the call, so the side effect it performed
 # disappears and the program diverges from C.

@@ -439,12 +439,19 @@ fn main() -> i32 { let a: i32[2][3] = 0; let i: i32 = 0; while (i < 2) { let j: 
 mutate 'm2: every level strides by the element' \
     's|            if(k>0)stride\*=(\*dims)\[k\];||' \
     must_differ 'a[0][2] after a full fill' 3 'fn main() -> i32 { let a: i32[2][3] = 0; let i: i32 = 0; while (i < 2) { let j: i32 = 0; while (j < 3) { a[i][j] = i * 3 + j + 1; j = j + 1; } i = i + 1; } return a[0][2]; }'
-# m3: sema checks only the outermost subscript again, so an inner bool
-# literal compiles — the hole this round's per-level walk closed. The mutant
-# therefore *accepts* what the real compiler refuses, and the rejection matrix
-# above is what pins the refusal.
-mutate 'm3: only the outer subscript is checked' \
-    's|for(uint32_t l=ch.level+1;l-->0;){|for(uint32_t l=ch.level+1;l-->ch.level;){|' \
+# m3: the per-level bool-index check is withdrawn at its source, so an inner
+# bool literal compiles — the hole this round's per-level walk closed. The
+# mutant therefore *accepts* what the real compiler refuses, and the rejection
+# matrix above is what pins the refusal. The first draft of this mutation
+# truncated the walk instead ("only the outermost subscript is checked",
+# which was the v0.23.31-dev hole), but v0.23.53-dev's annotate recurses into
+# a chain's inner Index, so the inner subscript is type-checked again as its
+# own one-subscript chain and the truncation no longer re-opens the hole —
+# measured: the truncated mutant still refused a[true][0]. Withdrawing the
+# check itself does. The 24-space indent keeps the sed off the base-type
+# rejectBool at the same call, which the scalar-base rows pin instead.
+mutate 'm3: the per-level bool-index check is withdrawn' \
+    's|                        rejectBool(idxTy,"an array index");||' \
     must_now_compile 'a[true][0]' 'fn main() -> i32 { let a: i32[2][3] = 0; return a[true][0]; }'
 # m4: the single-subscript row store is no longer refused — the check that
 # reads the dimension count for a target the parser handed over as itself.

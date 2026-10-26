@@ -652,8 +652,19 @@ build_mutant m3 's/if(e.name=="store_u16"&&!functionArities.count(e.name)){/if(f
 must_not_compile m3 u16_trunc
 build_mutant m4 's/if(e.name=="store_i64"&&!functionArities.count(e.name)){/if(false){/'
 must_not_compile m4 i64_widen_neg
+# m5: callType stops answering I64 for the quadword intrinsics, so the
+# arithmetic that consumes a load_i64 result loses its i64 operand width.
+# The first draft expected a run-time divergence (must_diverge), but
+# v0.23.53-dev's gen-entry guard compares the annotated type against
+# exprType on every node — Sema still answers i64, codegen's callType now
+# answers i32, and the guard aborts the compile with TypedIR MISMATCH
+# (measured: kind=3 type=i64 exprType=i32). The damage is still caught, one
+# layer earlier and louder, so the expectation is the compile-time abort. If
+# the guard is ever removed, this row fails and the mutation must be
+# re-pointed at an emission-site width instead — which is exactly the
+# discipline the mutation layer exists to enforce.
 build_mutant m5 's/if((e.name=="load_i64"||e.name=="store_i64")&&!functionArities.count(e.name))return Ty::I64;//'
-must_diverge m5 i64_call_arith
+must_not_compile m5 i64_call_arith
 build_mutant m6 's/int v=gen(\*e.args\[1\],Ty::I64);int a=gen(\*e.args\[0\]);/int v=gen(*e.args[1]);int a=gen(*e.args[0]);/'
 must_diverge m6 i64_widen_neg
 build_mutant m7 's/if(e.name=="load_u16"&&!functionArities.count(e.name)){/if(e.name=="load_u16"){/'

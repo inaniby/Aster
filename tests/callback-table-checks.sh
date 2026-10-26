@@ -592,8 +592,13 @@ must_accept m2 rej_sig
 build_mutant m3 's|if(pendingFuncType){fieldIsFunc=true;fieldFuncSig=pendingFuncSig;|if(false){fieldIsFunc=true;fieldFuncSig=pendingFuncSig;|'
 must_not_compile m3 ct_probe
 # m4: gen hands a null signature to the call sequence — the i64 width and the
-# i64 result both revert to the untyped rule.
-build_mutant m4 's|const FuncSig\* fs=fieldSigOf(e);|const FuncSig* fs=(const FuncSig*)0;|'
+# i64 result both revert to the untyped rule. The sed is pinned to the gen
+# site's spelling (16 spaces of indent) so it cannot also null the
+# fieldCallType oracle beside it: since v0.23.53-dev the gen-entry guard
+# compares every node's annotated type against exprType, so a nulled oracle
+# aborts the compile instead of diverging at run time — that corruption is
+# typedir-mutation.sh's to catch, and this mutation stays about emission.
+build_mutant m4 's|                const FuncSig\* fs=fieldSigOf(e);|                const FuncSig* fs=(const FuncSig*)0;|'
 must_diverge m4 ct_wide
 # m5: the callee is read after the arguments took X0-X7 — the struct address
 # lands in an argument register.

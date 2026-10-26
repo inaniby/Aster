@@ -290,7 +290,10 @@ guard 'indirect-call leaf SXTW'          'if(tyIs64(want)&&rt==Ty::I32)emit(0x93
 guard 'ptr index derives ptr<T> element'  'if(tyIsPtrToElem(st))pe=ptrElemType(st);'                          1
 guard 'ptr index derives ptr<S> element'  'else if(tyIsPtrToStruct(st))pe=Ty::ofStruct(st.sid);'              1
 guard 'ptr index reaches the shared leaf' 'emitElemIndex(r,pe);'                                                1
-guard 'Cond arm width'                    'const Ty armTy=tyIs64(want)?Ty::I64:exprType(e);'           1
+# v0.23.53-dev: the arm type is read from the annotation annotate filled
+# (e.type) instead of being recomputed — same value, one resolver. The i64
+# consumer still widens the arm explicitly, which is what this pin is about.
+guard 'Cond arm width'                    'const Ty armTy=tyIs64(want)?Ty::I64:e.type;'           1
 guard 'Neg passes want through'           'int a=gen(*e.a,want);'                                      1
 # v0.23.28-dev: three paths allocate a local array now — a struct element
 # (one store per element), a ptr element (an address per element) and the
@@ -508,7 +511,7 @@ M4 deref leaf SXTW removed~sed~/if(tyIs64(want))emit(0x93407c00u|(uint32_t(a)<<5
 M5 field leaf SXTW removed~sed~/if(tyIs64(want)&&f->ty==Ty::I32)emit(0x93407c00u/d~53
 M6 idx leaf SXTW removed~sed~/if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u/d~54 57 58
 M7 slotElemTypes removed~sed~s/slotElemTypes\[slot\]=elem;//~81 82 83
-M8 cond armTy reverted~sed~s/const Ty armTy=tyIs64(want)?Ty::I64:exprType(e);/const Ty armTy=exprType(e);/~61 62 63 64
+M8 cond armTy reverted~sed~s/const Ty armTy=tyIs64(want)?Ty::I64:e.type;/const Ty armTy=e.type;/~61 62 63 64
 M9 array esz forced to 4~sed~s/const uint32_t esz=tySize(elem);/const uint32_t esz=4u;/~82 86
 M10 global var SXTW removed~sed~/if(tyIs64(want)&&globalTypeOf(e.name)==Ty::I32)emit(0x93407c00u/d~56
 M11 element load width ignored~sed~s/emit(loadGlobalT(d,elem));/emit(loadGlobalT(d,Ty::I32));/~81 82 87
