@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.53-dev.** One table per area. "Since" is the version that
+**As of v0.23.54-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -238,6 +238,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | `build-elf` — fixed-address ELF64 `ET_EXEC` (`0x400000`) | shipped | early | `smoke.sh` |
 | `build-pie` / `link-pie` — static PIE with `RELATIVE` self-relocation | shipped | v0.22.x | `pie-so-checks.sh`, `e2e-pie-so.sh` |
 | `build-so` / `link-so` — `ET_DYN` with `DT_SONAME`, `--needed`, `--pic` | shipped | v0.22.21-dev | `so-dyn-checks.sh`, `e2e-so-import.sh` |
+| **Load-segment page size** — `--page-size 4096|16384` (default `4096`) on `build-elf`/`build-pie`/`build-so`/`link-obj`/`link-pie`/`build-apk`; every `PT_LOAD` gets `p_align` and `p_vaddr`/`p_offset` congruent mod the page size, so a `targetSdk >= 35` app loads on Android 15+ 16 KB-page devices. `4096` reproduces the pre-16 KB bytes exactly (baseline 0 drift); `16384` switches every load segment to `0x4000`; the three ELF writers no longer hard-code `0x1000`; no codegen change (the `ADRP` encoding is 4 KB-granular and 16 KB is a superset) | shipped | v0.23.54-dev | `page-size-checks.sh` |
 | Auto `DT_NEEDED` for known NDK symbols (`liblog.so`, `libandroid.so`, …) | shipped | v0.22.21-dev | `apk-checks.sh` |
 | `.plt` stubs, `JUMP_SLOT`/`GLOB_DAT` imports, `DT_JMPREL`/`DT_PLTGOT` | shipped | v0.22.21-dev | `so-dyn-checks.sh` |
 | `DT_HASH` + `DT_GNU_HASH` (bloom filter, buckets, chains) | shipped | v0.22.19.1-dev | `gnu-hash-checks.sh` |
