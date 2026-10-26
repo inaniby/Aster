@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.51-dev.** One table per area. "Since" is the version that
+**As of v0.23.53-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -234,7 +234,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | Standalone semantic pass (P3.1) — type checking over the AST before emission, with its own scope stack | shipped | v0.23.0-dev | `sema-checks.sh` |
 | Shared constant folding / comparison classification (one definition, both passes) | shipped | v0.23.0-dev | `sema-checks.sh` [2/6] |
 | `--bounds-check` accepted by the build commands, rejected by `link-*` | shipped | v0.23.1-dev | `runtime-bounds-checks.sh` [3/8] |
-| Typed IR (`TypedExpr` carrying its type) | planned (P3.1 follow-up) | — | — |
+| Typed IR (`Expr.type` carrying its resolved type) | shipped (P3.1 follow-up, structural nodes only) | v0.23.53-dev | `typedir-mutation.sh` |
 | `build-elf` — fixed-address ELF64 `ET_EXEC` (`0x400000`) | shipped | early | `smoke.sh` |
 | `build-pie` / `link-pie` — static PIE with `RELATIVE` self-relocation | shipped | v0.22.x | `pie-so-checks.sh`, `e2e-pie-so.sh` |
 | `build-so` / `link-so` — `ET_DYN` with `DT_SONAME`, `--needed`, `--pic` | shipped | v0.22.21-dev | `so-dyn-checks.sh`, `e2e-so-import.sh` |
