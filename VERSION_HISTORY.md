@@ -1,3 +1,10 @@
+## v0.23.56-dev — audit-driven hardening: `--page-size` documented, typed-IR status corrected, bootstrap-loop CI guard
+
+- **No compiler change.** The only edit to `src/aster.cpp` is the version constant.
+- **`--page-size` documented.** The flag (v0.23.54-dev ELF segments / v0.23.55-dev APK ZIP offset) was absent from `docs/language-reference.md` §11; it now has a full flag-table row covering its effect on every `PT_LOAD` `p_align` for `build*`/`link*` and on the embedded-`.so` ZIP offset for `build-apk`, the `4096`/`16384` acceptance rule, and the Android 15+ `targetSdk >= 35` requirement.
+- **Feature status corrected.** `FEATURE_STATUS.md` listed the standalone semantic pass / typed IR as `planned (P3.1)`; it is shipped — the semantic pass in v0.23.0-dev (P3.1) and the typed IR (every expression carries its resolved type into codegen, guarded by a contract at `gen()`) in v0.23.53-dev, mutation-witnessed by `tests/typedir-mutation.sh` (commit `fabab31`).
+- **Bootstrap-loop CI guard.** `tests/bootstrap-loop-checks.sh` guards the M4 self-hosting closed loop: it proves the host compiler reproduces `bootaster` byte-for-byte, that `bootaster` (run under qemu) recompiles `bootstrap/aster.ast` into `bootaster2` deterministically and into a valid ELF, and that host codegen is reproducible over a fixed corpus. It does not execute any product of the self-host (programs emitted by the self-hosted compiler are not currently qemu-loadable on this host — a known limitation, out of scope for the guard and covered by the differential suite against the C twin). Registered in `tests/ci.sh`.
+
 ## v0.23.55-dev — Android 16 KB-page support, completed: the `.so` ZIP-entry alignment
 
 - **The gap.** v0.23.54-dev made the *ELF load segments* 16 KB-aligned, but it

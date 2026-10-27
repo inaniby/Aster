@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.55-dev.** One table per area. "Since" is the version that
+**As of v0.23.56-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -271,7 +271,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | Multiple drawable densities or drawables beyond the launcher icon | **not planned** | — | Aster ships one resource; a real app's resources belong in a real asset pipeline |
 | Packing a program's own resources into the `.so` **instead of** `resources.arsc` | **not planned** | — | it does not work: `android:icon`/`android:label` are resource ids and only the table resolves them. The split is `resources.arsc` for what the framework reads, `@embed` for what the program reads |
 | Resource qualifiers (locale, density, night) / aapt-style resource compilation | **not planned** | — | one default configuration is what a NativeActivity app needs; `--string` covers the rest |
-| Standalone semantic pass / typed IR | planned (P3.1) | v0.23.0-dev | — |
+| Standalone semantic pass / typed IR | shipped | v0.23.0-dev (semantic pass, P3.1); v0.23.53-dev (typed IR: `Expr.type` carries the resolved type and `gen()` guards resolver agreement, with a mutation witness) | `sema` pass (`semantic()`); `typedir-mutation.sh` [registered ci.sh], commits `fabab31` / `bcfa0e6` |
 | Wider integer types (i64 / u8 / u16 / u32) on a unified `Ty` lattice | shipped | v0.23.2-dev | `wide-int-checks.sh` |
 | Multi-file declaration sharing beyond `extern` | shipped (P3.4) | v0.23.13-dev | `include-checks.sh` |
 | Touch-input example: `AInputQueue` → visible response (P2.3) | shipped | v0.23.14-dev, fixed v0.23.15-dev | `examples/native_touch.ast`, `touch-checks.sh` [4/4], qemu capture-chain test; on-device pipeline (offsets 80/88/96, `>= 0` drain, `lrintf` bridge) corrected in v0.23.15-dev after the device report |

@@ -877,6 +877,8 @@ aster verify-apk <app.apk>
 | `--needed LIB` | add a `DT_NEEDED` entry |
 | `--embed-dir DIR` | where `@embed("…")` resolves relative paths |
 | `--include-dir DIR` | where `include "…"` resolves relative paths |
+| `--page-size N` | load-segment page size for `build-elf` / `build-pie` / `build-obj` / `build-so` / `link-*` **and** the embedded-`.so` ZIP offset for `build-apk`. It sets every `PT_LOAD` `p_align` (and the segment base/file offsets) to **N**; for `build-apk` it additionally aligns the embedded shared object inside the APK ZIP to **N**. Default **4096**; only `4096` and `16384` are accepted (`aster: --page-size must be 4096 or 16384`). **16384 is required for Android 15+ devices that use a 16 KB page** — the app is rejected at install when `targetSdk >= 35` unless *both* the ELF segments and the in-ZIP `.so` offset are page-aligned. v0.23.54-dev (ELF segments) / v0.23.55-dev (build-apk ZIP offset) |
+
 
 Output is always AArch64 ELF64: `build-elf` an `ET_EXEC` at 0x400000,
 `build-pie` a static `ET_DYN` PIE with no interpreter, `build-obj` an
