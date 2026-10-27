@@ -87,7 +87,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.56-dev"
+#define ASTER_VERSION_STRING "0.23.57-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -576,6 +576,16 @@ static bool tyIsPtrToStruct(Ty t) { return t.k == Ty::Ptr && t.sid >= 0; }
 static bool tyIsPtrToElem(Ty t) { return t.k == Ty::Ptr && t.ew >= 0; }
 static Ty ptrElemType(Ty t) { Ty e(t.ekind); e.sid = t.esid; return e; }
 static Ty tyPtrToElem(Ty e) { Ty t(Ty::Ptr); t.ekind = e.k; t.esid = e.sid; t.ew = (int)tySize(e); return t; }
+// v0.23.57-dev: the element type a pointer strides over for `p[i]` and
+// `p - q` — the same one emitElemAddr chooses (its `pe`). A typed pointer
+// (`ptr<T>` or `ptr<S>`) names its element; an untyped `ptr` keeps the
+// one-i32 stride every untyped pointer has always used so that `p - q` agrees
+// with `p[i]` on the same base. Returns the element type, never the pointer.
+static Ty ptrStrideType(Ty t) {
+    if (tyIsPtrToElem(t)) return ptrElemType(t);
+    if (tyIsPtrToStruct(t)) return Ty::ofStruct(t.sid);
+    return Ty::I32;
+}
 // v0.23.35-dev: the product of a dimension list. Empty means "one element"
 // (a scalar type spelling), so the same helper serves sizeof's byte count and
 // len's element count.
@@ -3159,6 +3169,16 @@ struct Codegen {
             }
             case Expr::Sub: {
                 const Ty a=exprType(*e.a),b=exprType(*e.b);
+                if(a==Ty::Ptr&&b==Ty::Ptr){
+                    // v0.23.57-dev: pointer difference — the signed element
+                    // count between two pointers into the same array. Both must
+                    // stride over the same element type (an untyped `ptr` strides
+                    // over i32, matching `p[i]`), or the gap is meaningless.
+                    const Ty ea=ptrStrideType(a),eb=ptrStrideType(b);
+                    if(!(ea.k==eb.k&&ea.sid==eb.sid))
+                        throw Error(loc(e.line,e.col,"pointer difference requires two pointers to the same element type"));
+                    return Ty::I32;
+                }
                 if(a==Ty::Ptr&&b!=Ty::Ptr)return Ty::Ptr;
                 if(a==Ty::Ptr||b==Ty::Ptr)throw Error(loc(e.line,e.col,"invalid pointer arithmetic: expected ptr - i32"));
                 return promoteInt(a,b);
@@ -4169,6 +4189,30 @@ struct Codegen {
                     // offset + p: write result over the lower temporary so LIFO release
                     // remains valid; destination may alias the offset source.
                     emit(base|(uint32_t(a)<<16)|(uint32_t(b)<<5)|uint32_t(a));
+                    releaseTemp(b);
+                    return a;
+                }
+                if(e.k==Expr::Sub && ap && bp){
+                    // v0.23.57-dev: pointer difference. The byte gap in X, then
+                    // divide by the element stride — the very stride emitElemAddr
+                    // scales an index by — so `p - q` agrees with `&p[n] - &p[0]`.
+                    // A power-of-two stride folds into an arithmetic shift; a
+                    // struct stride (not a power of two) needs a signed divide.
+                    int a=gen(*e.a),b=gen(*e.b);
+                    emit(0xcb000000u|(uint32_t(b)<<16)|(uint32_t(a)<<5)|uint32_t(a)); // SUB Xa, Xa, Xb (byte gap)
+                    const Ty elem=ptrStrideType(exprType(*e.a));
+                    const int sh=elemShiftOf(elem);
+                    if(sh>0){
+                        // signed element count: ASR Xa, Xa, #sh
+                        emit(0x93400000u|(uint32_t(sh)<<16)|0xfc00u|(uint32_t(a)<<5)|uint32_t(a));
+                    } else if(sh==0){
+                        // 1-byte stride (u8): the byte gap already is the count
+                    } else {
+                        // non-power-of-two stride (struct): SDIV Xa, Xa, Xw
+                        int w=temp();emitMov64(w,tySize(elem));          // MOVZ/MOVK Xw, #sizeof(elem)
+                        emit(0x9ac00c00u|(uint32_t(w)<<16)|(uint32_t(a)<<5)|uint32_t(a)); // SDIV Xa, Xa, Xw (signed)
+                        releaseTemp(w);
+                    }
                     releaseTemp(b);
                     return a;
                 }
@@ -6563,6 +6607,14 @@ struct Sema {
             }
             case Expr::Sub: {
                 const Ty a=typeOf(*e.a),b=typeOf(*e.b);
+                if(a==Ty::Ptr&&b==Ty::Ptr){
+                    // v0.23.57-dev: pointer difference — element count between
+                    // two pointers, both striding over the same element type.
+                    const Ty ea=ptrStrideType(a),eb=ptrStrideType(b);
+                    if(!(ea.k==eb.k&&ea.sid==eb.sid))
+                        throw Error(loc(e.line,e.col,"pointer difference requires two pointers to the same element type"));
+                    return Ty::I32;
+                }
                 if(a==Ty::Ptr&&b!=Ty::Ptr)return Ty::Ptr;
                 if(a==Ty::Ptr||b==Ty::Ptr)throw Error(loc(e.line,e.col,"invalid pointer arithmetic: expected ptr - i32"));
                 rejectStruct(a,"-");rejectStruct(b,"-");
