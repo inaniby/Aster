@@ -491,7 +491,7 @@ fi
 # examples recorded through v0.23.23-dev, the indirect-call example from
 # v0.23.24-dev, and this round's condition example — must reproduce byte for
 # byte in all three build modes. A moved byte is a regression, not a
-# re-recording; re-recording is tests/rebuild-baseline-v0.23.25.sh's job.
+# re-recording; re-recording is tests/rebuild-baseline-<version>.sh's job.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[8/9] Byte-identity baseline: every example, all three build modes'
 BASE=tests/baseline/v0.23.5-dev/example-hashes.txt

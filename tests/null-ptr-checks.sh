@@ -499,7 +499,7 @@ fi
 # ---------------------------------------------------------------------------
 # [8/9] Byte-identity baseline. Every recorded line must reproduce byte for
 # byte in all three build modes. A moved byte is a regression, not a
-# re-recording; re-recording is tests/rebuild-baseline-v0.23.26.sh's job.
+# re-recording; re-recording is tests/rebuild-baseline-<version>.sh's job.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[8/9] Byte-identity baseline: every example, all three build modes'
 BASE=tests/baseline/v0.23.5-dev/example-hashes.txt
