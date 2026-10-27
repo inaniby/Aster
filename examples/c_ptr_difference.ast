@@ -1,0 +1,15 @@
+// v0.23.57-dev — pointer difference, exported for the C ABI harness
+// (tests/c-ptr-difference-host.c). `p - q` returns the signed element count
+// between two pointers, striding at each pointer's element width: 4 bytes for
+// i32 and an untyped `ptr` (matching `p[i]`'s one-i32 stride), 1 for u8, 8 for
+// i64, and the struct size for a `ptr<S>`. The byte gap is divided by that
+// width — an arithmetic shift for a power-of-two stride, a signed divide for a
+// struct stride that is not.
+
+fn aster_ptr_diff(p: ptr, q: ptr) -> i32 { return p - q; }
+fn aster_ptr_diff_i32(p: ptr<i32>, q: ptr<i32>) -> i32 { return p - q; }
+fn aster_ptr_diff_u8(p: ptr<u8>, q: ptr<u8>) -> i32 { return p - q; }
+fn aster_ptr_diff_i64(p: ptr<i64>, q: ptr<i64>) -> i32 { return p - q; }
+
+struct V3 { x: i32, y: i32, z: i32 }   // 12 bytes — a non-power-of-2 stride
+fn aster_ptr_diff_v3(p: ptr<V3>, q: ptr<V3>) -> i32 { return p - q; }

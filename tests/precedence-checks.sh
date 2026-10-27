@@ -596,8 +596,9 @@ done
 # shared-object TLS example (so_tls_demo.ast) joins it too, so twenty families
 # are skipped and the pre-existing count is still 288: 348 recorded, 60 of them
 # belonging to the twenty rounds this suite knows are new.
-grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^so_tls_demo\.' "$BASE" > "$OUT/expected-old.txt"
-grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^so_tls_demo\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
+# v0.23.57-dev: c_ptr_difference.ast (the pointer-difference round) joins this filter the same way, so the pre-existing count stays 288.
+grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^so_tls_demo\.' "$BASE" > "$OUT/expected-old.txt"
+grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^so_tls_demo\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
     echo 'FAIL: a pre-existing example moved — one of the four fixes changed bytes' >&2
     sed -n '1,20p' "$OUT/old.diff" >&2
