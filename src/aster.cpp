@@ -87,7 +87,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.58-dev"
+#define ASTER_VERSION_STRING "0.23.59-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -12290,7 +12290,7 @@ int main(int argc,char**argv){
         }
         if(cmd=="link-so"){
             if(!parseArgs(2)||sources.empty()||pic||boundsCheck){std::cerr<<kUsage;return 2;}
-            linkSharedObjects(sources,output,soname,needed);
+            linkSharedObjects(sources,output,soname,needed,pageSize);
             return 0;
         }
         if(cmd!="build-elf"&&cmd!="build-pie"&&cmd!="build-obj"&&cmd!="build-so"){std::cerr<<kUsage;return 2;}
