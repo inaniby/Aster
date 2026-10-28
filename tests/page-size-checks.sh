@@ -1,6 +1,7 @@
 #!/bin/sh
 # v0.23.54-dev (ELF segments) / v0.23.55-dev (build-apk ZIP offset): page-size
-# regression guard for Android 16 KB-page support.
+# regression guard for Android 16 KB-page support. v0.23.59-dev adds link-so to
+# the command matrix so the shared-object writer is covered too.
 #
 # Android 15+ devices that use a 16 KB page reject any app (targetSdk >= 35)
 # whose ELF load segments are not page-aligned to 0x4000: every PT_LOAD must
@@ -78,6 +79,7 @@ AST
 # 16 KB flag be a silent no-op: the 4 KB and 16 KB build-elf images must differ.
 printf '%s\n' '[4/6] Build and verify load-segment alignment (default 0x1000, 16384 -> 0x4000)'
 "$AS" build-obj "$W/source.ast" -o "$W/source.o"
+"$AS" build-obj --pic "$W/source.ast" -o "$W/source-pic.o"
 python3 - "$AS" "$W" <<'PY'
 import struct, subprocess, sys, os
 
@@ -125,6 +127,7 @@ CMDS = [
     ("build-so", ["build-so"], "source.ast"),
     ("link-obj", ["link-obj", os.path.join(W, "source.o")], None),
     ("link-pie", ["link-pie", os.path.join(W, "source.o")], None),
+    ("link-so", ["link-so", os.path.join(W, "source-pic.o")], None),
 ]
 
 # Default must keep 0x1000 on every segment.
