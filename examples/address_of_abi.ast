@@ -1,0 +1,36 @@
+// v0.23.58-dev — ABI surface exercised by tests/e2e-c-address-of.sh. Each
+// function takes a pointer (or struct pointer) from C and takes its address with
+// `&`, then loads through it. The point is the codegen the round added/relaxed:
+// `&p[k]` and `&p[1]` route through emitPtrElemAddr (a typed-pointer base), and
+// `&pt.a` / `&pt.b` through emitStructAddr's Field branch. C validates the
+// result against its own pointer arithmetic, so a wrong element stride (i32=4,
+// i64=8) or a wrong field offset would disagree.
+struct Pt { a: i32, b: i32 }
+
+// Return the k-th i32 element of array p, via &p[k] then load.
+fn aster_elem(p: ptr<i32>, k: i32) -> i32 {
+    let q: ptr<i32> = &p[k];
+    return *q;
+}
+
+// Return the k-th i64 element of array w via &w[k] then load (stride 8).
+fn aster_elem_i64(w: ptr<i64>, k: i32) -> i64 {
+    let q: ptr<i64> = &w[k];
+    return *q;
+}
+
+// Through a typed pointer: &p[1] addresses element 1 (the new ptr-base path).
+fn aster_thru(p: ptr<i32>) -> i32 {
+    let q: ptr<i32> = &p[1];
+    return *q;
+}
+
+// Field address through a ptr<S>: &pt.a and &pt.b, loaded back.
+fn aster_field_a(pt: ptr<Pt>) -> i32 {
+    let q: ptr<i32> = &pt.a;
+    return *q;
+}
+fn aster_field_b(pt: ptr<Pt>) -> i32 {
+    let q: ptr<i32> = &pt.b;
+    return *q;
+}

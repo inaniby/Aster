@@ -113,12 +113,19 @@ grep -qF 'cannot store a pointer to ' src/aster.cpp \
 # expression that has no stride.
 grep -qF 'if(x->k!=Expr::Field&&x->k!=Expr::Index&&x->k!=Expr::AddrOf)' src/aster.cpp \
     || { echo 'FAIL: postfix() no longer lets a subscript follow an &' >&2; exit 1; }
-# The two rules that must NOT have moved: `&` still requires an lvalue, and is
-# still struct-only for everything that is not an array.
+# The rule that must NOT have moved: `&` still requires an lvalue. (The
+# *other* half — that `&` was struct-only for everything else — was deliberately
+# relaxed in v0.23.58-dev: any lvalue now answers a typed `ptr<T>`, so the
+# old "only defined for a struct lvalue" refusal is gone, not just moved.)
 grep -qF "'&' requires a variable, a field, or a dereferenced ptr<S>" src/aster.cpp \
     || { echo 'FAIL: the lvalue rule for & moved' >&2; exit 1; }
-grep -qF "'&' is only defined for a struct lvalue, not " src/aster.cpp \
-    || { echo 'FAIL: the struct-only rule for & moved' >&2; exit 1; }
+# v0.23.58-dev: the struct-only refusal is genuinely gone.
+if grep -qF "'&' is only defined for a struct lvalue, not " src/aster.cpp; then
+    echo 'FAIL: the struct-only refusal for & is back' >&2; exit 1
+fi
+# v0.23.58-dev: in its place, a non-struct lvalue now answers tyPtrToElem.
+grep -qF 'return tyPtrToElem(inner);' src/aster.cpp \
+    || { echo 'FAIL: & no longer answers tyPtrToElem for a non-struct lvalue' >&2; exit 1; }
 printf '  %-34s %s\n' 'all guards present' 'ok'
 
 # ---------------------------------------------------------------------------
@@ -378,22 +385,20 @@ fn main() -> i32 { let a: V3[2] = V3 { 1, 2, 3 }; let p: ptr<Q> = &a; return 0; 
 reject '&buf into an i32 parameter'     'argument type mismatch calling takes at argument 1: expected i32' \
     'fn takes(n: i32) -> i32 { return n; }
 fn main() -> i32 { let a: i32[2] = 0; return takes(&a); }'
-# The rules that must NOT have moved: `&` is still struct-only for a scalar, a
-# ptr and a bool, and still requires an lvalue.
-reject '& of a ptr variable'            "'&' is only defined for a struct lvalue, not ptr" \
+# v0.23.58-dev relaxed `&`: a scalar, bool, pointer or struct lvalue now answers
+# a typed ptr<T>, so the old "struct-only" refusals for a scalar/bool/field/
+# element are gone — those cases now compile into a matching typed slot. Only a
+# size mismatch still refuses (a ptr<ptr> has no place in an untyped ptr), and
+# `&` still requires an lvalue.
+check "$A" '& of an i32 variable compiles' 0 'fn main() -> i32 { let x: i32 = 1; let q: ptr<i32> = &x; return 0; }'
+check "$A" '& of a bool variable compiles' 0 'fn main() -> i32 { let x: bool = true; let q: ptr<bool> = &x; return 0; }'
+check "$A" '& of a scalar struct field compiles' 0 'struct P { x: i32 } fn main() -> i32 { let s: P = P { 1 }; let q: ptr<i32> = &s.x; return 0; }'
+check "$A" '& of an i32 array element compiles' 0 'fn main() -> i32 { let a: i32[2] = 0; let q: ptr<i32> = &a[0]; return 0; }'
+reject '& of a ptr variable'           'cannot store a pointer to ptr elements in ptr' \
     'fn main() -> i32 { let p: ptr = 0; let q: ptr = &p; return 0; }'
-reject '& of an i32 variable'           "'&' is only defined for a struct lvalue, not i32" \
-    'fn main() -> i32 { let x: i32 = 1; let q: ptr = &x; return 0; }'
-reject '& of a bool variable'           "'&' is only defined for a struct lvalue, not bool" \
-    'fn main() -> i32 { let x: bool = true; let q: ptr = &x; return 0; }'
-reject '& of a scalar struct field'     "'&' is only defined for a struct lvalue, not i32" \
-    'struct P { x: i32 }
-fn main() -> i32 { let s: P = P { 1 }; let q: ptr = &s.x; return 0; }'
-reject '& of a call result'             "'&' requires a variable, a field, or a dereferenced ptr<S>" \
+reject '& of a call result'            "'&' requires a variable, a field, or a dereferenced ptr<S>" \
     'fn f() -> i32 { return 1; }
 fn main() -> i32 { let q: ptr = &f(); return 0; }'
-reject '& of an i32 array element'      "'&' is only defined for a struct lvalue, not i32" \
-    'fn main() -> i32 { let a: i32[2] = 0; let q: ptr = &a[0]; return 0; }'
 
 # ---------------------------------------------------------------------------
 # [6/9] Coverage map. Every accepted row above has to name the rule it
@@ -424,7 +429,11 @@ array field, behind a ptr<S>     diff       the C oracle for the field shapes
 & of an i64[2] into a ptr    guard         a strided pointer may not land in an untyped ptr
 & of a 12-byte struct array  guard         a size that is not a power of two
 ptr<i64> from a ptr<u8> slot rej           one stride does not pass as another
-& of an i32 array element    rej           &a[0] is still not a ptr (only the whole array)
+& of an i32 array element compiles  acc  &a[0] is now ptr<i32> (v0.23.58-dev relaxed &)
+& of an i32 variable compiles      acc  &x is ptr<i32> (v0.23.58-dev relaxed &)
+& of a bool variable compiles      acc  &x is ptr<bool> (v0.23.58-dev relaxed &)
+& of a scalar struct field compiles acc  &s.x is ptr<i32> (v0.23.58-dev relaxed &)
+& of a ptr variable            rej  ptr<ptr> has no place in an untyped ptr (size mismatch)
 examples/array_address.ast       diff           the shipped example against its twin
 MAP
 n=$(wc -l < "$OUT/map.txt")
@@ -482,8 +491,6 @@ else
 LOCALREF='fn main() -> i32 { let a: i32[4] = 7; let p: ptr = &a; return p[0]; }'
 GLOBALREF='let g: i32[4] = 11;
 fn main() -> i32 { let p: ptr = &g; return p[0]; }'
-FIELDREF='struct Row { cells: i32[4] }
-fn main() -> i32 { let r: Row; r.cells[0] = 4; let p: ptr = &r.cells; return p[0]; }'
 # m1: the predicate is gone, so `&` never sees an array — every array address
 # falls through to the struct-only rule and is refused.
 mutate 'm1: arrayOperandOf is gone' \
@@ -498,10 +505,11 @@ mutate 'm2: local arm reads the decayed type' \
 mutate 'm3: global arm is gone' \
     's/elem=arrayElemTypeOf(e.name); len=arrayLengthOf(e.name); return true;/return false;/' \
     must_not_compile '& of a global array' "$GLOBALREF"
-# m4: the struct-array-field arm is gone.
-mutate 'm4: array-field arm is gone' \
-    's/if(!f||!f->len)return false;/if(true)return false;/' \
-    must_not_compile '& of an array field' "$FIELDREF"
+# m4 (struct-array-field arm) removed for v0.23.58-dev: the AddrOf rule now
+# answers tyPtrToElem(inner) for any non-struct lvalue, and typeOf(Field) of an
+# array field already yields the element type, so arrayOperandOf's Field arm is
+# redundant for `&` and withdrawing it no longer changes anything. The array-field
+# address is instead pinned by address-of-checks.sh's "scalar field &s.a" case.
 # m5: the stride guard in ptrToAssignable is withdrawn, so `&w` on an i64[2]
 # is accepted into an untyped ptr — where it would be indexed at four bytes.
 mutate 'm5: the stride guard is gone' \
@@ -580,9 +588,9 @@ done
 # pre-existing count is still 288: 348 recorded, 60 of them belonging to the
 # twenty rounds this suite knows are new.
 # v0.23.57-dev: c_ptr_difference.ast (the pointer-difference round) joins this filter the same way, so the pre-existing count stays 288.
-FILTER='-e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^tls_demo\. -e ^so_verstrlen\. -e ^c_ptr_difference\. -e ^so_tls_demo\.'
-grep -v $FILTER "$BASE" > "$OUT/expected-old.txt"
-grep -v $FILTER "$OUT/hashes.txt" > "$OUT/got-old.txt"
+FILTER='-e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^tls_demo\. -e ^so_verstrlen\. -e ^c_ptr_difference\. -e ^address_of\. -e ^address_of_abi\. -e ^so_tls_demo\.'
+grep -v $FILTER "$BASE" | LC_ALL=C sort > "$OUT/expected-old.txt"
+grep -v $FILTER "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
     echo 'FAIL: a pre-existing example moved — the round changed bytes' >&2
     sed -n '1,20p' "$OUT/old.diff" >&2

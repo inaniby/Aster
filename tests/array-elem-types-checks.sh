@@ -135,7 +135,7 @@ grep -qF 'Rn == 31 is the stack pointer and not XZR' src/aster.cpp \
 # is a bool condition, so the condition walker reaches it.
 grep -qF 'return e.k==Expr::Var||e.k==Expr::Index||e.k==Expr::Field||e.k==Expr::Deref;' src/aster.cpp \
     || { echo 'FAIL: isLValue() no longer admits an array element' >&2; exit 1; }
-grep -qF '        if(!tyIsStruct(elementTypeOf(e.name)))' src/aster.cpp \
+grep -qF '            emitElemAddr(e.name,*e.a);' src/aster.cpp \
     || { echo 'FAIL: emitStructAddr() no longer reaches an array element' >&2; exit 1; }
 grep -qF 'if(e.k==Expr::Field||e.k==Expr::Cond||e.k==Expr::Index){' src/aster.cpp \
     || { echo 'FAIL: the condition walker no longer admits an array element' >&2; exit 1; }
@@ -443,12 +443,13 @@ reject 'ptrarr[0] = 7'              'type mismatch assigning array element of '"
     'fn main() -> i32 { let s: ptr[2] = 0; s[0] = 7; return 0; }'
 reject 'i32arr[0] = true'           'type mismatch assigning array element of '"'"'a'"'"': expected i32, got bool' \
     'fn main() -> i32 { let a: i32[2] = 0; a[0] = true; return 0; }'
-# `&` is still only for a struct lvalue: an element of an integer or pointer
-# array is not one.
-reject '& of an i32 element'        "'&' is only defined for a struct lvalue, not i32" \
-    'fn main() -> i32 { let a: i32[2] = 0; let p: ptr = &a[0]; return 0; }'
-reject '& of a ptr element'         "'&' is only defined for a struct lvalue, not ptr" \
-    'fn main() -> i32 { let s: ptr[2] = 0; let p: ptr = &s[0]; return 0; }'
+# v0.23.58-dev generalized `&` to every lvalue, so taking the address of an
+# array element (integer or pointer) is now accepted and yields ptr<T> /
+# ptr<ptr>. It is exercised further by tests/address-of-checks.sh.
+check "$A" '& of an i32 element' 7 \
+    'fn main() -> i32 { let a: i32[2] = 0; let p: ptr<i32> = &a[0]; *p = 7; return a[0]; }'
+check "$A" '& of a ptr element' 0 \
+    'fn main() -> i32 { let s: ptr[2] = 0; let q: ptr<ptr> = &s[0]; return 0; }'
 # A struct has no register form, so a whole element is not a value.
 reject 'a struct element as a value' 'return type mismatch in function main: expected i32, got P' \
     'struct P { x: i32 }
@@ -651,8 +652,10 @@ mutate 'm6: an element is not an lvalue' \
     must_not_compile '&a[i]' 'struct Point { x: i32, y: i32 }
 fn main() -> i32 { let p: Point[2] = Point { 0, 0 }; let q: ptr<Point> = &p[1]; return 0; }'
 # m7: emitStructAddr no longer reaches an element, so &a[i] has no address.
+# v0.23.58-dev routes every &a[i] (any element width) through emitElemAddr; the
+# mutant drops that emit so the address is never produced and &p[1] is refused.
 mutate 'm7: emitStructAddr skips elements' \
-    's/        if(!tyIsStruct(elementTypeOf(e.name)))/        if(true)/' \
+    '/emitElemAddr(e.name,\*e.a);/{N;s/emitElemAddr(e.name,\*e.a);\n            return;/            throw Error("emitStructAddr skips an element");\n            return;/}' \
     must_not_compile '&a[i]' 'struct Point { x: i32, y: i32 }
 fn main() -> i32 { let p: Point[2] = Point { 0, 0 }; let q: ptr<Point> = &p[1]; return 0; }'
 # m8: the condition walker no longer admits an element, so a bool array cannot
@@ -741,8 +744,8 @@ done
 # families are skipped and the pre-existing count is still 288: 345 recorded,
 # 57 of them belonging to the nineteen rounds this suite knows are new.
 # v0.23.57-dev: c_ptr_difference.ast (the pointer-difference round) joins this filter the same way, so the pre-existing count stays 288.
-grep -v -e '^sizeof_len\.' -e '^array_elem_types\.' -e '^precedence\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^so_tls_demo\.' "$BASE" > "$OUT/expected-old.txt"
-grep -v -e '^sizeof_len\.' -e '^array_elem_types\.' -e '^precedence\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^so_tls_demo\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
+grep -v -e '^sizeof_len\.' -e '^array_elem_types\.' -e '^precedence\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^address_of\.' -e '^address_of_abi\.' -e '^so_tls_demo\.' "$BASE" | LC_ALL=C sort > "$OUT/expected-old.txt"
+grep -v -e '^sizeof_len\.' -e '^array_elem_types\.' -e '^precedence\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^address_of\.' -e '^address_of_abi\.' -e '^so_tls_demo\.' "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
     echo 'FAIL: a pre-existing example moved — one of the three fixes changed bytes' >&2
     sed -n '1,20p' "$OUT/old.diff" >&2

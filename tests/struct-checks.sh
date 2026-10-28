@@ -169,12 +169,18 @@ for mode in build-so build-elf "build-obj --pic"; do
         fi
     done
 done
-if ! diff -u tests/baseline/v0.23.5-dev/example-hashes.txt "$OUT/hashes.txt" > "$OUT/hashes.diff"; then
+# address_of_abi.ast is a .so-only example with no byte-identity baseline row;
+# keep it out of the comparison (it is exercised by tests/e2e-c-address-of.sh).
+# Both sides are sorted so the append-only baseline file order never disagrees with
+# the alphabetical examples/*.ast glob order (a moved line is a regression, not a re-sort).
+grep -v '^address_of_abi\.' "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/hashes.filtered.txt"
+LC_ALL=C sort tests/baseline/v0.23.5-dev/example-hashes.txt > "$OUT/base.sorted.txt"
+if ! diff -u "$OUT/base.sorted.txt" "$OUT/hashes.filtered.txt" > "$OUT/hashes.diff"; then
     echo 'FAIL: struct support changed the output of a pre-existing example' >&2
     sed -n '1,20p' "$OUT/hashes.diff" >&2
     exit 1
 fi
-printf '%s\n' "PASS: $(wc -l < "$OUT/hashes.txt") recorded outputs reproduced byte for byte"
+printf '%s\n' "PASS: $(wc -l < "$OUT/hashes.filtered.txt") recorded outputs reproduced byte for byte"
 
 printf '%s\n' '[5/8] Structural: field layout matches the C compiler, byte for byte'
 # The strongest layout statement available without an offsetof operator: give

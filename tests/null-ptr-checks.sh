@@ -516,7 +516,13 @@ for mode in build-so build-elf "build-obj --pic"; do
         fi
     done
 done
-if ! diff -u "$BASE" "$OUT/hashes.txt" > "$OUT/base.diff"; then
+# address_of_abi.ast is a .so-only example with no byte-identity baseline row;
+# keep it out of the comparison (it is exercised by tests/e2e-c-address-of.sh).
+# Both sides are sorted so the append-only baseline file order never disagrees with
+# the alphabetical examples/*.ast glob order (a moved line is a regression, not a re-sort).
+grep -v '^address_of_abi\.' "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/hashes.filtered.txt"
+LC_ALL=C sort "$BASE" > "$OUT/base.sorted.txt"
+if ! diff -u "$OUT/base.sorted.txt" "$OUT/hashes.filtered.txt" > "$OUT/base.diff"; then
     echo 'FAIL: the byte baseline moved — a pre-existing example changed, or a new one is unrecorded' >&2
     sed -n '1,20p' "$OUT/base.diff" >&2
     exit 1

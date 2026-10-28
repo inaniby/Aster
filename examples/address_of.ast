@@ -1,0 +1,80 @@
+// v0.23.58-dev — the address-of operator is now defined for *every* lvalue,
+// not only a struct. `&x` where `x` is a scalar, bool, pointer or struct yields
+// a `ptr<T>` (or `ptr<S>` for a struct) that strides at the element's real
+// width, so `&a[0]` for an `i64[4]` is a `ptr<i64>` indexed at eight bytes and
+// `&p[1]` through a `ptr<i32>` lands on the second `i32` — no more "cannot take
+// the address of this expression" for the common cases.
+//
+// Nothing changes for programs that compiled before: a struct lvalue still gets
+// the dedicated `ptr<S>` shape (sid-based) and a whole array still decays to a
+// `ptr<T>`; only the previously-refused scalar/bool/pointer cases are now legal.
+// The codegen routes every new case to an already-existing, byte-stable helper
+// (emitElemAddr for an array element, emitPtrElemAddr for a typed-pointer base),
+// so the only new surface is the type rule that had been refusing these shapes.
+//
+// The arrays below are filled with DISTINCT values so the checksum genuinely
+// exercises element stride: if `&w[1]` or `&p[1]` scaled at the wrong width the
+// program would return a different exit code. main returns 7992545; its low byte
+// (225) is asserted by tests/address-of-checks.sh and the gcc differential in
+// tests/e2e-c-address-of.sh.
+
+let g: i32 = 42;                 // global scalar
+
+struct S { a: i32, b: i64 }
+
+fn main() -> i32 {
+    // 1. scalar local: &x is ptr<i32>
+    let x: i32 = 7;
+    let px: ptr<i32> = &x;
+    let y: i32 = *px;                                // 7
+
+    // 2. global scalar: &g is ptr<i32>, store through it, then read it back
+    let pg: ptr<i32> = &g;
+    *pg = 99;                                        // g becomes 99
+    let gv: i32 = g;                                 // 99
+
+    // 3. scalar struct field: &s.a is ptr<i32>
+    let s: S;
+    s.a = 11;
+    s.b = 22;
+    let psa: ptr<i32> = &s.a;
+    let val: i32 = *psa;                             // 11
+
+    // 4. i32 array, distinct elements: &arr[0] is ptr<i32>
+    let arr: i32[4] = 0;
+    let i: i32 = 0;
+    while (i < 4) { arr[i] = i + 1; i = i + 1; }     // {1,2,3,4}
+    let p0: ptr<i32> = &arr[0];
+    let e0: i32 = *p0;                               // 1
+
+    // 5. i64 array, distinct elements: &w[1] is ptr<i64> — strides at 8 bytes
+    let w: i64[3] = 0;
+    let j: i32 = 0;
+    while (j < 3) { w[j] = (j + 1) * 10; j = j + 1; } // {10,20,30}
+    let pw: ptr<i64> = &w[1];
+    let e1: i64 = *pw;                               // 20 (not 10 — stride 8)
+
+    // 6. through a typed pointer: &p[1] is ptr<i32> (p is ptr<i32>)
+    let p: ptr<i32> = &arr[0];
+    let pp: ptr<i32> = &p[1];
+    let v2: i32 = *pp;                               // arr[1] = 2
+
+    // 7. chain through a typed pointer: (&arr)[2] is arr[2]
+    let pchain: ptr<i32> = &arr[0];
+    let pc: ptr<i32> = &pchain[2];
+    let v3: i32 = *pc;                               // arr[2] = 3
+
+    // 8. whole-array address still works (regression): &arr is ptr<i32>
+    let pall: ptr<i32> = &arr;
+    let v4: i32 = pall[3];                           // arr[3] = 4
+
+    // 9. struct address still works (regression): &s is ptr<S>
+    let ps: ptr<S> = &s;
+    let v5: i32 = ps.a;                              // 11
+
+    // checksum = y*1000000 + gv*10000 + val*100 + e0*1000 + e1*10 + v2*100 + v3*10 + v4 + v5
+    //          = 7*1000000 + 99*10000 + 11*100 + 1*1000 + 20*10 + 2*100 + 3*10 + 4 + 11
+    //          = 7000000 + 990000 + 1100 + 1000 + 200 + 200 + 30 + 4 + 11 = 7992545
+    let c: i32 = y*1000000 + gv*10000 + val*100 + e0*1000 + i32(e1)*10 + v2*100 + v3*10 + v4 + v5;
+    return c;
+}

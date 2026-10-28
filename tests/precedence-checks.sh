@@ -364,13 +364,17 @@ reject 'local u16[2] = 65536' 'local array initializer does not fit in u16' \
 reject 'local u8 = 200 + 100' 'local initializer does not fit in u8' \
     'fn main() -> i32 { let b: u8 = 200 + 100; return b; }'
 # The prefix operators still refuse the operands they always refused: a bool
-# cannot be negated arithmetically, and a struct is not a number.
+# cannot be negated arithmetically, and a struct is not a number. (`&` is no
+# longer in this set — v0.23.58-dev generalized it to every lvalue, so taking
+# the address of a scalar and reading it back is now accepted, not refused.)
 reject '-b (a bool)' 'cannot use a bool value in -' \
     'fn main() -> i32 { let b: bool = true; let n: i32 = 0 - b; return n; }'
 reject '!(an i32)' "'!' requires a bool operand" \
     'fn main() -> i32 { let n: i32 = 1; if (!n) { return 1; } return 0; }'
-reject '& of an i32' "is only defined for a struct lvalue" \
-    'fn main() -> i32 { let n: i32 = 1; let p: ptr = &n; return 0; }'
+# v0.23.58-dev: `&` of a scalar is now accepted and yields a ptr<i32>; the prefix
+# binding itself is unchanged (it still binds tighter than the binary operators).
+check "$A" '& of an i32 yields ptr<i32>' 42 \
+    'fn main() -> i32 { let n: i32 = 42; let p: ptr<i32> = &n; return *p; }'
 
 # ---------------------------------------------------------------------------
 # [6/9] Coverage map. Every accepted row above has to name the rule it
@@ -597,8 +601,8 @@ done
 # are skipped and the pre-existing count is still 288: 348 recorded, 60 of them
 # belonging to the twenty rounds this suite knows are new.
 # v0.23.57-dev: c_ptr_difference.ast (the pointer-difference round) joins this filter the same way, so the pre-existing count stays 288.
-grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^so_tls_demo\.' "$BASE" > "$OUT/expected-old.txt"
-grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^so_tls_demo\.' "$OUT/hashes.txt" > "$OUT/got-old.txt"
+grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^address_of\.' -e '^address_of_abi\.' -e '^so_tls_demo\.' "$BASE" | LC_ALL=C sort > "$OUT/expected-old.txt"
+grep -v -e '^sizeof_len\.' -e '^precedence\.' -e '^array_elem_types\.' -e '^struct_array_field\.' -e '^array_address\.' -e '^multi_dim_array\.' -e '^lifecycle\.' -e '^fn_type\.' -e '^cb_table\.' -e '^fn_ret.' -e '^call-stmt.' -e '^copy.' -e '^arena\.' -e '^stdlib_demo\.' -e '^integer_cast\.' -e '^switch\.' -e '^literals\.' -e '^tls_demo\.' -e '^so_verstrlen\.' -e '^c_ptr_difference\.' -e '^address_of\.' -e '^address_of_abi\.' -e '^so_tls_demo\.' "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
     echo 'FAIL: a pre-existing example moved — one of the four fixes changed bytes' >&2
     sed -n '1,20p' "$OUT/old.diff" >&2
