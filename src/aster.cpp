@@ -87,7 +87,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.57-dev"
+#define ASTER_VERSION_STRING "0.23.58-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -3150,7 +3150,11 @@ struct Codegen {
                 // restricted to 4-byte elements).
                 if(e.a->k==Expr::Var&&arrayLengthOf(e.a->name)>0)
                     return tyPtrToElem(elementTypeOf(e.a->name));
-                return Ty::Ptr;
+                // v0.23.58-dev: the address of any other lvalue — a scalar,
+                // bool, or typed pointer — is a pointer to that value;
+                // tyPtrToElem carries the element type so it strides at its
+                // real width (i64/u8/u16/ptr/bool), not the old untyped i32.
+                return tyPtrToElem(inner);
             }
             case Expr::StructLit: {
                 auto it=g_structIndex.find(e.name);
@@ -4585,11 +4589,23 @@ struct Codegen {
                 emitIndexAddr(e);
                 return;
             }
-            // v0.23.28-dev: an element is a struct only for a named struct
-            // array, and a struct has no register form — a whole one is read
-            // field by field, or through `&a[i]`, exactly like a struct variable.
-            if(!tyIsStruct(elementTypeOf(e.name)))
-                throw Error("cannot take the address of this expression");
+            // v0.23.58-dev: a typed-pointer base — `&p[i]` — whose base rides
+            // in `a` and whose subscript in `b`. The element stride comes from
+            // the pointer's own element type, so it scales exactly like the
+            // array the pointer came from; emitPtrElemAddr leaves the address
+            // in X16 with no length to check against.
+            if(e.name.empty()){
+                const Ty baseType=exprType(*e.a);
+                if(tyIsPtrToElem(baseType)){
+                    emitPtrElemAddr(*e.a,*e.b,ptrElemType(baseType));
+                    return;
+                }
+            }
+            // v0.23.58-dev: a named (or whole) array element of any width —
+            // `&a[i]`, `&ga[i]` — is now addressable, not only struct elements.
+            // emitElemAddr scales by the element's real width (i64/u8/u16/ptr/
+            // bool/struct), so the result strides correctly for every element
+            // type; a non-array operand still reports a clear error there.
             emitElemAddr(e.name,*e.a);
             return;
         }
@@ -6470,9 +6486,14 @@ struct Sema {
                     return tyPtrToElem(aelem);
                 }
                 const Ty inner=typeOf(*e.a);
-                if(!tyIsStruct(inner))
-                    throw Error(loc(e.line,e.col,"'&' is only defined for a struct lvalue, not "+tyNameFull(inner)));
-                return Ty::ptrTo(inner.sid);
+                // v0.23.58-dev: the address of any lvalue — scalar, bool,
+                // pointer or struct — is a pointer to that value. A struct
+                // keeps its dedicated ptr<S> shape (sid-based) so pointer
+                // arithmetic through it strides by sizeof(S); every other
+                // lvalue is addressed through tyPtrToElem, which carries the
+                // element type so the result strides at its real width.
+                if(tyIsStruct(inner))return Ty::ptrTo(inner.sid);
+                return tyPtrToElem(inner);
             }
             case Expr::StructLit: return checkStructLit(e);
             case Expr::Index: {
