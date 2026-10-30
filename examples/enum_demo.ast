@@ -1,0 +1,23 @@
+// v0.23.61-dev: enum — C-style named integer constants over a nominal i32.
+//
+// An enum declaration introduces a nominal type whose enumerators are
+// compile-time i32 constants (folded to literals at parse time). The name is
+// the type; the constants are just integers. Two enums are distinct nominal
+// types, but every enum shares the i32 representation, so an enumerator value
+// interoperates with i32 everywhere an integer would — arithmetic, comparison,
+// and an implicit, free conversion to i32. A value only becomes a *specific*
+// enum at a type annotation (the `: Color` in `let c: Color = ...`).
+enum Byte { A=1, B=2, C=4, D=8, E=16, F=32, G=64, H=128 }
+
+fn main() -> i32 {
+    // `H` folds to the literal 128; `: Byte` makes the binding a Byte, not an
+    // i32. The nominal type only constrains where the value may flow, never
+    // how it is computed.
+    let h: Byte = H;
+    // The rest of the flags add up to 127 as plain i32 arithmetic (`A`..`G`
+    // each fold to their constant), exercising the enumerator-as-literal path.
+    let rest: i32 = A + B + C + D + E + F + G;
+    // enum -> i32 is free; `h` drops into the i32 sum without a cast.
+    let t: i32 = rest + h;          // 127 + 128 = 255
+    return t;
+}

@@ -32,8 +32,9 @@
 # host process's own TLS footprint at compile time.
 #
 # `tls` is a *context keyword* — only special at the start of a top-level
-# declaration — so it stays a usable identifier elsewhere and the reserved-word
-# count does not move (still 26).
+# declaration — so it stays a usable identifier elsewhere and is absent from the
+# reserved-word list. The reserved-word count is 27 since v0.23.61-dev added
+# `enum` as a genuine reserved word; see docs/language-reference.md §2.
 #
 # Layers (the project 9-layer shape): strict build, source guards, parse
 # acceptance, static-image ELF structure, the two access models' relocations,
@@ -126,17 +127,18 @@ fn main() -> i32 {
 AST
 "$A" build-elf "$OUT/ok.ast" -o "$OUT/ok" >/dev/null \
     || fail "a tls global (scalar and array, initialized and not) plus a local named tls must compile"
-# The reserved-word count must not have moved: `tls` is a context keyword, not a
-# keyword. The authoritative list is bootstrap/gen_lexer_names.py's KEYWORDS
-# (the generator asserts its own length is 26); `tls` must be absent from it.
+# `tls` must still be absent from the reserved-word list: it is a context
+# keyword, not a reserved word. The authoritative list is
+# bootstrap/gen_lexer_names.py's KEYWORDS (the generator asserts its own length
+# is 27 since v0.23.61-dev added `enum`); `tls` must be absent from it.
 python3 - <<'PY' || exit 1
 import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 26, ('reserved-word count moved', len(entries), entries)
+assert len(entries) == 27, ('reserved-word count moved', len(entries), entries)
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 26 reserved words, tls absent (context keyword)')
+print('PASS: 27 reserved words, tls absent (context keyword)')
 PY
 
 # ---------------------------------------------------------------- 4. static structure
