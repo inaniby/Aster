@@ -37,7 +37,7 @@
 // is gone; `reverse_digits` comes along because utoa ends by calling it.
 
 // ---- BEGIN GENERATED: lexer names (bootstrap/gen_lexer_names.py) ----
-// The 77 token kinds, numbered exactly as `enum class TK`
+// The 78 token kinds, numbered exactly as `enum class TK`
 // in src/aster.cpp. Regenerate: python3 bootstrap/gen_lexer_names.py
 let K_End: i32 = 0;
 let K_Ident: i32 = 1;
@@ -69,53 +69,54 @@ let K_U64: i32 = 26;
 let K_True: i32 = 27;
 let K_False: i32 = 28;
 let K_Struct: i32 = 29;
-let K_Include: i32 = 30;
-let K_LParen: i32 = 31;
-let K_RParen: i32 = 32;
-let K_LBrace: i32 = 33;
-let K_RBrace: i32 = 34;
-let K_Colon: i32 = 35;
-let K_Semi: i32 = 36;
-let K_Comma: i32 = 37;
-let K_Arrow: i32 = 38;
-let K_Eq: i32 = 39;
-let K_EqEq: i32 = 40;
-let K_Ne: i32 = 41;
-let K_Lt: i32 = 42;
-let K_Le: i32 = 43;
-let K_Gt: i32 = 44;
-let K_Ge: i32 = 45;
-let K_Plus: i32 = 46;
-let K_Minus: i32 = 47;
-let K_Star: i32 = 48;
-let K_Slash: i32 = 49;
-let K_LBracket: i32 = 50;
-let K_RBracket: i32 = 51;
-let K_At: i32 = 52;
-let K_And: i32 = 53;
-let K_Or: i32 = 54;
-let K_Not: i32 = 55;
-let K_Percent: i32 = 56;
-let K_Shl: i32 = 57;
-let K_Shr: i32 = 58;
-let K_BitXor: i32 = 59;
-let K_BitOr: i32 = 60;
-let K_Tilde: i32 = 61;
-let K_Question: i32 = 62;
-let K_PlusEq: i32 = 63;
-let K_MinusEq: i32 = 64;
-let K_StarEq: i32 = 65;
-let K_SlashEq: i32 = 66;
-let K_PercentEq: i32 = 67;
-let K_ShlEq: i32 = 68;
-let K_ShrEq: i32 = 69;
-let K_AndEq: i32 = 70;
-let K_OrEq: i32 = 71;
-let K_XorEq: i32 = 72;
-let K_PlusPlus: i32 = 73;
-let K_MinusMinus: i32 = 74;
-let K_Dot: i32 = 75;
-let K_Amp: i32 = 76;
+let K_Enum: i32 = 30;
+let K_Include: i32 = 31;
+let K_LParen: i32 = 32;
+let K_RParen: i32 = 33;
+let K_LBrace: i32 = 34;
+let K_RBrace: i32 = 35;
+let K_Colon: i32 = 36;
+let K_Semi: i32 = 37;
+let K_Comma: i32 = 38;
+let K_Arrow: i32 = 39;
+let K_Eq: i32 = 40;
+let K_EqEq: i32 = 41;
+let K_Ne: i32 = 42;
+let K_Lt: i32 = 43;
+let K_Le: i32 = 44;
+let K_Gt: i32 = 45;
+let K_Ge: i32 = 46;
+let K_Plus: i32 = 47;
+let K_Minus: i32 = 48;
+let K_Star: i32 = 49;
+let K_Slash: i32 = 50;
+let K_LBracket: i32 = 51;
+let K_RBracket: i32 = 52;
+let K_At: i32 = 53;
+let K_And: i32 = 54;
+let K_Or: i32 = 55;
+let K_Not: i32 = 56;
+let K_Percent: i32 = 57;
+let K_Shl: i32 = 58;
+let K_Shr: i32 = 59;
+let K_BitXor: i32 = 60;
+let K_BitOr: i32 = 61;
+let K_Tilde: i32 = 62;
+let K_Question: i32 = 63;
+let K_PlusEq: i32 = 64;
+let K_MinusEq: i32 = 65;
+let K_StarEq: i32 = 66;
+let K_SlashEq: i32 = 67;
+let K_PercentEq: i32 = 68;
+let K_ShlEq: i32 = 69;
+let K_ShrEq: i32 = 70;
+let K_AndEq: i32 = 71;
+let K_OrEq: i32 = 72;
+let K_XorEq: i32 = 73;
+let K_PlusPlus: i32 = 74;
+let K_MinusMinus: i32 = 75;
+let K_Dot: i32 = 76;
+let K_Amp: i32 = 77;
 
 // Byte-wise equality of n bytes at id against the
 // NUL-terminated literal lit; the terminator must sit
@@ -130,7 +131,7 @@ fn ident_is(lit: ptr<u8>, id: ptr<u8>, n: i32) -> i32 {
     return 1;
 }
 
-// Keyword recognition — the 26 reserved words, one branch
+// Keyword recognition — the 27 reserved words, one branch
 // each, from the same list as the C twin's table
 // (tests/lexer_names.h). No match is K_Ident.
 fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
@@ -157,6 +158,7 @@ fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
     if (ident_is("u32", id, n)) { return K_U32; }
     if (ident_is("u64", id, n)) { return K_U64; }
     if (ident_is("struct", id, n)) { return K_Struct; }
+    if (ident_is("enum", id, n)) { return K_Enum; }
     if (ident_is("include", id, n)) { return K_Include; }
     if (ident_is("true", id, n)) { return K_True; }
     if (ident_is("false", id, n)) { return K_False; }

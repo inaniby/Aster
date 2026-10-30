@@ -87,7 +87,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.60-dev"
+#define ASTER_VERSION_STRING "0.23.61-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -187,6 +187,7 @@ enum class TK { End, Ident, Number, String,
     U64,                 // v0.23.48-dev: the 64-bit unsigned integer — the cast target the language was missing
     True, False,         // v0.23.25-dev: Bool literals — the first the language has had
     Struct,              // v0.23.5-dev (P3.3): struct declarations
+    Enum,                // v0.23.61-dev: enum declarations — C-style named integer constants over an i32
     Include,             // v0.23.13-dev (P3.4): include "file.ast" declaration sharing
     LParen, RParen, LBrace, RBrace, Colon, Semi, Comma, Arrow, Eq, EqEq, Ne,
     Lt, Le, Gt, Ge, Plus, Minus, Star, Slash, LBracket, RBracket, At, And, Or, Not,
@@ -260,7 +261,7 @@ public:
                 TK k=TK::Ident;
                 if(x=="fn")k=TK::Fn; else if(x=="extern")k=TK::Extern; else if(x=="main")k=TK::Main; else if(x=="let")k=TK::Let;
                 else if(x=="return")k=TK::Return; else if(x=="if")k=TK::If; else if(x=="else")k=TK::Else; else if(x=="while")k=TK::While; else if(x=="for")k=TK::For; else if(x=="break")k=TK::Break; else if(x=="continue")k=TK::Continue; else if(x=="switch")k=TK::Switch; else if(x=="case")k=TK::Case; else if(x=="default")k=TK::Default; else if(x=="i32")k=TK::I32; else if(x=="ptr")k=TK::Ptr; else if(x=="bool")k=TK::Bool;
-                else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct;
+                else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct; else if(x=="enum")k=TK::Enum;
                 else if(x=="include")k=TK::Include;   // v0.23.13-dev (P3.4)
                 // v0.23.25-dev: true/false are reserved words now. No shipped
                 // example or suite used either as an identifier, so the byte
@@ -461,7 +462,7 @@ public:
 // The Kind keeps the spelling `Ty::I32`, so every site that asks "is this a
 // pointer?" or "how wide is it?" reads exactly as it did before.
 struct Ty {
-    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Struct };
+    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct };
     Kind k = I32;
     int sid = -1;                      // struct-table index; see above
     // v0.23.34-dev: a pointer may carry the *element* it strides over, so
@@ -477,6 +478,7 @@ struct Ty {
     int esid = -1;
     constexpr Ty(Kind kk = I32) : k(kk), sid(-1), ew(-1), ekind(I32), esid(-1) {}
     static Ty ofStruct(int id) { Ty t(Struct); t.sid = id; return t; }
+    static Ty ofEnum(int id) { Ty t(Enum); t.sid = id; return t; }
     static Ty ptrTo(int id) { Ty t(Ptr); t.sid = id; return t; }
 };
 // Comparing a Ty against a Kind is what nearly every call site does. Both
@@ -543,6 +545,15 @@ struct StructDef {
         return nullptr;
     }
 };
+// v0.23.61-dev: an enum is a nominal i32. Its enumerators are compile-time
+// integer constants (folded to Num at parse time in primary()), and the enum
+// name is a type spelling that resolves to Ty::Enum(sid). Two enums are
+// distinct nominal types even though both are four-byte signed integers.
+struct EnumConst { std::string name; int64_t value; };
+struct EnumDef {
+    std::string name;
+    std::vector<EnumConst> consts;
+};
 // Filled in by the parser as it reads the declarations, before any type is
 // measured: a field's struct type must already be in the table, so a struct
 // has to be declared before it is used, exactly as in C.
@@ -553,6 +564,18 @@ static const StructDef& structOf(int sid) {
         throw Error("internal compiler error: struct index out of range");
     return g_structs[(size_t)sid];
 }
+// v0.23.61-dev: the enum tables, mirroring the struct tables.
+static std::vector<EnumDef> g_enums;
+static std::map<std::string, int> g_enumIndex;
+// Enumerator name -> folded value. Populated during parsing so primary() can
+// fold `Red` to its integer at the very first reference.
+static std::map<std::string, int64_t> g_enumConsts;
+static const EnumDef& enumOf(int sid) {
+    if (sid < 0 || (size_t)sid >= g_enums.size())
+        throw Error("internal compiler error: enum index out of range");
+    return g_enums[(size_t)sid];
+}
+static const char* enumNameOf(int sid) { return enumOf(sid).name.c_str(); }
 // Width in bytes of one value of this type as it sits in memory.
 static uint32_t tySize(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).size;
@@ -607,7 +630,7 @@ static uint64_t sizeofTypeValue(Ty t, const std::vector<uint32_t>& dims) {
 static bool tyIs64(Ty t) { return t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr; }
 // I32/U32/U8/U16/I64/U64: arithmetic and comparison operands that are not bool,
 // not an address, and not a composite.
-static bool tyIsInteger(Ty t) { return t.k == Ty::I32 || t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::I64 || t.k == Ty::U64; }
+static bool tyIsInteger(Ty t) { return t.k == Ty::I32 || t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Enum; }
 // U32/U8/U16/U64 compare with the unsigned condition codes (LO/LS/HI/HS) and divide
 // with UDIV, unlike i32/i64.
 static bool tyIsUnsigned(Ty t) { return t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::U64; }
@@ -630,8 +653,10 @@ static const char* tyName(Ty t) {
         case Ty::U16: return "u16"; case Ty::I64: return "i64"; case Ty::U64: return "u64"; case Ty::Ptr: return "ptr";
         case Ty::Bool: return "bool";
         case Ty::Struct: break;
+        // v0.23.61-dev: an enum prints by its declared name, like a struct.
+        case Ty::Enum: break;
     }
-    return structOf(t.sid).name.c_str();
+    return t.k == Ty::Enum ? enumNameOf(t.sid) : structOf(t.sid).name.c_str();
 }
 // A type name for diagnostics: `ptr` for a plain address, `ptr<S>` for one
 // that knows what it points at. tyName cannot tell them apart, because the
@@ -730,6 +755,10 @@ struct Expr {
     // answer the named width so operations and codegen see it directly.
     enum LitSuffix { LSNone, LSU, LSL, LSUL } suffix=LSNone;
     bool boolLit=false;
+    // v0.23.61-dev: a Num that came from an enumerated constant. It behaves
+    // exactly like an i32 literal downstream (the nominal type is the enum
+    // *name*, not the constant), but the flag lets diagnostics name it.
+    bool enumConst=false;
     unsigned line=0, col=0;   // P4.1: source location of the token that introduces this node
     explicit Expr(Kind kind):k(kind){} Expr(Kind kind,uint64_t value):k(kind),n(value){}
 };
@@ -1052,8 +1081,11 @@ class Parser {
             // reports "expected a type" naming every spelling it accepts.
             case TK::Ident: {
                 auto it=g_structIndex.find(cur().s);
-                if(it==g_structIndex.end())return false;
-                out=Ty::ofStruct(it->second);++p;return true;
+                if(it!=g_structIndex.end()){out=Ty::ofStruct(it->second);++p;return true;}
+                // v0.23.61-dev: an enum name is a type spelling too.
+                auto ei=g_enumIndex.find(cur().s);
+                if(ei!=g_enumIndex.end()){out=Ty::ofEnum(ei->second);++p;return true;}
+                return false;
             }
             // v0.23.37-dev: a function type spelling `fn (P1, …, Pn) -> R`.
             // The storage type stays Ty::Ptr (a function pointer is an address);
@@ -1386,6 +1418,15 @@ class Parser {
             z->boolLit=true;z->line=tok.line;z->col=tok.col;return z;
         }
         if(cur().k==TK::Ident||cur().k==TK::Main){auto tok=t[p++];
+            // v0.23.61-dev: an enumerated constant folds to its integer value
+            // here, before the call/index/struct-literal branches, because an
+            // enumerator is a value (like a literal), never any of those. From
+            // this point every type rule and the code generator see a plain i32
+            // Num; the nominal enum type only matters where a *type* is written.
+            if(g_enumConsts.count(tok.s)){
+                E z(new Expr(Expr::Num,(uint64_t)g_enumConsts[tok.s]));
+                z->enumConst=true; z->line=tok.line; z->col=tok.col; return z;
+            }
             if(eat(TK::LParen)){E x(new Expr(Expr::Call));x->name=tok.s;x->line=tok.line;x->col=tok.col;
                 if(cur().k!=TK::RParen){do{x->args.push_back(expr());}while(eat(TK::Comma));}
                 need(TK::RParen,"expected ')' after function arguments");
@@ -2238,6 +2279,48 @@ class Parser {
             throw Error(loc(id.line,id.col,"struct "+id.s+" is too large: "+std::to_string(s.size)+" bytes (limit "+std::to_string(kMaxStructSize)+")"));
         g_structs[(size_t)sid]=std::move(s);
     }
+    // v0.23.61-dev: enum declarations. Each enumerator is a compile-time i32
+    // constant (folded to Num in primary() through g_enumConsts); the enum name
+    // is a nominal type spelled Ty::Enum(sid). C-style: values auto-increment
+    // from 0 unless an explicit `= constant` is given — a negative literal is
+    // allowed, an out-of-i32-range literal is not.
+    void enumDeclaration(){
+        auto id=need(TK::Ident,"expected enum name");
+        if(g_enumIndex.count(id.s))throw Error(loc(id.line,id.col,"duplicate enum declaration: "+id.s));
+        for(const auto& g:globals)if(g.name==id.s)throw Error(loc(id.line,id.col,"enum name conflicts with a global variable: "+id.s));
+        for(const auto& f:functions)if(f.name==id.s)throw Error(loc(id.line,id.col,"enum name conflicts with a function: "+id.s));
+        EnumDef def;def.name=id.s;
+        const int sid=(int)g_enums.size();
+        g_enums.push_back(EnumDef());
+        g_enumIndex[id.s]=sid;
+        need(TK::LBrace,"expected '{' after enum name");
+        int64_t next=0;
+        if(cur().k!=TK::RBrace){
+            do{
+                auto cn=need(TK::Ident,"expected enumerator name");
+                // An enumerator lives in the global constant namespace: it must
+                // not shadow or duplicate a global, a function, or another
+                // enumerator (including one from a previously declared enum).
+                for(const auto& g:globals)if(g.name==cn.s)throw Error(loc(cn.line,cn.col,"enumerator name conflicts with a global variable: "+cn.s));
+                for(const auto& f:functions)if(f.name==cn.s)throw Error(loc(cn.line,cn.col,"enumerator name conflicts with a function: "+cn.s));
+                if(g_enumConsts.count(cn.s))throw Error(loc(cn.line,cn.col,"duplicate enumerator: "+cn.s));
+                int64_t val=next;
+                if(eat(TK::Eq)){
+                    E c=expr();
+                    int64_t cv=0;
+                    if(!constantInteger(*c,cv))throw Error(loc(cn.line,cn.col,"enumerator initializer must be an integer constant: "+cn.s));
+                    if(cv<-2147483648LL||cv>2147483647LL)throw Error(loc(cn.line,cn.col,"enumerator value out of i32 range: "+cn.s));
+                    val=cv;
+                }
+                def.consts.push_back({cn.s,val});
+                g_enumConsts[cn.s]=val;
+                next=val+1;
+            } while(eat(TK::Comma));
+        }
+        need(TK::RBrace,"expected '}' after enumerators");
+        if(def.consts.empty())throw Error(loc(id.line,id.col,"enum "+id.s+" must declare at least one enumerator"));
+        g_enums[(size_t)sid]=std::move(def);
+    }
     // Global declaration grammar (array and @align extension):
     //   let name : T [ '[' length ']' ] [ '@' 'align' '(' power_of_two ')' ] '=' expr ;
     //   extern let name : T [ '[' length ']' ] ;
@@ -2490,6 +2573,7 @@ public:
         while(cur().k!=TK::End){
             if(eat(TK::Include)){includeDirective();continue;}
             if(eat(TK::Struct)){structDeclaration();continue;}
+            if(eat(TK::Enum)){enumDeclaration();continue;}
             if(eat(TK::Let)){globalDeclaration(false);continue;}
             if(cur().k==TK::Extern&&t[p+1].k==TK::Let){++p;eat(TK::Let);globalDeclaration(true);continue;}
             // v0.23.51-dev: thread-local storage. `tls let x : T = …;` puts x in a
@@ -2681,6 +2765,18 @@ static Ty promoteInt(Ty a,Ty b){
 //     for one (v0.23.48-dev), and silently dropping bits would be a bug.
 static bool tyAssignable(Ty to,Ty from,const Expr& e){
     if(to==from)return true;
+    // v0.23.61-dev: enum nominal isolation, built on the i32 representation.
+    //   * enum <-> enum  : only the very same enum (same sid) is assignable.
+    //   * enum <- i32    : only a compile-time i32 constant that fits i32
+    //                      (every enumerator value does, so any literal passes).
+    //   * i32  <- enum   : free — the underlying storage is i32.
+    //   * anything else (enum<->other integer, ptr, bool, struct) is an error.
+    if(to.k==Ty::Enum||from.k==Ty::Enum){
+        if(to.k==Ty::Enum&&from.k==Ty::Enum)return to.sid==from.sid;
+        int64_t v=0;
+        if(to.k==Ty::Enum)return from.k==Ty::I32&&constantInteger(e,v)&&initializerFits(to,e,v);
+        return from.k==Ty::Enum&&to.k==Ty::I32;
+    }
     // v0.23.26-dev: the null pointer constant is the one integer a ptr slot
     // accepts. Everything else about pointers is unchanged — no cast, no
     // truncation, no address arithmetic into a value.
@@ -7105,6 +7201,17 @@ struct Sema {
                     } else {
                         if(actual==Ty::Ptr)throw Error(loc(s.line,s.col,"type mismatch initializing '"+s.name+"': expected i32, got ptr"));
                         if(actual==Ty::Bool)throw Error(loc(s.line,s.col,"type mismatch initializing '"+s.name+"': expected i32, got bool"));
+                        // v0.23.61-dev: enum nominal isolation at a let initializer.
+                        // An enum slot takes only an i32 constant (folded to Num at
+                        // parse time) or the very same enum; an enum value drops into
+                        // an i32 slot for free. The enum rules are stricter than the
+                        // loose integer rules below, so they apply only when an enum
+                        // is on either side; plain integers keep their historical
+                        // wide acceptance (even narrowing a value is allowed).
+                        if(s.ty.k==Ty::Enum||actual.k==Ty::Enum){
+                            if(!tyAssignable(s.ty,actual,*s.expr))
+                                throw Error(loc(s.line,s.col,"type mismatch initializing '"+s.name+"': expected "+tyNameFull(s.ty)+", got "+tyNameFull(actual)));
+                        } else {
                         // v0.23.27-dev: the same range check a global applies.
                         // `let b: u8 = 300;` inside a function used to store 44
                         // in silence, while at file scope it was
@@ -7117,6 +7224,7 @@ struct Sema {
                         int64_t v=0;
                         if(constantInteger(*s.expr,v)&&!initializerFits(s.ty,*s.expr,v))
                             throw Error(loc(s.line,s.col,"local initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(v)+")"));
+                        }
                     }
                     // v0.23.34-dev: a `ptr<T>` local keeps the element type the
                     // declared stride names, so Sema's `p[i]` and codegen's
@@ -7140,6 +7248,13 @@ struct Sema {
                         if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
                     } else if(actual==Ty::Ptr||actual==Ty::Bool){
                         throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
+                    // v0.23.61-dev: enum nominal isolation on assignment. An enum
+                    // variable takes only an i32 constant (folded to Num at parse
+                    // time) or the very same enum; an enum value is assignable to
+                    // an i32 slot freely. tyAssignable enforces exactly this.
+                    } else if(b->ty.k==Ty::Enum||actual.k==Ty::Enum){
+                        if(!tyAssignable(b->ty,actual,*s.expr))
+                            throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
                     }
                 } else if(globalNames.count(s.name)){
                     if(arrayGlobals.count(s.name))throw Error(loc(s.line,s.col,"cannot assign to an array as a whole: "+s.name));
@@ -7151,6 +7266,10 @@ struct Sema {
                             throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected bool)"));
                     } else if(actual==Ty::Bool){
                         throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected i32)"));
+                    // v0.23.61-dev: enum nominal isolation on global assignment.
+                    } else if(want.k==Ty::Enum||actual.k==Ty::Enum){
+                        if(!tyAssignable(want,actual,*s.expr))
+                            throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
                     }
                 } else throw Error(loc(s.line,s.col,"assignment to unknown variable: "+s.name));
                 return;
@@ -7871,6 +7990,9 @@ struct DwarfDieWriter {
             case Ty::U64:  nm="u64"; size=8;enc=0x07;break;   // v0.23.48-dev: DW_ATE_unsigned
             // A bool slot is four bytes wide (v0.23.2-dev), so its type says so.
             case Ty::Bool: nm="bool";size=4;enc=0x02;break;   // DW_ATE_boolean
+            // v0.23.61-dev: an enum is a four-byte signed base type named after
+            // its declaration, exactly like an i32 with a distinct DWARF name.
+            case Ty::Enum: nm=enumNameOf(t.sid);size=4;enc=0x05;break;
             default: break;
         }
         dbgUleb(info,kAbbrBaseType);

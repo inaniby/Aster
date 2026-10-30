@@ -45,7 +45,7 @@ TOKENS = [
     "I64", "U8", "U16", "U32",
     "U64",                 # v0.23.48-dev: the 64-bit unsigned integer
     "True", "False",
-    "Struct", "Include",
+    "Struct", "Enum", "Include",   # v0.23.61-dev: enum declarations
     "LParen", "RParen", "LBrace", "RBrace", "Colon", "Semi", "Comma", "Arrow",
     "Eq", "EqEq", "Ne",
     "Lt", "Le", "Gt", "Ge", "Plus", "Minus", "Star", "Slash", "LBracket",
@@ -57,7 +57,7 @@ TOKENS = [
     "Dot", "Amp",
 ]
 
-# The 26 reserved words, each spelling mapped to the kind it lexes to. Order
+# The 27 reserved words, each spelling mapped to the kind it lexes to. Order
 # is the order the host compiler's chain tests them in; since every spelling
 # is distinct the order carries no meaning, but keeping it identical makes
 # the generated chain diff against the C++ one line for line.
@@ -69,7 +69,7 @@ KEYWORDS = [
     ("i32", "I32"), ("ptr", "Ptr"), ("bool", "Bool"),
     ("i64", "I64"), ("u8", "U8"), ("u16", "U16"), ("u32", "U32"),
     ("u64", "U64"),       # v0.23.48-dev
-    ("struct", "Struct"), ("include", "Include"),
+    ("struct", "Struct"), ("enum", "Enum"), ("include", "Include"),   # v0.23.61-dev
     ("true", "True"), ("false", "False"),
 ]
 
@@ -99,7 +99,7 @@ def die(msg):
 # Self-checks: the list must be well-formed before anything is emitted.
 # ---------------------------------------------------------------------------
 def check_list():
-    if TOKEN_COUNT != 77:
+    if TOKEN_COUNT != 78:
         die("expected 77 token kinds, list has %d" % TOKEN_COUNT)
     if len(set(TOKENS)) != TOKEN_COUNT:
         die("duplicate token kind name")
@@ -109,8 +109,8 @@ def check_list():
         if len(name) >= RECORD:
             die("token kind name %r does not fit a %d-byte record"
                 % (name, RECORD))
-    if KEYWORD_COUNT != 26:
-        die("expected 26 keywords, list has %d" % KEYWORD_COUNT)
+    if KEYWORD_COUNT != 27:
+        die("expected 27 keywords, list has %d" % KEYWORD_COUNT)
     kinds = [k for _, k in KEYWORDS]
     if len(set(kinds)) != KEYWORD_COUNT:
         die("two keywords map to the same kind")
