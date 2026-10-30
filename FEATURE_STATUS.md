@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.59-dev.** One table per area. "Since" is the version that
+**As of v0.23.60-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -82,7 +82,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | `?:` arms widen from the expression's own type when the consumer is `i32`, so `c ? 4294967297 : small` keeps both arms wide | shipped | v0.23.18-dev | `wide-int-literal-checks.sh` |
 | `u8` / `u16` / `u32` unsigned narrow types on the same lattice | shipped | v0.23.2-dev | `wide-int-checks.sh` |
 | **`u64` type** (unsigned 64-bit) — the eighth integer type: `i64`'s 8-byte slots and X registers with the unsigned reading (`LO/LS/HI/HS`, `UDIV`); `ptr<u64>` strides 8 bytes through the existing `tyPtrToElem` | shipped | v0.23.48-dev | `integer-cast-checks.sh` [3/10] |
-| **The cast `T(x)`** — a function-shaped explicit conversion at the primary level, six spellings (`i32 i64 u8 u16 u32 u64`), recognized with zero lookahead; integer operands only (`ptr`/`bool` are neither spellings nor operands); a narrowing answers the target width's low bits, a widening extends by the **source** type's signedness (the arm's `SXTW` answers at the consumer's width — the producer-extends rule) | shipped | v0.23.48-dev | `integer-cast-checks.sh` [3/10], [5/10], [8/10] m2/m3/m7 |
+| **The cast `T(x)`** — a function-shaped explicit conversion at the primary level, zero lookahead; the eight integer spellings (`i32 i64 u8 u16 u32 u64`) plus `bool` and `ptr`/`ptr<S>` as targets. Legal conversions: integer↔integer, bool↔integer (integer→bool normalizes to 0/1 at run time), integer↔ptr (the 64-bit address reinterprets; `i32` takes the low 32 bits the way C does), and `ptr<S>`↔`ptr<U>` (a pure reinterpretation, nothing emitted). Rejected: a struct on either side, and the two bool↔ptr crossings (`bool(p)` / `ptr(b)`) | shipped | v0.23.48-dev (widened v0.23.60-dev) | `integer-cast-checks.sh` [3/10], [5/10], [8/10] m2/m3/m7; `cast-conversions-checks.sh` |
 | `promoteInt` answers **`U64` first**, ahead of the `tyIs64` branch — otherwise `u64 + i64` would answer `I64` and a `u64` comparison would be emitted signed, silently wrong past 2^63−1 | shipped | v0.23.48-dev | `integer-cast-checks.sh` [8/10] m4 |
 | An integer literal is accepted up to 2^64−1 by the parser; the slot's own range is enforced at the declaration by `initializerFits` (`let x: i64 = 9223372036854775808;` → `local initializer does not fit in i64: x (…)`, naming the slot rather than the token) | shipped | v0.23.48-dev | `integer-cast-checks.sh` [5/10], [6/10] |
 | The `u64` slot takes a negative literal as the sign-extended view of a value near 2^64 (`-1` is 2^64−1), never a truncation | shipped | v0.23.48-dev | `integer-cast-checks.sh` [3/10] |
