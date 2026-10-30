@@ -22,7 +22,7 @@
 #   [2]  source guards           every load-bearing edit, pinned
 #   [3]  qemu behaviour          30 hand-derived witnesses
 #   [4]  gcc differential        the example against its C twin
-#   [5]  rejection matrix        13 refusals, exact messages
+#   [5]  rejection matrix        11 refusals, exact messages
 #   [6]  cascade diagnostics     the three migrated i64 messages
 #   [7]  coverage count          the behavioural matrix is the coverage
 #   [8]  mutation layer          9 mutants, each observably wrong
@@ -65,8 +65,8 @@ fi
 printf '%s\n' '[2/10] Source guards: the u64 grid and the cast'
 # the version constant — pinned to the current dev line so a stale compiler
 # (or a forgotten version bump) fails loudly rather than silently.
-grep -qF '#define ASTER_VERSION_STRING "0.23.59-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.59-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.60-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.60-dev" >&2; exit 1; }
 # the token and the keyword
 grep -qF '    U64,' src/aster.cpp \
     || { echo "FAIL: enum class TK no longer declares U64" >&2; exit 1; }
@@ -107,8 +107,8 @@ grep -qF 'case Expr::Cast: return isConstExpr(*e.a);' src/aster.cpp \
 # both type systems, and the promotion and assignment rules
 grep -qF 'case Expr::Cast: return e.ty;' src/aster.cpp \
     || { echo "FAIL: a type system no longer answers the cast target" >&2; exit 1; }
-grep -qF 'throw Error(loc(e.line,e.col,"cannot cast "+tyNameFull(from)+" to "+tyName(e.ty)));' src/aster.cpp \
-    || { echo "FAIL: Sema no longer refuses a cast of a non-integer" >&2; exit 1; }
+grep -qF 'a cast must be between integers, between a bool and an integer, between an integer and a ptr, or between two pointers' src/aster.cpp \
+    || { echo "FAIL: Sema no longer refuses an illegal cast (struct, or a bool<->ptr crossing)" >&2; exit 1; }
 grep -qF 'if(a==Ty::U64||b==Ty::U64)return Ty::U64;' src/aster.cpp \
     || { echo "FAIL: promoteInt no longer puts u64 first" >&2; exit 1; }
 grep -qF '||(to==Ty::U64&&from==Ty::I64)' src/aster.cpp \
@@ -239,8 +239,10 @@ fi
 
 # ---------------------------------------------------------------------------
 # [5/10] Rejection matrix. The cast spellings are checked like any other
-# construct; the narrow-slot discipline this round did not loosen still
-# refuses; the ptr and struct operands have no cast to answer.
+# construct; v0.23.60-dev widened the cast to bool<->int, int<->ptr and
+# ptr<S><->ptr<U>, so the only refusals left are the syntax cases, the
+# narrow-slot discipline, and the two ever-illegal crossings: a struct on
+# either side, and the bool<->ptr pairing.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[5/10] Rejection matrix'
 reject() {
@@ -259,17 +261,13 @@ reject 'cast without its paren'      "expected '(' after cast type" \
     'fn main() -> i32 { return u64 300; }'
 reject 'cast unclosed'               "expected ')' after cast operand" \
     'fn main() -> i32 { return u64(300; }'
-reject 'ptr( is not a cast'          "expected expression" \
-    'fn main() -> i32 { return ptr(0); }'
-reject 'bool( is not a cast'         "expected expression" \
-    'fn main() -> i32 { return bool(1); }'
-reject 'cast of a ptr'               "cannot cast ptr to u64" \
-    'fn main() -> i32 { let p: ptr = 0; let z: u64 = u64(p); return 0; }'
-reject 'cast of a struct'            "cannot cast B to u64" \
+reject 'ptr -> bool still refused'   "cannot cast ptr to bool" \
+    'fn main() -> i32 { let p: ptr = 0; let z: bool = bool(p); return 0; }'
+reject 'bool -> ptr still refused'   "cannot cast bool to ptr" \
+    'fn main() -> i32 { let b: bool = true; let z: ptr = ptr(b); return 0; }'
+reject 'struct -> integer still refused' "cannot cast struct" \
     'struct B { x: i32 }
 fn main() -> i32 { let b: B; let z: u64 = u64(b); return 0; }'
-reject 'cast of a bool'              "cannot cast bool to u64" \
-    'fn main() -> i32 { let t: bool = true; let z: u64 = u64(t); return 0; }'
 reject 'a narrow slot still refuses' "local initializer does not fit in u8: x (300)" \
     'fn main() -> i32 { let x: u8 = 300; return 0; }'
 reject 'a narrow parameter still refuses' "argument type mismatch calling f at argument 1: expected u8, got i32" \
@@ -478,7 +476,7 @@ done
 # pre-existing count is still 288: 348 recorded, 60 of them belonging to the
 # twenty rounds this suite knows are new.
 # v0.23.57-dev: c_ptr_difference.ast (the pointer-difference round) joins this filter the same way, so the pre-existing count stays 288.
-FILTER='-e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^tls_demo\. -e ^so_verstrlen\. -e ^c_ptr_difference\. -e ^address_of\. -e ^address_of_abi\. -e ^so_tls_demo\.'
+FILTER='-e ^cast-conversions\. -e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^tls_demo\. -e ^so_verstrlen\. -e ^c_ptr_difference\. -e ^address_of\. -e ^address_of_abi\. -e ^so_tls_demo\.'
 grep -v $FILTER "$BASE" | LC_ALL=C sort > "$OUT/expected-old.txt"
 grep -v $FILTER "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then

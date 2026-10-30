@@ -1,6 +1,6 @@
 #!/bin/sh
 # v0.23.54-dev (ELF segments) / v0.23.55-dev (build-apk ZIP offset): page-size
-# regression guard for Android 16 KB-page support. v0.23.59-dev adds link-so to
+# regression guard for Android 16 KB-page support. v0.23.60-dev adds link-so to
 # the command matrix so the shared-object writer is covered too.
 #
 # Android 15+ devices that use a 16 KB page reject any app (targetSdk >= 35)

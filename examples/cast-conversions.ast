@@ -1,0 +1,69 @@
+// v0.23.60-dev — T(x) reaches every conversion C permits that does not touch a
+// struct: bool <-> integer, integer <-> ptr, and ptr<S> <-> ptr<U>.
+//
+// Before this round only the integer family had a cast: u8(300) is 44, i64 of
+// an i32 -1 keeps the sign. An address was a different animal — "there is no
+// conversion to or from an address or a bool" — so `(ptr)0` (the null pointer
+// out of a zero) and `(bool)x` (truthiness of an integer) were simply
+// unspellable. This round widens the target and source past the integers:
+//
+//   * bool <-> integer : a bool is a 0/1 i32, so the bits reinterpret directly.
+//     integer -> bool is the one non-trivial direction — it normalizes to 0/1
+//     at run time (CSET W, ne), because a bool is a 0/1 i32 and nothing else.
+//   * integer <-> ptr  : an address's bits are an integer and vice versa.
+//     `(ptr)0x10` is the address, `(i64)p` reads it back, `(i32)p` takes the
+//     low 32 bits the way C does.
+//   * ptr<S> <-> ptr<U> : a typed pointer reinterprets as another typed
+//     pointer; the 64-bit value is unchanged, only its stride/target tag does,
+//     so the backend emits nothing for it.
+//
+// The eight groups below each carry exactly one bit of a 255 mask, so the exit
+// status says every group passed and a missing bit names the group that did
+// not. Every witness is hand-derived and pinned by tests/cast-conversions-checks.sh;
+// the C twin (tests/cast-conversions-twin.c) returns the same 255 through C's own
+// conversion rules. (The exit code is taken mod 256 by the OS, and 255 fits, so
+// the mask is exactly the status byte.)
+
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let r: i32 = 0;
+
+    // g1 (+1): bool -> integer. A true is 1, a false is 0 — the bits a bool
+    // already carries, read back as an integer.
+    let t: bool = true;
+    let f: bool = false;
+    if (i32(t) == 1 && i32(f) == 0) { r = r + 1; }
+
+    // g2 (+2): bool -> wider integer. The same 0/1, zero-extended to 64 bits.
+    if (u64(t) == 1 && u64(f) == 0) { r = r + 2; }
+
+    // g3 (+4): integer -> bool, a nonzero operand is truthy.
+    if (bool(7)) { r = r + 4; }
+
+    // g4 (+8): integer -> bool, a zero operand is false (the else arm fires).
+    if (bool(0)) { } else { r = r + 8; }
+
+    // g5 (+16): integer -> ptr -> integer, the bits survive the round trip.
+    // (ptr)0x10 materializes the value as an address; (i64) reads it back.
+    if (i64(ptr(0x10)) == 0x10) { r = r + 16; }
+
+    // g6 (+32): ptr -> i32 takes the low 32 bits of the address, exactly as C.
+    if (i32(ptr(0x20)) == 0x20) { r = r + 32; }
+
+    // g7 (+64): ptr<S> -> ptr<U> is a pure reinterpretation — no instruction.
+    // Recasting &pt as ptr<i32> and reading gives the first field, unchanged.
+    let pt: Point;
+    pt.x = 9; pt.y = 8;
+    let pp: ptr<Point> = &pt;
+    let ppa: ptr<i32> = ptr<i32>(pp);
+    if (*ppa == 9) { r = r + 64; }
+
+    // g8 (+128): ptr<U> -> ptr<U> and a typed pointer into a plain one agree on
+    // the address — (i32) of an untyped (ptr)x reads the same low bits.
+    let u: ptr = ptr(0x40);
+    let ut: ptr<i32> = ptr<i32>(u);
+    if (i32(ut) == 0x40) { r = r + 128; }
+
+    return r;
+}
