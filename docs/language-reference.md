@@ -1,6 +1,6 @@
 # Aster Language Reference
 
-**Applies to: v0.23.51-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.61-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
 source and then **checked against the v0.23.51-dev binary**. Where a rule says a
@@ -25,9 +25,9 @@ explains *why* each rule exists. This file is the lookup table.
 | Whitespace | spaces, tabs, newlines (`isspace`) |
 | Encoding note | UTF-8 inside a comment is fine: comments are consumed before the ASCII check runs |
 
-## 2. Reserved words — 26
+## 2. Reserved words — 27
 
-All 26 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
+All 27 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
 fails for every one of them).
 
 | Word | Role | Since |
@@ -52,6 +52,7 @@ fails for every one of them).
 | `ptr` | untyped / typed address (`ptr`, `ptr<S>`) | — |
 | `bool` | boolean type | v0.22.51-dev |
 | `struct` | struct declaration | v0.23.5-dev |
+| `enum` | enumeration declaration (named `i32` constants) | v0.23.61-dev |
 | `include` | `include "file.ast";` declaration sharing | v0.23.13-dev |
 | `true` | Bool literal, value 1 | v0.23.25-dev |
 | `false` | Bool literal, value 0 | v0.23.25-dev |
@@ -76,7 +77,7 @@ The type names are likewise ordinary identifiers, which is what lets
 identifier everywhere except at the **start of a top-level declaration**, where
 `tls let name: type …;` declares a thread-local global (§8). `let tls: i32 = 1;`
 compiles — a variable named `tls` is fine; only the declaration prefix is
-special. The reserved-word count therefore stays **26**.
+special. The reserved-word count therefore stays **27**.
 
 ### Identifiers
 
@@ -153,16 +154,19 @@ leading `&` and the bitwise level only sees one in operator position.
 | `u8` | 1 | 1 | zero-extended on load, truncated on store |
 | `u16` | 2 | 2 | same |
 | `bool` | 4 | 4 | holds 0 or 1 |
+| `E` (an enum) | 4 | 4 | named integer constants over `i32` (v0.23.61-dev) |
 | `S` (a struct) | layout | layout | passed and returned by address |
 
 Struct layout is AAPCS64 / C: each field starts at the next offset that is a
 multiple of its own alignment, the struct's alignment is the largest of its
 fields', and its size is the final offset rounded up to that alignment.
 
-There is **no** `void`, `float`/`double`, `char`, `enum`, `union`, `const`, or
-`typedef`/type alias. An explicit conversion between the integer types is the
-**cast** `T(x)` (v0.23.48-dev — see §5.1); no other conversion is expressible.
-(`sizeof` and `len` are operators since v0.23.35-dev — see §6.)
+There is **no** `void`, `float`/`double`, `char`, `union`, `const`, or
+`typedef`/type alias. (Enumerations **do** exist — see §5.2 — but they are a
+thin, nominal wrapper over `i32`, not a separate numeric kind.) An explicit
+conversion between the integer types is the **cast** `T(x)` (v0.23.48-dev — see
+§5.1); no other conversion is expressible. (`sizeof` and `len` are operators
+since v0.23.35-dev — see §6.)
 
 ### 5.1 The cast: `T(x)`
 
@@ -199,6 +203,62 @@ own width (`u8 + u8` wraps at 256); a 64-bit operand wins — and since
 v0.23.48-dev `u64` outranks `i64`, so a mixed pair with a `u64` side is
 compared unsigned (`u64 + i64` answers `u64`, not `i64`); a mixed pair widens
 to 32 bits, taking the unsigned reading when either side is unsigned.
+
+### 5.2 Enumerations (v0.23.61-dev)
+
+A `enum` declaration introduces a **nominal integer type** backed by `i32`. It
+names a set of `i32` constants so the source can read `Red`/`Green`/`Blue`
+instead of bare integers, without weakening the type system the way a C `enum`
+does.
+
+```
+enum-decl  ::= "enum" ident "{" enumerator ("," enumerator)* ","? "}"
+enumerator ::= ident ("=" constant)?
+```
+
+- **Auto-increment.** An enumerator with no `=` takes the previous value plus
+  one; the first takes `0`. `enum Color { A, B, C }` names `0, 1, 2`.
+- **Explicit values.** `enum Dir { North=10, East=20, South=20, West=-1 }` is
+  legal; a `=` value is any compile-time integer that `constantInteger` can
+  fold, so `= -1` works (the negative is folded before the assignment).
+- **A trailing comma** before `}` is allowed (`{ A, B, }`), like every other
+  Aster brace list.
+- **At least one enumerator** is required; `enum Empty { }` is `enum has no
+  enumerators at L:C`.
+- **Name clashes.** An enum name may not shadow a struct, and an enumerator
+  name may not repeat within the same enum (`duplicate enumerator 'X' at L:C`)
+  or collide with another enum's enumerator (the enumerator namespace is
+  global, so two enums may not reuse a name).
+
+**Enumerators are `i32` constants.** The lexer records each name → value pair;
+`primary()` rewrites an `Ident` that is an enumerator into a `Num` of that value
+(flagged `enumConst`) *before* any other interpretation, so `A + B` is plain
+`i32` addition and `Red == Blue` is a plain `i32` comparison.
+
+**The enum type is nominal.** `enum Color` and `enum Dir` are *different*
+types even when their values coincide — this is the one point where Aster's
+enum is stricter than C's. `tyAssignable` enforces:
+
+| Assignment | Result |
+| --- | --- |
+| `enum<same>  ←  enum<same>` | allowed (same `sid`) |
+| `enum E  ←  i32 constant` | allowed **only** if the constant fits the value's range (`initializerFits`) — `let c: Color = Red;` compiles, `let c: Color = 99;` does too if `99` fits, `let c: Color = someVar;` does **not** (a variable is not a compile-time constant) |
+| `i32  ←  enum E` | **free** — an enum value is already `i32` |
+| anything else (cross-enum, `enum ← i32 variable`, `enum ← ptr/bool`, `ptr ← enum`) | refused |
+
+Concretely, `let a: Color = Green; let b: Dir = a;` is refused
+(`cannot assign Dir from Color`), and `let x: i32 = someColorVar;` compiles
+because enum→i32 is free.
+
+**Storage and size.** An enum value occupies 4 bytes and aligns to 4 — exactly
+`i32`. `sizeof(Color)` is `4`, and codegen treats the type as a signed 32-bit
+slot throughout (`tySize`/`tyAlign` land on `default: 4`, and `tyIsInteger`
+includes `Ty::Enum` so an enum value is a legal `if`/`while` condition — zero
+vs non-zero — and a legal arithmetic operand alongside `i32`).
+
+**Debug info.** Each enum is emitted to DWARF as a `DW_TAG_enumeration_type`
+of `DW_AT_byte_size 4`, `DW_AT_type_encoding 0x05` (signed), so a debugger
+shows the named constants rather than bare integers.
 
 ## 6. Expressions — precedence, highest first
 
@@ -664,7 +724,7 @@ name      ::= ident | 'main'
 - `tls` is a **context keyword**: it is only special at the start of a
   top-level declaration, so it stays a usable identifier everywhere else
   (`let tls: i32 = 5;` is an ordinary local). The reserved-word count does
-  not move — still 26.
+  not move — still 27 (since v0.23.61-dev added `enum` as a reserved word).
 - Same shapes as a plain global — scalars and arrays, the same types, the
   same constant-initializer rules, the same length bounds. `tls extern let
   name: type;` declares one defined elsewhere, exactly like `extern let` —

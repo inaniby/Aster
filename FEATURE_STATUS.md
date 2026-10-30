@@ -10,6 +10,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | Feature | Status | Since | Coverage |
 | --- | --- | --- | --- |
 | `i32` type (signed 32-bit) | shipped | early | all suites |
+| `enum Name { … }` — nominal `i32`-backed enumeration; enumerators are named `i32` constants (auto-increment or `= value`), `enum<->enum` requires the same `sid`, `i32 <- enum` is free, `enum <- i32` only from a fitting constant; an enum value is a legal condition and arithmetic operand; `sizeof` is 4 | shipped | v0.23.61-dev | `enum-checks.sh` [9/9] — qemu witnesses, 5-rejection matrix, 2-mutant layer |
 | `ptr` type (64-bit address value) | shipped | v0.22.x | `pointer-index-checks.sh`, `c-ptr-*` e2e |
 | `fn` / `extern fn` / `main` (exported as `_start`) | shipped | early | `object-checks.sh`, `linker-checks.sh` |
 | Up to 32 call arguments, `i32`/`ptr` returns | shipped | early | `smoke.sh` argument cases |
@@ -71,7 +72,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | **Labeled `break` / `continue`** — `name: while/for` names a loop, and `break name;` / `continue name;` jump to that loop's exit / step, resolved innermost-first at compile time against a `loopNames` stack; a missing or misplaced label is a hard error, not a runtime `goto` | shipped | v0.23.49-dev | `switch-checks.sh` [3/9], [5/9] |
 | Global `let` scalars, arrays, `@align(N)` | shipped | v0.22.x | `global-checks.sh`, `global-deep-checks.sh` |
 | `extern let` declarations (cross-object globals) | shipped | v0.22.x | `global-checks.sh` |
-| `tls let` thread-local globals (scalar + array) — per-thread block split into `.tdata` + `.tbss`, `PT_TLS` in both static images and shared objects, local-exec `MRS Xt,TPIDR_EL0` access statically and initial-exec (GOT slot + `R_AARCH64_TLS_TPREL64`) in a `.so`, `tls` a context keyword (reserved-word count stays 26); `tls extern let` refused in a shared object | shipped | v0.23.52-dev | `tls-checks.sh` [9/9] |
+| `tls let` thread-local globals (scalar + array) — per-thread block split into `.tdata` + `.tbss`, `PT_TLS` in both static images and shared objects, local-exec `MRS Xt,TPIDR_EL0` access statically and initial-exec (GOT slot + `R_AARCH64_TLS_TPREL64`) in a `.so`, `tls` a context keyword (reserved-word count stays 27 since v0.23.61-dev added `enum`); `tls extern let` refused in a shared object | shipped | v0.23.52-dev | `tls-checks.sh` [9/9] |
 | Run-time global initializers (ordered `__aster_init` chain) | shipped | v0.22.x | `e2e-global-deep.sh` |
 | String literals (rodata, NUL-terminated) | shipped | v0.22.x | `c-string-literals-*`, `e2e-c-string-literals.sh` |
 | Comments `//` and `/* */` | shipped | v0.22.43-dev | `comment-checks.sh` |
