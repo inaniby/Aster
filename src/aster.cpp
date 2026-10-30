@@ -87,7 +87,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.59-dev"
+#define ASTER_VERSION_STRING "0.23.60-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -961,7 +961,11 @@ static int64_t castConstValue(int64_t v,Ty to){
         case Ty::U16: return (int64_t)(uint64_t)(uint16_t)(uint64_t)v;
         case Ty::U32: return (int64_t)(uint64_t)(uint32_t)(uint64_t)v;
         case Ty::I32: return (int64_t)(int32_t)v;
-        default:      return v;   // i64 and u64 keep every bit
+        // v0.23.60-dev: integer -> bool folds to 0/1, the same value gen(Cast)
+        // materializes at run time (CSET W, ne), so a constant-folding path and
+        // the code generator cannot disagree about what `(bool)x` means.
+        case Ty::Bool: return v!=0?1:0;
+        default:      return v;   // i64, u64 and ptr keep every bit
     }
 }
 class Parser {
@@ -1253,18 +1257,23 @@ class Parser {
             x->a=std::move(inner); x->line=ln; x->col=cl;
             return x;
         }
-        // v0.23.48-dev: an explicit integer cast, `u8(x)`, `(i64)` — the
-        // function-shaped spelling, the same one sizeof and len use. The type
-        // keywords are reserved words, so a cast is recognized with zero
-        // lookahead: an integer keyword followed by '(' can be nothing else.
-        // ptr and bool are deliberately not spellings — there is no conversion
-        // to or from an address or a bool — so `ptr(x)` falls through to the
-        // "expected expression" error below, exactly as it did before.
-        if(cur().k==TK::I32||cur().k==TK::I64||cur().k==TK::U8||cur().k==TK::U16||cur().k==TK::U32||cur().k==TK::U64){
+        // v0.23.48-dev: an explicit cast, `u8(x)`, `i64(x)`, `bool(x)`, `ptr(x)`,
+        // `ptr<i32>(x)` — the function-shaped spelling, the same one sizeof and len
+        // use. The type keywords are reserved words, so a cast is recognized with
+        // zero lookahead: a type keyword (optionally followed by `<...>`) followed
+        // by '(' can be nothing else. Which source/target *combinations* are legal
+        // is decided in Sema's typeOf; the parser only assembles the node here.
+        // v0.23.60-dev: the cast target now spans the six integers plus bool,
+        // ptr and ptr<S>, so every conversion C permits that does not involve a
+        // struct is spellable — bool <-> integer, integer <-> ptr, ptr<S> <->
+        // ptr<U>. (Which *combinations* are legal is decided in Sema's typeOf;
+        // the parser only assembles the node and its target type here.)
+        if(cur().k==TK::I32||cur().k==TK::I64||cur().k==TK::U8||cur().k==TK::U16||cur().k==TK::U32||cur().k==TK::U64||cur().k==TK::Bool||cur().k==TK::Ptr){
             const Token kw=t[p++];
-            need(TK::LParen,"expected '(' after cast type");
-            E inner=expr();
-            need(TK::RParen,"expected ')' after cast operand");
+            // Parse the target type first — for `ptr` this may consume a
+            // `<T>`/`<S>` argument that precedes the operand's '(' — then the
+            // '(' operand ')'. (The operand's '(' is parsed AFTER the type so
+            // `ptr<i32>(x)` reads the angle brackets before it looks for it.)
             Ty t=Ty::I32;
             switch(kw.k){
                 case TK::I32: t=Ty::I32; break;
@@ -1272,8 +1281,38 @@ class Parser {
                 case TK::U8:  t=Ty::U8;  break;
                 case TK::U16: t=Ty::U16; break;
                 case TK::U32: t=Ty::U32; break;
-                default:      t=Ty::U64; break;   // the sixth keyword is u64
+                case TK::U64: t=Ty::U64; break;
+                case TK::Bool: t=Ty::Bool; break;
+                case TK::Ptr: {
+                    // The `ptr` keyword is already consumed as kw, so the
+                    // optional element/struct argument is parsed inline rather
+                    // than through pointerType (which re-consumes `ptr`). Untyped
+                    // `ptr` when there is no '<'; ptr<T> (strided) or ptr<S>
+                    // (field-aware) when there is — the same two shapes
+                    // pointerType builds.
+                    t=Ty::Ptr;
+                    if(cur().k==TK::Lt){
+                        ++p;
+                        Ty elem;
+                        if(parseType(elem)){
+                            need(TK::Gt,"expected '>' after the type in a ptr<...> cast");
+                            t=(elem.k==Ty::Struct)?Ty::ptrTo(elem.sid):tyPtrToElem(elem);
+                        } else {
+                            auto id=need(TK::Ident,"expected a struct name after 'ptr<'");
+                            need(TK::Gt,"expected '>' after the struct name in a ptr<...> cast");
+                            auto it=g_structIndex.find(id.s);
+                            if(it==g_structIndex.end())
+                                throw Error("unknown struct type in ptr<"+id.s+"> at "+std::to_string(id.line)+":"+std::to_string(id.col));
+                            t=Ty::ptrTo(it->second);
+                        }
+                    }
+                    break;
+                }
+                default: break;   // t is already Ty::I32; the if above admits only the 8 cast keywords
             }
+            need(TK::LParen,"expected '(' after cast type");
+            E inner=expr();
+            need(TK::RParen,"expected ')' after cast operand");
             E x(new Expr(Expr::Cast));
             x->ty=t; x->a=std::move(inner); x->line=kw.line; x->col=kw.col;
             return x;
@@ -4115,20 +4154,45 @@ struct Codegen {
                 emit((wide?0xaa200000u:0x2a200000u)|(uint32_t(a)<<16)|(31u<<5)|uint32_t(a)); // ORN Wa, WZR, Wa
                 return a;
             }
-            // v0.23.48-dev: `T(x)` — an explicit conversion between integer
-            // types. The operand is generated at the *target* width first, so a
-            // narrower source is widened with its own signedness before any
-            // narrowing can happen: an i32 into a u64 slot sign-extends on load
-            // (which is what `(u64)(i32)-1 == 18446744073709551615` rests on),
-            // and a u8/u16/u32 zero-extends through its load form. Only when the
-            // source is wider than the target is a normalization emitted: take
-            // the low bits and read them back the way the target type would.
-            // The four forms are the run-time twin of castConstValue's four
-            // cases — UXTB/UXTH/MOV W(UXTW) for the unsigned targets, SXTW for
-            // i32 — and all four were checked against aarch64 gcc + objdump.
+            // v0.23.48-dev, widened by v0.23.60-dev: `T(x)` — an explicit
+            // conversion. The operand is generated at the *target* width first,
+            // so a narrower source is widened with its own signedness before any
+            // narrowing: an i32 into a u64 slot sign-extends on load (which is
+            // what `(u64)(i32)-1 == 18446744073709551615` rests on), and a
+            // u8/u16/u32 zero-extends through its load form. Only when the source
+            // is wider than the target is a normalization emitted: take the low
+            // bits and read them back the way the target type would.
+            //
+            // v0.23.60-dev extends the source and target past the integers. Every
+            // integer <-> integer case is unchanged; the new directions are all
+            // bit reinterpretations, so generating the operand at the target
+            // width is the whole of most of them:
+            //   - bool -> integer : a bool is already a 0/1 i32, carried at the
+            //     target width like any other integer; no extra instruction.
+            //   - integer -> ptr  : the integer is materialized at 64 bits (an
+            //     i32 sign-extends into the address, a u32 zero-extends), which
+            //     is exactly the address `(ptr)x` means.
+            //   - ptr -> integer   : wf (8) > wt for every narrow integer, so the
+            //     UXTB/UXTH/UXTW/SXTW below reinterpret the low bytes — the C
+            //     `(i32)ptr` reading of the address, high bit and all.
+            //   - ptr -> ptr       : both 64 bits, nothing emitted.
+            // The one non-trivial direction is integer -> bool, normalized to 0/1
+            // below, because a bool is a 0/1 i32 and the consumer expects exactly
+            // that, not the raw nonzero pattern.
             case Expr::Cast:{
                 const Ty from=exprType(*e.a);
                 int a=gen(*e.a,e.ty);
+                // integer -> bool : (x != 0) ? 1 : 0. `a` holds the integer;
+                // CMP+SETF (CSET W, ne) writes 1 when it is nonzero, 0 otherwise
+                // — the same 0/1 a bool comparison produces, so a stored,
+                // returned or combined `(bool)x` agrees with `(x != 0)`. gen
+                // carries `a` at its i32/i64 width, so a single compare against
+                // zero is the whole normalization.
+                if(e.ty==Ty::Bool){
+                    emit(cmpZero(a));
+                    emit(csetBool(a,1));   // CSET Wa, ne  -> 1 when a != 0
+                    return a;
+                }
                 const uint32_t wf=tySize(from),wt=tySize(e.ty);
                 if(wf>wt){
                     if(e.ty==Ty::U8)       emit(0x53001c00u|(uint32_t(a)<<5)|uint32_t(a)); // UXTB Wa, Wa
@@ -4965,6 +5029,11 @@ struct Codegen {
     // short-circuit: the right operand is evaluated only when the left one does
     // not already decide the result (a false left of &&, a true left of ||).
     int genBool(const Expr& e){
+        // v0.23.60-dev: a cast to bool is itself a bool expression — `(bool)x`
+        // normalizes to 0/1 inside gen(Cast), so materializing it at the bool
+        // width is the whole implementation, the same way a bool field or a ?:
+        // selection already is (below). gen(Cast,Bool) returns the 0/1 register.
+        if(e.k==Expr::Cast) return gen(e,Ty::Bool);
         if(isComparison(e.k)){
             // v0.23.26-dev: == and != accept a ptr operand (against another ptr
             // or against the null constant 0); ordering does not. Sema has
@@ -6432,17 +6501,37 @@ struct Sema {
                 // expression-form folds now (sema has the binding's dims).
                 if(e.a) const_cast<Expr&>(e).n = foldSizeOfExpr(e);
                 return Ty::I32;
-            // v0.23.48-dev: `T(x)` converts between the integer types. The
-            // operand must be an integer: there is no conversion to or from a
-            // ptr (an address is not a number here), a bool (true is not 1),
-            // or a struct. The answer is the target type — the very type
-            // codegen's exprType answers, so the two passes cannot disagree
-            // about the width the value is carried at.
+            // v0.23.60-dev: widen T(x) past the integer family to the
+            // conversions C allows that do not touch a struct (a composite never
+            // converts to or from a scalar or an address):
+            //   - bool <-> integer : a bool is a 0/1 i32; the bits reinterpret
+            //     directly (integer -> bool is normalized to 0/1 at run time by
+            //     gen(Cast)).
+            //   - integer <-> ptr  : an address's bits are an integer and vice
+            //     versa, the very reinterpretation `(ptr)0` makes the null
+            //     pointer out of.
+            //   - ptr<S> <-> ptr<U> : a typed pointer reinterprets as another
+            //     typed pointer; the 64-bit value is unchanged, only its
+            //     stride/target tag does, so gen(Cast) emits nothing.
+            // Rejected: a struct on either side (composites do not convert), and
+            // the two crossings bool <-> ptr — an address is neither a truthiness
+            // nor a number, the same line v0.23.48-dev drew for the integers.
             case Expr::Cast: {
                 const Ty from=typeOf(*e.a);
-                if(!tyIsInteger(from))
-                    throw Error(loc(e.line,e.col,"cannot cast "+tyNameFull(from)+" to "+tyName(e.ty)));
-                return e.ty;
+                if(tyIsStruct(from))
+                    throw Error(loc(e.line,e.col,"cannot cast struct '"+structOf(structBaseId(from,e.a->name)).name+"' to "+tyNameFull(e.ty)));
+                if(tyIsStruct(e.ty))
+                    throw Error(loc(e.line,e.col,"cannot cast "+tyNameFull(from)+" to struct '"+structOf(e.ty.sid).name+"'"));
+                const bool fromInt=tyIsInteger(from), fromBool=from==Ty::Bool;
+                const bool toInt=tyIsInteger(e.ty), toPtr=e.ty.k==Ty::Ptr, toBool=e.ty==Ty::Bool;
+                // Every integer source converts to integer, bool or ptr. A ptr
+                // source converts to integer or ptr (not bool). A bool source
+                // converts only to integer (never to ptr, and bool->bool is the
+                // identity a program never writes). All other pairs are rejected.
+                if(toInt)         return e.ty;             // int->int, bool->int, ptr->int
+                if(toPtr&&!fromBool) return e.ty;          // int->ptr, ptr->ptr (bool->ptr rejected)
+                if(toBool&&fromInt)  return e.ty;          // int->bool       (ptr->bool rejected)
+                throw Error(loc(e.line,e.col,"cannot cast "+tyNameFull(from)+" to "+tyName(e.ty)+": a cast must be between integers, between a bool and an integer, between an integer and a ptr, or between two pointers"));
             }
             case Expr::Var: {
                 if(const Binding* b=find(e.name))return b->ty;
