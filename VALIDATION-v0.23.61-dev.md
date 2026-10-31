@@ -279,7 +279,12 @@ linker hardening, crypto/key handling, and the regression evidence.
 `ASTER_VERSION_STRING`, `kVersion`, the usage banner, the three test pins
 (`literals-checks.sh`, `integer-cast-checks.sh`, `cast-conversions-checks.sh`),
 `CMakeLists.txt`, README, VERSION_HISTORY, FEATURE_STATUS, ROADMAP and this
-report all name `0.23.61-dev`.
+report all name `0.23.61-dev`. The feature summary is guarded too: README and
+`docs/language-spec.md` may no longer repeat the retired "Android
+NativeActivity, APK packaging/signing, runtime APIs, and self-hosting are not
+implemented" sentence, nor the pre-pointer-ABI 124-level call-nesting limit;
+`version-checks.sh` fails on either, and the guard was proved by re-adding the
+sentence and observing the FAIL.
 
 ---
 
@@ -750,6 +755,8 @@ Focused runs with the new gate (this host, cross `HOSTCC`):
 | same gate with `CI_JOBS=4` (private worktrees; fixed-`/tmp` suites serialized) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 partial suites; `work/` empty afterwards | 39.5 min |
 | fresh `--depth=1` clone of `origin/main` at `ca7059d`, full gate `CI_JOBS=4 CI_KEEP_ARTIFACTS=1` | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 partial suites; root `./aster` provisioned; `work/` empty | 37m53s |
 | same clone at doc follow-up `1ad9e29`, `CI_SUITES="version-checks.sh ci-protocol-checks.sh"` | 2/2 PASS; CMake and ARCHITECTURE line-count guards green | cached build |
+| same tree at the README/limits rewrite, `CI_SUITES="version-checks.sh ci-protocol-checks.sh"` | 2/2 PASS; stale-product and retired-limit guards green | cached build |
+| negative proof: retired product sentence re-appended to README | FAIL at the stale-claim guard, then restored | suite time only |
 | eight-suite isolated subset (global/object/so-argument/bootstrap-loop/condition/enum/struct/tls) | 8/8 PASS, including the suites that invoke `./aster` | 1m45s |
 | four-suite mixed subset (icon has a fixed `/tmp` path) | 4/4 PASS; one suite serialized, three parallel | 1m57s |
 | `CI_JOBS=0` and `CI_JOBS=abc` | exit 2 before the probe: `CI_JOBS must be ...` | immediate |

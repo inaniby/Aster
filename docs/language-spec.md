@@ -1,4 +1,8 @@
-# Aster language subset v0.18.1
+# Aster language subset
+
+This document began as the v0.18.1 subset and is maintained feature by feature;
+`docs/language-reference.md` is the current compact grammar and the authority
+when the two differ.
 
 ```aster
 let counter: i32 = 0;
@@ -16,7 +20,7 @@ fn add_values(a: i32, b: i32) -> i32 {
 }
 ```
 
-Function definitions use `fn name(arg: i32, ...) -> i32 { ... }`. The initial pointer ABI slice also accepts `ptr` parameter and return types, and `let name: ptr = expr;` local bindings. Calls use `name(expr, ...)`; calls to functions with any `ptr` parameter or a `ptr` return type are currently rejected from Aster code. `main` is the program entry and must have no parameters; it is emitted as ELF symbol `_start`. Other functions are global function symbols and can be defined in another `.ast` file compiled to `.o`. Cross-file callers should declare external signatures with `extern fn name(arg: i32, ...) -> i32;`.
+Function definitions use `fn name(arg: i32, ...) -> i32 { ... }`. The initial pointer ABI slice also accepts `ptr` parameter and return types, and `let name: ptr = expr;` local bindings. Calls use `name(expr, ...)`; calls to functions with pointer parameters or a pointer return type are supported since v0.22.9-dev. `main` is the program entry and must have no parameters; it is emitted as ELF symbol `_start`. Other functions are global function symbols and can be defined in another `.ast` file compiled to `.o`. Cross-file callers should declare external signatures with `extern fn name(arg: i32, ...) -> i32;`.
 
 The first eight arguments are passed in AArch64 registers `w0`–`w7`; `w0` carries the return value. Each function copies incoming parameters to its stack frame. Non-entry functions save and restore `x30`, enabling nested calls and recursion.
 
@@ -51,7 +55,7 @@ Statements: local declaration (`let name: i32 = expr;`, `let name: ptr = expr;`,
 
 Expressions: decimal integer literals (which include the null pointer constant `0` in a ptr context, v0.23.26-dev), variables, function calls, array element access `buf[index]`, pointer element access `p[index]` (since v0.22.49-dev), multi-dimensional element access `a[i][j]` and a row `a[i]` as a `ptr` value (since v0.23.31-dev; see *A second subscript*), parentheses, unary minus, `+ - * /`, the `bool` literals `true`/`false` (since v0.23.25-dev), and since v0.22.51-dev the logical operators `&&`, `||` and `!`, and since v0.23.30-dev the address of a **whole array** — `&buf`, `&gbuf`, `&s.cells` — which is a strided `ptr<T>` carrying the element width (any element type; see *An array has an address*); since v0.23.34-dev an array parameter `T[N]` decays to that same `ptr<T>`. Precedence, loosest to tightest: `||` < `&&` < comparisons < `+ -` < `* /` < unary `-` `!` `~` `*` `&` < postfix `.` `[]` `()`. That ordering is the implementation's since **v0.23.27-dev** — until that round `&&` and `||` shared one level and the prefix operators bound tighter than `.`, so this file was describing a grammar the compiler did not have. Comparisons `== != < <= > >=` are signed 32-bit and yield a `bool`; they are ordinary expressions (see *Booleans and logical operators*). A chain of comparisons **within one level** (`a < b < c`, `a == b == c`) is still rejected — combine comparisons with `&&` / `||` instead — while a level crossing (`a < b == c`) is legal since v0.23.27-dev. See *Expression precedence and binding*.
 
-Implementation limits: at most 500 parameter-plus-local slots per function, 32 parameters/arguments, 16 simultaneously live expression temporaries, and 124 levels of nested calls within argument expressions. Each function reserves an 8 KiB stack frame for locals, caller-save spill space, and argument scratch slots. Arithmetic is 32-bit wrapping; division by zero and signed overflow are unchecked. Definite-return analysis is conservative; loops are not assumed to execute.
+Implementation limits: at most 500 eight-byte parameter-plus-local slots per function, 32 parameters/arguments, 16 simultaneously live expression temporaries, 256 levels of expression or statement nesting (2048 in constant folding and codegen), 64 `include` levels, and 14 levels of nested calls in argument expressions (4 for struct-valued results inside a struct literal). Each function reserves a fixed 8 KiB stack frame for locals, caller-save spill space, and argument scratch slots. Arithmetic wraps at its operand width; division by zero and signed overflow are unchecked. Definite-return analysis is conservative; loops are not assumed to execute.
 
 ### Compilation order (v0.23.0-dev)
 
@@ -1193,7 +1197,7 @@ v0.16.0 file is therefore a byte-identical prefix once the four section-table he
 (`e_shoff`, `e_shentsize`, `e_shnum`, `e_shstrndx`, all zero before) are masked out, and a shared
 object is byte-identical up to the end of its loaded segments.
 
-Android NativeActivity, APK packaging/signing, runtime APIs, and self-hosting are not implemented.
+Android NativeActivity glue, APK packaging/signing, the zero-libc runtime surface and the self-hosting bootstrap are covered by the v0.22.x–v0.23.x sections below; `FEATURE_STATUS.md` is the authoritative inventory.
 
 ## v0.18.0: shared objects with dynamic imports
 

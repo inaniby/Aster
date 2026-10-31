@@ -104,4 +104,29 @@ if [ ! -f "VALIDATION-v$VER.md" ]; then
 fi
 echo "OK: VALIDATION-v$VER.md exists"
 
+# 6) The feature summary must not regress to the pre-Android text. It was true
+#    at v0.18 and has been false since v0.23.46-dev; a reader who lands on that
+#    sentence concludes the project does not do what every section above it
+#    demonstrates. The same sentence was copied into docs/language-spec.md, so
+#    both files are checked.
+stale_claim='Android NativeActivity, APK packaging/signing, runtime APIs, and self-hosting are'
+if grep -q "$stale_claim.*not implemented" README.md; then
+    echo "FAIL: README still claims Android/APK/runtime/self-hosting are not implemented" >&2
+    exit 1
+fi
+if grep -q "$stale_claim.*not implemented" docs/language-spec.md; then
+    echo "FAIL: docs/language-spec.md still claims Android/APK/runtime/self-hosting are not implemented" >&2
+    exit 1
+fi
+echo "OK: neither README nor docs/language-spec.md claims the shipped products are unimplemented"
+
+# The call-nesting limit was 124 in the pre-pointer-ABI compiler and is 14 (or
+# 4 for struct results) now. A stale number is worse than no number: it sends a
+# reader debugging a limit the compiler no longer has.
+if grep -Eq 'pointer-signature Aster-to-Aster calls are not yet supported|124 levels of nested calls' README.md docs/language-spec.md; then
+    echo "FAIL: a document still carries a retired call-nesting/pointer-call limit" >&2
+    exit 1
+fi
+echo "OK: the retired 124-level / pointer-signature-call claims are gone"
+
 echo "=== version checks: ALL PASSED ==="

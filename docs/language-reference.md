@@ -164,28 +164,35 @@ fields', and its size is the final offset rounded up to that alignment.
 There is **no** `void`, `float`/`double`, `char`, `union`, `const`, or
 `typedef`/type alias. (Enumerations **do** exist — see §5.2 — but they are a
 thin, nominal wrapper over `i32`, not a separate numeric kind.) An explicit
-conversion between the integer types is the **cast** `T(x)` (v0.23.48-dev — see
-§5.1); no other conversion is expressible. (`sizeof` and `len` are operators
-since v0.23.35-dev — see §6.)
+conversion is the **cast** `T(x)` (integers since v0.23.48-dev; `bool`, `ptr`
+and `ptr<T>` since v0.23.60-dev — see §5.1); no other conversion is
+expressible. (`sizeof` and `len` are operators since v0.23.35-dev — see §6.)
 
 ### 5.1 The cast: `T(x)`
 
 ```
-cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64" ) "(" expr ")"
+cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+          | "bool" | "ptr" [ "<" (type | ident) ">" ] ) "(" expr ")"
 ```
 
 - Function-shaped and **primary** (precedence 1), the spelling `sizeof` and
-  `len` already use. The type keywords are reserved words, so an integer
-  keyword followed by `(` can be nothing else — zero lookahead.
-- The operand must be an **integer**: `u8(p)`, `u8(true)`, `u8(s)` are
-  `cannot cast ptr to u8` / `cannot cast bool to u8` /
-  `cannot cast Point to u8`. `ptr` and `bool` are not cast *spellings*
-  either — `ptr(x)` is `expected expression`, exactly as before.
+  `len` already use. The type keywords are reserved words, so a type keyword
+  followed by `(` can be nothing else — zero lookahead.
+- **Legal conversions** (v0.23.60-dev): integer ↔ integer, bool ↔ integer,
+  integer ↔ `ptr`, and `ptr`/`ptr<T>` ↔ `ptr`/`ptr<U>`. A conversion involving
+  a **struct** is refused on either side (`cannot cast Point to u8` /
+  `cannot cast u8 to struct 'Point'`), and so are the two `bool` ↔ `ptr`
+  crossings — an address is neither a number nor a truth value.
 - A **narrowing** cast answers with the target width's low bits:
   `u8(300)` is `44`, `u16(70000)` is `4464`, `u32(0 - 1)` is `4294967295`.
-- A **widening** cast extends by the *source* type's signedness:
+  A **widening** cast extends by the *source* type's signedness:
   `u64(u8(200))` is `200`, `u64(u32(4294967295))` is `4294967295`,
   `i64(i32(0 - 1))` is `-1` (sign-extended, not `4294967295`).
+- `bool(x)` normalizes any non-zero integer to `1`; an integer cast of a bool
+  answers its 0/1 value. A pointer cast reinterprets the 64-bit address (an
+  `i32` source sign-extends, a `u32` source zero-extends into it), and a
+  `ptr<T>` ↔ `ptr<U>` cast leaves the value unchanged while changing the
+  stride/target the pointer carries.
 - This is the only way to ask for a truncation; implicit narrowing of a value
   remains a compile error where it is checked at all.
 
@@ -221,8 +228,9 @@ enumerator ::= ident ("=" constant)?
 - **Explicit values.** `enum Dir { North=10, East=20, South=20, West=-1 }` is
   legal; a `=` value is any compile-time integer that `constantInteger` can
   fold, so `= -1` works (the negative is folded before the assignment).
-- **A trailing comma** before `}` is allowed (`{ A, B, }`), like every other
-  Aster brace list.
+- **No trailing comma.** `enum E { A, B, }` is `expected enumerator name at
+  L:C`; write `{ A, B }`. (Struct fields and parameter lists are equally
+  strict.)
 - **At least one enumerator** is required; `enum Empty { }` is `enum has no
   enumerators at L:C`.
 - **Name clashes.** An enum name may not shadow a struct, and an enumerator
@@ -264,7 +272,7 @@ shows the named constants rather than bare integers.
 
 | # | Level | Operators | Associativity |
 | --- | --- | --- | --- |
-| 1 | Primary | literal, identifier, `f(…)`, `a[i]`, `S { … }`, `( e )`, `@embed(…)`, `@embed_len(…)`, `sizeof(…)`, `len(…)`, `T(x)` cast (v0.23.48-dev) | — |
+| 1 | Primary | literal, identifier, `f(…)`, `a[i]`, `S { … }`, `( e )`, `@embed(…)`, `@embed_len(…)`, `sizeof(…)`, `len(…)`, `T(x)` cast (integers v0.23.48-dev; `bool`/`ptr` v0.23.60-dev) | — |
 | 2 | Postfix | `.field` `[i]` `f(args)` | left |
 | 3 | Unary prefix | `-` `!` `~` `*` `&` | right |
 | 4 | Multiplicative | `*` `/` `%` | left |
@@ -907,7 +915,12 @@ argument paths). Since v0.23.48-dev the explicit spelling is a cast
 | Shift count (constant) | 0 … 63 | `shift count N is out of range (0..63)` |
 | Embedded file | ≤ 16 MiB | `embedded file is too large` |
 | Struct nesting | a struct may not contain itself, directly or by value | `struct S cannot contain itself` |
-| Expression nesting | no declared limit; the parser recurses once per level | — |
+| Frame slots (parameters + locals) | 500 eight-byte slots | `too many local declarations (limit 500, counted in eight-byte slots)` / `too many parameters (limit 500, counted in eight-byte slots)` |
+| Expression temporaries | 16 simultaneously live | `expression too complex: temporary register limit exceeded` |
+| Expression / statement nesting | 256 each | `expression is nested too deeply (max 256)` / `statement is nested too deeply (max 256)` |
+| Constant folding / codegen walk | 2048 | `constant expression is nested too deeply (max 2048)` |
+| `include` nesting | 64 | `include nesting is too deep (max 64)` |
+| Nested call arguments | 14 levels (struct-valued results inside a struct literal: 4) | `nested function-call arguments exceed compiler limit (14 for pointer ABI)` / `struct-returning calls nested more than 4 levels deep` |
 
 Constant folding covers `+ - * / % << >> & | ^ ~` and unary `-`, so
 `buf[(1 << 3) | 1]` is bounds-checked like `buf[9]`. Overflow, division by
