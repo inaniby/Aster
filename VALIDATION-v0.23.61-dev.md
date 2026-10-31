@@ -826,16 +826,27 @@ standalone and through the gate with the protocol self-checks (**2/2 PASS**:
 mutant floor raised to 1000, a fake one-mutant suite, and a fake suite with
 no survivor assertion. The first complete run of the 115-suite gate finished
 **115/115 PASS, 0 skipped, 0 failed** in 64 minutes with the APK gate 3/3 and
-the same two partial suites. This is the current release-candidate evidence.
+the same two partial suites.
+
+`sanitizer-checks.sh` then took the set to **116**. Its standalone run is
+recorded in §7; the first complete run of the resulting gate finished
+**116/116 PASS, 0 skipped, 0 failed** in 38 minutes with `CI_JOBS=4` on a
+4-vCPU host, the APK gate 3/3, and the same two suites (`icon-checks`,
+`resource-table-checks`) each keeping one optional SKIP layer. The cached
+compiler was the strict build
+`63bd132e44c2838629905b8bfc9115ae1fadd1e47c18341f2d5dfd9a426204bc`, and the
+run covered the README/language-summary rewrite (`82e01a7`) unchanged. This
+is the current release-candidate evidence.
 
 ### 9. What is still open in P1
 
-- **Nightly execution and governance** remain. A clean `--depth=1` clone runs
-  the four-job gate **115/115** (37m53s), so the gate no longer depends on the
-  maintainer's tree, but there is still no scheduled workflow in the
-  repository: the workflow is ready on a local branch and the fine-grained
-  token lacks the `workflow` scope to push it. `LICENSE`, `CONTRIBUTING`,
-  `SECURITY` and release tags are still open.
+- **Nightly execution** remains. A clean `--depth=1` clone runs the four-job
+  gate **115/115** (37m53s), so the gate does not depend on the maintainer's
+  tree, but there is still no scheduled workflow in the repository: the
+  workflow is ready on a local branch and the fine-grained token lacks the
+  `workflow` scope to push it. The repository is private (temporarily public
+  for convenience), so `LICENSE`, `CONTRIBUTING`, `SECURITY` and release tags
+  are deliberately out of scope and not part of the remediation plan.
 - **Bespoke mutation layers** that build their mutants by hand do not yet
   join the census. The standardized corpus is 24 suites / 155 mutants with
   floors 24/150/2, and a green gate means 155/155 caught; the hand-built
