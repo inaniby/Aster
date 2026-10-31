@@ -473,7 +473,7 @@ covered by `enum-checks`, `smoke` and the full baseline replay.
   frozen per-release baselines, codegen accept/reject and mutation floors, a
   gate-breadth ratchet, an 80% gcov line-coverage floor and an aggregate
   mutation census (24 suites / 155 mutants) are in place. Nightly execution
-  and parallel suite isolation remain open.
+  remains open.
 - **P2/P3** (module split, typed IR, bootstrap M5, fuzzing targets, product
   direction) were not part of this round.
 
@@ -487,8 +487,7 @@ qemu/regression evidence; the audit's four memory-safety reproductions
 BigInt/APK hardening) no longer reproduce and the sanitizer corpora report
 zero errors. The version is now single-sourced at `0.23.61-dev`. This round
 does not claim production readiness: the remaining limitations above, and the
-outstanding P1 items (nightly execution, suite isolation) still gate that
-claim.
+outstanding P1 item (nightly execution) still gates that claim.
 
 ---
 
@@ -640,9 +639,26 @@ own suite, a green gate means the census is also the denominator of a **100%
 fails the census before the gate can go green. Bespoke mutation layers that
 build their mutants by hand are not counted, so the floor is conservative.
 
-### 6. Observed evidence
+### 6. Parallel isolated suites
 
-`tests/ci-protocol-checks.sh` — **30/30 checks PASS**, covering:
+The gate still defaults to one job, but `CI_JOBS=N` runs N suites at once.
+Isolation is a private copy of the tree per suite: the strict binary, `src`,
+`tests`, `examples` and the rest are copied into `$CI_OUT/work/<suite>`, the
+suite runs there with its own `TMPDIR`, and the copy is discarded. Suites that
+write fixed names such as `tmp-g-rw.o` or `tmp-dyn-a.o` into the repository
+root therefore cannot collide. Four suites still contain fixed `/tmp/aster-*`
+paths (`apk`, `icon`, `resource-table`, `signing`); they are detected by a
+`/tmp/` scan and run one at a time after the parallel batches. The cached
+compiler and the AArch64 runner stay absolute and shared, so isolation adds
+copy I/O but no rebuilds. A copy failure is a suite failure (125), never a
+silent skip; `CI_JOBS=0` or a non-integer exits 2; a custom `CI_SUITE_DIR`, a
+missing `tar`, or an in-tree `CI_OUT` other than `ci-artifacts` falls back to
+one job with a warning. The first four-job full run finished **115/115 PASS**
+in **39.5 minutes**, against 64 minutes serial, on a four-core host.
+
+### 7. Observed evidence
+
+`tests/ci-protocol-checks.sh` — **32/32 checks PASS**, covering:
 
 - the three protocol constants;
 - skip with reason (77), skip without reason (1), explicit failure (1);
@@ -656,6 +672,8 @@ build their mutants by hand are not counted, so the floor is conservative.
   keys, malformed digests, missing examples, missing snapshots and a missing
   version definition;
 - no suite may hardcode a versioned baseline path again;
+- `CI_JOBS=0` and `CI_JOBS=abc` exit 2 with the validation message before any
+  suite runs;
 - the coverage ratchet: 115 registered suites, 121 examples, 360 baseline rows,
   33 mutation-bearing suites, no orphan `*-checks.sh`, no missing registered
   suite.
@@ -698,6 +716,11 @@ Focused runs with the new gate (this host, cross `HOSTCC`):
 | same suite with a fake one-mutant suite (negative test) | FAIL: below the 2-per-suite floor | < 1 s |
 | same suite with a fake suite that has no survivor assertion (negative test) | FAIL: declares mutants but has no survivor assertion | < 1 s |
 | full default gate, 115 suites (`CI_KEEP_ARTIFACTS=1 sh tests/ci.sh`) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 suites with one optional SKIP layer | 64 min |
+| same gate with `CI_JOBS=4` (private worktrees; fixed-`/tmp` suites serialized) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 partial suites; `work/` empty afterwards | 39.5 min |
+| eight-suite isolated subset (global/object/so-argument/bootstrap-loop/condition/enum/struct/tls) | 8/8 PASS, including the suites that invoke `./aster` | 1m45s |
+| four-suite mixed subset (icon has a fixed `/tmp` path) | 4/4 PASS; one suite serialized, three parallel | 1m57s |
+| `CI_JOBS=0` and `CI_JOBS=abc` | exit 2 before the probe: `CI_JOBS must be ...` | immediate |
+| missing suite under the refactored runner | FAIL, `0 passed, 1 failed`, log kept | suite time only |
 
 The diverse run was the first time the new gate paid for itself. `icon-checks.sh`
 failed not because of the cache but because `openssl smime -verify` rejected
@@ -710,7 +733,7 @@ affected suites is green. This is exactly the failure class the protocol is
 meant to surface: a 1-in-256 flake that a looser gate could have reported as a
 green run had the suite swallowed the external-verifier failure.
 
-### 7. Full default gate
+### 8. Full default gate
 
 The first complete run of the new runner over the then-**113 default suites**
 finished **109 PASS, 0 skipped, 4 FAIL** (plus the 3/3 APK gate; two suites
@@ -754,16 +777,13 @@ no survivor assertion. The first complete run of the 115-suite gate finished
 **115/115 PASS, 0 skipped, 0 failed** in 64 minutes with the APK gate 3/3 and
 the same two partial suites. This is the current release-candidate evidence.
 
-### 8. What is still open in P1
+### 9. What is still open in P1
 
-- **Parallel suite execution** is not enabled. Many suites share fixed `/tmp`
-  paths and repository-root output names, so true isolation (sandbox dirs,
-  unique `TMPDIR`) is a prerequisite. The build cache is the safe first half
-  of the speedup; running suites concurrently is not.
-- **Nightly execution and governance** remain, along with **parallel suite
-  execution**. The gate now censuses the standardized mutation corpus (24
-  suites / 155 mutants, floors 24/150/2; a green gate means 155/155 caught)
-  and floors source-line coverage at 80%, but bespoke mutation layers that
-  build their mutants by hand still report kills without joining the census.
-  `LICENSE`, a scheduled workflow, `CONTRIBUTING`, `SECURITY` and release tags
-  are still open.
+- **Nightly execution and governance** remain. The gate can run isolated
+  suites in parallel (`CI_JOBS`), and the four-job run is green, but there is
+  no scheduled workflow in the repository yet. `LICENSE`, a scheduled
+  workflow, `CONTRIBUTING`, `SECURITY` and release tags are still open.
+- **Bespoke mutation layers** that build their mutants by hand do not yet
+  join the census. The standardized corpus is 24 suites / 155 mutants with
+  floors 24/150/2, and a green gate means 155/155 caught; the hand-built
+  layers still report kills only inside their own suites.

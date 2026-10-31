@@ -282,6 +282,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# CI_JOBS validation. A mistyped job count must be a protocol failure (exit 2)
+# before any suite runs, not a silent fallback to serial that hides the typo.
+# A bounded CI_SUITES keeps a regression here from turning the check into a
+# full gate run; the missing-suite verdict is still a failure, never a pass.
+# ---------------------------------------------------------------------------
+check_ci_jobs() {
+    name=$1
+    value=$2
+    want_text=$3
+    out=$(CI_JOBS="$value" CI_OUT="$TMP/ci-jobs-$value" \
+        CI_SUITES=ci-jobs-probe-missing.sh CI_SKIP_APK_GATE=1 \
+        sh "$HERE/ci.sh" 2>&1)
+    rc=$?
+    ok=1
+    [ "$rc" -eq 2 ] || ok=0
+    case "$out" in
+        *"$want_text"*) : ;;
+        *) ok=0 ;;
+    esac
+    if [ "$ok" -eq 1 ]; then
+        pass "$name"
+    else
+        fail "$name (rc=$rc, wanted 2; output: $out)"
+    fi
+}
+
+check_ci_jobs "CI_JOBS=0 is rejected before any suite runs" 0 \
+    "CI_JOBS must be at least 1"
+check_ci_jobs "CI_JOBS=abc is rejected before any suite runs" abc \
+    "CI_JOBS must be a positive integer"
+
+# ---------------------------------------------------------------------------
 # Coverage ratchet. The gate is only as wide as its suite list, and the
 # corpus is only as wide as the examples and the frozen baseline. These are
 # floors, not exact counts: they move up with the project, and moving one

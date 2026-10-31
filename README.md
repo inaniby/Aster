@@ -185,7 +185,9 @@ corpus — 24 suites declaring 155 mutant builds — requires every declaring su
 assertion, and floors the total at 150, so a green gate reports **155/155 caught (100%)**. The first
 complete run of the 114-suite gate finished **114/114 PASS**, 0 failed, APK 3/3, with two suites
 keeping one optional SKIP layer each; the 115-suite gate, adding the mutation census, finished
-**115/115 PASS**, 0 failed, APK 3/3, in 64 minutes. The codegen twin
+**115/115 PASS**, 0 failed, APK 3/3, in 64 minutes. With `CI_JOBS=4` the same gate finished
+**115/115 PASS** in 39.5 minutes on a four-core host: each suite runs in a private worktree, and the
+four suites with fixed `/tmp` paths are serialized. The codegen twin
 also enforces evidence floors — at least 40 accepted programs byte-identical, 55 rejected by both
 sides, and 7 mutation probes — so a shrunken corpus cannot pass vacuously.
 
@@ -198,6 +200,7 @@ CI_SUITES="tls-checks.sh linker-checks.sh" sh tests/ci.sh
 CI_SKIP_APK_GATE=1 sh tests/ci.sh     # suites only
 CI_REBUILD=1 sh tests/ci.sh           # ignore the build stamp
 CI_ALLOW_MISSING=1 sh tests/ci.sh     # let missing tools SKIP (critical skips still fail)
+CI_JOBS=4 sh tests/ci.sh              # isolated parallel suites (private worktrees)
 CI_OUT=/tmp/aster-ci CI_KEEP_ARTIFACTS=1 sh tests/ci.sh
 ```
 

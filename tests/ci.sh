@@ -34,6 +34,8 @@
 #   CI_SKIP_APK_GATE=1      skip the three independent APK gates
 #   CI_KEEP_ARTIFACTS=1     keep logs even on a green run
 #   CI_REBUILD=1            rebuild the cached compiler unconditionally
+#   CI_JOBS=N               run N suites in isolated, parallel worktrees
+#                           (default 1; suites with fixed /tmp paths run alone)
 
 set -u
 cd "$(dirname "$0")/.."
@@ -65,6 +67,37 @@ CRITICAL=${CI_CRITICAL-apk-checks.sh signing-checks.sh tls-checks.sh linker-chec
 ALLOW_MISSING=${CI_ALLOW_MISSING:-0}
 SKIP_APK_GATE=${CI_SKIP_APK_GATE:-0}
 KEEP_ARTIFACTS=${CI_KEEP_ARTIFACTS:-0}
+JOBS=${CI_JOBS:-1}
+
+case "$JOBS" in
+    ''|*[!0-9]*)
+        printf 'FAIL: CI_JOBS must be a positive integer (got %s)\n' "$JOBS" >&2
+        exit 2
+        ;;
+esac
+[ "$JOBS" -ge 1 ] || {
+    printf 'FAIL: CI_JOBS must be at least 1 (got %s)\n' "$JOBS" >&2
+    exit 2
+}
+if [ "$JOBS" -gt 1 ]; then
+    if [ "$SUITE_DIR" != "$PWD/tests" ]; then
+        printf 'WARNING: CI_JOBS>1 needs the default tests/ suite directory; using one job\n' >&2
+        JOBS=1
+    elif ! command -v tar >/dev/null 2>&1; then
+        printf 'WARNING: CI_JOBS>1 needs tar to isolate suites; using one job\n' >&2
+        JOBS=1
+    else
+        case "$OUT" in
+            "$PWD"/*)
+                out_rel=${OUT#"$PWD"/}
+                if [ "$out_rel" != "ci-artifacts" ]; then
+                    printf 'WARNING: CI_JOBS>1 needs CI_OUT=ci-artifacts or a directory outside the tree; using one job\n' >&2
+                    JOBS=1
+                fi
+                ;;
+        esac
+    fi
+fi
 
 PASS=0; SKIP=0; FAIL=0; PARTIAL=0; CRITICAL_SKIP=0
 GATE_PASS=0; GATE_FAIL=0; GATE_SKIP=0
@@ -86,6 +119,7 @@ printf 'CXX       : %s\n' "$REAL_CXX"
 printf 'HOSTCC    : %s\n' "$HOSTCC"
 printf 'RUNNER    : %s\n' "$RUNNER"
 printf 'OUT       : %s\n' "$OUT"
+printf 'JOBS      : %s\n' "$JOBS"
 
 missing_required=""
 
@@ -209,6 +243,17 @@ else
 fi
 "$ASTER_BIN" --version 2>&1 | head -1
 
+# Some older suites still invoke ./aster directly. Keep a copy of the same
+# strict binary at the repository root so they test the compiler under test,
+# not a stale local build. The path is gitignored and generated.
+if [ "$ASTER_BIN" != "$PWD/aster" ]; then
+    if cp "$ASTER_BIN" "$PWD/aster.tmp.$$" 2>/dev/null; then
+        mv "$PWD/aster.tmp.$$" "$PWD/aster"
+    else
+        rm -f "$PWD/aster.tmp.$$"
+    fi
+fi
+
 ASTER_SOURCE_HASH=$SOURCE_HASH
 export ASTER_BIN ASTER_SOURCE_HASH
 export REAL_CXX
@@ -252,22 +297,25 @@ set -- $SUITES
 SUITE_TOTAL=$#
 
 printf '\n=== Running %s test suites ===\n' "$SUITE_TOTAL"
-for s in $SUITES; do
+
+# classify_suite <name> — print the verdict for one finished suite and update
+# the counters. The runner leaves the exit status in $OUT/<suite>.rc.
+classify_suite() {
+    s=$1
     path="$SUITE_DIR/$s"
     log="$OUT/$s.log"
-    mkdir -p "$OUT"
     printf '%-44s ' "$s"
 
     if [ ! -f "$path" ]; then
         printf 'FAIL (missing suite)\n'
         FAIL=$((FAIL+1)); FAILURES="$FAILURES $s"
-        continue
+        return 0
     fi
 
-    HOSTCC="$HOSTCC" RUNNER="$RUNNER" CXX="$CXX" ASTER_BIN="$ASTER_BIN" \
-        ASTER_SOURCE_HASH="$ASTER_SOURCE_HASH" sh "$path" >"$log" 2>&1
-    rc=$?
-
+    rc=$(cat "$OUT/$s.rc" 2>/dev/null || printf '1')
+    case "$rc" in
+        ''|*[!0-9]*) rc=1 ;;
+    esac
     skip_reason=$(sed -n 's/^[[:space:]]*SKIP:[[:space:]]*//p' "$log" | head -1)
     skip_marks=$(grep -cE '^[[:space:]]*SKIP:' "$log" 2>/dev/null || true)
     pass_marks=$(grep -Eic '^[[:space:]]*(PASS|OK):|ALL .*PASSED|=== .*PASSED' "$log" 2>/dev/null || true)
@@ -278,7 +326,7 @@ for s in $SUITES; do
         if [ -z "$skip_reason" ]; then
             printf 'FAIL (rc=77 without a SKIP reason)\n'
             FAIL=$((FAIL+1)); FAILURES="$FAILURES $s"
-            continue
+            return 0
         fi
         if is_critical "$s"; then
             printf 'FAIL (critical suite SKIP: %s)\n' "$skip_reason"
@@ -318,7 +366,116 @@ for s in $SUITES; do
         fi
         PASS=$((PASS+1))
     fi
-done
+    return 0
+}
+
+# run_suite_serial <name> — run in the repository, as every suite always has.
+run_suite_serial() {
+    s=$1
+    path="$SUITE_DIR/$s"
+    log="$OUT/$s.log"
+    if [ ! -f "$path" ]; then
+        : >"$log"
+        printf '127\n' >"$OUT/$s.rc"
+        return 0
+    fi
+    HOSTCC="$HOSTCC" RUNNER="$RUNNER" CXX="$CXX" ASTER_BIN="$ASTER_BIN" \
+        ASTER_SOURCE_HASH="$ASTER_SOURCE_HASH" sh "$path" >"$log" 2>&1
+    printf '%s\n' "$?" >"$OUT/$s.rc"
+    return 0
+}
+
+# run_suite_isolated <name> — copy the tree to a private worktree, run the
+# suite there, then discard the copy. Suites write fixed names such as
+# tmp-g-rw.o and tmp-dyn-a.o into their current directory; without a private
+# tree those names collide as soon as two suites run at once. The cached
+# compiler and the runner wrapper stay absolute and shared.
+run_suite_isolated() {
+    s=$1
+    path="$SUITE_DIR/$s"
+    log="$OUT/$s.log"
+    if [ ! -f "$path" ]; then
+        : >"$log"
+        printf '127\n' >"$OUT/$s.rc"
+        return 0
+    fi
+
+    work="$OUT/work/$s"
+    tarfile="$OUT/$s.tar"
+    rm -rf "$work"
+    mkdir -p "$work/tmp"
+    if ! tar -C "$PWD" -cf "$tarfile" \
+            --exclude=./.git --exclude=./.aster --exclude=./build \
+            --exclude=./ci-artifacts --exclude='./tmp-*' \
+            --exclude='./*.core' --exclude='__pycache__' . 2>"$OUT/$s.copy.log" \
+            || ! tar -C "$work" -xf "$tarfile" 2>>"$OUT/$s.copy.log"; then
+        printf 'FAIL: could not isolate the tree\n' >"$log"
+        printf '125\n' >"$OUT/$s.rc"
+        rm -rf "$work" "$tarfile"
+        return 0
+    fi
+    rm -f "$tarfile" "$OUT/$s.copy.log"
+
+    ( cd "$work" && HOSTCC="$HOSTCC" RUNNER="$RUNNER" CXX="$CXX" \
+        ASTER_BIN="$ASTER_BIN" ASTER_SOURCE_HASH="$ASTER_SOURCE_HASH" \
+        TMPDIR="$work/tmp" sh "$work/tests/$s" ) >"$log" 2>&1
+    printf '%s\n' "$?" >"$OUT/$s.rc"
+    rm -rf "$work"
+    return 0
+}
+
+# run_parallel_batches <jobs> <suite...> — start at most <jobs> isolated suites
+# at a time and classify each batch as it finishes.
+run_parallel_batches() {
+    jobs=$1
+    shift
+    batch_names=""
+    batch_pids=""
+    n=0
+    for s in "$@"; do
+        run_suite_isolated "$s" &
+        batch_pids="$batch_pids $!"
+        batch_names="$batch_names $s"
+        n=$((n+1))
+        if [ "$n" -ge "$jobs" ]; then
+            for p in $batch_pids; do wait "$p" || true; done
+            for s in $batch_names; do classify_suite "$s"; done
+            batch_names=""; batch_pids=""; n=0
+        fi
+    done
+    if [ -n "$batch_pids" ]; then
+        for p in $batch_pids; do wait "$p" || true; done
+        for s in $batch_names; do classify_suite "$s"; done
+    fi
+}
+
+if [ "$JOBS" -gt 1 ]; then
+    parallel_suites=""
+    serial_suites=""
+    serial_count=0
+    for s in $SUITES; do
+        if grep -q '/tmp/' "$SUITE_DIR/$s" 2>/dev/null; then
+            serial_suites="$serial_suites $s"
+            serial_count=$((serial_count+1))
+        else
+            parallel_suites="$parallel_suites $s"
+        fi
+    done
+    printf '  %s isolated jobs; %s suite(s) with fixed /tmp paths run alone\n' \
+        "$JOBS" "$serial_count"
+
+    # shellcheck disable=SC2086 # the list is intentionally word-split
+    run_parallel_batches "$JOBS" $parallel_suites
+    for s in $serial_suites; do
+        run_suite_isolated "$s"
+        classify_suite "$s"
+    done
+else
+    for s in $SUITES; do
+        run_suite_serial "$s"
+        classify_suite "$s"
+    done
+fi
 
 # ---------------------------------------------------------------------------
 # 4. APK verification gate (independent of the suites)
