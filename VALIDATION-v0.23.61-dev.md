@@ -656,6 +656,20 @@ missing `tar`, or an in-tree `CI_OUT` other than `ci-artifacts` falls back to
 one job with a warning. The first four-job full run finished **115/115 PASS**
 in **39.5 minutes**, against 64 minutes serial, on a four-core host.
 
+**Clean checkout.** The same four-job gate was run in a fresh
+`git clone --depth=1 https://github.com/inaniby/Aster.git` at `ca7059d`,
+outside the working tree: **115/115 PASS, 0 skipped, 0 failed**, APK gate 3/3,
+two suites with one optional SKIP layer, **37m53s** on the same four-core host.
+The clone started with no root `./aster` (it is gitignored), which is the state
+a new contributor or a hosted runner sees; `ci.sh` provisioned it from the
+strict build, and every suite that invokes `./aster` passed.
+`ci-artifacts/work/` was empty after the run. Fetching the doc-only follow-up
+(`1ad9e29`) into the same clone and running `version-checks.sh
+ci-protocol-checks.sh` through the gate gave **2/2 PASS**, including the new
+CMake and line-count guards. This is the clean-machine evidence P1's exit
+criterion asks for, short of the hosted nightly schedule that is still blocked
+by token scope.
+
 ### 7. Observed evidence
 
 `tests/ci-protocol-checks.sh` — **32/32 checks PASS**, covering:
@@ -717,6 +731,8 @@ Focused runs with the new gate (this host, cross `HOSTCC`):
 | same suite with a fake suite that has no survivor assertion (negative test) | FAIL: declares mutants but has no survivor assertion | < 1 s |
 | full default gate, 115 suites (`CI_KEEP_ARTIFACTS=1 sh tests/ci.sh`) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 suites with one optional SKIP layer | 64 min |
 | same gate with `CI_JOBS=4` (private worktrees; fixed-`/tmp` suites serialized) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 partial suites; `work/` empty afterwards | 39.5 min |
+| fresh `--depth=1` clone of `origin/main` at `ca7059d`, full gate `CI_JOBS=4 CI_KEEP_ARTIFACTS=1` | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 partial suites; root `./aster` provisioned; `work/` empty | 37m53s |
+| same clone at doc follow-up `1ad9e29`, `CI_SUITES="version-checks.sh ci-protocol-checks.sh"` | 2/2 PASS; CMake and ARCHITECTURE line-count guards green | cached build |
 | eight-suite isolated subset (global/object/so-argument/bootstrap-loop/condition/enum/struct/tls) | 8/8 PASS, including the suites that invoke `./aster` | 1m45s |
 | four-suite mixed subset (icon has a fixed `/tmp` path) | 4/4 PASS; one suite serialized, three parallel | 1m57s |
 | `CI_JOBS=0` and `CI_JOBS=abc` | exit 2 before the probe: `CI_JOBS must be ...` | immediate |
@@ -779,10 +795,12 @@ the same two partial suites. This is the current release-candidate evidence.
 
 ### 9. What is still open in P1
 
-- **Nightly execution and governance** remain. The gate can run isolated
-  suites in parallel (`CI_JOBS`), and the four-job run is green, but there is
-  no scheduled workflow in the repository yet. `LICENSE`, a scheduled
-  workflow, `CONTRIBUTING`, `SECURITY` and release tags are still open.
+- **Nightly execution and governance** remain. A clean `--depth=1` clone runs
+  the four-job gate **115/115** (37m53s), so the gate no longer depends on the
+  maintainer's tree, but there is still no scheduled workflow in the
+  repository: the workflow is ready on a local branch and the fine-grained
+  token lacks the `workflow` scope to push it. `LICENSE`, `CONTRIBUTING`,
+  `SECURITY` and release tags are still open.
 - **Bespoke mutation layers** that build their mutants by hand do not yet
   join the census. The standardized corpus is 24 suites / 155 mutants with
   floors 24/150/2, and a green gate means 155/155 caught; the hand-built
