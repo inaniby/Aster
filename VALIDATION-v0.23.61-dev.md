@@ -737,6 +737,17 @@ Focused runs with the new gate (this host, cross `HOSTCC`):
 | four-suite mixed subset (icon has a fixed `/tmp` path) | 4/4 PASS; one suite serialized, three parallel | 1m57s |
 | `CI_JOBS=0` and `CI_JOBS=abc` | exit 2 before the probe: `CI_JOBS must be ...` | immediate |
 | missing suite under the refactored runner | FAIL, `0 passed, 1 failed`, log kept | suite time only |
+| `bootstrap-loop-checks.sh` with the [6/7] runtime phase | 7/7 phases PASS; self-hosted `return_42` rc=42, `globals_and_write` stdout `s1ok` rc=163; negative expected-rc run fails at [6/7] | 25.2 s |
+
+The bootstrap guard now executes what the self-host emits. Phase [6/7] feeds
+two fixtures to `bootaster` (the self-host), applies the executable bit qemu
+requires, and runs the resulting images: `return_42.ast` exits 42 with empty
+stdout, `globals_and_write.ast` writes `s1ok` and exits 163. The previous
+advisory claimed self-hosted output was not qemu-loadable; the actual obstacle
+was that a file captured through `>` is mode 0644 and qemu exits 1 without
+starting the guest. Setting the bit (as the M4 report recorded) makes the
+products run. A negative run with the expected status changed to 43 failed at
+[6/7] with `rc=42`, proving the assertion is live.
 
 The diverse run was the first time the new gate paid for itself. `icon-checks.sh`
 failed not because of the cache but because `openssl smime -verify` rejected

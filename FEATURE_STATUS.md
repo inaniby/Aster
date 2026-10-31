@@ -322,13 +322,14 @@ garbage collection (the raw `mmap`/`brk` the kernel offers are in — M1 of
 `SELFHOSTING-PLAN.md`, shipped in v0.23.41-dev; a bump allocator is 20
 lines of Aster on top, see `examples/arena.ast` — what is out of scope is
 Aster *owning* an allocator, and the v0.23.42-dev standard library rides on
-the same primitives without owning one either), the remaining self-hosting
-milestones (tracked in
+the same primitives without owning one either), and full-language self-hosting
+beyond the milestones already shipped (tracked in
 `ROADMAP.md`'s backlog, with `SELFHOSTING-PLAN.md` the step-by-step route;
 M0 the input syscalls shipped v0.23.40-dev, M1 the heap v0.23.41-dev, M2 the
 stdlib v0.23.42-dev, M3a the bootstrap lexer v0.23.43-dev, M3b the bootstrap
 parser v0.23.44-dev, M3c the bootstrap semantic pass v0.23.45-dev, M3d the
-codegen + ELF writer v0.23.46-dev, and M4 the closed loop v0.23.47-dev — the
+codegen + ELF writer v0.23.46-dev, M4 the closed loop v0.23.47-dev — the
 bootstrap compiles itself and is a byte-level fixed point of its own codegen,
-`boot2 == boot3 == boot4`). These are deliberate
+`boot2 == boot3 == boot4` — and M5 the runtime execution of self-hosted
+products v0.23.61-dev). These are deliberate
 boundaries, not missing work.

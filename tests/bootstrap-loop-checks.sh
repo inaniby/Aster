@@ -1,5 +1,5 @@
 #!/bin/sh
-# tests/bootstrap-loop-checks.sh — the M4 self-hosting closed loop, guarded.
+# tests/bootstrap-loop-checks.sh — the M4 closed loop and M5 runtime claim, guarded.
 #
 # v0.23.56-dev adds this suite because the M4 end-to-end bootstrap loop had no
 # continuous guard: the only evidence it still worked was a one-off VALIDATION
@@ -18,13 +18,10 @@
 #      valid ELF. The loop reproduces itself.
 #   3. Host codegen is reproducible over a fixed corpus: each fixture compiles
 #      to a byte-identical ELF across two builds.
+#   4. A program emitted by the self-host executes under the same runner and
+#      produces its expected stdout and exit status — the M5 runtime claim.
 #
 # What it deliberately does NOT do (and why), surfaced as a non-fatal ADVISORY:
-#   - It never *executes* a program emitted by the self-host. Such programs are
-#     currently not qemu-loadable on this host (a known limitation, tracked
-#     separately), so runtime e2e of self-hosted output is out of scope here.
-#     The differential suite (codegen-checks.sh) covers correctness of emitted
-#     code against the C twin instead.
 #   - It does not assert bootaster == bootaster2 byte-for-byte. The host
 #     compiler and the self-host emit slightly different ELF layouts for the
 #     same source (a known, tolerated contract delta); what matters and what is
@@ -53,11 +50,11 @@ if [ ! -f bootstrap/aster.ast ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# [1/6] Obtain the host compiler. ci.sh builds ./aster before the suites run,
+# [1/7] Obtain the host compiler. ci.sh builds ./aster before the suites run,
 # so reuse it when present and runnable; otherwise build our own. Either way we
 # only need one host binary — the determinism is proven by building bootaster
 # twice with the *same* host, not by building the host twice.
-printf '%s\n' '[1/6] Obtain the host Aster compiler'
+printf '%s\n' '[1/7] Obtain the host Aster compiler'
 if [ -x ./aster ] && ./aster --help >/dev/null 2>&1; then
     ASTER=./aster
     printf 'reusing existing ./aster (built by ci.sh)\n'
@@ -72,11 +69,11 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# [2/6] Locate an AArch64 runner for the self-host. bootaster is an AArch64 ELF
+# [2/7] Locate an AArch64 runner for the self-host. bootaster is an AArch64 ELF
 # and runs under qemu-aarch64 on this (x86_64) host. Without qemu (and not on
 # an AArch64 host) the closed-loop phase cannot run and is SKIPped cleanly; the
 # host-side phases (1, 3, 5) still run and still guard the host compiler.
-printf '%s\n' '[2/6] Locate an AArch64 runner for the self-host'
+printf '%s\n' '[2/7] Locate an AArch64 runner for the self-host'
 SELFHOST_OK=1
 if ! command -v qemu-aarch64 >/dev/null 2>&1 && [ "$(uname -m)" != "aarch64" ]; then
     echo "SKIP: the closed-loop phase needs qemu-aarch64 (or an AArch64 host) to run bootaster"
@@ -84,10 +81,10 @@ if ! command -v qemu-aarch64 >/dev/null 2>&1 && [ "$(uname -m)" != "aarch64" ]; 
 fi
 
 # ---------------------------------------------------------------------------
-# [3/6] Host bootstrap is reproducible. The host compiler builds the self-host
+# [3/7] Host bootstrap is reproducible. The host compiler builds the self-host
 # twice; the two bootaster binaries must be byte-identical. This is the floor:
 # if the host cannot reproduce the self-host, every downstream claim is void.
-printf '%s\n' '[3/6] Host bootstrap is reproducible: aster -> bootaster (twice)'
+printf '%s\n' '[3/7] Host bootstrap is reproducible: aster -> bootaster (twice)'
 "$ASTER" build-obj bootstrap/aster.ast -o "$W/boot1.o" >"$W/boot1.log" 2>&1 \
     || { echo "FAIL: host build-obj (run 1) failed:" >&2; cat "$W/boot1.log" >&2; exit 1; }
 "$ASTER" link-obj "$W/boot1.o" -o "$W/bootaster1" >"$W/link1.log" 2>&1 \
@@ -105,11 +102,11 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# [4/6] The closed loop. bootaster (the self-host) recompiles bootstrap/aster.ast;
+# [4/7] The closed loop. bootaster (the self-host) recompiles bootstrap/aster.ast;
 # it reads the program on stdin and emits the ELF on stdout. Two such runs must
 # agree byte-for-byte and yield a valid ELF. This is the core M4 invariant: the
 # self-host reproduces itself.
-printf '%s\n' '[4/6] Closed loop: bootaster (self-host) recompiles bootstrap/aster.ast -> bootaster2 (twice)'
+printf '%s\n' '[4/7] Closed loop: bootaster (self-host) recompiles bootstrap/aster.ast -> bootaster2 (twice)'
 if [ "$SELFHOST_OK" -eq 1 ]; then
     run "$W/bootaster1" < bootstrap/aster.ast > "$W/bootaster2a" 2>"$W/b2a.err" \
         || { echo "FAIL: bootaster -> bootaster2 (run A) failed (rc=$?):" >&2; cat "$W/b2a.err" >&2; exit 1; }
@@ -136,11 +133,11 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# [5/6] Host codegen is reproducible over a fixed corpus. Each fixture is
+# [5/7] Host codegen is reproducible over a fixed corpus. Each fixture is
 # compiled (build-obj + link-obj) twice; the two ELFs must be byte-identical.
-# These are host-aster outputs (well-formed, loadable) but — like everything in
-# this suite — they are compared, never executed.
-printf '%s\n' '[5/6] Host codegen is reproducible over a fixed corpus (twice each)'
+# These host-aster outputs are compared, not executed; phase [6/7] executes
+# what the self-host emits instead.
+printf '%s\n' '[5/7] Host codegen is reproducible over a fixed corpus (twice each)'
 CORPUS="tests/codegen-fixtures/return_42.ast tests/codegen-fixtures/return_1.ast tests/codegen-fixtures/extern_global_main.ast tests/codegen-fixtures/globals_and_write.ast"
 n=0; bad=""
 for f in $CORPUS; do
@@ -161,16 +158,65 @@ fi
 echo "PASS: host aster compiles $n corpus programs byte-for-byte identically across 2 builds each"
 
 # ---------------------------------------------------------------------------
-# [6/6] Scope advisory. Non-fatal: states plainly what this guard covers and,
-# importantly, what it does not (and why), so a future reader does not "fix" it
-# by adding an execution step that would hard-fail on the known limitation.
-printf '%s\n' '[6/6] Scope advisory (non-fatal)'
+# [6/7] Programs emitted by the self-host are executed. The byte differential
+# (codegen-checks.sh) proves the self-host and the C twin agree, but agreement
+# alone cannot prove an image is loadable: both sides can emit the same
+# malformed ELF. This phase compiles two fixtures with bootaster (the
+# self-host), sets the executable bit qemu requires, and runs the emitted
+# images for real — exit status and stdout are the oracle. Together they cover
+# arithmetic, calls, globals, an array element, the write syscall and main's
+# return path.
+printf '%s\n' '[6/7] Execute programs emitted by the self-host'
+if [ "$SELFHOST_OK" -eq 1 ]; then
+    # run_product NAME FIXTURE EXPECTED_RC EXPECTED_STDOUT
+    run_product() {
+        pname=$1
+        fixture=$2
+        want_rc=$3
+        want_out=$4
+        elf="$W/product-$pname.elf"
+        if ! run "$W/bootaster1" < "$fixture" > "$elf" 2>"$W/product-$pname.err"; then
+            echo "FAIL: bootaster could not compile $fixture:" >&2
+            cat "$W/product-$pname.err" >&2
+            exit 1
+        fi
+        if [ ! -s "$elf" ]; then
+            echo "FAIL: bootaster emitted an empty ELF for $fixture" >&2
+            exit 1
+        fi
+        if ! chmod +x "$elf"; then
+            echo "FAIL: cannot set the executable bit on $elf (qemu requires it)" >&2
+            exit 1
+        fi
+        out=$(run "$elf" 2>"$W/product-$pname.run.err") && rc=0 || rc=$?
+        if [ "$rc" -ne "$want_rc" ] || [ "$out" != "$want_out" ]; then
+            echo "FAIL: self-hosted $fixture ran with rc=$rc stdout='$out'; wanted rc=$want_rc stdout='$want_out'" >&2
+            cat "$W/product-$pname.run.err" >&2
+            exit 1
+        fi
+        printf 'PASS: self-hosted %s runs (rc=%s, stdout=%s)\n' \
+            "$(basename "$fixture")" "$rc" "${out:-<empty>}"
+    }
+
+    run_product return_42 tests/codegen-fixtures/return_42.ast 42 ""
+    run_product globals_and_write tests/codegen-fixtures/globals_and_write.ast 163 "s1ok"
+else
+    echo "SKIP: self-hosted output phase (no AArch64 runner)"
+fi
+
+# ---------------------------------------------------------------------------
+# [7/7] Scope advisory. Non-fatal: states plainly what this guard covers and
+# what it does not, so a future reader neither assumes runtime coverage exists
+# where it does not nor adds a brittle equality assertion that the documented
+# host/self-host layout delta would fail.
+printf '%s\n' '[7/7] Scope advisory (non-fatal)'
 echo "ADVISORY: this guard proves the M4 bootstrap CLOSED LOOP is reproducible"
 echo "  (host aster -> bootaster -> bootaster2, all deterministic, bootaster2 a valid"
-echo "  ELF) and that host codegen is reproducible. It does NOT execute any program"
-echo "  produced by the self-host: programs emitted by the self-hosted compiler are"
-echo "  currently not qemu-loadable on this host (a known limitation, tracked"
-echo "  separately), so runtime e2e of self-hosted output is out of scope here and is"
-echo "  covered by the differential suite (codegen-checks.sh) against the C twin instead."
+echo "  ELF), that host codegen is reproducible, and that programs emitted by the"
+echo "  self-host execute under the same runner (return_42 and globals_and_write)."
+echo "  It does NOT assert bootaster == bootaster2 byte-for-byte: the host compiler"
+echo "  and the self-host emit slightly different ELF layouts for the same source"
+echo "  (a known, tolerated contract delta). Each step is reproducible, which is the"
+echo "  invariant that matters."
 
 echo "=== bootstrap-loop: ALL CHECKS PASSED ==="

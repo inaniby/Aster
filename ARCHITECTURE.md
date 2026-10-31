@@ -456,7 +456,8 @@ its own evidence.
 - **The bootstrap subset is deliberately narrower.** M4 reaches a byte-identical
   fixed point (`boot2 == boot3 == boot4`), but `bootstrap/aster.ast` does not
   accept everything the host does — structs, `bool`, `for`, `switch`, `u64`,
-  casts and `sizeof` are among the documented omissions — and
-  `tests/bootstrap-loop-checks.sh` does not execute programs emitted by the
-  self-host; their correctness is covered by the differential suite against the
-  C twin. See `bootstrap/CODEGEN-SPEC.md` §11.
+  casts and `sizeof` are among the documented omissions. The guard now also
+  executes two programs emitted by the self-host under the same runner
+  (`return_42`: exit 42; `globals_and_write`: `s1ok`, exit 163), so loadability
+  is tested rather than assumed; wider language coverage still comes from the
+  differential suite against the C twin. See `bootstrap/CODEGEN-SPEC.md` §11.
