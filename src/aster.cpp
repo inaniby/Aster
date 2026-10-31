@@ -11209,6 +11209,10 @@ static SigningKey generateKey(int bits) {
         // verifies, which only succeeds if d really inverts e modulo lambda.
         std::vector<uint8_t> serial = randomBytes(16);
         serial[0] &= 0x7F;                              // positive INTEGER
+        // DER INTEGER is minimal: a leading 0x00 is allowed only to keep a
+        // high-bit byte positive.  A random serial that starts 00/00..7F would
+        // otherwise be legal BER but rejected by OpenSSL ("illegal padding").
+        while (serial.size() > 1 && serial[0] == 0) serial.erase(serial.begin());
         k.certDER = selfSignedCert(k, serial);
         k.spki = certSubjectPublicKeyInfo(k.certDER);
         certIdentity(k.certDER, k.serial, k.issuerDER, "the generated certificate");

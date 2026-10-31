@@ -15,6 +15,7 @@
 # >16: a caller-made copy reached through X8) in both directions.
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/baseline.sh
 OUT=${OUT:-tmp-struct-checks}
 mkdir -p "$OUT"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 
@@ -134,10 +135,10 @@ fn main() -> i32 { return g.x; }'
 printf '%s\n' 'PASS: 20 struct rules rejected with the diagnostic that explains each'
 
 printf '%s\n' '[4/8] Structural: every pre-existing example still compiles byte for byte'
-# tests/baseline/v0.23.5-dev/example-hashes.txt records every example of this
-# release in three modes (build-so, build-elf, build-obj --pic), mode-major,
-# one sha256 per line. Nothing in the struct work may move a byte of any of
-# them: 252 of these 261 lines were recorded before v0.23.13-dev; the six
+# tests/baseline/v<version>/example-hashes.txt records every example of the
+# current release in three modes (build-so, build-elf, build-obj --pic),
+# mode-major, one sha256 per line. Nothing in the struct work may move a byte of
+# any of them: 252 of these 261 lines were recorded before v0.23.13-dev; the six
 # added in v0.23.13-dev are the `include` demo pair, and the three added in
 # v0.23.14-dev are the touch example examples/native_touch.ast -- in the same
 # three modes, of which the build-so and build-obj lines were re-recorded in
@@ -153,7 +154,8 @@ printf '%s\n' '[4/8] Structural: every pre-existing example still compiles byte 
 # byte-identical, and no example's build status changed in any mode.
 # The baseline enumerates examples/*.ast, so a new example has to be added to
 # it; what must never change is any line that was already there.
-if [ ! -f tests/baseline/v0.23.5-dev/example-hashes.txt ]; then
+BASE=$(aster_baseline_file)
+if [ ! -f "$BASE" ]; then
     echo 'FAIL: struct byte-identity baseline missing' >&2; exit 1
 fi
 : > "$OUT/hashes.txt"
@@ -174,7 +176,7 @@ done
 # Both sides are sorted so the append-only baseline file order never disagrees with
 # the alphabetical examples/*.ast glob order (a moved line is a regression, not a re-sort).
 grep -v '^address_of_abi\.' "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/hashes.filtered.txt"
-LC_ALL=C sort tests/baseline/v0.23.5-dev/example-hashes.txt > "$OUT/base.sorted.txt"
+LC_ALL=C sort "$BASE" > "$OUT/base.sorted.txt"
 if ! diff -u "$OUT/base.sorted.txt" "$OUT/hashes.filtered.txt" > "$OUT/hashes.diff"; then
     echo 'FAIL: struct support changed the output of a pre-existing example' >&2
     sed -n '1,20p' "$OUT/hashes.diff" >&2

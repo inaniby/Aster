@@ -262,7 +262,7 @@ guard 'global Var leaf SXTW'              'if(tyIs64(want)&&globalTypeOf(e.name)
 # sign-extension a direct call's i32 result has always had now covers a typed
 # fn-pointer's i32 result too. Two sites, one rule.
 guard 'Call leaf SXTW'                    'if(tyIs64(want)&&rt==Ty::I32)emit(0x93407c00u'              2
-guard 'Deref leaf SXTW'                   'if(tyIs64(want))emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));' 1
+guard 'Deref leaf SXTW'                   'if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));' 1
 guard 'Field leaf SXTW'                   'if(tyIs64(want)&&f->ty==Ty::I32)emit(0x93407c00u'           1
 # v0.23.28-dev: the local, global and ptr index paths compute their address in
 # one place (emitElemAddr) and read it through one leaf, so the three SXTW
@@ -277,7 +277,7 @@ guard 'Field leaf SXTW'                   'if(tyIs64(want)&&f->ty==Ty::I32)emit(
 # an i32 element through a ptr-to-elem base whose address emitPtrElemAddr
 # materializes, so that read sign-extends through its own copy of the same leaf.
 # The count is 4 with this third shape named rather than merged.
-guard 'Index leaf SXTW (named+chain+field+ptrToElem)' 'if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u'  4
+guard 'Index leaf SXTW (named+chain+field+ptrToElem)' 'if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)'  4
 guard 'Index leaf SXTW (chain read)'      'const Ty elem=ch.elem;'                                          1
 # v0.23.37-dev: the indirect leaf gained the rt test — its rt is the
 # signature's return type for a typed callee and i32 for a bare ptr, which is
@@ -507,7 +507,7 @@ M1 wideOp drops const~sed~s/||constExceedsI32(a)||constExceedsI32(b)//~36 37
 M2a genBool cmp drops const~sed~s/constExceedsI32(\*e\.a)||constExceedsI32(\*e\.b)/false/~47
 M2b cond cmp drops const~sed~s/constExceedsI32(\*c\.a)||constExceedsI32(\*c\.b)/false/~38
 M3 call leaf SXTW removed~sed~/if(tyIs64(want)&&rt==Ty::I32)emit(0x93407c00u/d~51
-M4 deref leaf SXTW removed~sed~/if(tyIs64(want))emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));/d~55
+M4 deref leaf SXTW removed~sed~/if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));/d~55
 M5 field leaf SXTW removed~sed~/if(tyIs64(want)&&f->ty==Ty::I32)emit(0x93407c00u/d~53
 M6 idx leaf SXTW removed~sed~/if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u/d~54 57 58
 M7 slotElemTypes removed~sed~s/slotElemTypes\[slot\]=elem;//~81 82 83

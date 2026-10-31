@@ -1,5 +1,6 @@
 /* Same-named exported data/functions must remain handle-addressable and state-isolated
  * when independent Aster DSOs are loaded RTLD_LOCAL. */
+#define _GNU_SOURCE
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>

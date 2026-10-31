@@ -30,7 +30,13 @@ SO="$WORK/libsign.so"
 rm -rf "$WORK" && mkdir -p "$WORK/proj-a" "$WORK/proj-b" "$WORK/release"
 
 echo "[1/10] compiling aster (strict: -Wall -Wextra -Werror)"
-c++ -std=c++17 -O2 -Wall -Wextra -Werror -o "$ASTER_BIN" src/aster.cpp
+${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Werror -o "$ASTER_BIN" src/aster.cpp
+
+# A random serial starting 0x00 followed by a byte below 0x80 is legal BER but
+# non-minimal DER; OpenSSL rejects the whole certificate as "illegal padding".
+# Pin the trim because that 1-in-256 case is not reachable deterministically.
+grep -qF 'while (serial.size() > 1 && serial[0] == 0) serial.erase(serial.begin());' src/aster.cpp \
+    || { echo 'FAIL: certificate serial is not minimally DER-encoded'; exit 1; }
 "$ASTER_BIN" build-so examples/so_math.ast -o "$SO" > /dev/null
 
 echo "[1/10] aster keygen -> a key pair openssl can read"

@@ -117,7 +117,7 @@ through. Both paths now route the enum case through `tyAssignable`.
 
 The enum round adds one example, `examples/enum_demo.ast`. Its three build modes
 (`build-so`, `build-elf`, `build-obj --pic`) are recorded in
-`tests/baseline/v0.23.5-dev/example-hashes.txt`. The ten byte-baseline suites
+`tests/baseline/v0.23.61-dev/example-hashes.txt`. The ten byte-baseline suites
 exclude `enum_demo.*` via `^enum_demo\.` filters (so the pre-existing **288**
 rows stay byte-identical), and the three whole-baseline suites
 (`condition`/`null-ptr`/`struct-checks`) compare the new rows directly.
@@ -261,6 +261,11 @@ linker hardening, crypto/key handling, and the regression evidence.
 - RSA keys below 2048 bits are refused; keygen accepts only 2048/3072/4096.
 - Debug keys are written through `mkstemp` with mode 0600 (no predictable
   temp name, no follow-through symlink).
+- The random certificate serial is trimmed to minimal DER. A serial starting
+  `00 00..7F` was legal BER but non-minimal, and OpenSSL rejected the whole
+  certificate as `illegal padding`; the 1-in-256 case is now pinned by a
+  source guard in `tests/signing-checks.sh` and the suite's `openssl
+  asn1parse` check.
 - AXML/ARSC lengths are encoded as UTF-16 code units with overlong-sequence
   and surrogate rejection; 200-byte Chinese labels encode correctly.
 - CLI integers are parsed with `from_chars` and bounded
@@ -433,7 +438,7 @@ that exercise them (a typed `i64` dereference now emits `LDR X`, a spill uses
 fixed compiler and the unchanged rows were left byte-identical. The merged
 baseline now has 360 rows because the `enum` round added three, and all 360
 reproduce byte for byte. The twelve suites that compare against
-`tests/baseline/v0.23.5-dev/example-hashes.txt` pass after the refresh.
+`tests/baseline/v0.23.61-dev/example-hashes.txt` pass after the refresh.
 Every changed example's behavioural layer passes as well, so the new bytes
 are not blessed on the strength of a hash alone.
 
@@ -463,10 +468,11 @@ covered by `enum-checks`, `smoke` and the full baseline replay.
 - **Weak symbol definitions** are refused explicitly; weak semantics
   (resolution preference, zero initialisation of unresolved weak references)
   are not implemented.
-- **P1 test credibility** is only partially addressed: the version single
-  source is fixed, but the 0/77/exit-code protocol, dependency-probe
-  classification, frozen per-version baselines and mutation score reporting
-  remain open. `tests/ci.sh` still classifies a suite as SKIP from its log.
+- **P1 test credibility** is addressed in part by Part III: the 0/77/exit-code
+  protocol, dependency-probe classification, build-once cache, self-tests,
+  frozen per-release baselines, and the codegen accept/reject and mutation
+  floors are in place. Aggregate mutation-score reporting, coverage ratchets
+  and parallel suite isolation remain open.
 - **P2/P3** (module split, typed IR, bootstrap M5, fuzzing targets, product
   direction) were not part of this round.
 
@@ -480,4 +486,240 @@ qemu/regression evidence; the audit's four memory-safety reproductions
 BigInt/APK hardening) no longer reproduce and the sanitizer corpora report
 zero errors. The version is now single-sourced at `0.23.61-dev`. This round
 does not claim production readiness: the remaining limitations above, and the
-P1 signal-quality work, still gate that claim.
+outstanding P1 items (aggregate mutation score, suite isolation, coverage)
+still gate that claim.
+
+---
+
+## Part III — CI trust layer (P1.1–P1.5, floors and ratchet)
+
+The P1 goal is to make a green run mean something. Four mechanisms do that
+here: a real exit-code protocol, an environment probe that separates "tool
+missing" from "assertion failed", one strict build reused by every suite, and
+per-release frozen byte baselines. A fifth change makes the mechanisms
+testable: `tests/ci-protocol-checks.sh` is itself a resident suite and also
+holds the evidence floors.
+
+### 1. Exit-code protocol (`tests/lib/verdict.sh`)
+
+| code | meaning |
+|---|---|
+| `0` | PASS — the suite ran and every assertion held |
+| `77` | SKIP — the **whole** suite could not run; a `SKIP: <reason>` line is mandatory |
+| `1` | FAIL — an assertion failed, or the suite died |
+
+`aster_skip` refuses to skip without a reason (it exits 1 instead), which is
+the exact failure mode the protocol exists to stop. `aster_fail` is the
+explicit failure path, and `aster_require_cmd` / `aster_require_file` turn a
+missing dependency into a reasoned whole-suite skip.
+
+`tests/ci.sh` classifies each suite by its exit code, not by scraping for
+words:
+
+- `rc=77` with a reason and a non-critical suite → SKIP.
+- `rc=77` without a reason → FAIL.
+- `rc=77` in a critical suite → FAIL (clean-machine CI is expected to have the
+  toolchain).
+- `rc` other than 0/77 → FAIL, with the log tail printed.
+- `rc=0` with `PASS` marks and optional `SKIP:` layers → PASS, counted as a
+  partial skip.
+- legacy `rc=0` with only `SKIP:` lines → SKIP when non-critical, FAIL when
+  critical. This keeps old suites honest without silently trusting them.
+
+The default critical list is APK, signing, TLS, linker, codegen, struct,
+enum, resource-table, page-size and version checks.
+
+### 2. Environment probe
+
+Before building, the gate probes the tools the suites depend on. Required:
+`CXX`, `python3`, `readelf`, `objdump`, `sha256sum`, and qemu-aarch64 (or a
+native AArch64 host). Optional and reported without failing: `openssl`,
+`llvm-objdump`, `llvm-dwarfdump`, `zip`/`unzip`, androguard, PIL, and an
+AArch64-capable `HOSTCC`. A missing required tool exits 2 with a list before
+any suite runs, instead of masquerading as a test failure; `CI_ALLOW_MISSING=1`
+converts that into a warning and lets the affected suites skip — but a skip in
+a critical suite still fails the run.
+
+### 3. Build once (`tests/lib/cxx-cache.sh`)
+
+`tests/ci.sh` builds the strict binary once (`-std=c++17 -O2 -Wall -Wextra
+-Wpedantic -Werror`) into `$CI_OUT/aster`, records the SHA-256 of
+`src/aster.cpp`, and exports `ASTER_BIN`, `ASTER_SOURCE_HASH` and `REAL_CXX`.
+Every suite is then run with `CXX=tests/lib/cxx-cache.sh`. A suite that asks
+for exactly `src/aster.cpp` with the allowlisted strict flags receives a copy
+of the cached binary; everything else is forwarded to the real compiler:
+`-c`, `-g`, `-D`, sanitizers, `-O0`/`-O3`, `-static`, multiple translation
+units, no `-o`, a mutated source, or a source hash that no longer matches.
+
+`tests/apk-checks.sh` and `tests/signing-checks.sh` now invoke
+`${CXX:-c++}` for their main build, so their compile step is a cache hit when
+run through the gate and still uses `c++` when run standalone. Their
+mutation-build paths deliberately keep a direct compiler call: the source is
+mutated and must never hit the cache.
+
+The cache is conservative on purpose. A false hit would test the wrong
+compiler, so the flag set is an allowlist rather than a denylist; only the
+documented strict build is served from cache.
+
+### 4. Frozen per-release baselines
+
+The byte baseline used to be one file named `v0.23.5-dev` that every release
+edited in place, so a moved byte and a deliberate re-record looked the same in
+review, and a version bump could silently keep comparing against the old
+release. It is now a frozen snapshot per release:
+
+- The version is read from `ASTER_VERSION_STRING` in `src/aster.cpp`; the
+  snapshot is `tests/baseline/v<version>/example-hashes.txt`.
+- `tests/lib/baseline.sh` resolves that path and validates every row: known
+  mode suffix, `FAILED` or a 64-hex digest, no duplicate keys, and an existing
+  `examples/<name>.ast`.
+- A version bump without its own snapshot exits 1 with the path and the
+  copy-and-re-record instruction. It never falls back to another release.
+- All 13 suites that consume the shared baseline source the helper and use
+  `BASE=$(aster_baseline_file)`; `struct-checks.sh` uses the same variable for
+  its whole-file diff. No suite names a versioned path any more, and
+  `ci-protocol-checks.sh` fails if one is reintroduced.
+- The pre-freeze file was renamed to `tests/baseline/v0.23.61-dev/`, which is
+  what its 360 rows actually describe after eleven rounds of in-place edits;
+  it is now immutable. Future releases copy it and re-record only their own
+  additions.
+
+### 5. Twin, mutation and coverage floors
+
+The codegen differential in `tests/codegen-checks.sh` [5/6] only failed on a
+divergence between `tests/codegen-twin.c` and `bootstrap/aster.ast`. A corpus
+that lost its accepted programs — or degraded to "both sides reject everything"
+— would still report zero divergences and pass: the strongest claim in the
+suite would be vacuously true over an empty evidence set.
+
+The differential now asserts a floor on both buckets:
+
+- at least **40 accepted** programs that produce a byte-identical ELF, and
+- at least **55 rejected by both** sides.
+
+The floors sit below the current **48 accepted / 78 rejected (126 total)** so
+adding or retiring a handful of examples does not require a test edit, while a
+lost layer does. They are source constants, not environment knobs: lowering
+them is a reviewed change. On violation the suite reports both measured values,
+both floors, and the total, then exits 1.
+
+[6/6] already required **every** mutation probe to diverge and counted the
+probes; it did not require the set to stay populated. It now also asserts at
+least **7 probes** — the current count — so a suite that silently dropped
+probes cannot report a perfect score over an empty set.
+
+The same "no vacuous evidence" rule is applied to the gate's breadth in
+`tests/ci-protocol-checks.sh`: the suite list parsed from `DEFAULT_SUITES`
+must contain at least **113** entries, every `tests/*-checks.sh` must be
+registered, every registered name must exist, and the corpus must keep at
+least **120 examples**, **360 baseline rows** and **30 mutation-bearing
+suites**. This is a test-mass ratchet, not source-line coverage: it catches a
+suite that exists but is never run, or a corpus that quietly shrank. gcov-style
+source coverage remains open.
+
+### 6. Observed evidence
+
+`tests/ci-protocol-checks.sh` — **30/30 checks PASS**, covering:
+
+- the three protocol constants;
+- skip with reason (77), skip without reason (1), explicit failure (1);
+- `require_cmd` / `require_file` passing and skipping;
+- cache hit copies the binary and does not invoke the compiler;
+- `/dev/null` and `$ASTER_BIN` targets are no-ops;
+- misses for `-O0`, `-static`, `-g`, `-c`, `-D`, sanitizer, a different
+  source, two translation units, no `-o`, a mutated source, and no cache
+  environment;
+- baseline resolution from `ASTER_VERSION_STRING`, and rejection of duplicate
+  keys, malformed digests, missing examples, missing snapshots and a missing
+  version definition;
+- no suite may hardcode a versioned baseline path again;
+- the coverage ratchet: 113 registered suites, 121 examples, 360 baseline rows,
+  32 mutation-bearing suites, no orphan `*-checks.sh`, no missing registered
+  suite.
+
+Runner classification was exercised with fixture suites:
+
+| fixture | expected | observed |
+|---|---|---|
+| PASS + partial SKIP | PASS (partial) | PASS (partial skips: 1) |
+| `77` + reason, non-critical | SKIP | SKIP |
+| `77` + reason, critical | FAIL | FAIL |
+| `77` without reason | FAIL | FAIL |
+| `rc=1` | FAIL | FAIL |
+| legacy `rc=0` + only SKIP, non-critical | SKIP | SKIP |
+| legacy `rc=0` + only SKIP, critical | FAIL | FAIL |
+| missing suite file | FAIL | FAIL |
+
+The green-path check (`pass-partial.sh` + non-critical `skip.sh`) exits 0 with
+1 passed / 1 skipped. `CXX=/nonexistent/g++` exits 2 at the probe, before the
+build.
+
+Focused runs with the new gate (this host, cross `HOSTCC`):
+
+| command | result | wall time |
+|---|---|---|
+| `CI_SKIP_APK_GATE=1 CI_SUITES="ci-protocol-checks.sh version-checks.sh enum-checks.sh tls-checks.sh"` | 4/4 PASS, first strict build | 2m11s |
+| same tree, repeated with two suites | BUILD CACHED, 2/2 PASS | 0.096s |
+| `CI_SKIP_APK_GATE=1 CI_SUITES="signing-checks.sh apk-checks.sh"` | 2/2 PASS (compile steps cached) | 39.9s |
+| APK gate only (3 demos) | 3/3 PASS | 2.8s |
+| diverse subset (protocol, condition, narrow-int-abi, resource-table, embed, icon, debug-info, c-ptr-structural, e2e-c-abi, bootstrap-loop) | 9 PASS + **1 real failure** | first diverse run |
+| `ci-protocol-checks.sh signing-checks.sh icon-checks.sh apk-checks.sh` after the fix | 4/4 PASS | rebuild + suites |
+| `ci-protocol-checks.sh enum-checks.sh condition-checks.sh struct-checks.sh` with the frozen baseline | 4/4 PASS | rebuild + suites |
+| `CI_SUITES="codegen-checks.sh"` with the floor | 1/1 PASS: 48/126 accepted, 78 rejected, floors 40/55; 7/7 mutation probes diverge (floor 7) | fresh strict build + suite |
+| same suite with the floors raised to 1000 (negative test) | FAIL at [5/6] with the measured 48 accepted / 78 rejected | suite time only |
+
+The diverse run was the first time the new gate paid for itself. `icon-checks.sh`
+failed not because of the cache but because `openssl smime -verify` rejected
+the freshly generated certificate with `illegal padding` in `serialNumber`.
+The random serial began `00 28 …`: legal BER, non-minimal DER. Aster's own
+in-process verifier accepted it; OpenSSL 3 did not. The fix trims leading zero
+bytes before `derInt` (Part II §1.6), and `tests/signing-checks.sh` now pins
+the trim plus its existing `openssl asn1parse` check. The rerun of the four
+affected suites is green. This is exactly the failure class the protocol is
+meant to surface: a 1-in-256 flake that a looser gate could have reported as a
+green run had the suite swallowed the external-verifier failure.
+
+### 7. Full default gate
+
+The first complete run of the new runner over all **113 default suites**
+finished **109 PASS, 0 skipped, 4 FAIL** (plus the 3/3 APK gate; two suites
+passed with one optional SKIP layer each: `icon-checks` and
+`resource-table-checks`). The four failures were test-side staleness exposed
+by bundling the whole suite for the first time, not compiler regressions:
+
+| suite | cause | fix |
+|---|---|---|
+| `integer-cast-checks` | its baseline filter lacked `^enum_demo\.`, so the frozen snapshot's +3 enum rows made it see 291 where it asserted 288 | added the filter (the other 23 filtered families still leave 288) |
+| `cast-conversions-checks`, `literals-checks` | same missing filter; both had not yet run when the fix landed and then passed in the same full run | same |
+| `so-scope-checks` | the host-side C helper uses `RTLD_DEFAULT` without `_GNU_SOURCE`; glibc hid the symbol under `-Werror` | added `_GNU_SOURCE` to it and to `so-loader-lifecycle-host.c`, which `e2e-so-scope.sh` shares |
+| `wide-int-literal-checks` | source guard and mutation M4 still pinned the pre-v0.23.61 deref leaf, which the typed-deref round changed to `if(tyIs64(want)&&elem==Ty::I32)emit(...)` | updated the guard and M4; the index guard now matches the `(uint32_t(d)<<5)` register shape so it still counts the four index leaves, not the deref leaf |
+| `include-checks` | mutation 12b's sed target named `full=resolveIncludePath(...)`, but the include refactor now assigns `requested` first and canonicalizes into `full` | retargeted the mutation to `requested=pathTok.s` |
+
+The five affected suites were rerun through the gate: **5/5 PASS**
+(`integer-cast`, `wide-int-literal`, `include`, `so-scope`, `e2e-so-scope`).
+This is the second time the trust layer paid for itself: the full run found
+three tests that had silently kept pre-enum/pre-refactor assumptions, which
+the focused runs could not see because each suite ran against a different
+snapshot of the tree.
+
+The follow-up complete run, with every fix in place, finished **113/113 PASS,
+0 skipped, 0 failed** (APK gate 3/3; the same two suites kept one optional
+SKIP layer each). That run is the first fully green execution of the complete
+default gate under the new protocol, cache, frozen baselines and evidence
+floors.
+
+### 8. What is still open in P1
+
+- **Parallel suite execution** is not enabled. Many suites share fixed `/tmp`
+  paths and repository-root output names, so true isolation (sandbox dirs,
+  unique `TMPDIR`) is a prerequisite. The build cache is the safe first half
+  of the speedup; running suites concurrently is not.
+- **Aggregate mutation score, source-line coverage and nightly execution**
+  remain, along with **governance** (`LICENSE`, GitHub Actions, `CONTRIBUTING`,
+  `SECURITY`, tags). The codegen twin has accept/reject and mutation-probe
+  floors, and the protocol suite ratchets suite/example/baseline breadth; the
+  other 31 mutation-bearing suites still report kills without a common score,
+  and no gcov line-coverage floor exists.
+- A second complete gate run after the five fixes has not been performed; the
+  failures were rerun individually through the same runner. A full green run
+  should precede a release tag.

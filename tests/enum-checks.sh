@@ -36,6 +36,7 @@
 # layer that cannot run says SKIP and the rest still runs.
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/baseline.sh
 CXX=${CXX:-c++}
 RUNNER=${RUNNER:-tests/run-aarch64.sh}
 OUT=${OUT:-tmp-enum-checks}
@@ -255,7 +256,7 @@ fi
 # below). The pre-existing count stays 288.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[8/9] Byte-identity baseline'
-BASE=tests/baseline/v0.23.5-dev/example-hashes.txt
+BASE=$(aster_baseline_file)
 : > "$OUT/hashes.txt"
 for mode in build-so build-elf "build-obj --pic"; do
     tag=$(echo "$mode" | tr ' ' '_')

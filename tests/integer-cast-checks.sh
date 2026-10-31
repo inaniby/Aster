@@ -35,6 +35,7 @@
 # still runs.
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/baseline.sh
 CXX=${CXX:-c++}
 RUNNER=${RUNNER:-tests/run-aarch64.sh}
 OUT=${OUT:-tmp-integer-cast-checks}
@@ -453,7 +454,7 @@ fi
 # than pre-existing.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[9/10] Byte-identity baseline'
-BASE=tests/baseline/v0.23.5-dev/example-hashes.txt
+BASE=$(aster_baseline_file)
 : > "$OUT/hashes.txt"
 for mode in build-so build-elf "build-obj --pic"; do
     tag=$(echo "$mode" | tr ' ' '_')
@@ -476,7 +477,9 @@ done
 # pre-existing count is still 288: 348 recorded, 60 of them belonging to the
 # twenty rounds this suite knows are new.
 # v0.23.57-dev: c_ptr_difference.ast (the pointer-difference round) joins this filter the same way, so the pre-existing count stays 288.
-FILTER='-e ^cast-conversions\. -e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^tls_demo\. -e ^so_verstrlen\. -e ^c_ptr_difference\. -e ^address_of\. -e ^address_of_abi\. -e ^so_tls_demo\.'
+# v0.23.61-dev: enum_demo.ast (the enum round) joins too; the frozen snapshot
+# has 360 rows, and 24 filtered families (23 with rows) leave the same 288.
+FILTER='-e ^cast-conversions\. -e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^enum_demo\. -e ^tls_demo\. -e ^so_verstrlen\. -e ^c_ptr_difference\. -e ^address_of\. -e ^address_of_abi\. -e ^so_tls_demo\.'
 grep -v $FILTER "$BASE" | LC_ALL=C sort > "$OUT/expected-old.txt"
 grep -v $FILTER "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then

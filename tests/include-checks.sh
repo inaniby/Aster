@@ -392,8 +392,8 @@ fi
 
 # 12b. Resolve against the working directory instead of the including file.
 mutate 'include resolves against cwd instead of the including file' \
-    's|const std::string full=resolveIncludePath(pathTok.s);|const std::string full=pathTok.s;|' \
-    present 'const std::string full=pathTok.s;'
+    's|const std::string requested=resolveIncludePath(pathTok.s);|const std::string requested=pathTok.s;|' \
+    present 'const std::string requested=pathTok.s;'
 if (cd "$OUT/decoy" && "$HERE/$OUT/aster-mutant" build-obj "$HERE/$OUT/main.ast" \
         -o "$HERE/$OUT/m2.o") >/dev/null 2>&1; then
     fail 'resolving an include against the working directory went unnoticed'

@@ -161,8 +161,24 @@ if [ "$FAIL" -ne 0 ]; then
     echo "FAIL: $FAIL divergence(s):$fails" >&2
     exit 1
 fi
-printf 'PASS: codegen-twin.c matches bootstrap/aster.ast byte-for-byte on every accepted program (%s/%s)\n' \
-    "$PASS" "$cnt"
+
+# The floor. Byte equality is only evidence if the corpus actually exercises
+# both outcomes: a corpus that lost its accepted programs (or degenerated to
+# "both reject everything") would pass the divergence check vacuously. The
+# floors sit below the current 48 accepted / 67 rejected so adding or retiring
+# a handful of examples does not need a test edit, while a lost layer does.
+# They are deliberately not environment-overridable: lowering them is a source
+# change with a review, not a CI knob.
+MIN_ACCEPT=40
+MIN_REJECT=55
+if [ "$PASS" -lt "$MIN_ACCEPT" ] || [ "$REJ_BOTH" -lt "$MIN_REJECT" ]; then
+    echo "FAIL: differential corpus too thin: accepted=$PASS (floor $MIN_ACCEPT), rejected=$REJ_BOTH (floor $MIN_REJECT), total=$cnt" >&2
+    echo "      the corpus must keep enough accepted and rejected programs for byte equality to mean anything;" >&2
+    echo "      restore the corpus, or lower the floor deliberately in tests/codegen-checks.sh." >&2
+    exit 1
+fi
+printf 'PASS: codegen-twin.c matches bootstrap/aster.ast byte-for-byte on every accepted program (%s/%s; floors %s accepted, %s rejected)\n' \
+    "$PASS" "$cnt" "$MIN_ACCEPT" "$MIN_REJECT"
 
 # ---------------------------------------------------------------------------
 # [6/6] Mutation probes. Each one patches bootstrap/aster.ast — the reference
@@ -224,6 +240,15 @@ if [ "$MFAIL" -ne 0 ]; then
     echo "FAIL: $MFAIL mutation probe(s) did not diverge from the twin" >&2
     exit 1
 fi
-printf 'PASS: all %s mutation probes against bootstrap/aster.ast diverge from the twin\n' "$MPROBE"
+# The score is 100% killed, but a score over a shrunken probe set is not
+# evidence. Keep at least the seven probes that cover instruction encoding,
+# both syscall paths, branch backfill, the entry point and the rodata base.
+MIN_MPROBE=7
+if [ "$MPROBE" -lt "$MIN_MPROBE" ]; then
+    echo "FAIL: mutation probe set too small: $MPROBE probe(s), floor $MIN_MPROBE" >&2
+    exit 1
+fi
+printf 'PASS: all %s mutation probes against bootstrap/aster.ast diverge from the twin (floor %s)\n' \
+    "$MPROBE" "$MIN_MPROBE"
 
 printf '%s\n' 'ALL CODEGEN CHECKS PASSED'

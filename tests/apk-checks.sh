@@ -34,7 +34,7 @@ ABI="${ABI:-arm64-v8a}"
 KEY_DIR="${KEY_DIR:-/tmp/aster-apk-keys}"
 
 echo "[1/7] compiling aster (strict: -Wall -Wextra -Werror)"
-c++ -std=c++17 -O2 -Wall -Wextra -Werror -o "$ASTER_BIN" src/aster.cpp
+${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Werror -o "$ASTER_BIN" src/aster.cpp
 
 # The test project's debug key. Generating it up front keeps every build below
 # signed by the same key, which is what makes the reproducibility check meaningful.

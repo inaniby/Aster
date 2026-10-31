@@ -2,6 +2,7 @@
  * The lifecycle mode intentionally uses RTLD_LOCAL only: a prior RTLD_GLOBAL
  * load can remain in a platform linker's global group and is not a valid test
  * of whether a local object's final reference was released. */
+#define _GNU_SOURCE
 #include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>

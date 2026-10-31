@@ -165,11 +165,41 @@ running every suite below.
 
 `tests/ci.sh` is the one-command gate that runs the whole discipline end to end and exits non-zero the
 moment any stage slips: it builds `aster` with `-Werror`, runs every `*-checks.sh` / `*-structural.sh` /
-`e2e-*.sh` suite as a black box (each reported PASS / SKIP / FAIL, with the e2e C-ABI suites self-skipping
-on a non-AArch64 host), and finishes with an APK validation gate (`validate_apk.py` + `verify-apk`) over
-the `native_render`, `icon_text_demo` and `native_touch` demos. `smoke.sh` stays the curated quick subset; `ci.sh` is the
-comprehensive one. On an AArch64 runner pass `HOSTCC=aarch64-linux-gnu-gcc` to let the e2e suites run for
-real.
+`e2e-*.sh` suite as a black box, and finishes with an APK validation gate (`validate_apk.py` +
+`verify-apk`) over the `native_render`, `icon_text_demo` and `native_touch` demos. `smoke.sh` stays the
+curated quick subset; `ci.sh` is the comprehensive one. On an AArch64 runner pass
+`HOSTCC=aarch64-linux-gnu-gcc` to let the e2e suites run for real.
+
+The gate enforces an exit-code protocol: **0 = PASS**, **77 = the whole suite could not run** (a
+`SKIP: <reason>` line is mandatory), and **anything else = FAIL**. A whole-suite skip in a critical
+suite (APK, signing, TLS, linker, codegen, struct, enum, resource tables, page size, version) is a red
+run; an optional layer may print `SKIP:` and still leave its suite green. `tests/ci-protocol-checks.sh`
+self-tests that protocol and the build cache, so a regression in either mechanism fails the gate rather
+than hiding behind it. The first complete run over all **113** default suites finished 109 PASS / 4
+FAIL; all four were stale test fixtures (baseline filters, a missing `_GNU_SOURCE`, and two source
+guards), and the follow-up complete run is **113/113 PASS** with the APK gate 3/3. The codegen twin
+also enforces evidence floors — at least 40 accepted programs byte-identical, 55 rejected by both
+sides, and 7 mutation probes — so a shrunken corpus cannot pass vacuously.
+
+The strict compiler is built once. `tests/lib/cxx-cache.sh` hands that binary to suites that would
+otherwise rebuild `src/aster.cpp`, and forwards mutated sources, `-c`, `-g`, sanitizers, alternate
+optimization levels, static links and unknown flags to the real compiler. A focused run and the knobs:
+
+```sh
+CI_SUITES="tls-checks.sh linker-checks.sh" sh tests/ci.sh
+CI_SKIP_APK_GATE=1 sh tests/ci.sh     # suites only
+CI_REBUILD=1 sh tests/ci.sh           # ignore the build stamp
+CI_ALLOW_MISSING=1 sh tests/ci.sh     # let missing tools SKIP (critical skips still fail)
+CI_OUT=/tmp/aster-ci CI_KEEP_ARTIFACTS=1 sh tests/ci.sh
+```
+
+Byte baselines are frozen per release. Each version owns
+`tests/baseline/v<version>/example-hashes.txt`, and suites resolve the path
+through `tests/lib/baseline.sh` rather than naming a file. A version bump
+without a snapshot fails the baseline layer instead of silently comparing
+against the previous release; the helper also rejects malformed rows, duplicate
+keys and rows whose example no longer exists.
+
 
 The e2e suites execute generated AArch64 binaries. On an ARM64 device they run natively; on any other
 host they run through **qemu-user**, with a cross compiler for the target-architecture test hosts:
