@@ -52,7 +52,7 @@ if grep -q 'kSharedTextVaddr' src/aster.cpp; then
     exit 1
 fi
 echo "OK: kSharedTextVaddr removed from src/aster.cpp"
-if grep -q '0x1000' src/aster.cpp; then
+if grep -Eq '(^|[^0-9A-Fa-f])0x1000([^0-9A-Fa-f]|$)' src/aster.cpp; then
     echo "FAIL: bare 0x1000 literal remains in src/aster.cpp (segment layout must derive from pageSize)" >&2
     exit 1
 fi

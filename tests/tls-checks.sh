@@ -192,6 +192,54 @@ assert vals == (10, 20), ('the tls initializers are missing from .tdata', vals)
 print('PASS: PT_TLS 0x8/0x14, .tdata WAT (a=10,b=20), .tbss NOBITS WAT at +0x10')
 PY
 
+# A TLS block followed by an ordinary .bss: the .bss section and its symbols
+# must land inside the same RW PT_LOAD, past p_filesz. A units mistake in the
+# static writer (treating a file offset as an address) puts them at 0x2004
+# instead of 0x402004: still mapped by luck in one test, but outside the
+# segment's declared range and wrong for every symbol consumer.
+cat > "$OUT/tlsbss.ast" <<'AST'
+tls let t: i32 = 3;
+let big: i32[1000] = 0;
+fn main() -> i32 {
+    big[123] = 7;
+    return t + big[123] - 7;
+}
+AST
+"$A" build-elf "$OUT/tlsbss.ast" -o "$OUT/tlsbss.elf" >/dev/null
+python3 - "$OUT/tlsbss.elf" <<'PY' || exit 1
+import struct, sys
+b = open(sys.argv[1], 'rb').read()
+phoff = struct.unpack_from('<Q', b, 32)[0]
+phentsize, phnum = struct.unpack_from('<HH', b, 54)
+segs = [struct.unpack_from('<IIQQQQQQ', b, phoff + i*phentsize) for i in range(phnum)]
+loads = [s for s in segs if s[0] == 1 and (s[1] & 0x2)]
+assert len(loads) == 1, ('expected one RW PT_LOAD', loads)
+rw = loads[0]
+shoff = struct.unpack_from('<Q', b, 40)[0]
+shentsize, shnum, shstrndx = struct.unpack_from('<HHH', b, 58)
+raw = [struct.unpack_from('<IIQQQQIIQQ', b, shoff + i*shentsize) for i in range(shnum)]
+shstr = raw[shstrndx]; names = b[shstr[4]:shstr[4]+shstr[5]]
+def nm(s): return names[s[0]:names.index(b'\0', s[0])].decode()
+sec = {nm(s): s for s in raw}
+bs = sec['.bss']
+assert bs[5] == 4000, ('expected 1000 i32 of .bss', bs[5])
+assert rw[3] <= bs[3] and bs[3] + bs[5] <= rw[3] + rw[6], \
+    ('the .bss must be inside the RW PT_LOAD', hex(bs[3]), hex(rw[3]), hex(rw[6]))
+# The symbol's address must agree with the section it lives in, not with a
+# file offset that happens to look plausible.
+sym = sec['.symtab']; strs = sec['.strtab']
+for off in range(24, sym[5], 24):
+    n, info, other, shndx, val, size = struct.unpack_from('<IBBHQQ', b, sym[4] + off)
+    end = b.index(b'\0', strs[4] + n)
+    if b[strs[4]+n:end].decode() == 'big':
+        assert raw[shndx][0] == bs[0], ('symbol big must live in .bss', shndx)
+        assert val == bs[3], ('symbol big must name the .bss address', hex(val), hex(bs[3]))
+        break
+else:
+    raise SystemExit('symbol big is missing')
+print('PASS: a TLS block plus 4000-byte .bss keeps .bss and its symbols inside the RW PT_LOAD')
+PY
+
 # ---------------------------------------------------------------- 5. the two models
 printf '%s\n' '[5/9] The relocations: kRelTlsOff (local-exec) and TLS_TPREL64 (initial-exec)'
 "$A" build-obj "$OUT/split.ast" -o "$OUT/split.o" >/dev/null

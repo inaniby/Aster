@@ -64,7 +64,7 @@ grep -qF 'const uint32_t labelResId = table.resId("string",   "app_name");' src/
 # leaves it in the manifest; the literal is applied over the top of it.
 grep -qF 'application.attrs={{"label","ref",labelId},' src/aster.cpp \
     || { echo 'FAIL: android:label is no longer written as TYPE_REFERENCE' >&2; exit 1; }
-grep -qF 'labelAsReference ? std::string() : label);' src/aster.cpp \
+grep -qF 'labelAsReference ? std::string() : label,' src/aster.cpp \
     || { echo 'FAIL: --label-as-reference no longer selects the aapt spelling' >&2; exit 1; }
 grep -qF 'if(!labelLiteral.empty()) application.attrs[0]={"label","str",labelLiteral};' src/aster.cpp \
     || { echo 'FAIL: the literal spelling is no longer applied over the reference' >&2; exit 1; }

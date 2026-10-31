@@ -8,6 +8,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <fcntl.h>              // open/mkstemp flags for key files
 #include <iostream>
 #include <iterator>
 #include <map>
@@ -92,6 +93,18 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
 struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
+// A depth counter for recursively walking the AST. The parser bounds nesting
+// it builds directly, but a long left-associative chain (`a+a+a+...`) is deep
+// on the left while the parser builds it iteratively; sema/codegen then walk
+// that depth. This turns a stack overflow into a diagnostic.
+struct RecursionGuard {
+    unsigned& d; unsigned limit; const char* what;
+    RecursionGuard(unsigned& depth,unsigned maxDepth,const char* label)
+        :d(depth),limit(maxDepth),what(label){
+        if(++d>limit){--d;throw Error(std::string(what)+" is nested too deeply (max "+std::to_string(limit)+")");}
+    }
+    ~RecursionGuard(){--d;}
+};
 std::string readFile(const std::string& p) {
     std::ifstream f(p, std::ios::binary);
     if (!f) throw Error("cannot open input: " + p);
@@ -614,8 +627,7 @@ static Ty ptrStrideType(Ty t) {
 // len's element count.
 static uint64_t dimsProduct(const std::vector<uint32_t>& d) {
     uint64_t p = 1; for (uint32_t x : d) p *= x; return p;
-}
-// v0.23.35-dev: the byte size of a *type* spelled as a sizeof argument, with
+}// v0.23.35-dev: the byte size of a *type* spelled as a sizeof argument, with
 // optional array dimensions: `sizeof(i32[4])` = tySize(i32) * 4. The scalar /
 // struct / ptr variants all collapse to tySize through this same path.
 static uint64_t sizeofTypeValue(Ty t, const std::vector<uint32_t>& dims) {
@@ -790,6 +802,10 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
         if(t==Ty::U8) return (uint64_t)e.n<=255u;
         if(t==Ty::U16)return (uint64_t)e.n<=65535u;
         if(t==Ty::Bool)return (uint64_t)e.n<=1u;
+        // v0.23.61-dev: u32 is 32 bits wide too. Accepting any literal let
+        // `let x: u32 = 4294967296;` silently store 0; the literal has to fit
+        // the slot, exactly as the folded-expression path below requires.
+        if(t==Ty::U32)return (uint64_t)e.n<=0xFFFFFFFFu;
         // v0.23.48-dev: an i64 slot's signed range, checked here rather than in
         // the parser — u64 now takes every literal up to 2^64-1, and only the
         // declaration knows which slot the value was meant for.
@@ -799,7 +815,7 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
     switch(t.k){
         case Ty::U8:  return folded>=0&&folded<=255;
         case Ty::U16: return folded>=0&&folded<=65535;
-        case Ty::U32: return folded>=0;
+        case Ty::U32: return folded>=0&&(uint64_t)folded<=0xFFFFFFFFu;
         // v0.23.48-dev: u64 holds every folded value's bit pattern exactly: a
         // negative fold is the sign-extended view of a u64 value (-1 is
         // 2^64-1), never a truncation, so the slot accepts it as it stands.
@@ -819,7 +835,7 @@ static bool caseValueFits(Ty t,int64_t folded){
     switch(t.k){
         case Ty::U8:  return folded>=0&&folded<=255;
         case Ty::U16: return folded>=0&&folded<=65535;
-        case Ty::U32: return folded>=0;
+        case Ty::U32: return folded>=0&&(uint64_t)folded<=0xFFFFFFFFu;
         case Ty::I32: return folded>=INT32_MIN&&folded<=INT32_MAX;
         // v0.23.48-dev: u64 holds every folded value's bit pattern exactly
         // (-1 is 2^64-1, never a truncation); i64 holds everything.
@@ -1271,9 +1287,11 @@ class Parser {
                     const uint64_t d=unsignedLiteral(lt,"array length");
                     if(d==0||d>1000)throw Error("array length out of range at "+std::to_string(lt.line)+":"+std::to_string(lt.col));
                     dims.push_back((uint32_t)d);
+                    if(dims.size()>8)throw Error(loc(lt.line,lt.col,"arrays support at most 8 dimensions"));
                     need(TK::RBracket,"expected ']' after array length");
                 }
                 need(TK::RParen,("expected ')' after "+op+" type").c_str());
+                dimsTotal(dims,1048576,"array length","the "+op+" type",ln,cl);
                 E x(new Expr(op=="sizeof"?Expr::SizeOf:Expr::Len));
                 x->ty=t; x->idims=dims; x->line=ln; x->col=cl;
                 // Type-form folds immediately: no binding context is required.
@@ -1619,6 +1637,7 @@ class Parser {
     // hand side of another conditional (`c ? a : d ? b : e` nests right, as in
     // C). Both arms are parsed at full expr() precedence.
     E expr(){
+        DepthGuard depthGuard(exprDepth,256,"expression");
         E x=logical();
         if(cur().k==TK::Question){
             auto q=t[p++];
@@ -1788,6 +1807,11 @@ class Parser {
                 throw Error(loc(n.line,n.col,what+" must be between 1 and "+std::to_string(limit)+": "+subject));
             need(TK::RBracket,("expected ']' after "+what).c_str());
             dims.push_back((uint32_t)cnt);
+            // Codegen's subscript chain is fixed at eight levels; refuse a
+            // ninth here, where the source location is, instead of failing
+            // later with an internal compiler error.
+            if(dims.size()>8)
+                throw Error(loc(n.line,n.col,"arrays support at most 8 dimensions: "+subject));
         }
         return dims;
     }
@@ -1798,7 +1822,14 @@ class Parser {
                        const std::string& subject,unsigned line,unsigned col){
         if(dims.empty())return 1;
         uint64_t total=1;
-        for(uint32_t d:dims)total*=d;
+        for(uint32_t d:dims){
+            // Check before multiplying: a wrapped product could otherwise slip
+            // under the limit (4 dims of 1000 already overflow uint32, 8
+            // overflow uint64), which is how a huge declaration became small.
+            if(total>(uint64_t)limit/d)total=(uint64_t)limit+1;
+            else total*=d;
+            if(total>limit)break;
+        }
         if(total>limit)
             throw Error(loc(line,col,what+" must be between 1 and "+std::to_string(limit)+": "+subject));
         return (uint32_t)total;
@@ -2043,6 +2074,7 @@ class Parser {
         return s;
     }
     Stmt statement(){
+        DepthGuard depthGuard(stmtDepth,256,"statement");
         if(cur().k==TK::Star)return derefAssignStatement();
         if(eat(TK::Let))return letStatement();
         if(eat(TK::Return)){Stmt s(Stmt::Return);s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;need(TK::Semi,"expected ';'");return s;}
@@ -2106,6 +2138,7 @@ class Parser {
         throw Error("expected let, assignment, return, if, while, for, break, continue, or switch at "+std::to_string(cur().line)+":"+std::to_string(cur().col));
     }
     int64_t foldConst(const Expr& e){
+        RecursionGuard depthGuard(foldDepth,2048,"constant expression");
         switch(e.k){
             case Expr::Num: return (int64_t)e.n;
             case Expr::SizeOf: case Expr::Len: return (int64_t)e.n;   // v0.23.35-dev: the type-form folded at parse time
@@ -2115,13 +2148,34 @@ class Parser {
             // fails inside the recursive call with the message below, which is
             // the right answer for a global initializer that is not constant.
             case Expr::Cast: return castConstValue(foldConst(*e.a),e.ty);
-            case Expr::Neg: return -foldConst(*e.a);
-            case Expr::Add: return foldConst(*e.a)+foldConst(*e.b);
-            case Expr::Sub: return foldConst(*e.a)-foldConst(*e.b);
-            case Expr::Mul: return foldConst(*e.a)*foldConst(*e.b);
+            case Expr::Neg: {
+                const int64_t a=foldConst(*e.a);
+                if(a==INT64_MIN)throw Error(loc(e.line,e.col,"negation overflows i64 in global variable initializer"));
+                return -a;
+            }
+            case Expr::Add: {
+                int64_t a=foldConst(*e.a),b=foldConst(*e.b),r=0;
+                if(__builtin_add_overflow(a,b,&r))
+                    throw Error(loc(e.line,e.col,"addition overflows i64 in global variable initializer"));
+                return r;
+            }
+            case Expr::Sub: {
+                int64_t a=foldConst(*e.a),b=foldConst(*e.b),r=0;
+                if(__builtin_sub_overflow(a,b,&r))
+                    throw Error(loc(e.line,e.col,"subtraction overflows i64 in global variable initializer"));
+                return r;
+            }
+            case Expr::Mul: {
+                int64_t a=foldConst(*e.a),b=foldConst(*e.b),r=0;
+                if(__builtin_mul_overflow(a,b,&r))
+                    throw Error(loc(e.line,e.col,"multiplication overflows i64 in global variable initializer"));
+                return r;
+            }
             case Expr::Div: {
                 int64_t a=foldConst(*e.a),b=foldConst(*e.b);
                 if(b==0)throw Error(loc(e.line,e.col,"division by zero in global variable initializer"));
+                if(a==INT64_MIN&&b==-1)
+                    throw Error(loc(e.line,e.col,"division overflows i64 in global variable initializer"));
                 return a/b;
             }
             // v0.23.17-dev (round 1): the new operators fold too, so
@@ -2129,6 +2183,9 @@ class Parser {
             case Expr::Mod: {
                 int64_t a=foldConst(*e.a),b=foldConst(*e.b);
                 if(b==0)throw Error(loc(e.line,e.col,"division by zero in global variable initializer"));
+                // INT64_MIN % -1 is the other signed-overflow corner: the
+                // mathematical result is 0, but the C++ operation is UB.
+                if(a==INT64_MIN&&b==-1)return 0;
                 return a%b;
             }
             // A shift count outside [0,63] has no defined meaning, and a left
@@ -2152,7 +2209,8 @@ class Parser {
             default: throw Error(loc(e.line,e.col,"global variable initializer must be a constant expression"));
         }
     }
-    static bool isConstExpr(const Expr& e){
+    bool isConstExpr(const Expr& e){
+        RecursionGuard depthGuard(constExprDepth,2048,"constant expression");
         switch(e.k){
             case Expr::Num: return true;
             case Expr::SizeOf: case Expr::Len: return true;   // v0.23.35-dev: a compile-time constant
@@ -2264,9 +2322,7 @@ class Parser {
                     // worst of both. A plain `ptr[4]` field is unaffected.
                     if(fieldIsFunc)
                         throw Error(loc(fn.line,fn.col,"an array of function pointers is not supported: "+id.s+"."+fn.s));
-                    flen=1;for(uint32_t d:dims)flen*=d;
-                    if(flen>1000)
-                        throw Error(loc(fn.line,fn.col,"array field length must be between 1 and 1000: "+id.s+"."+fn.s));
+                    flen=dimsTotal(dims,1000,"array field length",id.s+"."+fn.s,fn.line,fn.col);
                 }
                 for(const auto& old:s.fields)if(old.name==fn.s)throw Error(loc(fn.line,fn.col,"duplicate field in struct "+id.s+": "+fn.s));
                 s.fields.push_back({fn.s,fty,0,flen,std::move(dims),std::move(fieldFuncSig),fieldIsFunc});
@@ -2462,6 +2518,18 @@ public:
         :t(Lexer(s).run()),requireMain(requireEntry),includes(inc?inc:&ownIncludes),selfDir(selfDir_){}
     std::vector<Function> functions;
     std::vector<Global> globals;
+    // Recursive-descent parsers can be driven off the C stack by input such as
+    // `((((((...1...))))))` or a hundred nested ifs. These counters make the
+    // parser say "too deep" long before the process would die without a
+    // diagnostic; the limits are far above any hand-written program.
+    unsigned exprDepth=0, stmtDepth=0, foldDepth=0, constExprDepth=0;
+    struct DepthGuard {
+        unsigned& d;
+        DepthGuard(unsigned& depth,unsigned limit,const char* what):d(depth){
+            if(++d>limit){--d;throw Error(std::string(what)+" is nested too deeply (max "+std::to_string(limit)+")");}
+        }
+        ~DepthGuard(){--d;}
+    };
 
     // `include "path";` — another file's declarations, brought into this
     // translation unit.
@@ -2478,7 +2546,15 @@ public:
         const Token at=cur();
         const Token pathTok=need(TK::String,"expected a file path in quotes after include");
         need(TK::Semi,"expected ';' after include");
-        const std::string full=resolveIncludePath(pathTok.s);
+        const std::string requested=resolveIncludePath(pathTok.s);
+        // Canonicalize before the stack/done tests: "a/../x.ast" and "x.ast"
+        // are one file, and without realpath a cycle could alternate between
+        // spellings and never be seen as one. Symlinks resolve here too.
+        std::string full=requested;
+        char* canonical=::realpath(requested.c_str(),nullptr);
+        if(canonical){full=canonical;std::free(canonical);}
+        if(includes->stack.size()>=64)
+            throw Error(loc(at.line,at.col,"include nesting is too deep (max 64)"));
         // The cycle check comes FIRST, before "already pulled in", because a
         // file that is part-way through being parsed is in both: reached again
         // through a cycle it has to be an error, and reached again through a
@@ -2656,6 +2732,8 @@ public:
 // Overflow, division by zero, and anything else (variables, calls,
 // dereferences) simply do not fold, leaving the index unchecked at run time.
 static bool constantInteger(const Expr& e,int64_t& out){
+    static thread_local unsigned depth=0;
+    RecursionGuard depthGuard(depth,2048,"constant expression");
     int64_t a=0,b=0;
     switch(e.k){
         // v0.23.25-dev: a bool literal is not an integer constant. Folding it
@@ -2921,6 +2999,8 @@ struct Codegen {
     bool injectInit=false;
     std::string initSymbol;
     int callDepth=0;
+    mutable unsigned typeDepth=0;
+    unsigned genDepth=0;
     // --bounds-check: emit a run-time range test before every dynamic index
     // into a fixed-size array. Off by default, so an ordinary build emits the
     // same bytes it always did.
@@ -2982,6 +3062,11 @@ struct Codegen {
     std::vector<LoopContext> loops;
     static constexpr int kMaxLocals=500;
     static constexpr int kMaxTemps=16;
+    // v0.23.61-dev: sixteen eight-byte caller-save slots, 4032..4159. They sit
+    // between the variable slots (0..3999) and the argument scratch area
+    // (4160..), so an i64 or a pointer parked across a call keeps all 64 bits.
+    static constexpr uint32_t kSpillBase=4032;
+    static uint32_t spillOffset(int r){ return kSpillBase+uint32_t(r)*8u; }
     // R_AARCH64_ADR_PREL_PG_HI21 / R_AARCH64_ADD_ABS_LO12_NC / R_AARCH64_CALL26
     static constexpr uint32_t kRelAdrp=275, kRelAddLo=277, kRelCall26=283;
     // x16 (IP0) is reserved for global-address materialization; expression temporaries use w0-w15.
@@ -3189,8 +3274,16 @@ struct Codegen {
         if(!length)return;                       // pointer index or an array of unknown extent
         int64_t folded=0;
         if(constantInteger(index,folded))return; // compile-time check already covers it
-        if(length>0xfffu)throw Error("array is too long for --bounds-check: length "+std::to_string(length)+" exceeds the 4095 compare-immediate limit");
-        emit(cmpImm(idxReg,length));
+        if(length>0xfffu){
+            // CMP's immediate form carries 12 bits; longer arrays are still
+            // checked by materializing the length into a register. This used
+            // to refuse the whole build, which made --bounds-check unusable
+            // for the globals the language already allows up to 1<<20.
+            const int lenReg=temp();
+            emitMov64(lenReg,(uint64_t)length);
+            emit(0x6b00001fu|(uint32_t(lenReg)<<16)|(uint32_t(idxReg)<<5)); // CMP Widx, Wlen
+            releaseTemp(lenReg);
+        } else emit(cmpImm(idxReg,length));
         size_t at=code.size();emit(0);
         emit(brk(1));
         patchCond(at,3,(int)code.size());        // 3 = LO/CC: unsigned < length, skip the trap
@@ -3205,6 +3298,7 @@ struct Codegen {
     // width?" falls out of the same answer. One definition means the three
     // questions can never disagree.
     Ty exprType(const Expr& e) const {
+        RecursionGuard depthGuard(typeDepth,2048,"expression type");
         switch(e.k){
             case Expr::Num:
                 if(e.boolLit) return Ty::Bool;
@@ -3267,10 +3361,13 @@ struct Codegen {
                 return elementTypeOf(e.name);
             }
             case Expr::Deref: {
-                // *(p) reads one i32 as before — unless p is a ptr<S>, in
-                // which case it is the struct itself.
+                // *(p) reads the pointee's declared width: a ptr<S> is the
+                // struct itself, a strided pointer is its element, and only an
+                // untyped ptr keeps the historical i32 (v0.23.61-dev).
                 const Ty inner=exprType(*e.a);
-                return tyIsPtrToStruct(inner)?Ty::ofStruct(inner.sid):Ty::I32;
+                if(tyIsPtrToStruct(inner))return Ty::ofStruct(inner.sid);
+                if(tyIsPtrToElem(inner))return ptrElemType(inner);
+                return Ty::I32;
             }
             case Expr::Field: {
                 const Ty base=exprType(*e.a);
@@ -3593,6 +3690,15 @@ struct Codegen {
         if(reg==kGlobalBase){emitAddOff(17,31,off);emit(storeAtT(reg,17,0,t));return;}
         emitAddOff(kGlobalBase,31,off);emit(storeGlobalT(reg,t));
     }
+    // Park/restore every live temporary at full width. The slot area is
+    // eight-byte spaced, so a pointer or i64 that stays live across a call
+    // keeps its upper half (v0.23.61-dev).
+    void spillTemps(int live){
+        for(int r=0;r<live;++r)storeStackOff(r,spillOffset(r),Ty::I64);
+    }
+    void restoreTemps(int live){
+        for(int r=0;r<live;++r)loadStackOff(r,spillOffset(r),Ty::I64);
+    }
     // An incoming stack argument (the 9th and later): its 8-byte slot is
     // addressed through X16 (X16 = SP + 8192) and the load width follows the
     // declared parameter type. i32/ptr keep the exact forms they used before
@@ -3667,7 +3773,7 @@ struct Codegen {
     // lockstep.
     int syscallInsn(int num, const std::vector<std::unique_ptr<Expr>>& args, const std::vector<Ty>& tys, Ty resultTy=Ty::I32){
         const int live=nextTemp;
-        for(int r=0;r<live;++r)emit(storeLocal(r,1020+r));
+        spillTemps(live);
         const uint32_t scratchByte=4160u+uint32_t(callDepth)*256u;++callDepth;
         for(size_t i=0;i<args.size();++i){
             int v=gen(*args[i],tys[i]);
@@ -3701,10 +3807,11 @@ struct Codegen {
         // it through W would hand back 0x00000000_7fxxxxxx and every later
         // access through that pointer would fault (v0.23.41-dev).
         int d=temp();emit((tyIs64(resultTy)?0xaa0003e0u:0x2a0003e0u)|uint32_t(d)); // MOV (X|W)d, (X|W)0
-        for(int r=live-1;r>=0;--r)emit(loadLocal(r,1020+r));
+        restoreTemps(live);
         return d;
     }
     int gen(const Expr& e,Ty want=Ty::I32){
+        RecursionGuard depthGuard(genDepth,2048,"expression codegen");
         // Typed IR (P3.1 follow-up): guard. Every node gen reaches must carry
         // a resolved type agreeing with Codegen's exprType -- the "two
         // resolvers, one contract" check made mechanical: annotate must have
@@ -3922,7 +4029,7 @@ struct Codegen {
                     // itself. A syscall preserves every register but x0, so the
                     // only damage is the argument loading itself.
                     const int live=nextTemp;
-                    for(int r=0;r<live;++r)emit(storeLocal(r,1020+r));
+                    spillTemps(live);
                     static const Ty wts[3]={Ty::I32,Ty::Ptr,Ty::I32};
                     const uint32_t woff[3]={0,8,16};
                     const int scratchByte=4160+callDepth*256;++callDepth;
@@ -3943,7 +4050,7 @@ struct Codegen {
                     emit(0xd2800000u|(64u<<5)|8u);             // MOV X8, #64
                     emit(0xd4000001u);                          // SVC #0
                     int d=temp();emit(0x2a0003e0u|uint32_t(d));// MOV Wd, W0 — bytes written
-                    for(int r=live-1;r>=0;--r)emit(loadLocal(r,1020+r));
+                    restoreTemps(live);
                     return d;
                 }
                 // v0.23.40-dev: raw system-call intrinsics (zero libc). Each
@@ -4065,12 +4172,16 @@ struct Codegen {
             }
             case Expr::Deref:{
                 if(!exprIsPtr(*e.a))throw Error("dereference requires a ptr expression");
-                int a=gen(*e.a);emit(0xb9400000u|(uint32_t(a)<<5)|uint32_t(a));
+                const Ty inner=exprType(*e.a);
+                const Ty elem=tyIsPtrToElem(inner)?ptrElemType(inner):Ty::I32;
+                int a=gen(*e.a);
+                if(tyIsPtrToStruct(inner))emit(0xb9400000u|(uint32_t(a)<<5)|uint32_t(a));
+                else emit(loadAtT(a,a,0,elem));    // the pointee's real width (v0.23.61-dev)
                 // A 32-bit load read into an i64 context is sign-extended, as
                 // for a local, a field and an array element: LDR W zeroes the
                 // upper half of X, and a negative pointee would otherwise
                 // widen into a huge positive i64.
-                if(tyIs64(want))emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));
+                if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));
                 return a;
             }
             case Expr::Field:{
@@ -4808,8 +4919,19 @@ struct Codegen {
             emit(0xf9000000u|((off/8)<<10)|(uint32_t(dst)<<5)|15);   // STR X15, [Xdst, #off]
         }
         if(off<size){
-            emit(0xb9400000u|((off/4)<<10)|(uint32_t(src)<<5)|15);
-            emit(0xb9000000u|((off/4)<<10)|(uint32_t(dst)<<5)|15);
+            // A struct's size is a multiple of its alignment, not of four:
+            // {u8,u8} is two bytes. A four-byte tail store here used to write
+            // two bytes past the destination. Copy a whole word when one is
+            // left, then finish one byte at a time (v0.23.61-dev).
+            if(size-off>=4){
+                emit(0xb9400000u|((off/4)<<10)|(uint32_t(src)<<5)|15);
+                emit(0xb9000000u|((off/4)<<10)|(uint32_t(dst)<<5)|15);
+                off+=4;
+            }
+            for(;off<size;++off){
+                emit(0x39400000u|(off<<10)|(uint32_t(src)<<5)|15);   // LDRB W15, [Xsrc, #off]
+                emit(0x39000000u|(off<<10)|(uint32_t(dst)<<5)|15);   // STRB W15, [Xdst, #off]
+            }
         }
         loadStackOff(15,kCopyScratch+spAdj,Ty::I64);
     }
@@ -4925,7 +5047,7 @@ struct Codegen {
         // stack slots. Limit nesting so all scratch slots remain inside the fixed 8 KiB frame.
         if(callDepth>=14)throw Error("nested function-call arguments exceed compiler limit (14 for pointer ABI)");
         int live=nextTemp;
-        for(int r=0;r<live;++r)emit(storeLocal(r,1020+r));
+        spillTemps(live);
         const int scratchByte=4160+callDepth*256;++callDepth;
         for(size_t i=0;i<nargs;++i){
             const Ty ty=at(i);const uint32_t off=uint32_t(scratchByte+argOff[i]);
@@ -5048,7 +5170,7 @@ struct Codegen {
             }
         }
         if(total){emit(0x910003ffu|(total<<10));spAdj=0;}
-        for(int r=0;r<live;++r)emit(loadLocal(r,1020+r));
+        restoreTemps(live);
         return d;
     }
     // Store the struct value `e` produces into the memory X16 points at. An
@@ -5104,8 +5226,14 @@ struct Codegen {
                 // next temporary along, which is where X1 was put.
                 int d=gen(e);
                 loadStackOff(17,dstSlot,Ty::I64);
-                emit(storeAtT(d,17,0,Ty::I64));
-                if(size>8){emit(storeAtT(d+1,17,8,Ty::I64));releaseTemp(d+1);}
+                // Stage the register result and copy exactly `size` bytes.
+                // Writing a full eight bytes into a narrower destination used
+                // to clear the neighbouring field (v0.23.61-dev).
+                storeStackOff(d,kRetBuf+spAdj,Ty::I64);
+                if(size>8)storeStackOff(d+1,kRetBuf+spAdj+8,Ty::I64);
+                emitAddOff(kGlobalBase,31,kRetBuf+spAdj);
+                emitStructCopy(17,kGlobalBase,size);
+                if(size>8)releaseTemp(d+1);
                 releaseTemp(d);
             }
             --structCallDepth;
@@ -5305,6 +5433,10 @@ struct Codegen {
         }
         int v=(currentReturnBool&&isBool)?genBool(e):gen(e,retTy);
         emit((tyIs64(retTy)||currentReturnPtr?0xaa0003e0u:0x2a0003e0u)|(uint32_t(v)<<16));releaseTemp(v);
+        // A u8/u16 return is narrowed to its declared width before the caller
+        // can consume it, exactly as a u8/u16 store is (v0.23.61-dev).
+        if(retTy==Ty::U8)emit(0x53001c00u);       // UXTB W0, W0
+        else if(retTy==Ty::U16)emit(0x53003c00u); // UXTH W0, W0
         }
         if(isMain){emit(0xd2800000u|(93u<<5)|8u);emit(0xd4000001u);}
         else {emit(0xf94003feu|(uint32_t(1023)<<10)); // LDR X30, [SP, #8184]
@@ -5629,8 +5761,11 @@ struct Codegen {
                 releaseTemp(v);releaseTemp(r);
             } else if(s.k==Stmt::DerefAssign){
                 if(!exprIsPtr(*s.idx))throw Error("dereference assignment requires a ptr expression");
+                const Ty inner=exprType(*s.idx);
+                const Ty elem=tyIsPtrToElem(inner)?ptrElemType(inner):Ty::I32;
                 int address=gen(*s.idx);int value=gen(*s.expr);
-                if(exprIsPtr(*s.expr))emit(0xf9000000u|(uint32_t(address)<<5)|uint32_t(value)); // STR Xt, [Xn] (ptr store)
+                if(tyIsPtrToElem(inner))emit(storeAtT(value,address,0,elem)); // STRB/STRH/STR/STR X (v0.23.61-dev)
+                else if(exprIsPtr(*s.expr))emit(0xf9000000u|(uint32_t(address)<<5)|uint32_t(value)); // STR Xt, [Xn] (ptr store)
                 else emit(0xb9000000u|(uint32_t(address)<<5)|uint32_t(value)); // STR Wt, [Xn] (i32 store)
                 releaseTemp(value);releaseTemp(address);
             } else if(s.k==Stmt::Expr){
@@ -5923,15 +6058,23 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     uint64_t dataFileOff=0,dataVaddr=0;
     if(hasData){dataFileOff=alignUp(afterRodata,pageSize);dataVaddr=base+dataFileOff;}
     // v0.23.51-dev: the PT_TLS image sits in the data PT_LOAD at file offset
-    // (tlsVaddr-base), so the loader maps one copy per thread.
+    // (tlsVaddr-base), so the loader maps one copy per thread. The block goes
+    // right after .data, not after .bss: a large zero-filled .bss between the
+    // two would have to be written as padding to reach the block's file
+    // offset, making the file grow with the .bss.
     uint64_t tlsFileOff=0;
-    if(hasTlsSection){tlsFileOff=tlsVaddr-base; if(tlsFileOff<dataFileOff)throw Error("internal error: thread-local block must follow .data in the file");}
+    if(hasTlsSection){tlsFileOff=tlsVaddr-base; if(tlsFileOff<dataFileOff+data.size())throw Error("internal error: thread-local block must follow .data in the file");}
     // v0.23.52-dev: where the block ends, in file terms and in memory terms.
     // They differ precisely by .tbss: it starts at the block-aligned end of
     // .tdata and occupies address space only, so it moves memsz and not filesz.
     const uint64_t tlsFileEnd=hasTdataSection?tlsFileOff+tls.size():tlsFileOff;
     const uint64_t tbssFileOff=hasTbssSection?alignUp(tlsFileEnd,kTlsBlockAlign):tlsFileEnd;
+    // tlsMemEnd is an offset in the same space as the file offsets and is also
+    // the distance from `base` to the end of the thread-local block in memory.
+    // Addresses add base; sizes subtract the segment's file offset.
     const uint64_t tlsMemEnd=hasTbssSection?tbssFileOff+tbssSize:tlsFileEnd;
+    const uint64_t bssVaddr=hasTlsSection?base+alignUp(tlsMemEnd,bssAlign):dataVaddr+data.size();
+    const uint64_t dataMemEnd=hasTlsSection?(bssSize>0?bssVaddr+bssSize:base+tlsMemEnd):dataVaddr+data.size()+bssSize;
     // v0.23.32-dev: .debug_info and .debug_abbrev, numbered after .debug_line.
     const bool hasDebugLine=!debugLine.empty();
     const bool hasDebugInfo=!debugInfo.empty();
@@ -5948,7 +6091,7 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     uint16_t idxTdata=0;if(hasTdataSection)idxTdata=next++; // .tdata: the initialized part of the thread-local block
     uint16_t idxTbss=0;if(hasTbssSection)idxTbss=next++;    // v0.23.52-dev: .tbss, the zeroed tail (no file bytes)
     const uint16_t idxText=1,idxSym=next++,idxStr=next++,idxShstr=next++,shnum=next;
-    const SymTable st=buildSymbolTable(symbols,base+off,dataVaddr,dataVaddr+data.size(),idxText,idxData,idxBss,rodataVaddr,idxRodata);
+    const SymTable st=buildSymbolTable(symbols,base+off,dataVaddr,bssVaddr,idxText,idxData,idxBss,rodataVaddr,idxRodata);
     const std::string shstr(std::string("\0.text",6)+(hasRodataSection?std::string("\0.rodata",8):std::string())
         +(hasDataSection?std::string("\0.data",6):std::string())+(hasBssSection?std::string("\0.bss",5):std::string())+(hasTdataSection?std::string("\0.tdata",7):std::string())+(hasTbssSection?std::string("\0.tbss",6):std::string())+std::string("\0.symtab",8)
         +std::string("\0.strtab",8)+std::string("\0.shstrtab",10)+(hasDebugLine?std::string("\0.debug_line",12):std::string())
@@ -6010,14 +6153,15 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     Phdr p{};p.type=1;p.flags=5;p.offset=0;p.vaddr=base;p.paddr=base;p.filesz=textFileEnd;p.memsz=textFileEnd;p.align=pageSize;
     Phdr r{};if(hasRodataSection){r.type=1;r.flags=4;r.offset=rodataFileOff;r.vaddr=rodataVaddr;r.paddr=rodataVaddr;r.filesz=rodata.size();r.memsz=rodata.size();r.align=pageSize;}
     Phdr d{};if(hasData){d.type=1;d.flags=6;d.offset=dataFileOff;d.vaddr=dataVaddr;d.paddr=dataVaddr;
-        // v0.23.51-dev: the thread-local block lives in this PT_LOAD, after the
-        // (zero-filled) .bss gap, so its file size reaches the end of .tdata.
+        // v0.23.51-dev: the thread-local block lives in this PT_LOAD, after
+        // the .data bytes, so its file size reaches the end of .tdata.
         // v0.23.52-dev: .tbss is past that, and is the reason memsz now runs past
         // filesz — the kernel zeroes that tail when it maps the segment, which is
         // what makes a zero-initialized thread-local read as zero in a fresh
-        // thread. A static image has no loader to do it.
+        // thread. A static image has no loader to do it. .bss follows the whole
+        // TLS block, so it is part of memsz and not of filesz too.
         d.filesz=hasTlsSection?(tlsFileEnd-dataFileOff):data.size();
-        d.memsz=hasTlsSection?(tlsMemEnd-dataFileOff):data.size()+bssSize;
+        d.memsz=dataMemEnd-dataVaddr;
         d.align=pageSize;}
     // v0.23.51-dev: the thread-local storage segment. One copy is mapped per
     // thread; main's entry stub points TPIDR_EL0 at its base (tlsVaddr).
@@ -6030,7 +6174,7 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     sh[idxText].name=nameAt(".text");sh[idxText].type=1;sh[idxText].flags=0x6;sh[idxText].addr=base+off;sh[idxText].offset=off;sh[idxText].size=text.size();sh[idxText].addralign=4;
     if(hasRodataSection){Shdr& e=sh[idxRodata];e.name=nameAt(".rodata");e.type=1;e.flags=0x2;e.addr=rodataVaddr;e.offset=rodataFileOff;e.size=rodata.size();e.addralign=rodataAlign;}
     if(hasDataSection){Shdr& e=sh[idxData];e.name=nameAt(".data");e.type=1;e.flags=0x3;e.addr=dataVaddr;e.offset=dataFileOff;e.size=data.size();e.addralign=dataAlign;}
-    if(hasBssSection){Shdr& e=sh[idxBss];e.name=nameAt(".bss");e.type=8;e.flags=0x3;e.addr=dataVaddr+data.size();e.offset=tailStart;e.size=bssSize;e.addralign=bssAlign;}
+    if(hasBssSection){Shdr& e=sh[idxBss];e.name=nameAt(".bss");e.type=8;e.flags=0x3;e.addr=bssVaddr;e.offset=tailStart;e.size=bssSize;e.addralign=bssAlign;}
     if(hasTdataSection){Shdr& e=sh[idxTdata];e.name=nameAt(".tdata");e.type=1;e.flags=0x1|0x2|0x400;e.addr=tlsVaddr;e.offset=tlsFileOff;e.size=tls.size();e.addralign=tlsAlign;}
     if(hasTbssSection){Shdr& e=sh[idxTbss];e.name=nameAt(".tbss");e.type=8;e.flags=0x1|0x2|0x400;e.addr=base+tbssFileOff;e.offset=tailStart;e.size=tbssSize;e.addralign=tlsAlign;}
     {Shdr& e=sh[idxSym];e.name=nameAt(".symtab");e.type=2;e.offset=symOff;e.size=symSize;e.link=idxStr;e.info=st.syms.size()>1?1u:0u;e.addralign=8;e.entsize=sizeof(Sym);}
@@ -6128,6 +6272,7 @@ struct Sema {
         // storage type Ty::Ptr, so an indirect call can check arity/argument
         // types and pick the right staging width and return width.
         FuncSig funcSig; bool isFunc=false; };
+    unsigned typeDepth=0;
     const std::map<std::string,size_t>& arities;
     const std::set<std::string>& globalNames;
     const std::set<std::string>& externFunctions;
@@ -6579,6 +6724,7 @@ struct Sema {
         return t;
     }
     Ty typeOf(const Expr& e){
+        RecursionGuard depthGuard(typeDepth,2048,"expression");
         switch(e.k){
             case Expr::Num:
                 if(e.boolLit) return Ty::Bool;
@@ -6795,8 +6941,11 @@ struct Sema {
                 const Ty inner=typeOf(*e.a);
                 if(inner!=Ty::Ptr)throw Error(loc(e.line,e.col,"dereference requires a ptr expression"));
                 // *p on a ptr<S> is the struct itself, as in C — which is what
-                // makes `(*p).f` and `p.f` the same read.
-                return tyIsPtrToStruct(inner)?Ty::ofStruct(inner.sid):Ty::I32;
+                // makes `(*p).f` and `p.f` the same read. A strided pointer
+                // answers its element type, matching Codegen's width.
+                if(tyIsPtrToStruct(inner))return Ty::ofStruct(inner.sid);
+                if(tyIsPtrToElem(inner))return ptrElemType(inner);
+                return Ty::I32;
             }
             case Expr::Neg:
                 if(typeOf(*e.a)==Ty::Ptr)throw Error(loc(e.line,e.col,"pointer arithmetic is not supported yet"));
@@ -7255,6 +7404,14 @@ struct Sema {
                     } else if(b->ty.k==Ty::Enum||actual.k==Ty::Enum){
                         if(!tyAssignable(b->ty,actual,*s.expr))
                             throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
+                    } else {
+                        // A constant that does not fit the destination is an
+                        // error here too, not a silent low-byte store: the same
+                        // rule Let and global initialization already apply
+                        // (v0.23.61-dev).
+                        int64_t v=0;
+                        if(constantInteger(*s.expr,v)&&!initializerFits(b->ty,*s.expr,v))
+                            throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(b->ty)+": "+s.name+" ("+std::to_string(v)+")"));
                     }
                 } else if(globalNames.count(s.name)){
                     if(arrayGlobals.count(s.name))throw Error(loc(s.line,s.col,"cannot assign to an array as a whole: "+s.name));
@@ -7264,12 +7421,25 @@ struct Sema {
                     else if(want==Ty::Bool){
                         if(actual!=Ty::Bool&&!isBoolConstant(*s.expr))
                             throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected bool)"));
-                    } else if(actual==Ty::Bool){
-                        throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected i32)"));
                     // v0.23.61-dev: enum nominal isolation on global assignment.
                     } else if(want.k==Ty::Enum||actual.k==Ty::Enum){
                         if(!tyAssignable(want,actual,*s.expr))
                             throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
+                    } else if(want==Ty::Ptr){
+                        // v0.23.61-dev: the global branch used to fall through
+                        // here, so `g = &x` stored a truncated address and
+                        // `g = 12345` turned an integer into a pointer. Mirror
+                        // the local rule.
+                        if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))
+                            throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected ptr)"));
+                    } else if(actual==Ty::Bool){
+                        throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected i32)"));
+                    } else if(actual==Ty::Ptr){
+                        throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
+                    } else {
+                        int64_t v=0;
+                        if(constantInteger(*s.expr,v)&&!initializerFits(want,*s.expr,v))
+                            throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(want)+": "+s.name+" ("+std::to_string(v)+")"));
                     }
                 } else throw Error(loc(s.line,s.col,"assignment to unknown variable: "+s.name));
                 return;
@@ -7757,7 +7927,7 @@ struct DebugLineBlob {
     std::vector<uint64_t> patchSites;   // byte offset of each 8-byte address field
 };
 static void dbgPatchAddress(std::vector<uint8_t>& bytes,uint64_t site,uint64_t value){
-    if(site+8>bytes.size())throw Error("internal error: .debug_line address patch site is out of bounds");
+    if(site>bytes.size()||bytes.size()-site<8)throw Error("internal error: .debug_line address patch site is out of bounds");
     for(int i=0;i<8;++i)bytes[(size_t)site+(size_t)i]=uint8_t(value>>(8*i));
 }
 // Rows are (text offset, 1-based source line), ascending in address.
@@ -8313,7 +8483,13 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     auto align8=[](uint64_t n){return (n+7u)&~uint64_t(7u);};
     const uint64_t textOff=align8(sizeof(Ehdr)),textSize=L.ins.size()*4;
     uint64_t dataAlign=4,bssAlign=4;
-    for(const auto& g:globals){if(g.external)continue;const uint64_t a=std::max<uint64_t>(g.align<4?4:g.align,tySize(g.ty));if((tyIs64(g.ty)?g.wideInit==0:g.init==0)){if(a>bssAlign)bssAlign=a;}else{if(a>dataAlign)dataAlign=a;}}
+    for(const auto& g:globals){if(g.external)continue;
+        // v0.23.61-dev: the section alignment is the global's natural alignment,
+        // never its size. Using tySize here made a 24-byte struct produce
+        // sh_addralign=24 (not a power of two), which is not a legal ELF
+        // alignment and was rejected when this object was read back.
+        const uint64_t a=g.align<4?4:g.align;
+        if((tyIs64(g.ty)?g.wideInit==0:g.init==0)){if(a>bssAlign)bssAlign=a;}else{if(a>dataAlign)dataAlign=a;}}
     const uint64_t dataOff=hasData?alignUp(textOff+textSize,dataAlign>8?dataAlign:8):0;
     const uint64_t rodataOff=hasRodata?alignUp((hasData?dataOff+L.data.size():textOff+textSize),1):0;
     const uint64_t afterLast=hasRodata?rodataOff+L.rodata.size():(hasData?dataOff+L.data.size():textOff+textSize);
@@ -8383,6 +8559,11 @@ uint64_t checkedEnd(uint64_t off,uint64_t size,uint64_t total,const char* what){
     if(off>total||size>total-off) throw Error(std::string("malformed object: ")+what+" is out of bounds");
     return off+size;
 }
+// Section alignment is used to pad merge buffers, so it has to be a sane power
+// of two. A value like 2^63 would make the padding loop try to zero that many
+// bytes; ELF requires a power of two anyway, and no real input needs more than
+// a page.
+static bool validSectionAlign(uint64_t a){return a>=1&&a<=65536&&(a&(a-1))==0;}
 std::string sectionName(const std::vector<uint8_t>& file,const Shdr& shstr,uint32_t offset){
     checkedEnd(shstr.offset,shstr.size,file.size(),"section-name table");
     if(offset>=shstr.size)throw Error("malformed object: section name offset is out of bounds");
@@ -8480,16 +8661,17 @@ ParsedObject parseObject(const std::string& input){
     if(text.type!=1||(text.flags&0x6)!=0x6||text.addralign<4||text.size==0||text.size%4)throw Error(input+": unsupported .text section attributes");
     if(sym.type!=2||sym.entsize!=sizeof(Sym)||sym.size%sizeof(Sym)||sym.link!=(uint32_t)strIndex||sym.info>sym.size/sizeof(Sym))throw Error(input+": malformed or unsupported symbol table");
     if(str.type!=3)throw Error(input+": .strtab must be a string table");
-    if(result.dataIndex>=0){const Shdr& d=sections[result.dataIndex];if(d.type!=1||(d.flags&0x3)!=0x3||d.addralign<4||d.size%4||d.size==0)throw Error(input+": unsupported .data section attributes");result.dataAlign=d.addralign;result.data.assign(file.begin()+d.offset,file.begin()+d.offset+d.size);}
-    if(result.rodataIndex>=0){const Shdr& r=sections[result.rodataIndex];if(r.type!=1||(r.flags&0x2)==0||(r.flags&0x1)!=0||r.size==0)throw Error(input+": unsupported .rodata section attributes");result.rodataAlign=r.addralign<1?1:r.addralign;result.rodata.assign(file.begin()+r.offset,file.begin()+r.offset+r.size);}
-    if(result.bssIndex>=0){const Shdr& b=sections[result.bssIndex];if(b.type!=8||(b.flags&0x3)!=0x3||b.addralign<4||b.size%4||b.size==0)throw Error(input+": unsupported .bss section attributes");result.bssAlign=b.addralign;result.bssSize=b.size;}
-    if(result.tlsIndex>=0){const Shdr& t=sections[result.tlsIndex];if(t.type!=1||(t.flags&0x2u)==0||(t.flags&0x400u)==0||t.addralign<4||t.size%4)throw Error(input+": unsupported .tdata section attributes");result.tdataAlign=t.addralign<4?16:t.addralign;result.tdata.assign(file.begin()+t.offset,file.begin()+t.offset+t.size);}
+    if(result.dataIndex>=0){const Shdr& d=sections[result.dataIndex];if(d.type!=1||(d.flags&0x3)!=0x3||!validSectionAlign(d.addralign)||d.addralign<4||d.size%4||d.size==0)throw Error(input+": unsupported .data section attributes");result.dataAlign=d.addralign;result.data.assign(file.begin()+d.offset,file.begin()+d.offset+d.size);}
+    if(result.rodataIndex>=0){const Shdr& r=sections[result.rodataIndex];if(r.type!=1||(r.flags&0x2)==0||(r.flags&0x1)!=0||r.size==0||(r.addralign!=0&&!validSectionAlign(r.addralign)))throw Error(input+": unsupported .rodata section attributes");result.rodataAlign=r.addralign<1?1:r.addralign;result.rodata.assign(file.begin()+r.offset,file.begin()+r.offset+r.size);}
+    if(result.bssIndex>=0){const Shdr& b=sections[result.bssIndex];if(b.type!=8||(b.flags&0x3)!=0x3||!validSectionAlign(b.addralign)||b.addralign<4||b.size%4||b.size==0)throw Error(input+": unsupported .bss section attributes");result.bssAlign=b.addralign;result.bssSize=b.size;}
+    if(result.tlsIndex>=0){const Shdr& t=sections[result.tlsIndex];if(t.type!=1||(t.flags&0x2u)==0||(t.flags&0x400u)==0||!validSectionAlign(t.addralign)||t.addralign<4||t.size%4)throw Error(input+": unsupported .tdata section attributes");result.tdataAlign=t.addralign<4?16:t.addralign;result.tdata.assign(file.begin()+t.offset,file.begin()+t.offset+t.size);}
     // v0.23.52-dev: .tbss must be SHT_NOBITS — that is the whole point of it, it
     // is the part of the per-thread block that has no bytes to carry. An object
     // whose .tbss were PROGBITS would be claiming file bytes for zeroes.
-    if(result.tbssIndex>=0){const Shdr& t=sections[result.tbssIndex];if(t.type!=8||(t.flags&0x2u)==0||(t.flags&0x400u)==0||t.addralign<4||t.size%4)throw Error(input+": unsupported .tbss section attributes");result.tbssSize=t.size;}
+    if(result.tbssIndex>=0){const Shdr& t=sections[result.tbssIndex];if(t.type!=8||(t.flags&0x2u)==0||(t.flags&0x400u)==0||!validSectionAlign(t.addralign)||t.addralign<4||t.size%4)throw Error(input+": unsupported .tbss section attributes");result.tbssSize=t.size;}
     checkedEnd(text.offset,text.size,file.size(),".text data");result.text.assign(file.begin()+text.offset,file.begin()+text.offset+text.size);
     std::vector<std::string> namesByIndex;
+    bool tlsMarkerSeen = false;
     for(uint64_t off=0;off<sym.size;off+=sizeof(Sym)){Sym s{};std::memcpy(&s,file.data()+sym.offset+off,sizeof s);std::string name=symbolName(file,str,s.name);namesByIndex.push_back(name);ParsedSymbol ps{name,s.value,s.size,s.info,s.shndx};result.symbols.push_back(ps);
         if((s.info>>4)==1&&!name.empty()&&s.shndx!=0){
             uint16_t shndx=s.shndx;
@@ -8517,10 +8699,30 @@ ParsedObject parseObject(const std::string& input){
                 if((s.info&0x0f)!=1)throw Error(input+": global symbol in .tbss must be an object: "+name);
                 if(s.value%4||s.size==0||s.size%4||s.value>result.tbssSize||s.size>result.tbssSize-s.value)throw Error(input+": thread-local object must be defined and in bounds in .tbss: "+name);
             } else throw Error(input+": global symbol in an unsupported section: "+name);
+            // The thread-local block marker is an Aster convention, not a
+            // symbol the merge keeps: every input object has one and the
+            // link drops the copies. Accept only the shape codegen emits, so
+            // dropping it cannot also hide a malformed or misplaced marker.
+            if(name=="__aster_tls_block"){
+                if(tlsMarkerSeen)throw Error(input+": duplicate __aster_tls_block marker");
+                tlsMarkerSeen=true;
+                const bool inTdata=result.tlsIndex>=0&&shndx==(uint16_t)result.tlsIndex;
+                const bool inTbss=result.tbssIndex>=0&&shndx==(uint16_t)result.tbssIndex;
+                if(!inTdata&&!inTbss)throw Error(input+": __aster_tls_block must name .tdata or .tbss");
+                if(s.value!=0)throw Error(input+": __aster_tls_block must be at offset 0");
+                const uint64_t extent=inTdata?result.tdata.size():result.tbssSize;
+                if(s.size!=extent)throw Error(input+": __aster_tls_block must span its thread-local section");
+            }
+        } else if((s.info>>4)==2&&!name.empty()&&s.shndx!=0){
+            // STB_WEAK definitions used to be skipped by the merge, which then
+            // either failed later with "undefined symbol" or silently used a
+            // different definition. The link has no weak-resolution rules, so
+            // say that instead of pretending the symbol is not there.
+            throw Error(input+": weak symbol definitions are not supported: "+name);
         }
     }
     if(relaIndex>=0){const Shdr& rela=sections[relaIndex];if(rela.type!=4||rela.entsize!=sizeof(Rela)||rela.size%sizeof(Rela)||rela.link!=(uint32_t)symIndex||rela.info!=(uint32_t)result.textIndex)throw Error(input+": malformed .rela.text section");
-        for(uint64_t off=0;off<rela.size;off+=sizeof(Rela)){Rela r{};std::memcpy(&r,file.data()+rela.offset+off,sizeof r);uint32_t si=(uint32_t)(r.info>>32),type=(uint32_t)r.info;if(type!=283&&type!=275&&type!=277&&type!=kRelTlsOff&&type!=kRelTlsTprel)throw Error(input+": unsupported AArch64 relocation type "+std::to_string(type));if(si>=namesByIndex.size()||namesByIndex[si].empty())throw Error(input+": relocation references an invalid symbol");        if(r.offset+4>result.text.size()||r.offset%4)throw Error(input+": relocation offset is out of bounds or unaligned");result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}
+        for(uint64_t off=0;off<rela.size;off+=sizeof(Rela)){Rela r{};std::memcpy(&r,file.data()+rela.offset+off,sizeof r);uint32_t si=(uint32_t)(r.info>>32),type=(uint32_t)r.info;if(type!=283&&type!=275&&type!=277&&type!=kRelTlsOff){if(type==kRelTlsTprel)throw Error(input+": R_AARCH64_TLS_TPREL64 in an input object is not supported; Aster emits its own local-exec sequence");throw Error(input+": unsupported AArch64 relocation type "+std::to_string(type));}if(si>=namesByIndex.size()||namesByIndex[si].empty())throw Error(input+": relocation references an invalid symbol");        if(r.offset>result.text.size()||result.text.size()-r.offset<4||r.offset%4)throw Error(input+": relocation offset is out of bounds or unaligned");result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}
     }
     if(result.debugLineIndex>=0){
         const Shdr& dl=sections[result.debugLineIndex];
@@ -8537,7 +8739,7 @@ ParsedObject parseObject(const std::string& input){
             if(si>=namesByIndex.size()||namesByIndex[si].empty())throw Error(input+": relocation references an invalid symbol");
             // An address field sits wherever the variable-length header put it,
             // so there is no alignment to insist on — only bounds.
-            if(r.offset+8>result.debugLine.size())throw Error(input+": .debug_line relocation offset is out of bounds");
+            if(r.offset>result.debugLine.size()||result.debugLine.size()-r.offset<8)throw Error(input+": .debug_line relocation offset is out of bounds");
             result.debugLinePatches.push_back(r.offset);}
         if(result.debugLinePatches.empty())throw Error(input+": malformed .debug_line: no relocatable address");
     }
@@ -8564,7 +8766,7 @@ ParsedObject parseObject(const std::string& input){
         for(uint64_t off=0;off<rela.size;off+=sizeof(Rela)){Rela r{};std::memcpy(&r,file.data()+rela.offset+off,sizeof r);uint32_t si=(uint32_t)(r.info>>32),type=(uint32_t)r.info;
             if(type!=kRelAbs64)throw Error(input+": unsupported relocation type "+std::to_string(type)+" in .rela.debug_info");
             if(si>=namesByIndex.size()||namesByIndex[si].empty())throw Error(input+": relocation references an invalid symbol");
-            if(r.offset+8>result.debugInfo.size())throw Error(input+": .debug_info relocation offset is out of bounds");
+            if(r.offset>result.debugInfo.size()||result.debugInfo.size()-r.offset<8)throw Error(input+": .debug_info relocation offset is out of bounds");
             result.debugInfoPatches.push_back({r.offset,namesByIndex[si],r.addend});}
     }
     // v0.23.33-dev: .eh_frame, read back as a CIE plus one FDE per function.
@@ -8586,7 +8788,7 @@ ParsedObject parseObject(const std::string& input){
         for(uint64_t off=0;off<rela.size;off+=sizeof(Rela)){Rela r{};std::memcpy(&r,file.data()+rela.offset+off,sizeof r);uint32_t si=(uint32_t)(r.info>>32),type=(uint32_t)r.info;
             if(type!=kRelPrel32)throw Error(input+": unsupported relocation type "+std::to_string(type)+" in .rela.eh_frame");
             if(si>=namesByIndex.size()||namesByIndex[si].empty())throw Error(input+": relocation references an invalid symbol");
-            if(r.offset+4>ehFrameBytes.size())throw Error(input+": .eh_frame relocation offset is out of bounds");
+            if(r.offset>ehFrameBytes.size()||ehFrameBytes.size()-r.offset<4)throw Error(input+": .eh_frame relocation offset is out of bounds");
             ehRelocs[r.offset]={namesByIndex[si],r.addend};}
     }
     if(result.ehFrameIndex>=0){
@@ -8638,7 +8840,18 @@ void resolveRelocations(std::vector<uint8_t>& text,const std::vector<LinkPending
             throw Error("undefined global variable symbol '"+r.symbol+"'");
         }
         const int kind=symbolKind.at(r.symbol);
-        uint64_t target=it->second+uint64_t(r.addend);
+        // Adding a signed addend to an unsigned address must not wrap: a
+        // wrapped target would sail past later bounds checks (ADD_LO12 only
+        // examines the low 12 bits) and patch the wrong address.
+        uint64_t target=it->second;
+        if(r.addend>=0){
+            if(target>UINT64_MAX-(uint64_t)r.addend)throw Error("relocation addend overflows the address of '"+r.symbol+"'");
+            target+=(uint64_t)r.addend;
+        }else{
+            const uint64_t magnitude=(uint64_t)(-(r.addend+1))+1;   // safe for INT64_MIN
+            if(target<magnitude)throw Error("relocation addend underflows the address of '"+r.symbol+"'");
+            target-=magnitude;
+        }
         uint32_t ins=0;for(int i=0;i<4;++i)ins|=uint32_t(text[(size_t)r.patch+i])<<(i*8);
         if(r.type==kRelTlsOff){
             // v0.23.51-dev: fill the TLS offset into the MOVZ/MOVK pair the
@@ -8670,10 +8883,12 @@ void resolveRelocations(std::vector<uint8_t>& text,const std::vector<LinkPending
             if(pageDelta<-(int64_t(1)<<20)||pageDelta>=(int64_t(1)<<20))throw Error("AArch64 ADRP relocation out of range for '"+r.symbol+"'");
             uint32_t immlo=uint32_t(pageDelta)&0x3u,immhi=(uint32_t(pageDelta)>>2)&0x7ffffu;
             ins=(ins&~((0x3u<<29)|(0x7ffffu<<5)))|(immlo<<29)|(immhi<<5);
-        } else {
+        } else if(r.type==277) {
             if(kind==0&&!funcAddrDirect)throw Error("global address relocation references a function symbol '"+r.symbol+"'");
             if((ins&0xff800000u)!=0x91000000u)throw Error("low-12 relocation does not point to an ADD immediate instruction");
             ins=(ins&~(0xfffu<<10))|(uint32_t(target&0xfffu)<<10);
+        } else {
+            throw Error("unsupported relocation type "+std::to_string(r.type)+" for '"+r.symbol+"'");
         }
         for(int i=0;i<4;++i)text[(size_t)r.patch+i]=uint8_t(ins>>(i*8));
     }
@@ -8809,14 +9024,17 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t dynOff=alignUp(gotVaddr+gotSize,8),dynSize=uint64_t(kDynEntries)*sizeof(Elf64Dyn);
     const uint64_t seg1End=dynOff+dynSize;
     const uint64_t relroEnd=alignUp(seg1End,pageSize);
-    const uint64_t bssVaddr=relroEnd;
-    // v0.23.52-dev: the thread-local block, past .bss and outside RELRO. .tdata
-    // is SHF_WRITE — it is the initializer template for one thread's copy, and a
-    // running thread writes its own — and RELRO is a read-only region, so the
-    // block cannot go inside it. .tbss follows .tdata and owns no file bytes.
-    const uint64_t tdataVaddr=hasTls?alignUp(bssVaddr+bssSize,kTlsBlockAlign):0,tdataSize=tls.size();
-    const uint64_t tbssVaddr=alignUp(tdataVaddr+tdataSize,kTlsBlockAlign);
-    const uint64_t tlsMemEnd=hasTbss?tbssVaddr+tbssSize:(hasTls?tdataVaddr+tdataSize:bssVaddr+bssSize);
+    // v0.23.52-dev: the thread-local block is outside RELRO because .tdata is
+    // SHF_WRITE — it is the initializer template for one thread's copy, and a
+    // running thread writes its own. It goes directly after the RELRO page,
+    // before .bss, so the writable PT_LOAD's file size stops at .tdata instead
+    // of spanning a zero-filled .bss. Order: RELRO | .tdata | .tbss | .bss.
+    const uint64_t tdataVaddr=hasTls?alignUp(relroEnd,kTlsBlockAlign):0,tdataSize=tls.size();
+    const uint64_t tbssVaddr=hasTls?alignUp(tdataVaddr+tdataSize,kTlsBlockAlign):0;
+    const uint64_t tlsMemEnd=hasTbss?tbssVaddr+tbssSize:(hasTls?tdataVaddr+tdataSize:relroEnd);
+    const uint64_t bssVaddr=hasTls?alignUp(tlsMemEnd,8):relroEnd;
+    const uint64_t bssMemEnd=bssVaddr+bssSize;
+    const uint64_t dataMemEnd=hasTls?(bssSize>0?bssMemEnd:tlsMemEnd):bssMemEnd;
     const uint64_t textVaddr=textOff;
     // .dynsym values are virtual addresses, not .text-relative offsets.
     for(size_t i=0;i<exports.size();++i)dynsym[i+1].value=textVaddr+exports[i].offset;
@@ -9060,7 +9278,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // thread-local block. .tdata extends its filesz; .tbss extends only its memsz,
     // and the loader zeroes that tail for every thread it gives a block to.
     Phdr p1{};p1.type=1;p1.flags=6;p1.offset=dataVaddr;p1.vaddr=dataVaddr;p1.paddr=dataVaddr;
-    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=tlsMemEnd-dataVaddr;p1.align=pageSize;
+    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=dataMemEnd-dataVaddr;p1.align=pageSize;
     Phdr p2{};p2.type=2;p2.flags=6;p2.offset=dynOff;p2.vaddr=dynOff;p2.paddr=dynOff;p2.filesz=dynSize;p2.memsz=dynSize;p2.align=8;
     // v0.23.52-dev: PT_TLS. p_filesz is the part with bytes, p_memsz the whole
     // block; the difference is .tbss, zeroed per thread. p_align is what the
@@ -9377,13 +9595,17 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const uint64_t dynSize=dyn.size()*sizeof(Elf64Dyn);
     const uint64_t seg1End=dynOff+dynSize;
     const uint64_t relroEnd=alignUp(seg1End,pageSize);
-    const uint64_t bssVaddr=relroEnd;
-    // v0.23.52-dev: the thread-local block, past .bss and outside RELRO. .tdata is
-    // SHF_WRITE — a running thread writes its own copy — and RELRO is read-only,
-    // so the block cannot go inside it. .tbss follows and owns no file bytes.
-    const uint64_t tdataVaddr=hasTls?alignUp(bssVaddr+spec.bssSize,kTlsBlockAlign):0,tdataSize=spec.tls.size();
-    const uint64_t tbssVaddr=alignUp(tdataVaddr+tdataSize,kTlsBlockAlign);
-    const uint64_t tlsMemEnd=hasTbss?tbssVaddr+spec.tbssSize:(hasTls?tdataVaddr+tdataSize:bssVaddr+spec.bssSize);
+    // v0.23.52-dev: the thread-local block is outside RELRO because .tdata is
+    // SHF_WRITE — a running thread writes its own copy. It goes directly after
+    // the RELRO page, before .bss: the file's writable PT_LOAD must not stretch
+    // across a zero-filled .bss to reach it, which would write the .bss out as
+    // padding and make the file grow with it. Order: RELRO | .tdata | .tbss | .bss.
+    const uint64_t tdataVaddr=hasTls?alignUp(relroEnd,kTlsBlockAlign):0,tdataSize=spec.tls.size();
+    const uint64_t tbssVaddr=hasTls?alignUp(tdataVaddr+tdataSize,kTlsBlockAlign):0;
+    const uint64_t tlsMemEnd=hasTbss?tbssVaddr+spec.tbssSize:(hasTls?tdataVaddr+tdataSize:relroEnd);
+    const uint64_t bssVaddr=hasTls?alignUp(tlsMemEnd,8):relroEnd;
+    const uint64_t bssMemEnd=bssVaddr+spec.bssSize;
+    const uint64_t dataMemEnd=hasTls?(spec.bssSize>0?bssMemEnd:tlsMemEnd):bssMemEnd;
 
     // ---- .got.plt / .got and the dynamic relocations -----------------------------------------
     std::vector<uint8_t> gotPlt((size_t)gotPltSize,0),got((size_t)gotSize,0);
@@ -9614,7 +9836,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     // v0.23.52-dev: the writable PT_LOAD reaches past .bss to the end of the
     // thread-local block: .tdata extends its filesz, .tbss only its memsz.
     Phdr p1{};p1.type=1;p1.flags=6;p1.offset=dataVaddr;p1.vaddr=dataVaddr;p1.paddr=dataVaddr;
-    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=tlsMemEnd-dataVaddr;p1.align=pageSize;
+    p1.filesz=(hasTdata?tdataVaddr+tdataSize:relroEnd)-dataVaddr;p1.memsz=dataMemEnd-dataVaddr;p1.align=pageSize;
     Phdr p2{};p2.type=2;p2.flags=6;p2.offset=dynOff;p2.vaddr=dynOff;p2.paddr=dynOff;p2.filesz=dynSize;p2.memsz=dynSize;p2.align=8;
     // v0.23.52-dev: PT_TLS, after PT_DYNAMIC and before PT_GNU_RELRO — the region
     // it describes is deliberately outside RELRO, because .tdata is SHF_WRITE.
@@ -9753,8 +9975,8 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         // v0.23.52-dev: `__aster_tls_block` is the marker a static image reads
         // PT_TLS's size from. A shared object's PT_TLS is sized by the writer
         // from the merged block, so the marker is dropped rather than becoming
-        // a stray thread-local named "block".
-        auto isTlsMarker=[](const std::string& n){return n=="__aster_tls_block";};
+        // a stray thread-local named "block". parseObject has already checked
+        // that it has the shape codegen emits.
         for(const auto& s:obj.symbols){if((s.info>>4)!=1||s.name.empty()||s.shndx==0)continue;Def def{};
             if(s.shndx==(uint16_t)obj.textIndex){def.kind=0;def.off=textBase+s.value;def.size=s.size;}
             else if(obj.dataIndex>=0&&s.shndx==(uint16_t)obj.dataIndex){def.kind=1;def.off=dataBase+s.value;def.size=s.size;}
@@ -9766,7 +9988,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
             else if(obj.tlsIndex>=0&&s.shndx==(uint16_t)obj.tlsIndex){def.kind=4;def.off=tlsBase+s.value;def.size=s.size;}
             else if(obj.tbssIndex>=0&&s.shndx==(uint16_t)obj.tbssIndex){def.kind=5;def.off=mergedTbss+s.value;def.size=s.size;}
             else throw Error(input+": global symbol in an unsupported section: "+s.name);
-            if(isTlsMarker(s.name))continue;
+            if(s.name=="__aster_tls_block")continue;   // per-object block marker, validated above
             if(s.name=="_start")throw Error(input+": a shared object must not define _start; build the object with --pic");
             std::string defName=remapPrivateStringSymbol(s.name,i);
             // A PIC object carries a thread-local as `__aster_tls_<name>`; the
@@ -9790,7 +10012,12 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
             if(mergedDebugAbbrev.empty())mergedDebugAbbrev=obj.debugAbbrev;
         }
         if(!obj.ehFrameFdes.empty()){
+            // Every FDE is rebuilt against one CIE at the start of the merged
+            // section. That is only correct while the inputs share a CIE: the
+            // CIE carries the initial unwind rules and code alignment, so an
+            // FDE from a different one cannot be attached to this header.
             if(ehCie.empty())ehCie=obj.ehFrameCie;
+            else if(ehCie!=obj.ehFrameCie)throw Error(input+": .eh_frame CIE differs from the first input object; this link supports one CIE");
             for(const auto& f:obj.ehFrameFdes)ehEntries.push_back({remapPrivateStringSymbol(f.symbol,i),f.addend,f.range,f.cfi,i});
         }
         mergedText.insert(mergedText.end(),obj.text.begin(),obj.text.end());
@@ -9948,10 +10175,22 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
             // object, so the block-aligned .tbss base is added after the loop.
             else if(obj.tbssIndex>=0&&s.shndx==(uint16_t)obj.tbssIndex){def.kind=5;def.off=mergedTbss+s.value;def.size=s.size;}
             else throw Error(input+": global symbol in an unsupported section: "+s.name);
+            // Every object carries its own copy of the block marker. The
+            // merged image has one block starting at tlsVaddr, so keep a
+            // single definition at offset 0 for the main object's entry stub
+            // to resolve and drop the per-object copies. parseObject checked
+            // their shape. Kind 4 makes the lookup below use tlsVaddr even
+            // when the block is entirely .tbss.
+            if(s.name=="__aster_tls_block"){definitions.emplace("__aster_tls_block",Def{0,4,s.size});continue;}
             std::string defName=s.name;
             if(defName==kInitSymbol){defName=initNameByInput.empty()?std::string(kInitSymbol):std::string(kInitSymbol)+"$"+std::to_string(initNameByInput.size());initNameByInput[i]=defName;}
             auto inserted=definitions.emplace(defName,def);if(!inserted.second)throw Error("duplicate global symbol '"+defName+"' across input objects");
-            if(s.name=="_start"){++startCount;entryOffset=textBase+s.value;}
+            if(s.name=="_start"){
+                // The entry point is an address in the merged .text image, so
+                // a same-named object in .data/.bss must not be counted as one.
+                if(def.kind!=0)throw Error(input+": _start must be a function defined in .text");
+                ++startCount;entryOffset=textBase+s.value;
+            }
         }
         for(const auto& r:obj.relocs)pending.push_back({textBase+r.offset,r.symbol,r.addend,r.type,i});
         if(!obj.debugLine.empty()){
@@ -9972,7 +10211,11 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
             if(mergedDebugAbbrev.empty())mergedDebugAbbrev=obj.debugAbbrev;
         }
         if(!obj.ehFrameFdes.empty()){
+            // See the shared-object link: one merged section can carry only
+            // one CIE, so inputs that disagree have to be rejected, not
+            // silently reattached to the first object's initial rules.
             if(ehCie.empty())ehCie=obj.ehFrameCie;
+            else if(ehCie!=obj.ehFrameCie)throw Error(input+": .eh_frame CIE differs from the first input object; this link supports one CIE");
             for(const auto& f:obj.ehFrameFdes)ehEntries.push_back({f.symbol,f.addend,f.range,f.cfi,i});
         }
         mergedText.insert(mergedText.end(),obj.text.begin(),obj.text.end());
@@ -10023,12 +10266,18 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     // v0.23.52-dev: .tbss makes that "only thread-locals" case larger: the block
     // can now be entirely zero-initialized, with no .tdata bytes at all.
     if(!mergedData.empty()||mergedBss>0||!mergedTls.empty()||mergedTbss>0){uint64_t dataFileOff=alignUp(afterRodata,pageSize);dataVaddr=base+dataFileOff;bssVaddr=dataVaddr+mergedData.size();}
-    if(!mergedTls.empty()||mergedTbss>0)tlsVaddr=alignUp(bssVaddr+mergedBss,maxTlsAlign);
+    // v0.23.52-dev: the block sits between .data and .bss. Keeping .bss after
+    // the whole TLS block means the data PT_LOAD's file size stops at .tdata,
+    // so a large .bss occupies memory only instead of padding the file.
+    const bool hasTls=!mergedTls.empty()||mergedTbss>0;
+    if(hasTls)tlsVaddr=alignUp(dataVaddr+mergedData.size(),maxTlsAlign);
     // .tbss starts at the first block-aligned offset past .tdata. A static image
     // has no loader to zero it: the kernel does, as the part of the PT_LOAD that
     // lies past p_filesz — which is exactly what the memsz arithmetic below asks
     // for.
     const uint64_t tbssVaddr=alignUp(tlsVaddr+mergedTls.size(),kTlsBlockAlign);
+    const uint64_t tlsMemEnd=mergedTbss>0?tbssVaddr+mergedTbss:tlsVaddr+mergedTls.size();
+    if(hasTls)bssVaddr=alignUp(tlsMemEnd,maxBssAlign<4?4:maxBssAlign);
     std::map<std::string,uint64_t> symbolVaddr;std::map<std::string,int> symbolKind;
     for(const auto& d:definitions){uint64_t a=d.second.kind==0?textVaddr+d.second.off:d.second.kind==1?dataVaddr+d.second.off:d.second.kind==3?rodataVaddr+d.second.off:d.second.kind==4?tlsVaddr+d.second.off:d.second.kind==5?tbssVaddr+d.second.off:bssVaddr+d.second.off;symbolVaddr[d.first]=a;symbolKind[d.first]=int(d.second.kind);}
     if(hasInitEnd){symbolVaddr["__aster_init_end"]=textVaddr+initEndOff;symbolKind["__aster_init_end"]=0;}
@@ -10123,7 +10372,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "            [--label TXT] [--string NAME=VALUE] [--min-sdk N] [--target-sdk N] [--version-code N] [--version-name T]\n"
     "            [--emit-so PATH] (keep the .so compiled from .ast input)\n"
     "            [--sign-mode debug|release] [--keystore KEY] [--cert CRT]\n"
-    "            [--keystore-dir DIR] [--key-bits N] [--no-verify]\n"
+    "            [--keystore-dir DIR] [--key-bits N] [--no-verify] [--debuggable]\n"
     "  keygen     generate the project's RSA debug key + self-signed certificate\n"
     "  verify-apk check an APK's own v1 + v2 signatures (structure, digests, certificate)\n"
     "  build-apk signs with one of two keys, never with a key baked into aster:\n"
@@ -10146,7 +10395,8 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "  Keys are read as PEM or DER: PKCS#8 or PKCS#1 private keys (unencrypted) and X.509\n"
     "  certificates, so anything openssl/keytool wrote can be used directly.\n"
     "  build-apk re-verifies the APK in memory before writing it (--no-verify skips that);\n"
-    "  by default every APK is v1 + v2 dual-signed."
+    "  by default every APK is v1 + v2 dual-signed. android:debuggable is false in the\n"
+    "  manifest unless --debuggable is given, so a release build is never debuggable."
     "  --soname NAME   DT_SONAME for the shared object (default: the output file name);\n"
     "                 for build-apk with .ast input, the library's DT_SONAME\n"
 "  --bounds-check  trap on out-of-bounds array indexes at run time (off by default):\n"
@@ -10294,6 +10544,21 @@ static Big mul(const Big& a, const Big& b) {
 static std::pair<Big,Big> divmod(const Big& A, const Big& B) {
     if (cmp(B, Big()) == 0) return {Big(), Big()};
     if (cmp(A, B) < 0) return {Big(), A};
+    // A one-limb divisor is the common case in prime trial division and was
+    // the one Knuth's loop could not express: v.v[n-2] read v.v[-1] (ASan).
+    if (B.v.size() == 1) {
+        const uint64_t d = B.v[0];
+        std::vector<uint32_t> qv(A.v.size(), 0);
+        uint64_t rem = 0;
+        for (int i = (int)A.v.size() - 1; i >= 0; --i) {
+            const uint64_t cur = (rem << 32) | A.v[i];
+            qv[(size_t)i] = (uint32_t)(cur / d);
+            rem = cur % d;
+        }
+        Big q; q.v = qv; q.trim();
+        Big r; r.v = {(uint32_t)rem}; r.trim();
+        return {q, r};
+    }
     size_t n = B.v.size(), m = A.v.size() - n;
     uint32_t shift = 0; { uint32_t hi = B.v.back(); while (!(hi & 0x80000000u)) { hi <<= 1; ++shift; } }
     auto shl = [&](const Big& x) -> Big {
@@ -10325,10 +10590,13 @@ static std::pair<Big,Big> divmod(const Big& A, const Big& B) {
     }
     std::vector<uint32_t> rlimbs(n, 0); for (size_t i = 0; i < n; ++i) rlimbs[i] = u.v[i];
     std::vector<uint32_t> w = rlimbs;
-    for (size_t i = 0; i < w.size(); ++i) {
-        uint32_t low = w[i] >> shift;
-        uint32_t fromHigh = (i + 1 < w.size()) ? (w[i + 1] & ((1u << shift) - 1)) : 0;
-        w[i] = low | (fromHigh << (32 - shift));
+    // shift == 0 is already normalized; shifting by 32 would be undefined.
+    if (shift != 0) {
+        for (size_t i = 0; i < w.size(); ++i) {
+            uint32_t low = w[i] >> shift;
+            uint32_t fromHigh = (i + 1 < w.size()) ? (w[i + 1] & ((1u << shift) - 1)) : 0;
+            w[i] = low | (fromHigh << (32 - shift));
+        }
     }
     Big r; r.v = w; r.trim();
     std::vector<uint32_t> qw(q.begin(), q.end()); Big qq; qq.v = qw; qq.trim();
@@ -10346,6 +10614,13 @@ static Big halve(const Big& a) {
     Big r; r.v = w; r.trim(); return r;
 }
 static Big modExp(const Big& base, const Big& exp, const Big& m) {
+    // v0.23.61-dev: a zero modulus would divide by zero inside divmod, and an
+    // attacker-supplied key with a huge modulus/exponent would otherwise turn
+    // verify-apk into a memory/CPU sink. RSA-8192 is the largest key Aster
+    // accepts, so anything much wider than that is rejected here as well.
+    if (cmp(m, Big()) == 0) throw Error("modular exponentiation with a zero modulus");
+    if (m.v.size() > 512 || exp.v.size() > 512)
+        throw Error("modular exponentiation operand is too large");
     Big result; result.v = {1}; result.trim(); Big b = base, e = exp;
     while (cmp(e, Big()) > 0) {
         if (e.v[0] & 1) result = mod(mul(result, b), m);
@@ -10566,6 +10841,20 @@ static void rsaPublicKey(const std::vector<uint8_t>& spki, std::vector<uint8_t>&
         throw Error(what + ": malformed RSA public key");
     n = minimalBE(std::vector<uint8_t>(spki.begin() + (long)pkc[0].hdr, spki.begin() + (long)(pkc[0].hdr + pkc[0].len)));
     e = minimalBE(std::vector<uint8_t>(spki.begin() + (long)pkc[1].hdr, spki.begin() + (long)(pkc[1].hdr + pkc[1].len)));
+    // v0.23.61-dev: RSA-2048 is the floor for anything Aster signs or trusts,
+    // and RSA-8192 the ceiling (see modExp). The exponent is bounded because it
+    // drives the number of modular squarings during verification.
+    if (n.size() < 256)
+        throw Error(what + ": RSA modulus is " + std::to_string(n.size() * 8) +
+                    " bits; at least 2048 is required");
+    if (n.size() > 1024)
+        throw Error(what + ": RSA modulus is " + std::to_string(n.size() * 8) +
+                    " bits; at most 8192 is supported");
+    if ((n.back() & 1u) == 0) throw Error(what + ": RSA modulus is even");
+    if (e.empty() || e.size() > 8)
+        throw Error(what + ": RSA public exponent is missing or larger than 64 bits");
+    if ((e.back() & 1u) == 0 || (e.size() == 1 && e[0] < 3))
+        throw Error(what + ": RSA public exponent must be an odd integer >= 3");
 }
 
 // A key that is internally inconsistent signs APKs that every verifier rejects,
@@ -10979,20 +11268,51 @@ static std::string keyDirOf(const std::string& projectDir) { return projectDir +
 static std::string debugKeyPath(const std::string& projectDir) { return keyDirOf(projectDir) + "/debug.key.pem"; }
 static std::string debugCertPath(const std::string& projectDir) { return keyDirOf(projectDir) + "/debug.crt.pem"; }
 static void writeFileAtomic(const std::string& path, const std::string& data) {
-    const std::string tmp = path + ".tmp";
-    {
-        std::ofstream os(tmp, std::ios::binary);
-        if (!os) throw Error("cannot write " + tmp);
-        os.write(data.data(), (std::streamsize)data.size());
+    // v0.23.61-dev: a key file is written through a unique mkstemp file (0600,
+    // O_EXCL semantics, symlinks cannot be followed) and fsynced before the
+    // rename, so a crash or a same-directory attacker never yields a short key
+    // or a write through a planted link.
+    std::string tmpl = path + ".tmp.XXXXXX";
+    std::vector<char> name(tmpl.begin(), tmpl.end()); name.push_back('\0');
+    const int fd = ::mkstemp(name.data());
+    if (fd < 0)
+        throw Error("cannot create a temporary file next to " + path + ": " + std::strerror(errno));
+    const std::string tmp(name.data());
+    bool ok = true; int saved = 0;
+    size_t off = 0;
+    while (off < data.size()) {
+        const ssize_t n = ::write(fd, data.data() + off, data.size() - off);
+        if (n < 0) { if (errno == EINTR) continue; ok = false; saved = errno; break; }
+        if (n == 0) { ok = false; saved = EIO; break; }
+        off += (size_t)n;
     }
+    if (ok && ::fchmod(fd, 0600) != 0) { ok = false; saved = errno; }
+    if (ok && ::fsync(fd) != 0) { ok = false; saved = errno; }
+    if (::close(fd) != 0 && ok) { ok = false; saved = errno; }
+    if (!ok) { ::unlink(tmp.c_str()); throw Error("cannot write " + tmp + ": " + std::strerror(saved)); }
     // Write-then-rename: two builds racing in one project must never observe a
     // half-written key.
-    if (std::rename(tmp.c_str(), path.c_str()) != 0) throw Error("cannot move " + tmp + " into place");
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        saved = errno; ::unlink(tmp.c_str());
+        throw Error("cannot move " + tmp + " into place: " + std::strerror(saved));
+    }
+    // The rename itself is only durable once the directory entry is on disk.
+    const std::string dir = dirNameOf(path);
+    const int dfd = ::open(dir.empty() ? "." : dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd >= 0) { ::fsync(dfd); ::close(dfd); }
 }
 static void writeKeyPair(const std::string& projectDir, const SigningKey& k) {
     const std::string kd = keyDirOf(projectDir);
     if (!dirExists(kd) && mkdir(kd.c_str(), 0700) != 0 && !dirExists(kd))
         throw Error("cannot create " + kd);
+    // Refuse a symlinked .aster: writing keys through it would put them (or
+    // overwrite files) wherever the link points. Then make sure the directory
+    // really is private, whether we just made it or not.
+    struct stat st;
+    if (::lstat(kd.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+        throw Error("cannot use " + kd + ": not a real directory");
+    if (::chmod(kd.c_str(), 0700) != 0)
+        throw Error("cannot make " + kd + " private: " + std::strerror(errno));
     writeFileAtomic(debugKeyPath(projectDir), pemEncode("PRIVATE KEY", pkcs8Der(k)));
     writeFileAtomic(debugCertPath(projectDir), pemEncode("CERTIFICATE", k.certDER));
     // Both files are derived artifacts and the private key must never be
@@ -11148,22 +11468,48 @@ static std::vector<uint8_t> build(int w, int h) {
 } // namespace PNG
 
 // ---------------------------------------------------------------- resources.arsc (binary resource table)
-// A manifest cannot point at a file: `android:icon` is a resource *id*, and the
-// only place an id is mapped to a path is this table. An APK with an icon
-// therefore needs one, and Aster has to build it itself. The table carries the
-// minimum a launcher needs: one package (0x7f), one type ("drawable"), one
-// entry ("ic_launcher") whose value is the path of the PNG inside the APK.
-namespace ARSC {
-static void encLen(std::vector<uint8_t>& o, size_t n) {
-    // ResStringPool reads a two-byte length as ((first & 0x7F) << 8) | second,
-    // so the high bits go in the first byte.
-    if (n < 0x80) o.push_back((uint8_t)n);
-    else { o.push_back((uint8_t)(0x80 | ((n >> 8) & 0x7F))); o.push_back((uint8_t)(n & 0xFF)); }
+// ResStringPool's UTF-8 encoding stores two lengths ahead of each string: the
+// length in UTF-16 code units (what the framework counts characters with) and
+// the length in bytes. Both are one or two bytes, high bits first, and 0x7FFF
+// is the format's ceiling — a longer string is rejected rather than silently
+// truncated into something a reader would mis-slice.
+static size_t utf16CodeUnits(const std::string& s) {
+    size_t units = 0;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = (unsigned char)s[i];
+        uint32_t cp = 0; size_t n = 0;
+        if (c < 0x80) { cp = c; n = 1; }
+        else if ((c & 0xE0) == 0xC0) { cp = c & 0x1Fu; n = 2; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0Fu; n = 3; }
+        else if ((c & 0xF8) == 0xF0) { cp = c & 0x07u; n = 4; }
+        else throw Error("resource string is not valid UTF-8 (bad lead byte)");
+        if (n > s.size() - i) throw Error("resource string is not valid UTF-8 (truncated sequence)");
+        for (size_t k = 1; k < n; ++k) {
+            const unsigned char cc = (unsigned char)s[i + k];
+            if ((cc & 0xC0) != 0x80) throw Error("resource string is not valid UTF-8 (bad continuation byte)");
+            cp = (cp << 6) | (cc & 0x3Fu);
+        }
+        if ((n == 2 && cp < 0x80) || (n == 3 && cp < 0x800) || (n == 4 && cp < 0x10000))
+            throw Error("resource string is not valid UTF-8 (overlong sequence)");
+        if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+            throw Error("resource string is not valid UTF-8 (invalid code point)");
+        units += (cp >= 0x10000) ? 2 : 1;
+        i += n;
+    }
+    return units;
 }
-static void encStr(std::vector<uint8_t>& o, const std::string& s) {
-    encLen(o, s.size()); encLen(o, s.size());   // character count, then byte count
+static void encPoolLen(std::vector<uint8_t>& o, size_t n) {
+    if (n > 0x7FFFu) throw Error("resource string is too long for ResStringPool (max 32767)");
+    if (n < 0x80) o.push_back((uint8_t)n);
+    else { o.push_back((uint8_t)(0x80 | ((n >> 8) & 0x7Fu))); o.push_back((uint8_t)(n & 0xFFu)); }
+}
+static void encPoolStr(std::vector<uint8_t>& o, const std::string& s) {
+    const size_t units = utf16CodeUnits(s);
+    encPoolLen(o, units); encPoolLen(o, s.size());   // character count, then byte count
     o.insert(o.end(), s.begin(), s.end()); o.push_back(0x00);
 }
+namespace ARSC {
+static void encStr(std::vector<uint8_t>& o, const std::string& s) { encPoolStr(o, s); }
 static std::vector<uint8_t> stringPool(const std::vector<std::string>& strings) {
     std::vector<uint8_t> offs, data; size_t pos = 0;
     for (const std::string& s : strings) {
@@ -11211,6 +11557,12 @@ struct Table {
     std::vector<Entry> entries;
     std::vector<std::string> types;   // distinct type names, in type-id order
     void add(const Entry& e) {
+        // A second entry with the same type and name would get a different id
+        // but resId() would keep returning the first, so one of them could
+        // never be reached. Refuse rather than build an ambiguous table.
+        for (const auto& x : entries)
+            if (x.type == e.type && x.name == e.name)
+                throw Error("duplicate resource " + e.type + "/" + e.name);
         bool known = false;
         for (const auto& t : types) if (t == e.type) known = true;
         if (!known) types.push_back(e.type);
@@ -11365,12 +11717,8 @@ struct Builder {
         int i = off + (int)(isAttr ? attrNames.size()-1 : others.size()-1);
         idxMap[s] = i; return i;
     }
-    void encLen(std::vector<uint8_t>& o, size_t n) { if (n < 0x80) o.push_back((uint8_t)n); else { o.push_back((uint8_t)(0x80|(n&0x7F))); o.push_back((uint8_t)(n>>7)); } }
-    void encStr(std::vector<uint8_t>& o, const std::string& s) {
-        std::vector<uint8_t> b(s.begin(), s.end());
-        encLen(o, s.size()); encLen(o, b.size());
-        o.insert(o.end(), b.begin(), b.end()); o.push_back(0x00);
-    }
+    void encLen(std::vector<uint8_t>& o, size_t n) { encPoolLen(o, n); }
+    void encStr(std::vector<uint8_t>& o, const std::string& s) { encPoolStr(o, s); }
     struct Node { std::string name; std::vector<std::vector<std::string>> attrs; std::vector<Node> children; };
     std::vector<uint8_t> attrBytes(const std::string& aname, const std::string& kind, const std::string& val) {
         int nameIdx = strIdx(aname, true);
@@ -11457,7 +11805,8 @@ static std::vector<uint8_t> nativeActivity(const std::string& pkg, int verCode,
                                            const std::string& verName, int minSdk, int targetSdk,
                                            const std::string& libName, uint32_t iconResId,
                                            uint32_t labelResId,
-                                           const std::string& labelLiteral) {
+                                           const std::string& labelLiteral,
+                                           bool debuggable = false) {
     char labelId[32]; std::snprintf(labelId, sizeof labelId, "0x%08X", labelResId);
     Builder b; Builder::Node activity; activity.name="activity";
     activity.attrs={{"name","str","android.app.NativeActivity"},{"label","ref",labelId},{"exported","bool","true"},{"configChanges","hex","0x490"}};
@@ -11469,7 +11818,9 @@ static std::vector<uint8_t> nativeActivity(const std::string& pkg, int verCode,
     Builder::Node category; category.name="category"; category.attrs={{"name","str","android.intent.category.LAUNCHER"}};
     itfilter.children={action,category}; activity.children={metadata,itfilter};
     Builder::Node application; application.name="application";
-    application.attrs={{"label","ref",labelId},{"hasCode","bool","false"},{"debuggable","bool","true"}};
+    // v0.23.61-dev: a shipped APK must not be debuggable; the flag is opt-in.
+    application.attrs={{"label","ref",labelId},{"hasCode","bool","false"},
+                       {"debuggable","bool",debuggable ? "true" : "false"}};
     if(!labelLiteral.empty()) application.attrs[0]={"label","str",labelLiteral};
     if (iconResId) {
         char id[32]; std::snprintf(id, sizeof id, "0x%08X", iconResId);
@@ -11615,6 +11966,31 @@ static std::vector<uint8_t> signingBlock(const std::vector<uint8_t>& contentDige
 }
 } // namespace APKv2
 
+// Entry names are paths inside the archive. A name that is absolute, carries a
+// drive letter or a backslash, or has a "." / ".." component is a zip-slip
+// waiting to happen for whoever extracts it, and no APK needs one; a trailing
+// slash is the ordinary directory-entry spelling and is allowed. Both the
+// reader and the builder use this, so a name Aster writes is one Aster accepts.
+static bool zipNameSafe(const std::string& n) {
+    if (n.empty() || n[0] == '/' || n.find('\\') != std::string::npos) return false;
+    // A NUL would make different consumers disagree about where the name ends.
+    if (n.find('\0') != std::string::npos) return false;
+    if (n.size() >= 2 && std::isalpha((unsigned char)n[0]) && n[1] == ':') return false;
+    size_t end = n.size();
+    if (end && n[end - 1] == '/') --end;
+    if (end == 0) return false;
+    size_t p = 0;
+    while (p <= end) {
+        size_t e = n.find('/', p);
+        if (e == std::string::npos || e > end) e = end;
+        const std::string comp = n.substr(p, e - p);
+        if (comp.empty() || comp == "." || comp == "..") return false;
+        if (e == end) break;
+        p = e + 1;
+    }
+    return true;
+}
+
 // ============================== APK verification ==============================
 // build-apk signs and verify-apk checks. They share the constants and the
 // chunked-digest code above and deliberately share nothing else: the verifier
@@ -11644,7 +12020,6 @@ static uint64_t rd64(const std::vector<uint8_t>& b, size_t p) {
     for (int k = 7; k >= 0; --k) v = (v << 8) | b[p + k];
     return v;
 }
-
 static bool readZip(const std::vector<uint8_t>& b, Zip& z, std::string& err) {
     if (b.size() < 22) { err = "file is smaller than an End of Central Directory record"; return false; }
     const size_t minI = b.size() > 65557 + 22 ? b.size() - 65557 - 22 : 0;
@@ -11662,6 +12037,7 @@ static bool readZip(const std::vector<uint8_t>& b, Zip& z, std::string& err) {
     }
     size_t p = z.cdStart;
     const size_t end = z.cdStart + z.cdSize;
+    std::set<std::string> seenNames;
     while (p + 46 <= end) {
         if (rd32(b, p) != 0x02014b50u) { err = "a central directory entry has a bad signature"; return false; }
         ZipEntry ze;
@@ -11670,16 +12046,39 @@ static bool readZip(const std::vector<uint8_t>& b, Zip& z, std::string& err) {
         ze.compSize = rd32(b, p + 20);
         const uint16_t nameLen = rd16(b, p + 28), extraLen = rd16(b, p + 30), commentLen = rd16(b, p + 32);
         const size_t localOff = rd32(b, p + 42);
-        ze.name.assign(b.begin() + (long)(p + 46), b.begin() + (long)(p + 46 + nameLen));
+        // The fixed header is inside the directory, but its variable-length
+        // tail may not be: bound name/extra/comment before touching the name.
+        // Without this, a nameLen of 0xffff read past the file (ASan confirmed
+        // a heap-buffer-overflow that also echoed about 64 KB of heap).
+        const size_t nameAt = p + 46;
+        if (nameAt > end || nameLen > end - nameAt) { err = "a central directory entry name runs past the directory"; return false; }
+        if (extraLen > end - (nameAt + nameLen) || commentLen > end - (nameAt + nameLen + extraLen)) {
+            err = "a central directory entry runs past the directory"; return false;
+        }
+        ze.name.assign(b.begin() + (long)nameAt, b.begin() + (long)(nameAt + nameLen));
+        if (!zipNameSafe(ze.name)) { err = "entry name is not a safe archive path: " + ze.name; return false; }
+        // Two entries with one name make "which bytes are signed?" ambiguous:
+        // different consumers pick different copies. No real APK needs it.
+        if (!seenNames.insert(ze.name).second) { err = "duplicate entry name: " + ze.name; return false; }
         if (localOff + 30 > b.size() || rd32(b, localOff) != 0x04034b50u) {
             err = "entry " + ze.name + " has a bad local header"; return false;
         }
+        if (rd16(b, localOff + 26) != nameLen) { err = "entry " + ze.name + ": local header and central directory disagree on the name length"; return false; }
+        // The two copies have to be byte-identical: a consumer that reads the
+        // local header sees a different file than one that trusts the central
+        // directory otherwise, and the signature only covers one of them.
+        const size_t localNameAt = localOff + 30;
+        if (nameLen > b.size() - localNameAt) { err = "entry " + ze.name + ": local header name runs past the end of the file"; return false; }
+        if (!std::equal(ze.name.begin(), ze.name.end(), b.begin() + (long)localNameAt)) {
+            err = "entry " + ze.name + ": local header and central directory disagree on the name"; return false;
+        }
         if (rd32(b, localOff + 14) != ze.crc) { err = "entry " + ze.name + ": local header and central directory disagree on CRC-32"; return false; }
         ze.dataOff = localOff + 30 + rd16(b, localOff + 26) + rd16(b, localOff + 28);
-        if (ze.dataOff + ze.compSize > b.size()) { err = "entry " + ze.name + " runs past the end of the file"; return false; }
+        if (ze.dataOff > b.size() || ze.compSize > b.size() - ze.dataOff) { err = "entry " + ze.name + " runs past the end of the file"; return false; }
         z.entries.push_back(ze);
         p += 46 + nameLen + extraLen + commentLen;
     }
+    if (p != end) { err = "the central directory has a truncated entry"; return false; }
     if (z.entries.size() != z.entryCount) { err = "central directory entry count disagrees with the EOCD"; return false; }
     return true;
 }
@@ -11872,9 +12271,9 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
     if (!readZip(b, z, err)) { r.fail(err); return false; }
     r.pass("EOCD at " + std::to_string(z.eocdOff) + ": " + std::to_string(z.entries.size()) +
            " entries, central directory at " + std::to_string(z.cdStart));
-    bool crcOk = true, compressed = false;
+    bool crcOk = true;
     for (const ZipEntry& e : z.entries) {
-        if (e.method != 0) { compressed = true; continue; }
+        if (e.method != 0) continue;   // CRC-32 covers the uncompressed bytes
         if (crc32(b.data() + e.dataOff, e.compSize) != e.crc) { crcOk = false; r.fail("entry " + e.name + ": CRC-32 mismatch"); }
     }
     if (crcOk) r.pass("every stored entry's CRC-32 matches its central directory record");
@@ -11891,13 +12290,26 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
     const std::vector<uint8_t> mf = entryData(b, *mfE), sf = entryData(b, *sfE), p7 = entryData(b, *rsaE);
     const std::string mfText(mf.begin(), mf.end()), sfText(sf.begin(), sf.end());
     const std::vector<JarSection> mfSecs = parseJarFile(mfText), sfSecs = parseJarFile(sfText);
+    // A signature file with tens of thousands of tiny sections used to make the
+    // SF x MANIFEST scan quadratic. Real APKs are far below this, and the scan
+    // below now goes through a map anyway.
+    if (mfSecs.size() > 20000 || sfSecs.size() > 20000) {
+        r.fail("MANIFEST.MF or CERT.SF has too many sections");
+        return false;
+    }
 
     size_t checked = 0;
     for (const JarSection& s : mfSecs) {
         if (s.name.empty()) continue;
         const ZipEntry* target = findEntry(z, s.name);
         if (!target) { r.fail("MANIFEST.MF covers " + s.name + ", which is not in the archive"); continue; }
-        if (target->method != 0) continue;
+        // No inflater here: a compressed entry's digest cannot be checked,
+        // and silently skipping it would make a v1 signature that covers
+        // nothing look like one that covers everything.
+        if (target->method != 0) {
+            r.fail("MANIFEST.MF digest for " + s.name + " cannot be verified: the entry is compressed and this verifier supports stored entries only");
+            continue;
+        }
         auto it = s.attrs.find("SHA-256-Digest");
         if (it == s.attrs.end()) { r.fail("MANIFEST.MF section for " + s.name + " has no SHA-256-Digest"); continue; }
         SHA256 md; md.upd(b.data() + target->dataOff, target->compSize);
@@ -11905,6 +12317,18 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
         ++checked;
     }
     if (checked) r.pass("MANIFEST.MF: " + std::to_string(checked) + " entries, every SHA-256-Digest matches");
+
+    // v0.23.61-dev: v1 integrity means the manifest covers every payload
+    // entry, not just that the entries it happens to mention are intact. An
+    // extra entry no section names would otherwise ride along unsigned.
+    std::set<std::string> mfCovered;
+    for (const JarSection& s : mfSecs) if (!s.name.empty()) mfCovered.insert(s.name);
+    for (const ZipEntry& e : z.entries) {
+        if (e.name.rfind("META-INF/", 0) == 0) continue;   // signature files are the signer's own
+        if (!e.name.empty() && e.name.back() == '/') continue;
+        if (!mfCovered.count(e.name))
+            r.fail("entry " + e.name + " is not covered by MANIFEST.MF");
+    }
 
     bool manifestDigestOk = false;
     for (const JarSection& s : sfSecs)
@@ -11919,16 +12343,18 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
     else r.fail("CERT.SF has no SHA-256-Digest-Manifest matching SHA-256(MANIFEST.MF)");
 
     size_t sfChecked = 0;
+    std::map<std::string, const JarSection*> mfByName;
+    for (const JarSection& m : mfSecs) if (!m.name.empty()) mfByName[m.name] = &m;
     for (const JarSection& s : sfSecs) {
         if (s.name.empty()) continue;
         auto it = s.attrs.find("SHA-256-Digest");
         if (it == s.attrs.end()) continue;
-        for (const JarSection& m : mfSecs)
-            if (m.name == s.name) {
-                SHA256 md; md.upd((const uint8_t*)m.raw.data(), m.raw.size());
-                if (b64decode(it->second) != md.fin()) r.fail("CERT.SF digest for " + s.name + " does not match MANIFEST.MF");
-                else ++sfChecked;
-            }
+        auto m = mfByName.find(s.name);
+        if (m != mfByName.end()) {
+            SHA256 md; md.upd((const uint8_t*)m->second->raw.data(), m->second->raw.size());
+            if (b64decode(it->second) != md.fin()) r.fail("CERT.SF digest for " + s.name + " does not match MANIFEST.MF");
+            else ++sfChecked;
+        }
     }
     if (sfChecked) r.pass("CERT.SF: " + std::to_string(sfChecked) + " per-entry digests match MANIFEST.MF");
 
@@ -11955,18 +12381,57 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
     const std::vector<uint8_t>* v2Blob = nullptr;
     for (const auto& pr : pairs) if (pr.first == APKv2::kBlockId) v2Blob = &pr.second;
     if (!v2Blob) { r.fail("no v2 block (0x7109871a) in the Signing Block"); return false; }
-    if (!compressed) {}   // unused here; kept for readability
 
     std::vector<uint8_t> signersBlob, signer, signedData, signatures, publicKey, digests, certificates;
-    size_t q = 0;
-    if (!lpRead(*v2Blob, 0, v2Blob->size(), signersBlob, q) ||
+    size_t q = 0, signerFieldsEnd = 0, v2Used = 0;
+    if (!lpRead(*v2Blob, 0, v2Blob->size(), signersBlob, v2Used) ||
         !lpRead(signersBlob, 0, signersBlob.size(), signer, q) ||
         !lpRead(signer, 0, signer.size(), signedData, q) ||
         !lpRead(signer, q, signer.size(), signatures, q) ||
-        !lpRead(signer, q, signer.size(), publicKey, q) ||
+        !lpRead(signer, q, signer.size(), publicKey, signerFieldsEnd) ||
         !lpRead(signedData, 0, signedData.size(), digests, q) ||
         !lpRead(signedData, q, signedData.size(), certificates, q)) {
         r.fail("the v2 signer does not parse"); return false;
+    }
+    // v0.23.61-dev: consume each sequence completely. Reading the first signer
+    // and ignoring whatever follows would let a second signer (or trailing
+    // garbage) ride along unverified while this report still says OK.
+    if (v2Used != v2Blob->size()) {
+        r.fail("the v2 block has trailing bytes after the signers sequence");
+        return false;
+    }
+    if (signerFieldsEnd != signer.size()) {
+        r.fail("the v2 signer has trailing bytes");
+        return false;
+    }
+    // Standard v2 signed-data ends after the additional-attributes sequence.
+    // Aster's writer has historically emitted one extra empty length-prefixed
+    // field; both spellings are fully consumed here, and anything else is
+    // still rejected as trailing bytes.
+    {
+        std::vector<uint8_t> extra;
+        if (q < signedData.size() && !lpRead(signedData, q, signedData.size(), extra, q)) {
+            r.fail("the v2 signed-data additional attributes do not parse");
+            return false;
+        }
+        if (q < signedData.size()) {
+            std::vector<uint8_t> trailing;
+            if (!lpRead(signedData, q, signedData.size(), trailing, q) || !trailing.empty()) {
+                r.fail("the v2 signed-data has unrecognized trailing bytes");
+                return false;
+            }
+        }
+    }
+    if (q != signedData.size()) {
+        r.fail("the v2 signed-data has trailing bytes this verifier does not understand");
+        return false;
+    }
+    {
+        size_t sq = 0; std::vector<uint8_t> tmp;
+        if (!lpRead(signersBlob, sq, signersBlob.size(), tmp, sq) || sq != signersBlob.size()) {
+            r.fail("the v2 block has more than one signer; this verifier handles exactly one");
+            return false;
+        }
     }
     std::vector<std::pair<uint32_t, std::vector<uint8_t>>> digestPairs, sigPairs, digestRaw, sigRaw;
     std::vector<uint8_t> v2Cert;
@@ -11988,9 +12453,23 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
     if (!unwrap(digestRaw, digestPairs) || !unwrap(sigRaw, sigPairs)) {
         r.fail("the v2 digests or signatures are not length-prefixed properly"); return false;
     }
-    { std::vector<uint8_t> first; size_t qq; lpRead(certificates, 0, certificates.size(), first, qq); v2Cert = first; }
+    std::vector<std::vector<uint8_t>> v2Certs;
+    {
+        size_t cq = 0;
+        while (cq < certificates.size()) {
+            std::vector<uint8_t> c;
+            if (!lpRead(certificates, cq, certificates.size(), c, cq)) {
+                r.fail("the v2 certificate list is malformed");
+                return false;
+            }
+            if (c.empty()) { r.fail("the v2 certificate list contains an empty certificate"); return false; }
+            v2Certs.push_back(std::move(c));
+        }
+    }
+    if (v2Certs.empty()) { r.fail("the v2 signer carries no certificate"); return false; }
+    v2Cert = v2Certs.front();
     r.pass("v2 block parses: signed-data " + std::to_string(signedData.size()) + " B, public key " +
-           std::to_string(publicKey.size()) + " B, 1 certificate");
+           std::to_string(publicKey.size()) + " B, " + std::to_string(v2Certs.size()) + " certificate(s)");
 
     if (publicKey == certSubjectPublicKeyInfo(v2Cert))
         r.pass("the v2 public key is the certificate's SubjectPublicKeyInfo");
@@ -12059,13 +12538,71 @@ static void addStringResource(const std::string& arg,
         throw Error(std::string(what) + ": duplicate --string resource: " + name);
     out.push_back({name, value});
 }
+// --package, --abi and --libname end up in names that leave the build: the
+// package in the manifest and resources.arsc, the other two inside the
+// "lib/<abi>/lib<libname>.so" ZIP entry. They are restricted here so an option
+// cannot inject a path separator, "..", a NUL or a name no Android build would
+// load - and so the failure is a clear diagnostic rather than a ZIP entry that
+// escapes lib/ once extracted.
+static bool validApkPackageName(const std::string& s) {
+    if (s.empty() || s.size() > 127 || s.find('.') == std::string::npos) return false;
+    bool atSegmentStart = true;
+    for (char c : s) {
+        const unsigned char u = (unsigned char)c;
+        if ((u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z')) atSegmentStart = false;
+        else if ((u >= '0' && u <= '9') || c == '_') { if (atSegmentStart) return false; }
+        else if (c == '.') { if (atSegmentStart) return false; atSegmentStart = true; }
+        else return false;
+    }
+    return !atSegmentStart;
+}
+static bool validApkAbi(const std::string& s) {
+    if (s.empty() || s.size() > 64) return false;
+    for (char c : s) {
+        const unsigned char u = (unsigned char)c;
+        if (!(std::isalnum(u) || c == '_' || c == '-')) return false;
+    }
+    return true;
+}
+static bool validApkLibname(const std::string& s) {
+    if (s.empty() || s.size() > 255 || s == "." || s == "..") return false;
+    for (char c : s) {
+        const unsigned char u = (unsigned char)c;
+        if (!(std::isalnum(u) || c == '_' || c == '.' || c == '-')) return false;
+    }
+    return true;
+}
+static bool validateApkInputs(const std::string& pkg, const std::string& abi,
+                              const std::string& libname, std::string& err) {
+    if (!validApkPackageName(pkg)) {
+        err = "--package \"" + pkg + "\" is not a valid Android package name: dot-separated "
+              "segments of ASCII letters, digits and '_', each starting with a letter, "
+              "at most 127 bytes";
+        return false;
+    }
+    if (!validApkAbi(abi)) {
+        err = "--abi \"" + abi + "\" is not a valid ABI name: letters, digits, '_' and '-' "
+              "only, 1 to 64 bytes";
+        return false;
+    }
+    if (!validApkLibname(libname)) {
+        err = "--libname \"" + libname + "\" is not a valid library name: letters, digits, "
+              "'_', '.' and '-' only, 1 to 255 bytes, and not \".\" or \"..\"";
+        return false;
+    }
+    if (("lib/" + abi + "/lib" + libname + ".so").size() > 65535) {
+        err = "the library entry name would exceed the ZIP limit of 65535 bytes";
+        return false;
+    }
+    return true;
+}
 // ---------------------------------------------------------------- buildApk : assemble + sign the whole APK
 static int buildApk(const std::string& out, const std::string& pkg, const std::string& libname,
                     const std::string& abi, const std::vector<uint8_t>& so, int minSdk, int targetSdk,
                     const std::string& label, int verCode, const std::string& verName,
                     const std::vector<std::pair<std::string,std::string>>& extraStrings,
                     const SigningKey& key, bool selfVerify, bool labelAsReference,
-                    uint64_t pageSize = 4096) {
+                    bool debuggable = false, uint64_t pageSize = 4096) {
     // The icon is part of the package rather than an option: a launcher entry
     // with no icon falls back to the system default, which is the thing this
     // exists to fix. res/drawable-nodpi keeps the bitmap exact — Android will
@@ -12085,6 +12622,12 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     nameEntry.value=label; nameEntry.isFile=false;            // the value itself, nothing to open
     table.add(nameEntry);
     for (const auto& s : extraStrings) {
+        // app_name is what android:label points at, and ic_launcher is the
+        // built-in drawable. Letting --string reuse either simple name would
+        // make the table contain two resources a reader cannot tell apart.
+        if (s.first == "app_name" || s.first == iconName)
+            throw Error("build-apk: --string " + s.first + " collides with the built-in " +
+                        (s.first == "app_name" ? "string/" : "drawable/") + s.first + " resource");
         ARSC::Entry e; e.type="string"; e.name=s.first; e.value=s.second; table.add(e);
     }
     const uint32_t iconResId  = table.resId("drawable", iconName);    // 0x7f010000
@@ -12093,9 +12636,18 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     std::vector<uint8_t> arsc = ARSC::build(pkg, table);
     std::vector<uint8_t> manifest = AXML::nativeActivity(pkg, verCode, verName, minSdk, targetSdk,
                                                        libname, iconResId, labelResId,
-                                                       labelAsReference ? std::string() : label);
+                                                       labelAsReference ? std::string() : label,
+                                                       debuggable);
     std::vector<ZIP::Entry> entries; std::vector<uint8_t> apk;
+    std::set<std::string> entryNames;
     auto append=[&](const std::string& name, const std::vector<uint8_t>& data, bool align){
+        // Everything above builds these names from validated options, but this
+        // is the last point before they become bytes: reject anything that is
+        // not a plain relative path or would make two entries share a name.
+        if (name.size() > 65535 || !zipNameSafe(name))
+            throw Error("build-apk: refusing to write an unsafe ZIP entry name: " + name);
+        if (!entryNames.insert(name).second)
+            throw Error("build-apk: refusing to write a duplicate ZIP entry: " + name);
         uint32_t crc=crc32(data.data(), data.size()); size_t off=apk.size();
         // v0.23.55-dev: the shared-object entry must be aligned to the page size
         // so Android's 16 KB-page loader can mmap it straight out of the APK. The
@@ -12320,6 +12872,22 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
     return 0;
 }
 
+// CLI numbers are plain decimal and must fit the field they configure. atoi
+// would read "12x" as 12, accept "-1", and wrap values above INT_MAX, so an
+// option that silently becomes a different number is rejected instead.
+static bool parseCliUInt(const char* s, uint64_t max, uint64_t& out) {
+    if (!s || !*s) return false;
+    uint64_t v = 0;
+    for (const char* p = s; *p; ++p) {
+        if (*p < '0' || *p > '9') return false;
+        const uint64_t d = (uint64_t)(*p - '0');
+        if (v > (max - d) / 10) return false;
+        v = v * 10 + d;
+    }
+    out = v;
+    return true;
+}
+
 int main(int argc,char**argv){
     const std::string cmd=argc>1?argv[1]:"";
     std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false;
@@ -12352,8 +12920,8 @@ int main(int argc,char**argv){
             else if(a.rfind("--embed-dir=",0)==0)embedDir=a.substr(12);
             else if(a=="--include-dir"){if(i+1>=argc)return false;includeDir=argv[++i];}
             else if(a.rfind("--include-dir=",0)==0)includeDir=a.substr(14);
-            else if(a=="--page-size"){if(i+1>=argc){std::cerr<<"aster: --page-size requires an argument\n";return false;} pageSize=(uint64_t)strtoull(argv[++i],nullptr,10);}
-            else if(a.rfind("--page-size=",0)==0)pageSize=(uint64_t)strtoull(a.substr(12).c_str(),nullptr,10);
+            else if(a=="--page-size"){if(i+1>=argc){std::cerr<<"aster: --page-size requires an argument\n";return false;} if(!parseCliUInt(argv[++i],16384,pageSize)){std::cerr<<"aster: --page-size must be a decimal integer between 0 and 16384\n";return false;}}
+            else if(a.rfind("--page-size=",0)==0){if(!parseCliUInt(a.c_str()+12,16384,pageSize)){std::cerr<<"aster: --page-size must be a decimal integer between 0 and 16384\n";return false;}}
             else if(!a.empty()&&a[0]=='-')return false;
             else sources.push_back(a);
         }
@@ -12368,7 +12936,15 @@ int main(int argc,char**argv){
             std::string inSo, package, libname, abi="arm64-v8a", label="AsterApp", verName="1.0", emitSo, soSoname;
             std::string signMode="debug", keystore, cert, keystoreDir;
             int minSdk=21, targetSdk=30, verCode=1, keyBits=2048; bool havePkg=false, selfVerify=true;
-            bool labelAsReference=false;
+            bool labelAsReference=false, debuggable=false;
+            auto parseNum=[&](const char* opt, const char* text, uint64_t max, uint64_t& out)->bool {
+                if (!parseCliUInt(text, max, out)) {
+                    std::cerr << "aster: build-apk: " << opt << " must be a decimal integer between 0 and "
+                              << max << " (got \"" << text << "\")\n";
+                    return false;
+                }
+                return true;
+            };
             std::vector<std::pair<std::string,std::string>> extraStrings;
             for(int i=2;i<argc;++i){const std::string a=argv[i];
                 auto next=[&]()->const char*{ return (i+1<argc)?argv[++i]:nullptr; };
@@ -12379,17 +12955,19 @@ int main(int argc,char**argv){
                 else if(a=="--label"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --label requires an argument\n";return 2;} label=v;}
                 else if(a=="--string"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --string requires an argument\n";return 2;} addStringResource(v,extraStrings,"aster: build-apk");}
                 else if(a=="--label-as-reference")labelAsReference=true;
+                // v0.23.61-dev: android:debuggable is off unless asked for.
+                else if(a=="--debuggable")debuggable=true;
                 else if(a.rfind("--string=",0)==0)addStringResource(a.substr(9),extraStrings,"aster: build-apk");
                 else if(a=="--embed-dir"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --embed-dir requires an argument\n";return 2;} embedDir=v;}
                 else if(a.rfind("--embed-dir=",0)==0)embedDir=a.substr(12);
                 else if(a=="--include-dir"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --include-dir requires an argument\n";return 2;} includeDir=v;}
                 else if(a.rfind("--include-dir=",0)==0)includeDir=a.substr(14);
-                else if(a=="--page-size"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --page-size requires an argument\n";return 2;} pageSize=(uint64_t)strtoull(v,nullptr,10);}
-                else if(a.rfind("--page-size=",0)==0)pageSize=(uint64_t)strtoull(a.substr(12).c_str(),nullptr,10);
+                else if(a=="--page-size"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --page-size requires an argument\n";return 2;} uint64_t n; if(!parseNum("--page-size",v,16384,n))return 2; pageSize=n;}
+                else if(a.rfind("--page-size=",0)==0){uint64_t n; if(!parseNum("--page-size",a.c_str()+12,16384,n))return 2; pageSize=n;}
                 else if(a=="--version-name"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --version-name requires an argument\n";return 2;} verName=v;}
-                else if(a=="--min-sdk"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --min-sdk requires an argument\n";return 2;} minSdk=atoi(v);}
-                else if(a=="--target-sdk"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --target-sdk requires an argument\n";return 2;} targetSdk=atoi(v);}
-                else if(a=="--version-code"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --version-code requires an argument\n";return 2;} verCode=atoi(v);}
+                else if(a=="--min-sdk"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --min-sdk requires an argument\n";return 2;} uint64_t n; if(!parseNum("--min-sdk",v,2147483647ULL,n))return 2; minSdk=(int)n;}
+                else if(a=="--target-sdk"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --target-sdk requires an argument\n";return 2;} uint64_t n; if(!parseNum("--target-sdk",v,2147483647ULL,n))return 2; targetSdk=(int)n;}
+                else if(a=="--version-code"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --version-code requires an argument\n";return 2;} uint64_t n; if(!parseNum("--version-code",v,2100000000ULL,n))return 2; verCode=(int)n;}
                 // --emit-so keeps the intermediate shared object when compiling
                 // from .ast input (the inspection artifact objdump/readelf/qemu
                 // all want); without it the intermediate is built and discarded.
@@ -12402,12 +12980,12 @@ int main(int argc,char**argv){
                 else if(a=="--keystore"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --keystore requires an argument\n";return 2;} keystore=v;}
                 else if(a=="--cert"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --cert requires an argument\n";return 2;} cert=v;}
                 else if(a=="--keystore-dir"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --keystore-dir requires an argument\n";return 2;} keystoreDir=v;}
-                else if(a=="--key-bits"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --key-bits requires an argument\n";return 2;} keyBits=atoi(v);}
+                else if(a=="--key-bits"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --key-bits requires an argument\n";return 2;} uint64_t n; if(!parseNum("--key-bits",v,8192,n))return 2; keyBits=(int)n;}
                 else if(a.rfind("--sign-mode=",0)==0)signMode=a.substr(12);
                 else if(a.rfind("--keystore-dir=",0)==0)keystoreDir=a.substr(15);
                 else if(a.rfind("--keystore=",0)==0)keystore=a.substr(11);
                 else if(a.rfind("--cert=",0)==0)cert=a.substr(7);
-                else if(a.rfind("--key-bits=",0)==0)keyBits=atoi(a.substr(11).c_str());
+                else if(a.rfind("--key-bits=",0)==0){uint64_t n; if(!parseNum("--key-bits",a.c_str()+11,8192,n))return 2; keyBits=(int)n;}
                 // --no-verify is an escape hatch for the (rare) case where the
                 // built APK has to be inspected precisely because signing went
                 // wrong. It never changes what is signed, only whether Aster
@@ -12425,6 +13003,12 @@ int main(int argc,char**argv){
             if(inSo.empty()){std::cerr<<"aster: build-apk: missing input .so or .ast file\n";return 2;}
             if(pageSize!=4096&&pageSize!=16384){std::cerr<<"aster: build-apk: --page-size must be 4096 or 16384 (got "<<pageSize<<")\n";return 2;}
             if(libname.empty()){libname=baseNameOf(output); size_t dp=libname.rfind(".apk"); if(dp==libname.size()-4) libname=libname.substr(0,dp);}
+            // Check the names that become ZIP paths and manifest identifiers
+            // before generating a key or compiling anything: a rejected build
+            // should cost one message, not a temp .so and a debug key.
+            std::string inputErr;
+            if(!validateApkInputs(package,abi,libname,inputErr)){
+                std::cerr<<"aster: build-apk: "<<inputErr<<"\n";return 2;}
             if(!emitSo.empty()&&emitSo==output){std::cerr<<"aster: build-apk: --emit-so must differ from -o\n";return 2;}
             if(signMode!="debug"&&signMode!="release"){
                 std::cerr<<"aster: build-apk: --sign-mode must be debug or release (got \""<<signMode<<"\")\n";return 2;}
@@ -12459,7 +13043,7 @@ int main(int argc,char**argv){
                     std::cerr<<"aster: build-apk: input is not an ELF shared object (expected a .so or a .ast): "<<inSo<<"\n";return 2;
                 }
             }
-            int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,pageSize);
+            int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,debuggable,pageSize);
             if(r==0)std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2 dual-signed, "
                 <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n";
             return r;
@@ -12471,9 +13055,9 @@ int main(int argc,char**argv){
             for(int i=2;i<argc;++i){const std::string a=argv[i];
                 auto next=[&]()->const char*{ return (i+1<argc)?argv[++i]:nullptr; };
                 if(a=="--dir"){const char* v=next(); if(!v){std::cerr<<"aster: keygen: --dir requires an argument\n";return 2;} dir=v;}
-                else if(a=="--bits"){const char* v=next(); if(!v){std::cerr<<"aster: keygen: --bits requires an argument\n";return 2;} bits=atoi(v);}
+                else if(a=="--bits"){const char* v=next(); if(!v){std::cerr<<"aster: keygen: --bits requires an argument\n";return 2;} uint64_t n; if(!parseCliUInt(v,8192,n)){std::cerr<<"aster: keygen: --bits must be a decimal integer between 0 and 8192 (got \""<<v<<"\")\n";return 2;} bits=(int)n;}
                 else if(a.rfind("--dir=",0)==0)dir=a.substr(6);
-                else if(a.rfind("--bits=",0)==0)bits=atoi(a.substr(7).c_str());
+                else if(a.rfind("--bits=",0)==0){uint64_t n; if(!parseCliUInt(a.c_str()+7,8192,n)){std::cerr<<"aster: keygen: --bits must be a decimal integer between 0 and 8192 (got \""<<a.substr(7)<<"\")\n";return 2;} bits=(int)n;}
                 else if(a=="--force")force=true;
                 else {std::cerr<<"aster: keygen: unknown option "<<a<<"\naster: keygen usage: aster keygen [--dir DIR] [--bits 2048] [--force]\n";return 2;}
             }

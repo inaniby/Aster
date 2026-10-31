@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(aster_bootstrap VERSION 0.22.38 LANGUAGES CXX)
+project(aster_bootstrap VERSION 0.23.61 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(aster src/aster.cpp)

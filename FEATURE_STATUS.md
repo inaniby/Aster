@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.60-dev.** One table per area. "Since" is the version that
+**As of v0.23.61-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.

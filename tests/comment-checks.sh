@@ -18,8 +18,10 @@ fn main() -> i32 { // trailing line comment
 }
 EOF
 ./aster build-elf "$tmpdir/commented.ast" -o "$tmpdir/commented"
-if ! llvm-objdump -d "$tmpdir/commented" | grep -q 'mov	w0, #0x2a'; then
-    echo "FAIL: commented program did not compile to 'return 42'" >&2
+rc=0
+tests/run-aarch64.sh "$tmpdir/commented" || rc=$?
+if [ "$rc" -ne 42 ]; then
+    echo "FAIL: commented program did not run to 'return 42' (exit $rc)" >&2
     exit 1
 fi
 echo "OK: // and /* */ comments are skipped by the lexer"

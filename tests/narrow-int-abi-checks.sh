@@ -97,8 +97,12 @@ guard 'raw storeStackT emitted once'   'emit(storeStackT(reg,off,t));'          
 # read/openat/close/fstat, which stages N arguments through the same scratch
 # grid with the identical LIFO discipline: one loadStackOff and one storeStackOff
 # in its generic staging loops (write keeps its own inlined copy). +1 and +1.
-guard 'loadStackOff call sites'        'loadStackOff('                                 17
-guard 'storeStackOff call sites'       'storeStackOff('                                12
+# v0.23.61-dev raised both counts: restoreTemps() reads every spilled temporary
+# back at full width through loadStackOff (+1), while spillTemps() saves them
+# through storeStackOff (+1) and the narrow struct return stores its first and
+# second eight-byte half through storeStackOff (+2). Nothing else moved.
+guard 'loadStackOff call sites'        'loadStackOff('                                 18
+guard 'storeStackOff call sites'       'storeStackOff('                                15
 printf '%s\n' 'PASS: per-width ranges, both fallbacks, and no raw encoding at a call site'
 
 # ---------------------------------------------------------------------------
