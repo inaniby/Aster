@@ -175,11 +175,16 @@ The gate enforces an exit-code protocol: **0 = PASS**, **77 = the whole suite co
 suite (APK, signing, TLS, linker, codegen, struct, enum, resource tables, page size, version) is a red
 run; an optional layer may print `SKIP:` and still leave its suite green. `tests/ci-protocol-checks.sh`
 self-tests that protocol and the build cache, so a regression in either mechanism fails the gate rather
-than hiding behind it. The first complete run over all **113** default suites finished 109 PASS / 4
+than hiding behind it. The first complete run over the then-113 default suites finished 109 PASS / 4
 FAIL; all four were stale test fixtures (baseline filters, a missing `_GNU_SOURCE`, and two source
-guards), and the follow-up complete run is **113/113 PASS** with the APK gate 3/3. The codegen twin
-also enforces evidence floors — at least 40 accepted programs byte-identical, 55 rejected by both
-sides, and 7 mutation probes — so a shrunken corpus cannot pass vacuously.
+guards), and the follow-up complete run was **113/113 PASS** with the APK gate 3/3. The gate now runs
+**114** suites: `tests/coverage-checks.sh` builds with `--coverage -O0`, drives every example in five
+modes plus the link/APK/keygen/flag/error paths, and floors `src/aster.cpp` line coverage at **80%**
+(measured 84.71% of 7526 lines). The first complete run of that gate finished **114/114 PASS**, 0
+failed, APK 3/3, with two suites keeping one optional SKIP layer each. The codegen twin also enforces
+evidence floors — at least 40 accepted
+programs byte-identical, 55 rejected by both sides, and 7 mutation probes — so a shrunken corpus cannot
+pass vacuously.
 
 The strict compiler is built once. `tests/lib/cxx-cache.sh` hands that binary to suites that would
 otherwise rebuild `src/aster.cpp`, and forwards mutated sources, `-c`, `-g`, sanitizers, alternate

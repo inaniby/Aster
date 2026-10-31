@@ -470,9 +470,10 @@ covered by `enum-checks`, `smoke` and the full baseline replay.
   are not implemented.
 - **P1 test credibility** is addressed in part by Part III: the 0/77/exit-code
   protocol, dependency-probe classification, build-once cache, self-tests,
-  frozen per-release baselines, and the codegen accept/reject and mutation
-  floors are in place. Aggregate mutation-score reporting, coverage ratchets
-  and parallel suite isolation remain open.
+  frozen per-release baselines, codegen accept/reject and mutation floors, a
+  gate-breadth ratchet and an 80% gcov line-coverage floor are in place.
+  Aggregate mutation-score reporting, nightly execution and parallel suite
+  isolation remain open.
 - **P2/P3** (module split, typed IR, bootstrap M5, fuzzing targets, product
   direction) were not part of this round.
 
@@ -486,8 +487,8 @@ qemu/regression evidence; the audit's four memory-safety reproductions
 BigInt/APK hardening) no longer reproduce and the sanitizer corpora report
 zero errors. The version is now single-sourced at `0.23.61-dev`. This round
 does not claim production readiness: the remaining limitations above, and the
-outstanding P1 items (aggregate mutation score, suite isolation, coverage)
-still gate that claim.
+outstanding P1 items (aggregate mutation score, nightly execution, suite
+isolation) still gate that claim.
 
 ---
 
@@ -610,12 +611,23 @@ probes cannot report a perfect score over an empty set.
 
 The same "no vacuous evidence" rule is applied to the gate's breadth in
 `tests/ci-protocol-checks.sh`: the suite list parsed from `DEFAULT_SUITES`
-must contain at least **113** entries, every `tests/*-checks.sh` must be
+must contain at least **114** entries, every `tests/*-checks.sh` must be
 registered, every registered name must exist, and the corpus must keep at
 least **120 examples**, **360 baseline rows** and **30 mutation-bearing
-suites**. This is a test-mass ratchet, not source-line coverage: it catches a
-suite that exists but is never run, or a corpus that quietly shrank. gcov-style
-source coverage remains open.
+suites**. This is a test-mass ratchet: it catches a suite that exists but is
+never run, or a corpus that quietly shrank.
+
+`tests/coverage-checks.sh` adds the source-line half. It builds
+`src/aster.cpp` with `--coverage -O0`, drives a deterministic corpus through
+the public CLI — every example in five modes (`build-elf`, `build-pie`,
+`build-obj`, `build-obj --pic`, `build-so`), the three link verbs, keygen,
+`build-apk`/`verify-apk`, `-g`, `--bounds-check`, `--page-size 16384`, and the
+top-level error paths — and requires gcov line coverage of `src/aster.cpp` to
+stay at or above **80%**. The measured value is **84.71% of 7526 executable
+lines**, and the suite costs about 28 s (12 s instrumented build, 14 s corpus).
+gcov is optional: missing gcov is a whole-suite `SKIP` (77), while a gcov that
+cannot read the profile fails. The floor is a source constant, so raising the
+corpus means raising the floor in the same review.
 
 ### 6. Observed evidence
 
@@ -633,7 +645,7 @@ source coverage remains open.
   keys, malformed digests, missing examples, missing snapshots and a missing
   version definition;
 - no suite may hardcode a versioned baseline path again;
-- the coverage ratchet: 113 registered suites, 121 examples, 360 baseline rows,
+- the coverage ratchet: 114 registered suites, 121 examples, 360 baseline rows,
   32 mutation-bearing suites, no orphan `*-checks.sh`, no missing registered
   suite.
 
@@ -667,6 +679,10 @@ Focused runs with the new gate (this host, cross `HOSTCC`):
 | `ci-protocol-checks.sh enum-checks.sh condition-checks.sh struct-checks.sh` with the frozen baseline | 4/4 PASS | rebuild + suites |
 | `CI_SUITES="codegen-checks.sh"` with the floor | 1/1 PASS: 48/126 accepted, 78 rejected, floors 40/55; 7/7 mutation probes diverge (floor 7) | fresh strict build + suite |
 | same suite with the floors raised to 1000 (negative test) | FAIL at [5/6] with the measured 48 accepted / 78 rejected | suite time only |
+| `CI_SUITES="coverage-checks.sh ci-protocol-checks.sh"` | 2/2 PASS: 84.71% of 7526 lines (floor 80%) | 28 s + protocol |
+| `coverage-checks.sh` standalone | PASS, same 84.71% | 28.1 s |
+| same suite with the floor raised to 95% (negative test) | FAIL: 84.71% below the 95% floor | suite time only |
+| full default gate, 114 suites (`CI_KEEP_ARTIFACTS=1 sh tests/ci.sh`) | 114/114 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 suites with one optional SKIP layer | 62 min |
 
 The diverse run was the first time the new gate paid for itself. `icon-checks.sh`
 failed not because of the cache but because `openssl smime -verify` rejected
@@ -681,7 +697,7 @@ green run had the suite swallowed the external-verifier failure.
 
 ### 7. Full default gate
 
-The first complete run of the new runner over all **113 default suites**
+The first complete run of the new runner over the then-**113 default suites**
 finished **109 PASS, 0 skipped, 4 FAIL** (plus the 3/3 APK gate; two suites
 passed with one optional SKIP layer each: `icon-checks` and
 `resource-table-checks`). The four failures were test-side staleness exposed
@@ -708,18 +724,23 @@ SKIP layer each). That run is the first fully green execution of the complete
 default gate under the new protocol, cache, frozen baselines and evidence
 floors.
 
+`coverage-checks.sh` was added after that run, taking the default set to
+**114**. It was validated standalone and through the gate alongside the
+protocol self-checks: **2/2 PASS**, coverage 84.71% of 7526 lines against the
+80% floor, 28 s. The first complete run of the resulting gate then finished
+**114/114 PASS, 0 skipped, 0 failed** in 62 minutes, with the APK gate 3/3 and
+the same two suites each keeping one optional SKIP layer; this is the current
+release-candidate evidence.
+
 ### 8. What is still open in P1
 
 - **Parallel suite execution** is not enabled. Many suites share fixed `/tmp`
   paths and repository-root output names, so true isolation (sandbox dirs,
   unique `TMPDIR`) is a prerequisite. The build cache is the safe first half
   of the speedup; running suites concurrently is not.
-- **Aggregate mutation score, source-line coverage and nightly execution**
-  remain, along with **governance** (`LICENSE`, GitHub Actions, `CONTRIBUTING`,
-  `SECURITY`, tags). The codegen twin has accept/reject and mutation-probe
-  floors, and the protocol suite ratchets suite/example/baseline breadth; the
-  other 31 mutation-bearing suites still report kills without a common score,
-  and no gcov line-coverage floor exists.
-- A second complete gate run after the five fixes has not been performed; the
-  failures were rerun individually through the same runner. A full green run
-  should precede a release tag.
+- **Aggregate mutation score and nightly execution** remain, along with
+  **governance** (`LICENSE`, GitHub Actions, `CONTRIBUTING`, `SECURITY`, tags).
+  The codegen twin has accept/reject and mutation-probe floors, the protocol
+  suite ratchets suite/example/baseline breadth, and `coverage-checks.sh`
+  floors source-line coverage at 80%; the other 31 mutation-bearing suites
+  still report kills without a common score.
