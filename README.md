@@ -178,13 +178,16 @@ self-tests that protocol and the build cache, so a regression in either mechanis
 than hiding behind it. The first complete run over the then-113 default suites finished 109 PASS / 4
 FAIL; all four were stale test fixtures (baseline filters, a missing `_GNU_SOURCE`, and two source
 guards), and the follow-up complete run was **113/113 PASS** with the APK gate 3/3. The gate now runs
-**114** suites: `tests/coverage-checks.sh` builds with `--coverage -O0`, drives every example in five
+**115** suites: `tests/coverage-checks.sh` builds with `--coverage -O0`, drives every example in five
 modes plus the link/APK/keygen/flag/error paths, and floors `src/aster.cpp` line coverage at **80%**
-(measured 84.71% of 7526 lines). The first complete run of that gate finished **114/114 PASS**, 0
-failed, APK 3/3, with two suites keeping one optional SKIP layer each. The codegen twin also enforces
-evidence floors — at least 40 accepted
-programs byte-identical, 55 rejected by both sides, and 7 mutation probes — so a shrunken corpus cannot
-pass vacuously.
+(measured 84.71% of 7526 lines); `tests/mutation-score-checks.sh` censuses the standardized mutation
+corpus — 24 suites declaring 155 mutant builds — requires every declaring suite to keep a survivor
+assertion, and floors the total at 150, so a green gate reports **155/155 caught (100%)**. The first
+complete run of the 114-suite gate finished **114/114 PASS**, 0 failed, APK 3/3, with two suites
+keeping one optional SKIP layer each; the 115-suite gate, adding the mutation census, finished
+**115/115 PASS**, 0 failed, APK 3/3, in 64 minutes. The codegen twin
+also enforces evidence floors — at least 40 accepted programs byte-identical, 55 rejected by both
+sides, and 7 mutation probes — so a shrunken corpus cannot pass vacuously.
 
 The strict compiler is built once. `tests/lib/cxx-cache.sh` hands that binary to suites that would
 otherwise rebuild `src/aster.cpp`, and forwards mutated sources, `-c`, `-g`, sanitizers, alternate

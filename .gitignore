@@ -15,6 +15,7 @@ qemu_deep.bin_*
 # Logs
 build.log
 *.log
+/ci-artifacts/
 
 # Python caches
 __pycache__/

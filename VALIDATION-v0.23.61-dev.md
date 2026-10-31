@@ -471,9 +471,9 @@ covered by `enum-checks`, `smoke` and the full baseline replay.
 - **P1 test credibility** is addressed in part by Part III: the 0/77/exit-code
   protocol, dependency-probe classification, build-once cache, self-tests,
   frozen per-release baselines, codegen accept/reject and mutation floors, a
-  gate-breadth ratchet and an 80% gcov line-coverage floor are in place.
-  Aggregate mutation-score reporting, nightly execution and parallel suite
-  isolation remain open.
+  gate-breadth ratchet, an 80% gcov line-coverage floor and an aggregate
+  mutation census (24 suites / 155 mutants) are in place. Nightly execution
+  and parallel suite isolation remain open.
 - **P2/P3** (module split, typed IR, bootstrap M5, fuzzing targets, product
   direction) were not part of this round.
 
@@ -487,8 +487,8 @@ qemu/regression evidence; the audit's four memory-safety reproductions
 BigInt/APK hardening) no longer reproduce and the sanitizer corpora report
 zero errors. The version is now single-sourced at `0.23.61-dev`. This round
 does not claim production readiness: the remaining limitations above, and the
-outstanding P1 items (aggregate mutation score, nightly execution, suite
-isolation) still gate that claim.
+outstanding P1 items (nightly execution, suite isolation) still gate that
+claim.
 
 ---
 
@@ -585,7 +585,7 @@ release. It is now a frozen snapshot per release:
   it is now immutable. Future releases copy it and re-record only their own
   additions.
 
-### 5. Twin, mutation and coverage floors
+### 5. Twin, mutation, coverage and census floors
 
 The codegen differential in `tests/codegen-checks.sh` [5/6] only failed on a
 divergence between `tests/codegen-twin.c` and `bootstrap/aster.ast`. A corpus
@@ -611,7 +611,7 @@ probes cannot report a perfect score over an empty set.
 
 The same "no vacuous evidence" rule is applied to the gate's breadth in
 `tests/ci-protocol-checks.sh`: the suite list parsed from `DEFAULT_SUITES`
-must contain at least **114** entries, every `tests/*-checks.sh` must be
+must contain at least **115** entries, every `tests/*-checks.sh` must be
 registered, every registered name must exist, and the corpus must keep at
 least **120 examples**, **360 baseline rows** and **30 mutation-bearing
 suites**. This is a test-mass ratchet: it catches a suite that exists but is
@@ -629,6 +629,17 @@ gcov is optional: missing gcov is a whole-suite `SKIP` (77), while a gcov that
 cannot read the profile fails. The floor is a source constant, so raising the
 corpus means raising the floor in the same review.
 
+`tests/mutation-score-checks.sh` turns the scattered kill assertions into one
+aggregate view. It censuses the standardized helpers (`mutate`,
+`build_mutant`, `mutate_and_check`) across the suites, requires every
+declaring suite to keep at least one survivor assertion, and floors the
+result at **24 suites / 150 mutant builds / 2 per suite**. The measured
+census is **24 suites / 155 mutants**. Because a surviving mutant fails its
+own suite, a green gate means the census is also the denominator of a **100%
+(155/155) mutation score**; a suite that loses its kill path or its probes
+fails the census before the gate can go green. Bespoke mutation layers that
+build their mutants by hand are not counted, so the floor is conservative.
+
 ### 6. Observed evidence
 
 `tests/ci-protocol-checks.sh` — **30/30 checks PASS**, covering:
@@ -645,8 +656,8 @@ corpus means raising the floor in the same review.
   keys, malformed digests, missing examples, missing snapshots and a missing
   version definition;
 - no suite may hardcode a versioned baseline path again;
-- the coverage ratchet: 114 registered suites, 121 examples, 360 baseline rows,
-  32 mutation-bearing suites, no orphan `*-checks.sh`, no missing registered
+- the coverage ratchet: 115 registered suites, 121 examples, 360 baseline rows,
+  33 mutation-bearing suites, no orphan `*-checks.sh`, no missing registered
   suite.
 
 Runner classification was exercised with fixture suites:
@@ -682,7 +693,11 @@ Focused runs with the new gate (this host, cross `HOSTCC`):
 | `CI_SUITES="coverage-checks.sh ci-protocol-checks.sh"` | 2/2 PASS: 84.71% of 7526 lines (floor 80%) | 28 s + protocol |
 | `coverage-checks.sh` standalone | PASS, same 84.71% | 28.1 s |
 | same suite with the floor raised to 95% (negative test) | FAIL: 84.71% below the 95% floor | suite time only |
-| full default gate, 114 suites (`CI_KEEP_ARTIFACTS=1 sh tests/ci.sh`) | 114/114 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 suites with one optional SKIP layer | 62 min |
+| `mutation-score-checks.sh` standalone | PASS: 24 suites, 155 mutants; floors 24/150/2 | < 1 s |
+| same suite with the mutant floor raised to 1000 (negative test) | FAIL: 155 mutants below the 1000 floor | < 1 s |
+| same suite with a fake one-mutant suite (negative test) | FAIL: below the 2-per-suite floor | < 1 s |
+| same suite with a fake suite that has no survivor assertion (negative test) | FAIL: declares mutants but has no survivor assertion | < 1 s |
+| full default gate, 115 suites (`CI_KEEP_ARTIFACTS=1 sh tests/ci.sh`) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 suites with one optional SKIP layer | 64 min |
 
 The diverse run was the first time the new gate paid for itself. `icon-checks.sh`
 failed not because of the cache but because `openssl smime -verify` rejected
@@ -729,8 +744,15 @@ floors.
 protocol self-checks: **2/2 PASS**, coverage 84.71% of 7526 lines against the
 80% floor, 28 s. The first complete run of the resulting gate then finished
 **114/114 PASS, 0 skipped, 0 failed** in 62 minutes, with the APK gate 3/3 and
-the same two suites each keeping one optional SKIP layer; this is the current
-release-candidate evidence.
+the same two suites each keeping one optional SKIP layer.
+
+`mutation-score-checks.sh` then took the set to **115**. It was validated
+standalone and through the gate with the protocol self-checks (**2/2 PASS**:
+24 suites, 155 mutants), and three negative runs failed as expected — the
+mutant floor raised to 1000, a fake one-mutant suite, and a fake suite with
+no survivor assertion. The first complete run of the 115-suite gate finished
+**115/115 PASS, 0 skipped, 0 failed** in 64 minutes with the APK gate 3/3 and
+the same two partial suites. This is the current release-candidate evidence.
 
 ### 8. What is still open in P1
 
@@ -738,9 +760,10 @@ release-candidate evidence.
   paths and repository-root output names, so true isolation (sandbox dirs,
   unique `TMPDIR`) is a prerequisite. The build cache is the safe first half
   of the speedup; running suites concurrently is not.
-- **Aggregate mutation score and nightly execution** remain, along with
-  **governance** (`LICENSE`, GitHub Actions, `CONTRIBUTING`, `SECURITY`, tags).
-  The codegen twin has accept/reject and mutation-probe floors, the protocol
-  suite ratchets suite/example/baseline breadth, and `coverage-checks.sh`
-  floors source-line coverage at 80%; the other 31 mutation-bearing suites
-  still report kills without a common score.
+- **Nightly execution and governance** remain, along with **parallel suite
+  execution**. The gate now censuses the standardized mutation corpus (24
+  suites / 155 mutants, floors 24/150/2; a green gate means 155/155 caught)
+  and floors source-line coverage at 80%, but bespoke mutation layers that
+  build their mutants by hand still report kills without joining the census.
+  `LICENSE`, a scheduled workflow, `CONTRIBUTING`, `SECURITY` and release tags
+  are still open.
