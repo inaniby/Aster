@@ -380,6 +380,22 @@ Built with
 keygen, a dual-signed APK build and its verification all complete under
 ASan+UBSan with no report.
 
+The campaign is now **resident** rather than a manual audit step:
+`tests/sanitizer-checks.sh` (registered in `ci.sh`) builds the compiler with
+`-O0 -g -fsanitize=address,undefined -fno-sanitize-recover=all` and runs six
+deterministic corpora — every shipped example, `tests/fuzz-gen.py`'s syntax
+corpus, and targeted mutations of ELF objects, APKs and DER/PEM keys generated
+by `tests/fuzz-bin.py`. A sanitizer abort is made fatal with
+`ASAN_OPTIONS=abort_on_error=1` and `UBSAN_OPTIONS=halt_on_error=1`, so it
+cannot hide behind the compiler's own exit 1. The suite passes only if every
+input exits 0 (accepted) or 1 (rejected with a diagnostic), with at least the
+unmutated object and APK seeds accepted. Step [7/8] re-injects the historical
+`readZip` missing-`nameLen`-bound bug into a copy of `src/aster.cpp` and
+requires ASan to catch a 0xffff nameLen (exit 134), proving the harness can
+fail. Default run (`SAN_COUNT=200`, `SAN_KEY_COUNT=100`): **8/8 phases PASS**,
+121 examples (67 compiled / 54 cleanly rejected), 21/179 syntax, 13/187
+objects, 1/199 APKs, 12/88 keys accepted/rejected, **0 crashes**, 112 s.
+
 #### 2.4 Suite matrix
 
 A full `tests/ci.sh` run was started, but each suite rebuilds the 12,000-line
@@ -688,7 +704,7 @@ by token scope.
 - no suite may hardcode a versioned baseline path again;
 - `CI_JOBS=0` and `CI_JOBS=abc` exit 2 with the validation message before any
   suite runs;
-- the coverage ratchet: 115 registered suites, 121 examples, 360 baseline rows,
+- the coverage ratchet: 116 registered suites, 121 examples, 360 baseline rows,
   33 mutation-bearing suites, no orphan `*-checks.sh`, no missing registered
   suite.
 
@@ -729,6 +745,7 @@ Focused runs with the new gate (this host, cross `HOSTCC`):
 | same suite with the mutant floor raised to 1000 (negative test) | FAIL: 155 mutants below the 1000 floor | < 1 s |
 | same suite with a fake one-mutant suite (negative test) | FAIL: below the 2-per-suite floor | < 1 s |
 | same suite with a fake suite that has no survivor assertion (negative test) | FAIL: declares mutants but has no survivor assertion | < 1 s |
+| `CI_SUITES="sanitizer-checks.sh"` | 8/8 PASS: 121 examples (67/54), 200 syntax (21/179), 200 objects (13/187), 200 APKs (1/199), 100 keys (12/88), 0 crashes; injected nameLen over-read caught (exit 134) | 112 s; 150 s through CI |
 | full default gate, 115 suites (`CI_KEEP_ARTIFACTS=1 sh tests/ci.sh`) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 suites with one optional SKIP layer | 64 min |
 | same gate with `CI_JOBS=4` (private worktrees; fixed-`/tmp` suites serialized) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 partial suites; `work/` empty afterwards | 39.5 min |
 | fresh `--depth=1` clone of `origin/main` at `ca7059d`, full gate `CI_JOBS=4 CI_KEEP_ARTIFACTS=1` | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 partial suites; root `./aster` provisioned; `work/` empty | 37m53s |

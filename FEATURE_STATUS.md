@@ -298,6 +298,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | Two independent readers (`readelf`, `llvm-dwarfdump`) agree on the pc ranges and the CFI rules | shipped | v0.23.33-dev | `eh-frame-checks.sh` [7/9] |
 | One-command CI (smoke + apk + validate_apk) | **shipped** — see Toolchain table (v0.23.8-dev) | v0.23.8-dev | `ci.sh` |
 | Random syntax fuzzer (thousands of inputs, no crashes) | shipped | v0.23.11-dev | `fuzz-checks.sh` |
+| **ASan/UBSan hostile-input campaign** — the sanitizer build runs the shipped examples, a generated syntax corpus, and deterministic mutations of real ELF objects, APKs and DER/PEM signing keys; every input must be accepted (0) or rejected with a diagnostic (1), never crash or hang. The suite re-injects the historical `readZip` `nameLen` over-read into a copy of the source and requires ASan to catch it | shipped | v0.23.61-dev | `sanitizer-checks.sh` [8/8] |
 
 ## Runtime API surface (what generated code can call)
 
