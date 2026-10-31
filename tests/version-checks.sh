@@ -35,6 +35,22 @@ grep -q '^constexpr const char\* kVersion = ASTER_VERSION_STRING;$' src/aster.cp
     || { echo "FAIL: kVersion is no longer defined from ASTER_VERSION_STRING" >&2; exit 1; }
 echo "OK: kVersion expands the shared version macro"
 
+# CMake carries the same version for its project() metadata. It is the one
+# build system file that names a version, and a bump that forgets it would
+# ship a CMake project claiming an older release than the binary it builds.
+cmake_ver=$(sed -n 's/^project(aster_bootstrap VERSION \([0-9][0-9.]*\) .*/\1/p' \
+    CMakeLists.txt | head -1)
+expect_ver=${VER%-dev}
+if [ -z "$cmake_ver" ]; then
+    echo "FAIL: could not read the project version from CMakeLists.txt" >&2
+    exit 1
+fi
+if [ "$cmake_ver" != "$expect_ver" ]; then
+    echo "FAIL: CMakeLists.txt project version is $cmake_ver, source is $expect_ver" >&2
+    exit 1
+fi
+echo "OK: CMakeLists.txt project version matches the source ($expect_ver)"
+
 # 3) The version literal must appear exactly once in the source: in the macro
 #    itself. A second copy is a second chance to forget to update it.
 # Quoted, because the version is also mentioned in comments ("// v0.23.13-dev:
@@ -52,6 +68,25 @@ if ! head -1 README.md | grep -q "$VER"; then
     exit 1
 fi
 echo "OK: README.md title names $VER"
+
+# The architecture map states the size of the translation unit. It once said
+# "~2.5k lines" while the file had grown past 13k; a stale size is how a reader
+# concludes the document is about a compiler that no longer exists. Keep the
+# claim within 10% of the real file so a major change forces a doc review.
+arch_k=$(sed -n 's/^One C++17 translation unit, ~\([0-9][0-9]*\)k lines,.*/\1/p' \
+    ARCHITECTURE.md | head -1)
+if [ -z "$arch_k" ]; then
+    echo "FAIL: could not read the line-count claim from ARCHITECTURE.md" >&2
+    exit 1
+fi
+actual_lines=$(wc -l < src/aster.cpp | tr -d ' ')
+arch_lo=$((arch_k * 900))
+arch_hi=$((arch_k * 1100))
+if [ "$actual_lines" -lt "$arch_lo" ] || [ "$actual_lines" -gt "$arch_hi" ]; then
+    echo "FAIL: ARCHITECTURE.md claims ~${arch_k}k lines; src/aster.cpp has $actual_lines (allowed ${arch_lo}-${arch_hi})" >&2
+    exit 1
+fi
+echo "OK: ARCHITECTURE.md line-count claim (~${arch_k}k) matches src/aster.cpp ($actual_lines)"
 
 # 4) VERSION_HISTORY's newest entry must be this version (its first heading).
 top=$(grep -m1 '^## ' VERSION_HISTORY.md)

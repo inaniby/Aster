@@ -1,13 +1,15 @@
 # Aster — Architecture
 
-**As of v0.23.5-dev.** This document describes the compiler as it exists in
+**As of v0.23.61-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
-carries **no signing key of its own**. It is descriptive: when code and this
-file disagree, the code wins and this file is the bug.
+carries **no signing key of its own**. It is descriptive, not a feature
+catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the
+language and toolchain accept. When code and this file disagree, the code wins
+and this file is the bug.
 
 ## Shape of the system
 
-One C++17 translation unit, ~2.5k lines, zero dependencies beyond the standard
+One C++17 translation unit, ~13k lines, zero dependencies beyond the standard
 library. There is no intermediate representation, no assembler, no external
 linker: the parser's AST is consumed directly by a code generator that emits
 AArch64 instruction words, which an in-process ELF writer serializes. The APK
@@ -69,9 +71,11 @@ dedicated diagnostic.
 
 **Semantic pass** (`struct Sema`, v0.23.0-dev / P3.1) type-checks every emitted
 function **before** code generation starts. It walks the AST with its own scope
-stack and infers one of eight kinds — `Ty::I32`, `Ty::U32`, `Ty::U8`, `Ty::U16`,
-`Ty::I64`, `Ty::Ptr`, `Ty::Bool`, `Ty::Struct` — for every expression. A `Ty` is a
-`(Kind, sid)` pair: `sid` names the struct when the kind is `Struct`, and names the
+stack and infers one of ten kinds — `Ty::I32`, `Ty::U32`, `Ty::U8`, `Ty::U16`,
+`Ty::I64`, `Ty::U64`, `Ty::Ptr`, `Ty::Bool`, `Ty::Struct`, `Ty::Enum` — for
+every expression. A `Ty` is a
+`(Kind, sid)` pair: `sid` names the declaration when the kind is `Struct` or
+`Enum`, and names the
 struct a `ptr<S>` points at, so `ptr<P>` and `ptr<Q>` are different types (the unified lattice
 replaced the older scattered `isPtr`/`isBool` booleans in v0.23.2-dev / P3.2):
 
@@ -395,14 +399,12 @@ bridge exactly as v0.23.14-dev did — proves the test can fail.
 
 ## Test architecture
 
-`tests/smoke.sh` is the front door: it runs the structural suites
-(`error-checks`, `object-checks`, `linker-checks`, `global-checks`,
-`pie-so-checks`, `so-dyn-checks`, `comment-checks`, `pixel-offset-checks`,
-`array-bounds-checks`, `local-array-checks`, `for-loop-checks`,
-`runtime-bounds-checks`, `pointer-index-checks`, symtab/regression suites) and the e2e suites that
-execute generated binaries. Suite counts are reproducible in two host
-configurations — default host toolchain and `HOSTCC=aarch64-linux-gnu-gcc` —
-documented in `README.md`.
+`tests/ci.sh` is the front door: one strict build, then the full suite list —
+structural, qemu, differential, mutation, coverage and ratchet checks — plus
+three independent APK gates. `tests/smoke.sh` is the fast local subset: it
+compiles a fixed group of examples and asserts the ELF shape without qemu.
+Suite counts are reproducible in two host configurations — default host
+toolchain and `HOSTCC=aarch64-linux-gnu-gcc` — documented in `README.md`.
 
 Three mechanisms keep the suite honest off-device:
 
@@ -417,26 +419,44 @@ Three mechanisms keep the suite honest off-device:
   self-checks** (programs that return 0 only if the feature works), plus a
   rejection matrix for the misuse cases.
 
-Byte-level no-regression claims are proven by rebuilding the previous
-version's compiler from its delivery zip and comparing `build-so` output for
-every `examples/*.ast`.
+Byte-level no-regression claims are proven by frozen per-version baselines
+(`tests/baseline/v*/example-hashes.txt`) recording every example's output
+modes; an old snapshot is read-only, and a re-record is a reviewed change with
+its own evidence.
 
 ## Known limitations (carried, not hidden)
 
-- The semantic pass still infers types on the fly rather than building a typed
-  IR: there is no `TypedExpr` node carrying its type, so each pass re-derives
-  what it needs. A typed IR is the natural next step (P3.1 follow-up).
-- Dynamic subscripts are bounds-checked at run time only when `--bounds-check`
-  is passed (v0.23.1-dev / P1.5); a default build emits no test. The check is
-  `CMP widx, #len` + `B.LO` over `BRK #1` — one unsigned comparison, because a
-  negative index is a huge unsigned value — and it is skipped for constant
-  indexes (the compile-time fold already proved them in range) and for
-  subscripts with no known extent (pointer indexing).
-- `if` requires an `else`; `else if` chains are sugar for `else { if … }`
-  (v0.22.51-dev). There are no `true`/`false` keywords: the only bool literals
-  are `0` and `1`.
-- Only `i32`, `ptr` and `bool` exist as types; no structs, no wider integers
-  (P3.2, P3.3).
-- APK signatures are v1 (JAR) only (P2.1 adds v2).
-- The 32-bit spill path for live pointer temporaries across calls is latent;
-  current code paths avoid it by materializing bases after evaluating indices.
+- **No typed IR.** The semantic pass infers types on the fly and codegen
+  re-derives them: there is no `TypedExpr` carrying its type, so the two
+  passes remain a duplicated rule set rather than one source of truth. A typed
+  IR is the structural fix the P2 plan names.
+- **Bounds checks are opt-in at run time.** Dynamic subscripts are guarded only
+  under `--bounds-check` (v0.23.1-dev), including array parameters since
+  v0.23.36-dev; constant subscripts are always proved at compile time, and a
+  subscript whose extent is unknown (pointer indexing) is never guarded. A
+  default build emits no test.
+- **The language is integer-only.** There is no floating-point type: `float`
+  and `double` cross only the C ABI, through the `s0` bridge used by
+  `native_touch.ast`. There is no string *value* (a literal is a `ptr`), no
+  heap operator (the `mmap`/`brk` intrinsics are the surface), and no
+  variadics, generics, closures or modules beyond `include`.
+- **One translation unit.** Lexer, parser, Sema, codegen, ELF writer, linker,
+  APK packager and crypto all live in `src/aster.cpp` (~13k lines). That keeps
+  the zero-dependency build honest and the whole compiler readable in one file,
+  at the cost of a large edit surface; splitting it behind a unity build is a
+  P2 item, not a shipped change.
+- **Fixed frames, no tail calls.** Every function reserves 8 KiB and recursion
+  depth is bounded by the stack; the bootstrap compiler therefore lowers
+  expressions with an explicit work stack rather than by recursion.
+- **APK signing is v1 + v2.** There is no v3/v4 key rotation and no AAB output;
+  releases are signed with the caller's key (or a generated per-project debug
+  key), and deterministic PKCS#1 v1.5 keeps builds reproducible. Device-visible
+  behavior closes only on hardware (ROADMAP principle 4); the e2e suites need
+  qemu or an AArch64 host.
+- **The bootstrap subset is deliberately narrower.** M4 reaches a byte-identical
+  fixed point (`boot2 == boot3 == boot4`), but `bootstrap/aster.ast` does not
+  accept everything the host does — structs, `bool`, `for`, `switch`, `u64`,
+  casts and `sizeof` are among the documented omissions — and
+  `tests/bootstrap-loop-checks.sh` does not execute programs emitted by the
+  self-host; their correctness is covered by the differential suite against the
+  C twin. See `bootstrap/CODEGEN-SPEC.md` §11.
