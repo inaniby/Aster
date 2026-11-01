@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.62-dev"
+#define ASTER_VERSION_STRING "0.23.63-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -775,6 +775,12 @@ struct Expr {
     explicit Expr(Kind kind):k(kind){} Expr(Kind kind,uint64_t value):k(kind),n(value){}
 };
 using E=std::unique_ptr<Expr>;
+// v0.23.63-dev: an enum is an i32 underneath, so every value that becomes one
+// — an explicit `= value`, an auto-increment, or a constant assigned into an
+// enum slot — has to sit in i32's signed range. One predicate, because three
+// places ask the same question and each of them used to answer "yes".
+static bool enumValueFits(int64_t v){return v>=-2147483648LL&&v<=2147483647LL;}
+
 // Does a folded constant initializer fit in `t`? Used where the value is known
 // at compile time, so a silent truncation would be a bug in the program rather
 // than a wrapping operation.
@@ -810,6 +816,12 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
         // the parser — u64 now takes every literal up to 2^64-1, and only the
         // declaration knows which slot the value was meant for.
         if(t==Ty::I64) return (uint64_t)e.n<=0x7fffffffffffffffULL;
+        // v0.23.63-dev: an enum slot is an i32 underneath, so a literal has to
+        // fit i32 — `let c: Color = 4294967296;` used to be accepted and
+        // silently truncated. Without this the case falls through to `return
+        // true`, and tyAssignable's own `initializerFits` test is the only
+        // range check on the enum <- i32-constant path.
+        if(t.k==Ty::Enum)return enumValueFits((int64_t)e.n);
         return true;
     }
     switch(t.k){
@@ -821,6 +833,10 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
         // 2^64-1), never a truncation, so the slot accepts it as it stands.
         case Ty::U64: return true;
         case Ty::Bool: return folded==0||folded==1;
+        // v0.23.63-dev: the same i32 range for a folded constant, so
+        // `let c: Color = 1 + 4294967295;` is refused too and not just the
+        // bare literal.
+        case Ty::Enum: return enumValueFits(folded);
         default:      return true;   // i64 holds everything; i32 truncates as before
     }
 }
@@ -2365,9 +2381,17 @@ class Parser {
                     E c=expr();
                     int64_t cv=0;
                     if(!constantInteger(*c,cv))throw Error(loc(cn.line,cn.col,"enumerator initializer must be an integer constant: "+cn.s));
-                    if(cv<-2147483648LL||cv>2147483647LL)throw Error(loc(cn.line,cn.col,"enumerator value out of i32 range: "+cn.s));
+                    // v0.23.63-dev: one predicate for both paths, so the two
+                    // cannot drift apart again (the explicit one was checked
+                    // and the auto-increment was not).
+                    if(!enumValueFits(cv))throw Error(loc(cn.line,cn.col,"enumerator value out of i32 range: "+cn.s));
                     val=cv;
                 }
+                // v0.23.63-dev: the auto-increment is range-checked too.
+                // `enum E { A = 2147483647, B }` used to give B the value
+                // 2147483648 — an enumerator no i32 slot could hold, produced
+                // by the one path the explicit check never covered.
+                else if(!enumValueFits(val))throw Error(loc(cn.line,cn.col,"enumerator value out of i32 range: "+cn.s));
                 def.consts.push_back({cn.s,val});
                 g_enumConsts[cn.s]=val;
                 next=val+1;
@@ -3824,9 +3848,19 @@ struct Codegen {
         // those nodes' `type` with the Sema answer; they are simply not
         // asserted here, and Codegen must keep reading exprType for them.
         switch(e.k){
+        // v0.23.63-dev: the shift family and BitNot joined the exemption.
+        // They were the only arithmetic nodes left out, so a wide integer
+        // reaching them aborted the compiler on a legal program —
+        // `let c: i64 = (a + b) << 2;` with two i64 operands died with
+        // "TypedIR MISMATCH kind=25" (kind 25 is Shl), because Sema answers
+        // i32 for every arithmetic node while Codegen answers promoteInt.
+        // The exemption is the same deliberate split the family already had:
+        // unifying the two resolvers is a semantic decision of its own (it
+        // would start refusing programs that compile today), not a bug fix.
             case Expr::Add: case Expr::Sub: case Expr::Mul: case Expr::Div:
             case Expr::Neg: case Expr::Mod:
             case Expr::BitAnd: case Expr::BitOr: case Expr::BitXor:
+            case Expr::Shl: case Expr::Shr: case Expr::BitNot:
                 break;
             default:
                 if(e.type!=exprType(e)){
@@ -6556,10 +6590,45 @@ struct Sema {
         }
         if(actual==Ty::Ptr||actual==Ty::Bool)throw Error(loc(e.line,e.col,at+"i32"));
     }
-    // May a value of type `actual` (the expression `e`) be stored in a slot of
-    // type `want`? Structs match by identity; everything else keeps the rules
-    // the scalar lattice already had.
-    void checkValue(Ty want,const Expr& e,Ty actual,const std::string& what){
+// v0.23.63-dev: is Sema's type for `e` a real width, or the i32 placeholder
+// the arithmetic family gets? Sema answers Ty::I32 for every arithmetic node
+// while Codegen promotes to the operand width (the TypedIR exemption in gen
+// says so), so `a + b` on two u8 operands is typed i32 by Sema and is a u8 sum
+// in the emitted code. A narrowing check that trusted the placeholder would
+// refuse `fn add_u8(a: u8, b: u8) -> u8 { return a + b; }`, which has compiled
+// since narrow types were introduced. So the strict rule applies to a value
+// that carries a width of its own — a variable, a field, a call, a literal —
+// and an arithmetic result keeps its historical treatment until the two
+// resolvers are unified, which is P1-1's root fix and a decision of its own.
+static bool semaTypeIsPlaceholder(const Expr& e){
+    switch(e.k){
+        case Expr::Add: case Expr::Sub: case Expr::Mul: case Expr::Div:
+        case Expr::Neg: case Expr::Mod:
+        case Expr::BitAnd: case Expr::BitOr: case Expr::BitXor:
+        case Expr::Shl: case Expr::Shr: case Expr::BitNot:
+            return true;
+        default: return false;
+    }
+}
+// May a value of type `actual` (the expression `e`) be stored in a slot of
+// type `want`? Structs match by identity; everything else keeps the rules
+// the scalar lattice already had.
+//
+// `refuseNarrow` is the v0.23.63-dev rule itself, and it is `false` at exactly
+// two call sites — a store through a subscript and a store through a field.
+// Those are the two positions the round deliberately leaves alone, and the
+// reason is not a principle but a fact the tree carries: `bootstrap/aster.ast`
+// — the program the M4 closed loop recompiles with its own output — stores an
+// `i64` instruction word into an `i32[262144]` stream (`textw[textlen] = w;`),
+// and the bootstrap subset has **no cast expression** to spell that truncation
+// with (its parser rejects every type keyword in operand position). Tightening
+// those two sites would break self-hosting with no way to fix the source, so
+// the narrowing rule covers the four positions where a value is *bound* to a
+// declared type — a `let`, an assignment, a global assignment and a `return` —
+// and a store through a subscript or a field keeps the width the container has.
+// The honest fix is to give the bootstrap subset a cast; until then this flag
+// is the seam where that decision lives, and it is named rather than silent.
+    void checkValue(Ty want,const Expr& e,Ty actual,const std::string& what,bool refuseNarrow=true){
         if(tyIsStruct(want)||tyIsStruct(actual)){
             if(!tyIsStruct(want)||!tyIsStruct(actual)||actual.sid!=want.sid)
                 throw Error(loc(e.line,e.col,what+": expected "+tyNameFull(want)+", got "+tyNameFull(actual)));
@@ -6573,7 +6642,24 @@ struct Sema {
             if(!ptrToAssignable(want,actual,e))throw Error(loc(e.line,e.col,what+": expected "+tyNameFull(want)+", got "+tyNameFull(actual)));
             return;
         }
-        if(actual==Ty::Ptr||actual==Ty::Bool)throw Error(loc(e.line,e.col,what+": expected "+tyNameFull(want)+", got "+tyNameFull(actual)));
+        // v0.23.63-dev: the scalar case now routes through tyAssignable, the
+        // rule checkArgument has always applied to an argument. It used to fall
+        // through after refusing a ptr and a bool, so `return x;` with an i64
+        // `x` in a `-> u8` function compiled and handed back `300 & 0xFF`: an
+        // implicit truncation, which is the one thing tyAssignable exists to
+        // refuse. The two checks above stay ahead of it because a struct and a
+        // ptr have their own rules; this line is the integer lattice, and it
+        // still refuses a ptr or a bool reaching an integer slot. An arithmetic
+        // A ptr or a bool reaching an integer slot is refused at every store,
+        // the two the narrowing rule leaves alone included — that refusal is
+        // not about width, so `refuseNarrow` does not reach it.
+        if(actual==Ty::Ptr||actual==Ty::Bool)
+            throw Error(loc(e.line,e.col,what+": expected "+tyNameFull(want)+", got "+tyNameFull(actual)));
+        // result is exempt — see semaTypeIsPlaceholder.
+        if(!refuseNarrow||semaTypeIsPlaceholder(e))return;
+        if(!tyAssignable(want,actual,e))
+            throw Error(loc(e.line,e.col,what+": expected "+tyNameFull(want)+", got "+tyNameFull(actual)+
+                            " (write an explicit cast to truncate)"));
     }
     // The element type of an indexable name: a local T[N], or a fixed-size
     // global whose declared type is the element type. v0.23.28-dev: this is
@@ -7063,6 +7149,23 @@ struct Sema {
                     }
                 }
                 rejectStruct(a,"a comparison");rejectStruct(b,"a comparison");
+                // v0.23.63-dev: enum nominal isolation in a comparison, on the
+                // terms tyAssignable already sets for assignment. tyIsInteger
+                // counts an enum as an integer and the branches above only
+                // refuse a ptr and a struct, so `c == f` between two different
+                // enums compiled and answered true — a nominal type compared
+                // by its bits. Two enums compare only when they are the same
+                // enum; an enum compares against an i32, because the
+                // underlying storage is i32 and `i32 <- enum` is free. Every
+                // other integer width is refused, as it is in an assignment.
+                if(a.k==Ty::Enum&&b.k==Ty::Enum){
+                    if(a.sid!=b.sid)
+                        throw Error(loc(e.line,e.col,"cannot compare two different enum types: "+tyNameFull(a)+" and "+tyNameFull(b)));
+                } else if(a.k==Ty::Enum||b.k==Ty::Enum){
+                    const Ty other=a.k==Ty::Enum?b:a;
+                    if(other.k!=Ty::I32)
+                        throw Error(loc(e.line,e.col,"an enum may only be compared with the same enum or with an i32 (got "+tyNameFull(other)+")"));
+                }
                 return Ty::Bool;
             }
             case Expr::And: case Expr::Or: {
@@ -7396,6 +7499,15 @@ struct Sema {
                         int64_t v=0;
                         if(constantInteger(*s.expr,v)&&!initializerFits(s.ty,*s.expr,v))
                             throw Error(loc(s.line,s.col,"local initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(v)+")"));
+                        // v0.23.63-dev: the same rule, at a let. An i64 in a
+                        // u8 slot used to be accepted and truncated, while an
+                        // argument in the same slot was refused — the two
+                        // positions disagreed about what the language says.
+                        // The range check stays first: `let x: u8 = 300;` is a
+                        // constant that does not fit, and saying so is more
+                        // use than saying the slot will not take an i32.
+                        if(!semaTypeIsPlaceholder(*s.expr)&&!tyAssignable(s.ty,actual,*s.expr))
+                            throw Error(loc(s.line,s.col,"type mismatch initializing '"+s.name+"': expected "+tyNameFull(s.ty)+", got "+tyNameFull(actual)+" (write an explicit cast to truncate)"));
                         }
                     }
                     // v0.23.34-dev: a `ptr<T>` local keeps the element type the
@@ -7435,6 +7547,10 @@ struct Sema {
                         int64_t v=0;
                         if(constantInteger(*s.expr,v)&&!initializerFits(b->ty,*s.expr,v))
                             throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(b->ty)+": "+s.name+" ("+std::to_string(v)+")"));
+                        // v0.23.63-dev: and at a plain assignment, for the same
+                        // reason: a store is a store wherever it is written.
+                        if(!semaTypeIsPlaceholder(*s.expr)&&!tyAssignable(b->ty,actual,*s.expr))
+                            throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+": expected "+tyNameFull(b->ty)+", got "+tyNameFull(actual)+" (write an explicit cast to truncate)"));
                     }
                 } else if(globalNames.count(s.name)){
                     if(arrayGlobals.count(s.name))throw Error(loc(s.line,s.col,"cannot assign to an array as a whole: "+s.name));
@@ -7463,6 +7579,10 @@ struct Sema {
                         int64_t v=0;
                         if(constantInteger(*s.expr,v)&&!initializerFits(want,*s.expr,v))
                             throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(want)+": "+s.name+" ("+std::to_string(v)+")"));
+                        // v0.23.63-dev: and at a global assignment — the
+                        // fourth of the four places a value lands in a slot.
+                        if(!semaTypeIsPlaceholder(*s.expr)&&!tyAssignable(want,actual,*s.expr))
+                            throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+": expected "+tyNameFull(want)+", got "+tyNameFull(actual)+" (write an explicit cast to truncate)"));
                     }
                 } else throw Error(loc(s.line,s.col,"assignment to unknown variable: "+s.name));
                 return;
@@ -7506,7 +7626,10 @@ struct Sema {
                 }
                 const Ty elem=arrayElemTypeOf(s.name);
                 const Ty actual=annotateExpr(*s.expr);
-                checkValue(elem,*s.expr,actual,"type mismatch assigning array element of '"+s.name+"'");
+                // v0.23.63-dev: `refuseNarrow=false` — see checkValue. A store
+                // through a subscript keeps the element's width; the narrowing
+                // rule covers a `let`, an assignment and a `return`.
+                checkValue(elem,*s.expr,actual,"type mismatch assigning array element of '"+s.name+"'",false);
                 return;
             }
             case Stmt::FieldAssign: {
@@ -7520,7 +7643,9 @@ struct Sema {
                 // is a struct or ptr<S> and yields the field's declared type.
                 const Ty field=annotateExpr(*s.idx);
                 const Ty actual=annotateExpr(*s.expr);
-                checkValue(field,*s.expr,actual,"type mismatch assigning field '"+s.idx->name+"'");
+                // v0.23.63-dev: `refuseNarrow=false`, the same two-site
+                // exemption as an element store — see checkValue.
+                checkValue(field,*s.expr,actual,"type mismatch assigning field '"+s.idx->name+"'",false);
                 // v0.23.38-dev: `h.onClick = inc;` — a fn-pointer field is
                 // stored by signature, which is the difference between a
                 // callback table and eight bytes that happen to be an address.
@@ -7557,6 +7682,14 @@ struct Sema {
                         throw Error(loc(s.line,s.col,"return type mismatch in function "+fn));
                 } else if(actual==Ty::Bool){
                     throw Error(loc(s.line,s.col,"return type mismatch in function "+fn+": expected i32, got bool"));
+                } else {
+                    // v0.23.63-dev: the integer return. The branches above
+                    // cover a struct, a bool and a ptr, and an integer used to
+                    // fall through untouched — so `fn f() -> u8 { let x: i64
+                    // = 300; return x; }` compiled and handed back `300 & 0xFF`.
+                    // An argument has always been checked by this rule; a
+                    // return now is too.
+                    checkValue(retType,*s.expr,actual,"return type mismatch in function "+fn);
                 }
                 // v0.23.38-dev: `fn get() -> fn(i32) -> i32 { return inc; }` —
                 // the function promised a signature, so what it returns has to

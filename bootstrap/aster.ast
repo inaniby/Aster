@@ -3522,6 +3522,13 @@ fn ty_width(t: i32) -> i32 {
 fn align_up(v: i64, a: i32) -> i64 {
     return (v + a - 1) / a * a;
 }
+// v0.23.63-dev: the i32 twin. `.data`/`.bss` sizes are i32 slots, and an i64
+// result landing in one is an implicit narrowing, which the host refuses — and
+// the bootstrap subset has no cast expression to ask for the truncation with,
+// so the arithmetic is simply done at the width the slot is.
+fn align_up32(v: i32, a: i32) -> i32 {
+    return (v + a - 1) / a * a;
+}
 
 // The string walk is the dump's walk — the same iterative pre-order over the
 // same sibling chains (emit, §6). The .rodata order is therefore a property
@@ -3646,12 +3653,12 @@ fn cg_globals(prog: i32) -> i32 {
                     ninit = ninit + 1;
                 }
                 if (sec == 1) {
-                    data_size = align_up(data_size, w);
+                    data_size = align_up32(data_size, w);
                     g_addr[s] = 0x800000 + data_size;
                     g_sec[s] = 1;
                     data_size = data_size + total;
                 } else {
-                    bss_size = align_up(bss_size, w);
+                    bss_size = align_up32(bss_size, w);
                     g_addr[s] = bss_size;   // .bss's base is not known until
                                             // .data's size is final; fixed up
                                             // in cg_collect once the walk ends
