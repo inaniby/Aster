@@ -355,3 +355,23 @@ fn main() -> i32 { return i32(f()); }
 新常驻套件 `tests/layout-boundary-checks.sh`（9 层，注册进 `DEFAULT_SUITES` 与 `CRITICAL`），配套 `tests/layout-boundary-twin.c`：7 条 qemu 见证（含「最后一个合法块偏移」511 × 8 MiB）、6 例 C 差分、6 条拒绝、双向计数、3 个变异体（m2 刻意是**两处**编辑——只把累加器改回 32 位并**不会**被抓住，因为逐字段检查先触发；这正是「哪一处改动才是承重的」这一问题的诚实答案）、360/360 基线行、1 形态 × 3 模式。
 
 第 3 批仍剩第 13 项（语言缺口 `typedef`/`const`/`void`）未处理，按上面的路线排队。
+
+## 修复记录（v0.23.66-dev）
+
+第二部分「ELF / 链接器 / DWARF / APK」表里的待验项**已全部实测完毕**：五处真缺陷、一处防御性缺口、一处**审计自己判错**。只有 `.so` 的字节动了，且只动在节头表里——121 个例子的文件长度逐一不变，最多相差 4 字节。
+
+| 审计项 | 处理 |
+| --- | --- |
+| `kRelTlsOff` 只校验 4 字节（标注「高（待验）」） | **确认，且是本轮唯一一处内存安全问题。** 该重定位填的是 `MOVZ`/`MOVK` **一对**指令共 8 字节，而 `parseObject` 只证明了 4 字节在界内。手工构造一个把重定位指向 `.text` 末 4 字节的 `.o`，ASAN 构建直接报 `heap-buffer-overflow ... READ of size 1 ... in resolveRelocations`。Aster 自己写出的对象不会把一对指令放在末尾，但 `parseObject` 是 `link-*` 读外部输入的入口，越过 `std::vector` 就是未定义行为。边界改为按类型：`need=(type==kRelTlsOff)?8u:4u` |
+| `writeObject` 的 STB_LOCAL 段符号排序 + `sh_info=1` | **确认。** 只有 `-g` 才写这个符号，而它被写在 **GLOBAL 中间**（紧邻线程局部之前），`sh_info` 却恒为 1。`readelf` 原话：`local symbol 2 found at index >= .symtab's sh_info value of 1`。段符号移到槽 1（紧跟 null 项），全局符号从 `symBase = 1 + dbgSym` 起，`sh_info` 写 `symBase` |
+| `.hash` 的 `sh_entsize=0` | **确认。** SysV 哈希表是 `uint32` 数组，`gcc -shared -Wl,--hash-style=sysv` 产出的 `.hash` 在 readelf 里 `ES` 列是 `04`。改为 4 |
+| `.rela.plt` 的 `sh_info=0` | **审计判错了。** 审计说应为 `.plt` 的索引；GNU ld 写的是 **`.got.plt`**——同一份 ld 产物里 readelf 显示 `Inf 20`，而 `.plt` 是第 8 节、`.got.plt` 才是第 20 节。这也才是对的：`R_AARCH64_JUMP_SLOT` 填的是 GOT 槽，不是 `.plt` 里的桩。改的是 `.got.plt`，且新套件的 GNU ld 差分先对 ld 自己的输出断言同一不变量，因此修法跟随工具而非猜测——与上一轮页对齐那一项同构（错的都是断言） |
+| `.bss` / `.tbss` 的 `sh_offset` 固定写 `relroEnd` | **确认。** SHT_NOBITS 的 `sh_offset` 应是「它若有字节时所处的位置」，即 `sh_addr` 减去所属段的 (vaddr−offset) 差。GNU ld 的 `.bss` 是 `Address 0x20038` / `Off 0x10038`，差 `0x10000` 正是它第二个 `PT_LOAD` 的段差。有 TLS 时 Aster 的 `.bss` 地址在 `.tbss` 之后，偏移却停在 RELRO 末尾，两者相差整个 `.tbss`。改为跟随地址 |
+| PLT 的 `ADRP x16` 无 ±4GB 检查 | **确认（防御性）。** 同一条指令在 `resolveRelocations` 里有 `±2^20` 页的检查，PLT 生成处没有，直接截断写进 21 位字段。当前不可达（`.plt` 与 `.got.plt` 相距数十字节），但两条路径不该不一致，故改为拒绝 |
+| `maxTlsAlign` 仅 `!tdata.empty()` 时更新 | **确认（低）。** 纯 `.tbss` 对象（线程局部全为零初始化）此前对合并块的对齐毫无贡献。`ParsedObject` 增加 `tbssAlign`，两个链接器都纳入 |
+| `.gnu.hash` 的 `sh_entsize=0` | **不是缺陷。** GNU ld 的 `.gnu.hash` 同样写 0。套件**断言 0**，以免后一轮把它「修」成缺陷 |
+| `rodataOff=alignUp(...,1)`（`.rodata` 只有 1 对齐） | **确认但与 ld 不一致而非错误**：GNU ld 用 8。未在本轮修——它会移动字节，而本轮的其余部分都是「只改节头」。已记入 `ROADMAP.md` backlog |
+
+新常驻套件 `tests/elf-metadata-checks.sh`（9 层，注册进 `DEFAULT_SUITES` 与 `CRITICAL`）：21 条源码守卫、`readelf` + 独立解码器双读者、**GNU ld 差分**（先对两个 ld 链接的 `.so` 断言同一组不变量，把「什么是对的」钉在工具上而不是钉在 Aster 上）、ASAN 构建下的拒绝矩阵（篡改对象必须被拒绝且**不**产生 sanitizer 报告——靠运气通过的拒绝不算）、2 条 qemu 见证、8 条解码器断言、3 个变异体、360/360 基线行。
+
+第 3 批仍剩第 13 项（语言缺口 `typedef`/`const`/`void`）未处理。

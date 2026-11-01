@@ -1,6 +1,6 @@
 # Aster — Architecture
 
-**As of v0.23.65-dev.** This document is a structural map of the compiler in
+**As of v0.23.66-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
 carries **no signing key of its own**. It is descriptive, not a feature
 catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the
@@ -195,6 +195,29 @@ to a vector, recording relocations (`R_AARCH64_CALL26` for calls,
   back-patched. Exit is `mov x8, #93; svc #0`.
 
 ## Images and linking
+
+**A relocation's footprint is not always one instruction (v0.23.66-dev).**
+`parseObject` proved four bytes of `.text` in bounds for every relocation,
+which is one instruction — except for `kRelTlsOff`, which fills a
+`MOVZ`/`MOVK` **pair**, eight bytes. Proving four and using eight is a
+heap-buffer-overflow at the `MOVK` read (ASAN: `resolveRelocations`), reachable
+only from a hand-made object, but `parseObject` reads whatever `link-*` is
+handed. The bound is per-type now.
+
+**Section headers describe the image; they are not free to be wrong
+(v0.23.66-dev).** Four of them were, and the authority for each is a tool
+outside the project rather than the source:
+
+| Field | Contract | Who says so |
+| --- | --- | --- |
+| `.symtab` `sh_info` | every local symbol precedes every global, and `sh_info` names the first global | `readelf` warns about the violation in so many words |
+| `.hash` `sh_entsize` | `4` — the table is an array of `uint32` | GNU ld prints `04` |
+| `.rela.plt` `sh_info` | the index of **`.got.plt`**, not `.plt` — a `JUMP_SLOT` fills a GOT slot | GNU ld: `Inf 20` where `.plt` is section 8 |
+| `sh_offset` of a `SHT_NOBITS` section | the place its bytes would have had: `sh_addr` minus its segment's delta | GNU ld: `.bss` at `Off 0x10038` / `Address 0x20038`, delta `0x10000` |
+
+`.gnu.hash` is the deliberate exception — it carries `sh_entsize 0`, and so
+does GNU ld's, so the suite asserts 0 there too rather than leaving a reader
+free to "fix" it.
 
 **Two ceilings the layout arithmetic now enforces (v0.23.65-dev).** Both were
 the same defect: a number that wrapped instead of refusing.

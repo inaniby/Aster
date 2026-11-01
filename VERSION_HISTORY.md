@@ -1,3 +1,100 @@
+## v0.23.66-dev — the parts of an ELF image nobody runs
+
+`AUDIT-v0.23.61-dev.md`'s second part listed seven ELF/linker findings marked
+「待验」— located by reading the source, **never reproduced**. v0.23.65-dev took
+the two that were already known (the `.eh_frame` page alignment and the
+`kRelTlsOff` truncation). This round reproduces the rest: five real defects,
+one defensive gap, and one item where the audit itself was wrong.
+
+Only `.so` bytes move, and only inside the section header table: every one of
+the 121 examples builds to a file of exactly the same length, differing in at
+most four bytes.
+
+### A relocation that reads past the end of `.text`
+
+`kRelTlsOff` fills a `MOVZ`/`MOVK` **pair** — eight bytes, two instructions —
+but `parseObject` proved only four:
+
+```cpp
+if(r.offset>result.text.size()||result.text.size()-r.offset<4||r.offset%4)
+    throw Error(input+": relocation offset is out of bounds or unaligned");
+```
+
+Four bytes of `.text` in bounds satisfies that check and does **not** satisfy
+the fill, which reads `text[patch+4 .. patch+7]` and then writes it. A
+relocation pointing at the last four bytes made both go past the end. ASAN, on
+a hand-made object:
+
+```
+==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x50d000000198
+READ of size 1 at 0x50d000000198 thread T0
+    #0 resolveRelocations src/aster.cpp:9071
+0x50d000000198 is located 0 bytes after 136-byte region
+```
+
+No object Aster itself writes puts a pair there, but `parseObject` is the
+reader for anything handed to `link-*`, and reading past a `std::vector` is
+undefined whether or not it is reachable today. The footprint is per-type now:
+
+```
+error: /tmp/t.o: relocation at offset 132 needs 8 bytes of .text and
+only 4 remain
+```
+
+### Four section-header fields
+
+| Field | Was | Now | Authority |
+|---|---|---|---|
+| `.symtab` `sh_info` (with `-g`) | `1`, with a local `STT_SECTION` symbol written in the middle of the globals | the first global index | `readelf`: *"local symbol 2 found at index >= .symtab's sh_info value of 1"* |
+| `.hash` `sh_entsize` | `0` | `4` | GNU ld prints `04`; the table is `uint32[]` |
+| `.rela.plt` `sh_info` | `0` | `.got.plt`'s index | GNU ld — see below |
+| `.bss` / `.tbss` `sh_offset` | the end of whatever was written last | `sh_addr` − the segment's delta | GNU ld: its `.bss` reads `Off 0x10038` / `Address 0x20038`, and `0x10000` is exactly its `PT_LOAD` delta |
+
+The `-g` symbol order needed the section symbol to move to slot 1, right after
+the null entry, with the globals starting after it — so `.symtab` carries
+`sh_info = symBase` rather than a constant.
+
+The NOBITS pair is the one that changes what a reader sees: with a thread-local
+block present, `.bss`'s address sits past `.tbss` (which owns address space but
+no file bytes) while its offset stopped at the end of RELRO.
+
+### Where the audit was wrong
+
+It said `.rela.plt`'s `sh_info` should name `.plt`. GNU ld names
+**`.got.plt`** — on a `ld`-linked `.so`, readelf shows `Inf 20` where `.plt` is
+section **8** and `.got.plt` is section 20. That is right, too: a
+`R_AARCH64_JUMP_SLOT` fills a slot in the GOT, not a stub in `.plt`. The
+suite's GNU ld differential asserts the invariant on `ld`'s own output first,
+so the fix follows the tool rather than the guess — the same correction the
+page-size suite needed last round, where the *assertion* was wrong rather than
+the code.
+
+`.gnu.hash` is recorded as **not** a defect: it carries `sh_entsize 0` and so
+does GNU ld's. The suite asserts 0 there too, to stop a later round "fixing" it.
+
+### One defensive gap
+
+The PLT's `ADRP x16` truncated its 21-bit immediate with no range check, while
+`resolveRelocations` applies exactly that check (`±2^20` pages) to the same
+instruction everywhere else. Unreachable today — `.plt` and `.got.plt` sit tens
+of bytes apart — but the two paths should not disagree, so the PLT refuses
+now. Pure `.tbss` objects also got their alignment back: `maxTlsAlign` was only
+updated from `tdataAlign`, so a block whose thread-locals were all
+zero-initialized contributed nothing to where the merged block had to start.
+
+### New resident suite
+
+`tests/elf-metadata-checks.sh` (9 layers), registered in `tests/ci.sh`:
+strict build, 21 source guards, an independent reader (`readelf` for what it
+can say, a decoder for what it cannot — `readelf` will not tell you the
+offset/address delta of the segment a NOBITS section belongs to), a **GNU ld
+differential** that runs the same invariants over two `ld`-linked `.so`s so
+"right" is fixed from outside the project, a refusal matrix under an **ASAN
+build** (the tampered object must be refused with no sanitizer report — a
+refusal that came from luck would not do), qemu witnesses that the corrected
+images still load and run, coverage counting, three mutations, and the byte
+baseline.
+
 ## v0.23.65-dev — where the layout arithmetic runs out
 
 `AUDIT-v0.23.61-dev.md` items 9 and 10. Both turned out to be the same defect

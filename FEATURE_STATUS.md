@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.65-dev.** One table per area. "Since" is the version that
+**As of v0.23.66-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -252,6 +252,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | `DT_HASH` + `DT_GNU_HASH` (bloom filter, buckets, chains) | shipped | v0.22.19.1-dev | `gnu-hash-checks.sh` |
 | **Symbol versioning** in both `.so` writers — `DT_VERDEF` with a `VER_FLG_BASE` BASE entry (index 1, skipped by glibc's loader so an import's `versym` 1 means "no version") plus a named `aster` version (index 2) for exports, `DT_VERNEED` against `GLIBC_2.17` (aux index 3) for libc imports, and `.gnu.version` / `.gnu.version_d` / `.gnu.version_r` with the five `DT_VER*` tags; exports answer `name@@aster` under `readelf --version-info` | shipped | v0.23.51-dev | `symbol-versioning-checks.sh` [9/9] |
 | `PT_GNU_RELRO` coverage in shared-object writers | shipped | v0.20.0-dev | `relro-checks.sh`, `e2e-relro.sh` |
+| **Section-header self-consistency** — `.symtab` `sh_info` names the first global and every local precedes it (with `-g` the local `STT_SECTION` symbol for `.text` takes slot 1); `.hash` declares `sh_entsize 4`; `.rela.plt`'s `sh_info` names **`.got.plt`** (a `JUMP_SLOT` fills a GOT slot, not a stub — GNU ld agrees, and the audit guessed `.plt`); a `SHT_NOBITS` section's `sh_offset` is where its bytes would have been, `sh_addr` minus its segment's delta. `.gnu.hash` keeps `sh_entsize 0`, which is what GNU ld writes and is therefore *not* a defect. A relocation's bounds check is per-type: `kRelTlsOff` fills a `MOVZ`/`MOVK` **pair**, so it proves 8 bytes, not 4 (ASAN caught the over-read). The PLT's `ADRP` carries the same ±4 GiB page-range check the relocation resolver applies, and a pure-`.tbss` object contributes its alignment to the merged TLS block | shipped (bug fix) | v0.23.66-dev | `elf-metadata-checks.sh` [2/9], [3/9], [4/9], [5/9] |
 | `link-obj` — ET_REL merging, `CALL26` + address-pair relocation resolution | shipped | v0.22.x | `linker-checks.sh` |
 | `build-apk` from `.so` (two-step) and from `.ast` (one-step, `--emit-so`) | shipped | v0.22.47-dev | `apk-checks.sh` |
 | Binary AXML manifest (real string pool), NativeActivity glue, 4 KiB alignment | shipped | v0.22.x | `apk-checks.sh`, `validate_apk.py` |
