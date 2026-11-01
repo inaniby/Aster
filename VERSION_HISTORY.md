@@ -1,3 +1,103 @@
+## v0.23.65-dev — where the layout arithmetic runs out
+
+`AUDIT-v0.23.61-dev.md` items 9 and 10. Both turned out to be the same defect
+wearing two costumes: a layout number that **silently wrapped** instead of
+refusing. No byte change — every example compiles to what it compiled to in
+v0.23.64-dev; what changed is which programs are accepted.
+
+### A thread-local offset that did not fit the instruction carrying it
+
+Local-exec TLS addresses a variable as `TPIDR_EL0 + offset`, and the offset
+travels in the immediate of a `MOVZ X17,#imm16` / `MOVK X17,#imm16,LSL#16`
+pair — 32 bits. The relocation that fills it computed
+
+```cpp
+const uint32_t val=uint32_t((target-tlsVaddr)&0xffffffffu);
+```
+
+and a mask is not a check. A variable at offset 2^32 was moved to offset 0,
+onto whatever thread-local lived there. Reachable with a 10 KB source: 513
+declarations of `tls let gN: i64[1048576] = 0;`. The observable consequence is
+not a crash but a wrong answer — `g512[0] = 1; return i32(g0[0]);` returns
+**1**, because the write and the read address the same eight bytes. One stride
+less (512 declarations, last offset `0xFF800000`) still works, and that is now
+a witness rather than a coincidence.
+
+The mask is gone; the check is at the point of the lossy conversion, and it
+names the variable, the offset and the ceiling:
+
+```
+error: thread-local variable '__aster_tls_g512' sits at offset 4294967296 in
+the thread-local block, which does not fit the 32-bit MOVZ/MOVK pair a
+local-exec access carries (limit 4294967295)
+```
+
+### A struct whose size wrapped to zero
+
+`layoutStruct` accumulated field offsets in a `uint32_t` and the 1024-byte
+limit was checked *after* the loop. A struct of 8192 fields of `L1[512]` —
+`L1` being 1024 bytes — reaches `8192 × 524288 = 2^32` exactly, which wraps to
+**0**, and 0 is not `> 1024`. So the compiler accepted a 4 GiB struct, reported
+`sizeof` as 0, and laid every field over whatever the zero-size slot happened
+to sit on. A 4195-field variant (`L1[1000]`) wrapped to 712704 and was refused
+with a size that had never existed — a diagnostic that named a number no part
+of the program held.
+
+The accumulation is 64-bit now, and the limit is enforced **while the fields
+are placed**, so there is no window in which a nonsense size is held at all.
+The message names the field that crossed:
+
+```
+error: struct Big is too large: field 'f0' reaches offset 524288 (limit 1024 bytes)
+```
+
+That required `kMaxStructSize` to move to namespace scope, because the check
+now lives in `layoutStruct` rather than in its caller — the caller passes its
+declaration token in, so the refusal still carries `at L:C`. A 32-bit span
+ceiling guards `f.offset` independently, so raising the size limit later cannot
+quietly reintroduce the wrap. The final round-up is still asserted, though with
+`kMaxStructSize = 1024` and every alignment a divisor of it, the per-field
+check has always fired first — the invariant is kept because it is the one that
+says what `s.size` is, not because it currently fires.
+
+### Item 9's other half was measured, and it is sound
+
+`.so` `.eh_frame` page alignment was the audit's first priority for Android
+15+ 16 KB-page devices. It is fine — and finding that out corrected the suite
+that was supposed to be checking it. `tests/page-size-checks.sh` asserted that
+every `PT_LOAD` *starts* on a page boundary. The contract is **congruence**:
+`p_vaddr == p_offset (mod p_align)`, which is what a loader needs, since it
+mmaps from `p_vaddr & ~(page-1)` at file offset `p_offset & ~(page-1)`. GNU ld
+settles which reading is real — `gcc -shared -fPIC -Wl,-z,max-page-size=16384`
+emits a second `PT_LOAD` at off `0x3e30` / vaddr `0x7e30` with `p_align
+0x4000`: congruent, not start-aligned. At the default 4 KB it is congruent mod
+`0x1000` and *not* even mod `0x4000`, which is precisely why `--page-size`
+exists.
+
+The stronger assertion could never have failed, because no image in the corpus
+carried a `.eh_frame`: `build-so -g` at 16 KB emits a fourth segment at
+`0x10840`, which is congruent but not start-aligned. The matrix now runs with
+`-g` as well (24 images instead of 12), the assertion is congruence, the suite
+asserts that `-g` really does add a segment (so the paragraph above stays
+true), and the GNU ld differential is asserted beside it so the correction
+cannot rot into "anything goes".
+
+### New resident suite
+
+`tests/layout-boundary-checks.sh` (9 layers) and its C twin
+`tests/layout-boundary-twin.c`: strict build, source guards pinning both
+ceilings, 7 qemu witnesses (including the last thread-local offset the pair can
+carry, and the four struct layouts unchanged by the new accumulation), a 6-case
+C differential, a 6-refusal matrix, coverage counting on both sides, a
+3-mutant layer, the 360-row byte baseline, and one shape through all three
+modes. The twin is explicit about what it does *not* twin: reproducing a 4 GiB
+thread-local block in C would ask a C compiler for a 4 GiB per-thread
+allocation, and the property under test belongs to Aster's own code sequence.
+The three mutants withdraw one ceiling each and must be caught by a program the
+real compiler refuses — including one that restores the defect exactly (32-bit
+accumulator **and** no per-field check, so the only remaining check runs on a
+size that has already wrapped).
+
 ## v0.23.64-dev — every suite runs: the orphan gate's blind spot
 
 No compiler change, and no byte change. This round is about the gate.

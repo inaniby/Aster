@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.64-dev.** One table per area. "Since" is the version that
+**As of v0.23.65-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -72,7 +72,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | **Labeled `break` / `continue`** — `name: while/for` names a loop, and `break name;` / `continue name;` jump to that loop's exit / step, resolved innermost-first at compile time against a `loopNames` stack; a missing or misplaced label is a hard error, not a runtime `goto` | shipped | v0.23.49-dev | `switch-checks.sh` [3/9], [5/9] |
 | Global `let` scalars, arrays, `@align(N)` | shipped | v0.22.x | `global-checks.sh`, `global-deep-checks.sh` |
 | `extern let` declarations (cross-object globals) | shipped | v0.22.x | `global-checks.sh` |
-| `tls let` thread-local globals (scalar + array) — per-thread block split into `.tdata` + `.tbss`, `PT_TLS` in both static images and shared objects, local-exec `MRS Xt,TPIDR_EL0` access statically and initial-exec (GOT slot + `R_AARCH64_TLS_TPREL64`) in a `.so`, `tls` a context keyword (reserved-word count stays 27 since v0.23.61-dev added `enum`); `tls extern let` refused in a shared object | shipped | v0.23.52-dev | `tls-checks.sh` [9/9] |
+| `tls let` thread-local globals (scalar + array) — per-thread block split into `.tdata` + `.tbss`, `PT_TLS` in both static images and shared objects, local-exec `MRS Xt,TPIDR_EL0` access statically and initial-exec (GOT slot + `R_AARCH64_TLS_TPREL64`) in a `.so`, `tls` a context keyword (reserved-word count stays 27 since v0.23.61-dev added `enum`); `tls extern let` refused in a shared object. **v0.23.65-dev:** the local-exec block offset is refused when it does not fit the 32-bit `MOVZ`/`MOVK` pair that carries it — it used to be masked, which moved a variable at offset 2^32 onto offset 0 | shipped (bug fix) | v0.23.52-dev | `tls-checks.sh` [9/9], `layout-boundary-checks.sh` [5/9] |
 | Run-time global initializers (ordered `__aster_init` chain) | shipped | v0.22.x | `e2e-global-deep.sh` |
 | String literals (rodata, NUL-terminated) | shipped | v0.22.x | `c-string-literals-*`, `e2e-c-string-literals.sh` |
 | Comments `//` and `/* */` | shipped | v0.22.43-dev | `comment-checks.sh` |
@@ -162,7 +162,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | **Sema walks the chain** (`indexChainOf`): dimension *k*'s bounds come from `dims[k]`, the answer is a row unless this is the innermost subscript, and *every* subscript is checked — an inner `a[true][0]` is as illegal as an outer one | shipped | v0.23.31-dev | `multi-dim-array-checks.sh` [5/9], mutant m3 |
 | **Codegen computes every subscript first and materializes the base address after** in `emitIndexAddr()`, because evaluating a subscript can materialize a global's address into X16 — where the base is about to go | shipped | v0.23.31-dev | `multi-dim-array-checks.sh` [2/9], [3/9] |
 | A chain may stop short: **a row is a `ptr` value** — it may be read, assigned to a `ptr` variable, and handed to a `ptr` parameter exactly as `&buf` travels (v0.23.30-dev's route) | shipped | v0.23.31-dev | `multi-dim-array-checks.sh` [3/9], [4/9] |
-| `struct Name { field: T, … }` — nominal composite type, AAPCS64 layout (recursive), `.field` read/write | shipped | v0.23.5-dev | `struct-checks.sh` [2/8], [5/8] |
+| `struct Name { field: T, … }` — nominal composite type, AAPCS64 layout (recursive), `.field` read/write, 1024-byte size limit enforced **while the fields are placed** (v0.23.65-dev: the accumulation is 64-bit and names the field that crosses, because a `uint32_t` accumulator wrapped 2^32 to 0 and 0 passed the check that ran afterwards) | shipped | v0.23.5-dev | `struct-checks.sh` [2/8], [5/8], `layout-boundary-checks.sh` [5/9] |
 | Aggregate literal `Name { v1, v2 }`, including nested (`Rect { Point { 1, 2 }, … }`) | shipped | v0.23.5-dev | `struct-checks.sh` [7/8] |
 | A field may be another struct (nesting), declared earlier; self-containment rejected | shipped | v0.23.5-dev | `struct-checks.sh` [3/8], [7/8] |
 | `ptr<S>` — pointer to a struct, reached with `&v`; `.field` through it | shipped | v0.23.5-dev | `struct-checks.sh` [7/8] |

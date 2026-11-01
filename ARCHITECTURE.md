@@ -1,6 +1,6 @@
 # Aster — Architecture
 
-**As of v0.23.64-dev.** This document is a structural map of the compiler in
+**As of v0.23.65-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
 carries **no signing key of its own**. It is descriptive, not a feature
 catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the
@@ -195,6 +195,32 @@ to a vector, recording relocations (`R_AARCH64_CALL26` for calls,
   back-patched. Exit is `mov x8, #93; svc #0`.
 
 ## Images and linking
+
+**Two ceilings the layout arithmetic now enforces (v0.23.65-dev).** Both were
+the same defect: a number that wrapped instead of refusing.
+
+- A local-exec thread-local is `TPIDR_EL0 + offset`, and the offset travels in
+  the immediate of a `MOVZ X17,#imm16` / `MOVK X17,#imm16,LSL#16` pair — 32
+  bits. `kRelTlsOff` used to write it with `& 0xffffffffu`, which is a mask and
+  not a check, so a variable at offset 2^32 was moved to offset 0 onto
+  whatever thread-local lived there. It is refused now, naming the variable,
+  the offset and the ceiling.
+- `layoutStruct` accumulated field offsets in a `uint32_t` and the 1024-byte
+  limit was checked after the loop, so a struct whose total is exactly 2^32
+  wrapped to 0 and 0 passed the check — a 4 GiB struct was accepted with
+  `sizeof` 0. The accumulation is 64-bit, the limit is enforced **as fields are
+  placed** and names the field that crossed, and a 32-bit span ceiling guards
+  `f.offset` independently of the size limit.
+
+**What a load segment has to satisfy (v0.23.65-dev).** Congruence, not
+start-alignment: `p_vaddr == p_offset (mod p_align)`, which is what a loader
+needs because it mmaps from `p_vaddr & ~(page-1)` at file offset
+`p_offset & ~(page-1)`. GNU ld agrees — at `-z max-page-size=16384` its second
+`PT_LOAD` sits at off `0x3e30` / vaddr `0x7e30` with `p_align 0x4000`, and at
+the default 4 KB it is not even congruent mod `0x4000`, which is exactly why
+`--page-size` exists. Aster's layouts all have `p_vaddr == p_offset` shifted by
+the link base, so every segment is congruent at either setting; what the 4 KB
+default lacks is `p_align` itself.
 
 | Product | Command | Shape |
 | --- | --- | --- |
