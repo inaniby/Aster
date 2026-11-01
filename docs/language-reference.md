@@ -1,6 +1,6 @@
 # Aster Language Reference
 
-**Applies to: v0.23.61-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.62-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
 source and then **checked against the v0.23.51-dev binary**. Where a rule says a
@@ -606,6 +606,21 @@ assignment out in full instead`.
 
 `++` / `--` are **statements only**, never expressions — that is what keeps an
 Aster expression free of side effects. Prefix and postfix are the same store.
+
+### Evaluation order (v0.23.62-dev)
+
+Aster does not specify the order in which the operands of one *expression* are
+evaluated, and a program that depends on it is not portable. It does specify
+one thing that used to be observable, and wrong: in every assignment form
+above, the **value** is generated before the target's address is held, and a
+subscript is generated before the base it indexes. So `a[i][j] = g` and
+`s.f[i] = g` store into the element named — including when `g` is a *global*,
+whose address materializes in the same register the target address lives in.
+
+The value is also generated at the **target's** width rather than a default
+one: `*p = -5` on a `ptr<i64>` stores `-5`, not `4294967291`. And an
+integer→`bool` cast tests the operand at its own width, so `0x1_0000_0000` is
+true.
 
 ### `if`
 

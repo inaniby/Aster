@@ -1,0 +1,310 @@
+# Aster 全量源码级审计报告
+
+**审计对象**：Aster 编译器 v0.23.61-dev（`ca7059d`）
+**状态**：**4 个 P0 缺陷已在 v0.23.62-dev 修复并补上回归测试**（见文末「修复记录」）；5 个 P1 缺陷与第二、三、四部分发现仍未处理，按建议路线排队。
+**审计范围**：`src/aster.cpp`（13,132 行单文件编译器：词法/语法/语义/代码生成/ELF 写出/链接器/DWARF/APK 打包/RSA 签名）、`bootstrap/aster.ast`（5,458 行自举编译器）、115 个常驻测试套件、121 个示例、7 份文档
+**审计方法**：五路并行源码审阅 + **执行实测验证**（严格构建 `g++ -std=c++17 -O2 -Wall -Wextra -pedantic -Werror` 通过后，编写 20 个探针程序编译并在 `qemu-aarch64` 上运行，每个异常项都配**对照组**以排除测试程序自身错误）
+
+---
+
+## 摘要
+
+审计发现 **10 个经执行实测确认的缺陷**（其中 4 个会导致**静默的错误结果或内存破坏**，属最高优先级），另有一批代码审阅发现待实测验证。
+
+值得警惕的是：**一个全绿的 115 套件 CI 并不能拦住这批缺陷**。它们全部逃过了现有测试——因为测试用例普遍使用常量下标与常量右值，恰好绕开了出错的求值顺序路径。这印证了「测试覆盖了路径，不等于覆盖了路径的组合」。
+
+| 等级 | 数量 | 性质 |
+|---|---|---|
+| **P0** | 4 | 静默产生错误结果 / 内存破坏（写错地址） |
+| **P1** | 5 | 静默接受非法程序，或错误拒绝合法程序 |
+| **P2** | 9 | 代码审阅发现，待实测验证 |
+
+---
+
+## 第一部分：执行实测确认的缺陷
+
+以下每项均给出**最小复现程序**、**实测结果**、**期望结果**与**对照组**。
+
+### P0-1　多维数组下标赋值：目标地址先于右值求值 → 写错地址（内存破坏）
+
+```aster
+let g: i32 = 42;
+fn main() -> i32 { let m: i32[2][3] = 0; m[0][1] = g; return m[0][1]; }
+```
+**实测**：返回 `0`　**期望**：`42`
+
+代码生成先把目标元素地址算进 `X16`，再求右值；而右值读取全局变量时 `emitGlobalAddress` 会**覆写 `X16`**，于是 `STR` 写到了 `g` 的存储位置而非 `m[0][1]`。
+
+**对照组（均正常，精确定位故障面）**：
+
+| 用例 | 结果 | 说明 |
+|---|---|---|
+| `m[0][1] = 42`（常量右值） | 42 ✓ | 常量不占用寄存器 |
+| `m[0][1] = f()`（调用右值） | 42 ✓ | 静态 ELF 直连 `BL`，不经 PLT，`X16` 幸存 |
+| `a[1] = g`（**一维**数组 + 全局右值） | 42 ✓ | 一维分支求值顺序正确 |
+| `m[0][1] = g`（**多维** + 全局） | 0 ✗ | 仅多维分支有缺陷 |
+
+> 一维分支（约 5732/5750 行）遵循「先求值再造址」，多维分支（约 5723-5727 行）顺序相反——同类代码两种写法，是典型的复制粘贴漂移。
+
+**建议修法**：多维分支把 `emitIndexAddr()` 移到 `gen(*s.expr)` 之后。结构体字段存储路径 `emitStructStore` 需同样核查。
+
+**回归用例**：上述 4 个用例应全部固化为断言，缺一则该缺陷会再次溜过。
+
+---
+
+### P0-2　结构体数组字段寻址：基址先于下标求值 → 读到错位元素
+
+```aster
+struct S { xs: i32[4] }
+let gi: i32 = 2;
+fn main() -> i32 { let s: S; s.xs[2] = 12; return s.xs[gi]; }
+```
+**实测**：返回 `0`　**期望**：`12`
+
+`emitElemAddrField` 先算字段首址（`X16`），再算下标。`gi` 是全局量，读取时覆写 `X16`，后续以 `X16` 为基址取元素 → 偏移落在错误位置。
+
+**对照组**：
+
+| 用例 | 结果 |
+|---|---|
+| `return s.xs[2]`（常量下标） | 12 ✓ |
+| `let li: i32 = 2; return s.xs[li]`（**局部**下标） | 12 ✓ |
+| `return s.xs[gi]`（**全局**下标） | 0 ✗ |
+
+局部下标正常、全局下标出错，直接证实了「全局地址加载覆写 `X16`」的机理。同类函数 `emitElemAddr`／`emitPtrElemAddr`／`emitIndexAddr` 都是**先下标后基址**，唯独此处相反。
+
+**建议修法**：交换两行顺序，与其余三个同类函数保持一致。
+
+---
+
+### P0-3　`*p = v` 右值未按目标宽度生成 → 64 位写入被截断为无符号 32 位
+
+```aster
+let q: i64 = 0;
+fn main() -> i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 0; } return 1; }
+```
+**实测**：返回 `1`（即 `q != -5`）　**期望**：`0`
+
+存储宽度取自目标元素类型 `elem`，但右值 `gen(*s.expr)` 用默认 `Ty::I32` 生成 → `SUB W` 得到 `0xFFFFFFFB`，再以 `STR X` 存成 `4294967291`。全局变量与局部变量版本**均触发**。
+
+其余所有写路径（Let、Assign、FieldAssign、IndexAssign）都正确传入了目标类型，仅此一处遗漏。
+
+**建议修法**：改为 `gen(*s.expr, elem)`。
+
+---
+
+### P0-4　`(bool)` 转换对 64 位源只比较低 32 位
+
+```aster
+fn main() -> i32 { let a: u64 = 4294967296; let b: bool = bool(a); if (b) { return 1; } return 0; }
+```
+**实测**：返回 `0`（判为假）　**期望**：`1`（`2^32` 非零应为真）
+
+`gen()` 固定发射 `cmpZero()`（`CMP W` 32 位比较），而源寄存器里其实保留着完整 64 位值 → 高位非零、低位为零时被误判为假。
+
+**对照组**：`bool(u64 = 1)` → `1` ✓（低位非零时掩盖了缺陷）。
+
+> 同文件 `emitCondition`（约 5375 行）已正确写成 `tyIs64(t) ? cmpZeroX : cmpZero`，`&&`/`||` 也正确——此处是遗漏。
+
+**建议修法**：改为 `emit(tyIs64(from) ? cmpZeroX(a) : cmpZero(a))`。
+
+---
+
+### P1-1　宽整数算术参与移位/取反 → 合法程序被拒绝
+
+```aster
+fn main() -> i32 { let a: i64 = 1; let b: i64 = 2; let c: i64 = (a + b) << 2; return i32(c); }
+```
+**实测**：编译拒绝 `TypedIR MISMATCH kind=25 type=i32 exprType=i64`　**期望**：编译通过并返回 `12`
+
+根因：Sema 的 `typeOf(Add)` 硬返回 `Ty::I32`，而 Codegen 的 `exprType(Add)` 返回 `promoteInt`（此处为 `I64`）。TypedIR 一致性断言的豁免名单只列了 `Add/Sub/Mul/Div/Neg/Mod/BitAnd/BitOr/BitXor`，**漏了 `Shl/Shr/BitNot`** → 断言触发。同理 `~(u8+u8)`、以及三元表达式双臂同为宽整数加法也会崩。
+
+**建议修法**：二选一——(a) 把 `Shl/Shr/BitNot` 加入豁免；(b) **治本**：让 `typeOf` 对算术族改用与 `exprType` 相同的 `promoteInt`，消除两套类型推导的不一致。
+
+---
+
+### P1-2　enum 比较运算符缺少名义隔离（本轮新代码的缺陷）
+
+```aster
+enum Color { R, G }
+enum Fruit { A, B }
+fn main() -> i32 { let c: Color = R; let f: Fruit = A; if (c == f) { return 1; } return 0; }
+```
+**实测**：编译通过并返回 `1`　**期望**：**编译拒绝**
+
+比较运算（约 7029 行）只拒绝 `Ptr`/`Struct`，两个 `Ty::Enum` 一律放行，而 `tyIsInteger` 又已把 `Enum` 算作整数 → 跨枚举比较畅通无阻。这违背了语言参考中「两个 enum 即使同为 4 字节也是不同名义类型」的设计，也与本轮刚建立的 `tyAssignable` enum 分支不一致。
+
+**建议修法**：两侧均为 Enum 时要求 `sid` 相同；一侧为 i32 常量则放行（与 `tyAssignable` 口径一致）。
+
+---
+
+### P1-3　enum 常量初始化缺少 i32 范围检查（本轮新代码）
+
+```aster
+enum Color { R, G }
+fn main() -> i32 { let c: Color = 4294967296; return 0; }
+```
+**实测**：编译通过　**期望**：编译拒绝（超出 i32）
+
+`initializerFits` 的 `switch` 无 `Ty::Enum` 分支 → 落到 `default: return true`；`Num` 路径也只对 `U8/U16/Bool/U32/I64` 判范围。越界值经 `tyAssignable` 放行后被静默截断。
+
+**建议修法**：`initializerFits` 增加 `case Ty::Enum:` 判定 `folded ∈ [-2^31, 2^31-1]`，并在 `Num` 路径补同等判据。
+
+---
+
+### P1-4　enum 自增越界未检查（本轮新代码）
+
+```aster
+enum E { A = 2147483647, B }
+```
+**实测**：编译通过（`B = 2147483648`）　**期望**：编译拒绝
+
+声明解析处的注释明确写着「越出 i32 的枚举值不允许」，但该检查只作用于**显式** `= 常量` 的枚举器，自增路径（`next = val + 1`）漏了检查 → 与 P1-3 叠加后静默回绕。
+
+**建议修法**：`next = val + 1` 之后立即执行同一范围检查。
+
+---
+
+### P1-5　`return` 处的隐式窄化未被拒绝
+
+```aster
+fn f() -> u8 { let x: i64 = 300; return x; }
+fn main() -> i32 { return i32(f()); }
+```
+**实测**：编译通过，返回 `44`（`300 & 0xFF`）　**期望**：编译拒绝，要求显式 `u8(x)`
+
+`checkValue` 只处理 struct/bool/ptr，不走 `tyAssignable`；而 `tyAssignable` 的注释明确写「没有隐式截断：要截断请写 cast」。故 `return`、数组元素赋值、结构体字段赋值三处的隐式窄化均被静默接受。
+
+> **注意**：参数传递路径**是正确的**——实测 `fn f(a: u8)` 传入 `i64` 变量被正确拒绝（`argument type mismatch: expected u8, got i64`）。这说明 Sema 各路径的严格度不一致：`checkArgument` 严、`checkValue` 松。
+
+**建议修法**：`checkValue` 补 `tyAssignable` 调用，与 `checkArgument` 口径统一。
+
+---
+
+## 第二部分：代码审阅发现（待实测验证）
+
+以下为源码审阅定位、尚未构造复现用例的项，按严重度排列。**标注「待验」意味着可能存在误判，实施修复前应先复现。**
+
+### 内存安全 / 数值
+
+| 严重度 | 位置 | 问题 | 备注 |
+|---|---|---|---|
+| 高（触发昂贵） | `aster.cpp:692-707` + `2334` | `layoutStruct` 以 `uint32_t` 累加偏移，而 1024 字节上限校验发生在布局**之后** → 回绕出的小 `size` 反而通过校验，字段 `offset` 被写成接近 2³² 的巨大值，随后 `structConstantImage` 按 `size` 分配缓冲区 → **堆越界写**。需约 400 万字段才能回绕，实际触发成本极高（数十 MB 源码、GB 级内存） | 确认缺陷，非 fuzz 可达 |
+| 中 | `aster.cpp:628` | `dimsProduct` 的 `uint64` 连乘无溢出检查 | 当前所有调用点已先经 `dimsTotal` 前置校验，**当前不可触发** |
+| 中 | `aster.cpp:2451` | 全局 `rawData` 按 `size*count` 分配，无上限 → 单次可达 1GB，配合段累加可致 OOM | 资源耗尽，防御性 |
+| 低 | `aster.cpp:10775` | `derChildren` 不校验子节点是否落在**父节点** contents 之内（只校验整个 buffer） | 证书解析宽松，非内存越界 |
+| 低 | `aster.cpp:1019/1024` | `cur()`/`need()` 依赖「词法器总追加 End 哨兵」的不变式，无边界检查；7 处 `t[p+1]`/`t[p+2]` 前瞻依赖该不变式 | 已核实无 `need(TK::End)`，**当前不可触发**，属脆弱依赖 |
+
+### ELF / 链接器 / DWARF / APK
+
+| 严重度 | 位置 | 问题 |
+|---|---|---|
+| 高（待验） | `aster.cpp:9293`、`9847` | `.so` 的 `.eh_frame` 所在 PT_LOAD 声明 `p_align = pageSize`，但 `ehFrameOff` 只做了 `alignUp(..., 8)`——与同文件注释（6030-6034「动态链接器会拒绝 vaddr/offset 未按页对齐的 LOAD 段」）**自相矛盾**。`writeElfBytes` 用的是 `alignUp(..., pageSize)`。后果预判：带 `-g` 的 `.so` 在 Android 15+ 16KB 页设备上 `dlopen` 被拒 |
+| 高（待验） | `aster.cpp:8863-8869` | `resolveRelocations` 的 `kRelTlsOff` 分支读写 `text[patch+4 .. patch+7]`，但 `parseObject:8725` 只校验 `text.size() - offset >= 4` → 重定位落在 `.text` 末 4 字节时越界读写 |
+| 中（待验） | `aster.cpp:8452-8454`、`8540` | `writeObject` 把 **STB_LOCAL** 段符号放在所有 GLOBAL 之后，却写 `sh_info=1`；ELF 要求 local 符号排在所有 global 之前 → `readelf`/`ld` 可能报错 |
+| 中（待验） | `aster.cpp:9662-9663` | PLT 的 `ADRP x16` 未做 ±4GB 页范围检查即截断写入 21 位字段（对比 `resolveRelocations:8883` 有检查） |
+| 中（待验） | `aster.cpp:9245`、`9865` | `.bss`（SHT_NOBITS）的 `sh_offset` 固定写 `relroEnd`；有 TLS 时真实 `.bss` 在 `.tbss` 之后 |
+| 中（待验） | `aster.cpp:8494` | `rodataOff = alignUp(..., 1)` 是无操作，`.rodata` 完全不对齐 → `@embed` 数据无法获得 >1 对齐 |
+| 低 | `aster.cpp:9240/9856` | `.hash` 的 `sh_entsize=0`（应为 4） |
+| 低 | `aster.cpp:10233` | `maxTlsAlign` 仅在 `!tdata.empty()` 时更新，纯 `.tbss` 对象的对齐被忽略 |
+| 低 | `aster.cpp:9859` | `.rela.plt` 的 `sh_info=0`（应为 `S_PLT`） |
+
+**已审阅未发现问题的部分**（供参考，避免重复劳动）：`writeElfBytes` 的 ELF 头与段表核算、CALL26 ±128MB / ADRP ±4GB / imm12 溢出检查、`DT_RELACOUNT` 与 RELATIVE 连续块一致性、符号版本化索引、DWARF 行表与 DIE/abbrev 一致性、`.eh_frame` CIE/FDE 补丁、APK Signing Block 与 `contentDigest` 语义、resources.arsc 各 chunk、AXML、PNG CRC/zlib、RSA PKCS#1 v1.5 填充与长度校验、`/dev/urandom` 熵源、Miller-Rabin 33 轮。
+
+---
+
+## 第三部分：功能缺口
+
+`docs/language-reference.md:164` 明确列出不支持项：`void`、`float/double`、`char` **类型**、`union`、`const`、`typedef`/类型别名。对照 `ROADMAP.md:172-180` 的「Deliberately not planned」，**这些特性从未进入规划**（连「未排期」都算不上）。
+
+按**性价比**排序最值得补的 5 项（均为纯前端改动，不涉及后端代码生成重写）：
+
+1. **`typedef` / 类型别名** — 在 `Ty` 解析期即可展开，改动集中在 Parser，语义风险最低。
+2. **`const` 只读绑定** — 只需 Sema 增加写保护位，可复用现有赋值检查路径。
+3. **`void`** — 仅涉及函数返回位；补齐后可直接打通 C ABI 互操作。
+4. **`char` 类型** — char **字面量**已在 v0.23.50 落地（折叠为 i32），加一个 `Ty::Char` 即可闭合，成本远低于「新特性」。
+5. **`union`** — 复用 struct 布局（`ObjectLayout`），仅重叠偏移，收益是 C 头文件互操作。
+
+**建议维持不做的**：`float/double`（需 FPU 寄存器类 + AAPCS64 传参重做）、泛型/闭包/模块系统/运算符重载（需重建类型系统与符号表）。
+
+### 文档与实现不一致（应修正）
+
+| 位置 | 问题 |
+|---|---|
+| `FEATURE_STATUS.md:192` | 仍称 `&arr` 元素非 4 字节宽会被拒绝（v0.23.30），与 `:149` 的「v0.23.34 起不再限宽」**自相矛盾**；实现以 `:149` 为准，**`:192` 应删除** |
+| `FEATURE_STATUS.md:308-311` | 仍引用已退役的 `tests/lexer-checks.sh`（v0.23.44 退役）与 `tests/parser-checks.sh`（#261 删除） |
+| `docs/language-reference.md:164` vs `:110-112` | 一处说无 `char`，另一处说 char 字面量已支持 → 应改为「有 char 字面量（折叠为 i32），无 char 类型」 |
+| `ARCHITECTURE.md:438/440` | 「仅 i32/ptr/bool、无 struct」「APK 仅 v1 签名」相对 v0.23.61 **严重过时** |
+
+---
+
+## 第四部分：技术债与工程卫生
+
+**显式技术债几乎为零**：grep 未命中任何 `TODO/FIXME/HACK/XXX`。债是隐式的，散落在注释里：`pointer indexing is not supported yet`、指针算术限制、链式比较限制、函数指针数组限制、局部对齐等。
+
+**单文件可维护性**：`src/aster.cpp` 13,132 行，其中 Codegen 约 3.3k 行、后端+链接器+APK 约 5.2k 行。但 `ROADMAP.md:21-24` 原则 5 明确要求「保持单文件、零依赖」，**因此不建议拆文件**；可行替代是补充 section banner 锚点、把 `main` 后的 CLI 分派改为表驱动。
+
+### 测试盲区
+
+- **`tests/smoke.sh` 未注册进 `tests/ci.sh` 的 `DEFAULT_SUITES`**（已核实：ci.sh 中 grep `smoke` 无结果）。而 `FEATURE_STATUS.md` 多处把**基础算术、比较、while/break/continue、32 参数调用、build-elf** 的覆盖挂在它名下 → 这些**最基础的能力实际没有常驻套件**。这是最高优先级的覆盖缺口，修法仅一行。
+- **自举阶段断档**：`lexer-checks.sh` / `parser-checks.sh` 退役后，词法与语法阶段只剩 `codegen-checks.sh` 兜底。
+- **Android 后端薄弱**：`liblog`、`libandroid` 相关能力只有示例 + 手工设备验证，无常驻套件。
+
+### 工程卫生
+
+根目录残留（**均已被 `.gitignore` 正确忽略，无未跟踪污染**）：
+
+- `core.*` **100 个 / 约 75 MB**
+- `tmp-*` 9 个 / 约 11 MB
+- `aster`（1.2 MB）、`lifecycle.apk`、`build.log`（0 字节）、`ci-full.log`、`ci_run.log`
+
+**唯一该加未加的忽略规则**：`*.tmp.*` / `aster.tmp.*`——`tests/ci.sh:249-254` 先写 `aster.tmp.$$` 再 `mv`，若中途中断会留下未被忽略的残留。
+
+---
+
+## 第五部分：建议修复路线
+
+### 第 1 批（P0，正确性，建议立即）
+1. 修多维下标赋值的求值顺序（P0-1），同步核查 `emitStructStore`
+2. 修 `emitElemAddrField` 的基址/下标顺序（P0-2）
+3. `*p = v` 按目标宽度生成右值（P0-3）
+4. `(bool)` 对 64 位源改用 `cmpZeroX`（P0-4）
+5. **为每个缺陷补 4 个对照用例**（常量/局部/全局/调用），现有测试正是因为只用常量而漏掉了它们
+
+### 第 2 批（P1，语义严格度）
+6. 统一 `typeOf` 与 `exprType`，消除 TypedIR 断言豁免名单（P1-1，治本）
+7. enum 三件套：比较名义隔离（P1-2）、初始化范围（P1-3）、自增越界（P1-4）
+8. `checkValue` 接入 `tyAssignable`，与 `checkArgument` 口径统一（P1-5）
+
+### 第 3 批（P2 与缺口）
+9. 实测验证第二部分的 ELF/链接器项，优先 `.so` 的 `.eh_frame` 页对齐（影响 Android 15+ 16KB 设备）与 `kRelTlsOff` 越界
+10. `layoutStruct` 改用带溢出检查的累加，并把尺寸上限校验前移
+11. **把 `tests/smoke.sh` 加入 `DEFAULT_SUITES`**
+12. 修正四处文档过时断言；补 `*.tmp.*` 忽略规则；清理 75 MB 的 `core.*`
+13. 语言缺口按第三部分 Top5 推进（先 `typedef`/`const`/`void`）
+
+---
+
+## 附：本次审计的元发现
+
+**一个全绿的 CI 不等于没有 bug。** 本次发现的 4 个 P0 缺陷全部能在现有 115 套件全绿的情况下存在，原因是测试用例普遍采用最简单的形式（常量下标、常量右值），恰好绕开了出错的求值顺序组合。
+
+针对性建议：为**求值顺序**类缺陷建立一个专门的常驻套件，系统性覆盖「下标/基址/右值 × 常量/局部/全局/调用」的组合矩阵。这类缺陷一旦发生就是静默的内存破坏，最难在用户侧被发现，价值远高于再增加一轮功能特性。
+
+---
+
+## 修复记录（v0.23.62-dev）
+
+第 1 批的 5 项**全部完成**，按审计建议落地：
+
+| 审计项 | 处理 |
+| --- | --- |
+| 第 1 批 1（P0-1） | 已修：`Stmt::IndexAssign` 多维标量分支改为先生成值再寻址；struct 分支**故意保持**寻址优先，并在源码注释说明理由（`emitStructStore` 把目的地址停在栈帧里、每字段重新装载 `X16`，故不跨右值求值持有地址） |
+| 第 1 批 2（P0-2） | 已修：`emitElemAddrField` 先求值下标、再算字段基址，与 `emitIndexAddr` 已有顺序一致 |
+| 第 1 批 3（P0-3） | 已修：`Stmt::DerefAssign` 改为 `gen(*s.expr, elem)`，按元素自身宽度生成右值 |
+| 第 1 批 4（P0-4） | 已修：`gen(Cast)` 的 bool 分支改为 `tyIs64(from) ? cmpZeroX(a) : cmpZero(a)` |
+| 第 1 批 5（补对照用例） | 已落地：`tests/eval-order-checks.sh`，其骨架就是审计建议的**操作数组合矩阵**（常量/局部/全局/调用），四个修复形态各配四个右值种类；配套 `tests/eval-order-twin.c` 做 gcc 差分；[7/9] 变异层用 `cmp -s` 断言变异体确实改动了源码 |
+
+元发现的建议已按字面采纳：求值顺序缺陷有了自己的常驻套件（9 层，注册进 `tests/ci.sh` 的 `DEFAULT_SUITES` 与 `CRITICAL`）。
+
+第 2、3 批（P1 五件与 P2/缺口）未在本轮处理，仍按上面的路线排队；其中第 3 批第 9、10 项涉及 `.so` 页对齐与结构体布局溢出，建议优先。

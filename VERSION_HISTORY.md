@@ -1,3 +1,36 @@
+## v0.23.62-dev — evaluation order and operand width in codegen
+
+Round driven by the full source-level audit recorded in `AUDIT-v0.23.61-dev.md`:
+four P0 defects, each confirmed by execution on qemu with a control group, all
+of them in codegen's handling of **when an operand is evaluated** and **at what
+width**. No language change; no new surface.
+
+### The shared root mechanism
+
+`X16` is the register codegen parks a destination address in: `emitIndexAddr`,
+`emitStructAddr` and `emitElemAddrField` all leave the address they computed in
+`X16`, and the store that follows writes through it. Evaluating an operand is
+not inert with respect to `X16` — materializing a **global**'s address
+(`emitGlobalAddress`) writes `X16` too. So any store that evaluates its
+right-hand side *after* computing its address silently retargets itself at
+whatever global the right-hand side happened to mention. Two of the four
+defects are exactly that, and the other two are the same story told about
+width: an operand generated at the default width instead of its own.
+
+### The four fixes
+
+- **A multi-dimensional scalar element store generates the value before the address** (`Stmt::IndexAssign`, the `s.idx->k==Expr::Index && s.idx->name.empty()` branch). It used to run `emitIndexAddr` first and `gen(*s.expr)` second, so `arr[i][j] = g` — with `g` a global — stored into the global's address instead of the element's. Now: `int v=gen(*s.expr,elem); emitIndexAddr(*s.idx); emit(storeGlobalT(v,elem)); releaseTemp(v);`. The **struct** branch of the same `if` keeps addressing first, and the comment says why: `emitStructStore` parks the destination in the frame and reloads `X16` per field, so it never holds an address across the value's evaluation. Splitting that branch out is the reason the fix is a two-line reordering rather than a rewrite.
+- **A struct field's array subscript is evaluated before the field's base address** (`emitElemAddrField`). It called `emitStructAddr(fbase)` and then `gen(index)`, so `s.xs[f()]` or any subscript that touches a global overwrote the base it had just computed. Now `gen(index)` runs first, then `emitStructAddr`, then `emitBoundsCheck` and `emitElemIndex` — the order `emitIndexAddr` already documents and uses for the non-field case.
+- **`*p = -5` on a `ptr<i64>` stores `-5`** (`Stmt::DerefAssign`). The value was generated with the default `i32` width, which sign-extends a negative into the low half, and then stored with a 64-bit `STR` — writing `4294967291`. Now `int value=gen(*s.expr,elem);`, at the element's own width, the way `Let`, `Assign`, `FieldAssign` and `IndexAssign` already do.
+- **An integer→`bool` cast compares at the operand's own width** (`gen(Cast)`). It always emitted a 32-bit `CMP`, so a 64-bit source whose low half is zero — `0x1_0000_0000`, or any `i64`/`u64` multiple of `2^32` — was read as `false`. Now `emit(tyIs64(from)?cmpZeroX(a):cmpZero(a));`, the width `emitCondition` has always picked this way.
+
+### Tests
+
+- **`tests/eval-order-checks.sh`** (9 layers, registered in `tests/ci.sh` both in `DEFAULT_SUITES` and in `CRITICAL`). Its spine is an **operand-kind matrix** rather than a list of shapes: every fixed store form is exercised with a constant, a local, a global and a call on the right-hand side, because the defect is a property of the operand's *evaluation*, not of the shape. Layers: [1/9] strict `-Werror` build; [2/9] 5 source guards pinning the version and each of the four fixes; [3/9] 19 qemu witnesses, each a distinct exit code; [4/9] 9 gcc differential cases against `tests/eval-order-twin.c`; [5/9] a 4-rejection matrix proving the array bounds checks still fire after the reordering (a reordering that moved the bounds check after the store would be a new bug); [6/9] coverage counting (≥19 witnesses, ≥4 refusals) so a shrunken corpus cannot pass vacuously; [7/9] a 4-mutant layer, each mutant restoring exactly one defect — `m1`/`m2` swap the two orderings back, `m3` drops the `elem` width from the deref store, `m4` restores the 32-bit `CMP` — with `cmp -s` asserting the mutant really changed the source; [8/9] byte baseline over the 288 pre-existing rows; [9/9] the four fixed shapes through `build-elf`/`build-so`/`build-obj --pic`.
+- **`tests/eval-order-twin.c`**: the C differential twin — the same nine cases written in C with `int64_t`/`struct S { int32_t xs[4]; }`, so "Aster agrees with gcc" is a measured fact rather than an argument. Cases `A2 A3 A6 B2 B5 C1 C3 D2 D4`; the twin exits with the case value.
+- **Byte baseline.** Three examples changed bytes in all three modes — `array_address`, `multi_dim_array`, `struct_array_field`, 9 of 360 rows — which is the fixes being visible. `tests/baseline/v0.23.62-dev/example-hashes.txt` freezes the new snapshot; every row that changed went hash→hash, none hash→`FAILED`, and the eight suites carrying `FILTER` lists already exclude all three names, so no suite sees an unexpected row count.
+- Four version guards bumped to `0.23.62-dev` (`enum-checks.sh`, `integer-cast-checks.sh`, `literals-checks.sh`, `cast-conversions-checks.sh`). Evidence in `VALIDATION-v0.23.62-dev.md`.
+
 ## v0.23.61-dev — `enum` plus correctness and security hardening
 
 ### Enumerations

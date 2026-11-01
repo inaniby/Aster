@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.61-dev.** One table per area. "Since" is the version that
+**As of v0.23.62-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -109,6 +109,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | Local (function-scope) `i32[N]`, 1–1000 elements, packed 4-byte layout in the 8 KiB frame | shipped | v0.22.49-dev | `local-array-checks.sh` |
 | Local-array name decays to its frame address (ptr argument / ptr binding) | shipped | v0.22.49-dev | `local-array-checks.sh` [7/8] |
 | Frame base correct for arrays not in slot 0 (`sh=0` ADD encoding) | shipped (bug fix) | v0.22.50-dev | `local-array-checks.sh` [8/8] |
+| **Store evaluation order**: a multi-dimensional element store (`a[i][j] = v`), a struct field's subscript (`s.f[i]`) and a dereference store (`*p = v`) generate the value/subscript at the operand's own width and **before** the destination address is held in `X16` — evaluating a global operand rewrites `X16`, so the old order silently retargeted the store; `(bool)x` compares at the operand's own width (`CMP X` for a 64-bit source) | shipped (bug fix) | v0.23.62-dev | `eval-order-checks.sh` [3/9] 19 witnesses over a constant/local/global/call matrix, [4/9] 9-case gcc differential, [5/9] 4 refusals, [7/9] 4 mutants |
 | Pointer indexing `p[i]` / `p[i] = v` = `*(p + i*4)` on ptr locals/params | shipped | v0.22.49-dev | `pointer-index-checks.sh`, `e2e-c-ptr-index.sh` |
 | Dereference read `*p` / write `*p = v` (i32 and ptr stores) | shipped | v0.22.x | `c-ptr-*` e2e |
 | `ptr ± i32` byte arithmetic, `load_u8`/`store_u8` | shipped | v0.22.x | `c-ptr-arithmetic-*`, `c-ptr-u8-*` |
