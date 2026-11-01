@@ -19,8 +19,8 @@ dependencies; `python3` here uses only the standard library for the demo
 Unpack the source and go in:
 
 ```sh
-unzip aster-v0.23.7-dev.zip
-cd aster-v0.22.38-dev
+unzip aster-*.zip
+cd aster-*/
 ```
 
 > **Run from the project root.** `@embed("demo_assets/icon48.bin")` resolves
@@ -42,7 +42,7 @@ cd aster-v0.22.38-dev
 | `tests/icon-text-host.c` | 2,419 | the host that renders the frame with no Android present |
 | `tests/icon-text-demo-checks.sh` | — | the [5/5] suite: build, embed, render, package, verify |
 
-All of it is inside `aster-v0.23.7-dev.zip`.
+All of it is inside the release archive.
 
 ## 2. Build the compiler
 

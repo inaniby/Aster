@@ -339,11 +339,11 @@ absent=""
 for b in $registered; do
     [ -f "$ROOT/tests/$b" ] || absent="$absent $b"
 done
-if [ "$suite_count" -ge 115 ] && [ "$examples" -ge 120 ] && [ "$rows" -ge 360 ] \
+if [ "$suite_count" -ge 116 ] && [ "$examples" -ge 120 ] && [ "$rows" -ge 360 ] \
         && [ "$mutations" -ge 30 ] && [ -z "$orphans" ] && [ -z "$absent" ]; then
     pass "coverage ratchet: $suite_count suites, $examples examples, $rows baseline rows, $mutations mutation suites, no orphans"
 else
-    fail "coverage ratchet: suites=$suite_count (floor 115), examples=$examples (floor 120), baseline_rows=$rows (floor 360), mutation_suites=$mutations (floor 30), unregistered:$orphans, missing:$absent"
+    fail "coverage ratchet: suites=$suite_count (floor 116), examples=$examples (floor 120), baseline_rows=$rows (floor 360), mutation_suites=$mutations (floor 30), unregistered:$orphans, missing:$absent"
 fi
 
 # ---------------------------------------------------------------------------

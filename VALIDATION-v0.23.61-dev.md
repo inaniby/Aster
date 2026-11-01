@@ -279,7 +279,12 @@ linker hardening, crypto/key handling, and the regression evidence.
 `ASTER_VERSION_STRING`, `kVersion`, the usage banner, the three test pins
 (`literals-checks.sh`, `integer-cast-checks.sh`, `cast-conversions-checks.sh`),
 `CMakeLists.txt`, README, VERSION_HISTORY, FEATURE_STATUS, ROADMAP and this
-report all name `0.23.61-dev`.
+report all name `0.23.61-dev`. The feature summary is guarded too: README and
+`docs/language-spec.md` may no longer repeat the retired "Android
+NativeActivity, APK packaging/signing, runtime APIs, and self-hosting are not
+implemented" sentence, nor the pre-pointer-ABI 124-level call-nesting limit;
+`version-checks.sh` fails on either, and the guard was proved by re-adding the
+sentence and observing the FAIL.
 
 ---
 
@@ -379,6 +384,22 @@ Built with
 `--bits 512` exits 2 with `--bits must be 2048, 3072 or 4096`; a 2048-bit
 keygen, a dual-signed APK build and its verification all complete under
 ASan+UBSan with no report.
+
+The campaign is now **resident** rather than a manual audit step:
+`tests/sanitizer-checks.sh` (registered in `ci.sh`) builds the compiler with
+`-O0 -g -fsanitize=address,undefined -fno-sanitize-recover=all` and runs six
+deterministic corpora — every shipped example, `tests/fuzz-gen.py`'s syntax
+corpus, and targeted mutations of ELF objects, APKs and DER/PEM keys generated
+by `tests/fuzz-bin.py`. A sanitizer abort is made fatal with
+`ASAN_OPTIONS=abort_on_error=1` and `UBSAN_OPTIONS=halt_on_error=1`, so it
+cannot hide behind the compiler's own exit 1. The suite passes only if every
+input exits 0 (accepted) or 1 (rejected with a diagnostic), with at least the
+unmutated object and APK seeds accepted. Step [7/8] re-injects the historical
+`readZip` missing-`nameLen`-bound bug into a copy of `src/aster.cpp` and
+requires ASan to catch a 0xffff nameLen (exit 134), proving the harness can
+fail. Default run (`SAN_COUNT=200`, `SAN_KEY_COUNT=100`): **8/8 phases PASS**,
+121 examples (67 compiled / 54 cleanly rejected), 21/179 syntax, 13/187
+objects, 1/199 APKs, 12/88 keys accepted/rejected, **0 crashes**, 112 s.
 
 #### 2.4 Suite matrix
 
@@ -656,6 +677,20 @@ missing `tar`, or an in-tree `CI_OUT` other than `ci-artifacts` falls back to
 one job with a warning. The first four-job full run finished **115/115 PASS**
 in **39.5 minutes**, against 64 minutes serial, on a four-core host.
 
+**Clean checkout.** The same four-job gate was run in a fresh
+`git clone --depth=1 https://github.com/inaniby/Aster.git` at `ca7059d`,
+outside the working tree: **115/115 PASS, 0 skipped, 0 failed**, APK gate 3/3,
+two suites with one optional SKIP layer, **37m53s** on the same four-core host.
+The clone started with no root `./aster` (it is gitignored), which is the state
+a new contributor or a hosted runner sees; `ci.sh` provisioned it from the
+strict build, and every suite that invokes `./aster` passed.
+`ci-artifacts/work/` was empty after the run. Fetching the doc-only follow-up
+(`1ad9e29`) into the same clone and running `version-checks.sh
+ci-protocol-checks.sh` through the gate gave **2/2 PASS**, including the new
+CMake and line-count guards. This is the clean-machine evidence P1's exit
+criterion asks for, short of the hosted nightly schedule that is still blocked
+by token scope.
+
 ### 7. Observed evidence
 
 `tests/ci-protocol-checks.sh` — **32/32 checks PASS**, covering:
@@ -674,7 +709,7 @@ in **39.5 minutes**, against 64 minutes serial, on a four-core host.
 - no suite may hardcode a versioned baseline path again;
 - `CI_JOBS=0` and `CI_JOBS=abc` exit 2 with the validation message before any
   suite runs;
-- the coverage ratchet: 115 registered suites, 121 examples, 360 baseline rows,
+- the coverage ratchet: 116 registered suites, 121 examples, 360 baseline rows,
   33 mutation-bearing suites, no orphan `*-checks.sh`, no missing registered
   suite.
 
@@ -715,12 +750,28 @@ Focused runs with the new gate (this host, cross `HOSTCC`):
 | same suite with the mutant floor raised to 1000 (negative test) | FAIL: 155 mutants below the 1000 floor | < 1 s |
 | same suite with a fake one-mutant suite (negative test) | FAIL: below the 2-per-suite floor | < 1 s |
 | same suite with a fake suite that has no survivor assertion (negative test) | FAIL: declares mutants but has no survivor assertion | < 1 s |
+| `CI_SUITES="sanitizer-checks.sh"` | 8/8 PASS: 121 examples (67/54), 200 syntax (21/179), 200 objects (13/187), 200 APKs (1/199), 100 keys (12/88), 0 crashes; injected nameLen over-read caught (exit 134) | 112 s; 150 s through CI |
 | full default gate, 115 suites (`CI_KEEP_ARTIFACTS=1 sh tests/ci.sh`) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 suites with one optional SKIP layer | 64 min |
 | same gate with `CI_JOBS=4` (private worktrees; fixed-`/tmp` suites serialized) | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 partial suites; `work/` empty afterwards | 39.5 min |
+| fresh `--depth=1` clone of `origin/main` at `ca7059d`, full gate `CI_JOBS=4 CI_KEEP_ARTIFACTS=1` | 115/115 PASS, 0 skipped, 0 failed; APK gate 3/3; 2 partial suites; root `./aster` provisioned; `work/` empty | 37m53s |
+| same clone at doc follow-up `1ad9e29`, `CI_SUITES="version-checks.sh ci-protocol-checks.sh"` | 2/2 PASS; CMake and ARCHITECTURE line-count guards green | cached build |
+| same tree at the README/limits rewrite, `CI_SUITES="version-checks.sh ci-protocol-checks.sh"` | 2/2 PASS; stale-product and retired-limit guards green | cached build |
+| negative proof: retired product sentence re-appended to README | FAIL at the stale-claim guard, then restored | suite time only |
 | eight-suite isolated subset (global/object/so-argument/bootstrap-loop/condition/enum/struct/tls) | 8/8 PASS, including the suites that invoke `./aster` | 1m45s |
 | four-suite mixed subset (icon has a fixed `/tmp` path) | 4/4 PASS; one suite serialized, three parallel | 1m57s |
 | `CI_JOBS=0` and `CI_JOBS=abc` | exit 2 before the probe: `CI_JOBS must be ...` | immediate |
 | missing suite under the refactored runner | FAIL, `0 passed, 1 failed`, log kept | suite time only |
+| `bootstrap-loop-checks.sh` with the [6/7] runtime phase | 7/7 phases PASS; self-hosted `return_42` rc=42, `globals_and_write` stdout `s1ok` rc=163; negative expected-rc run fails at [6/7] | 25.2 s |
+
+The bootstrap guard now executes what the self-host emits. Phase [6/7] feeds
+two fixtures to `bootaster` (the self-host), applies the executable bit qemu
+requires, and runs the resulting images: `return_42.ast` exits 42 with empty
+stdout, `globals_and_write.ast` writes `s1ok` and exits 163. The previous
+advisory claimed self-hosted output was not qemu-loadable; the actual obstacle
+was that a file captured through `>` is mode 0644 and qemu exits 1 without
+starting the guest. Setting the bit (as the M4 report recorded) makes the
+products run. A negative run with the expected status changed to 43 failed at
+[6/7] with `rc=42`, proving the assertion is live.
 
 The diverse run was the first time the new gate paid for itself. `icon-checks.sh`
 failed not because of the cache but because `openssl smime -verify` rejected
@@ -775,14 +826,27 @@ standalone and through the gate with the protocol self-checks (**2/2 PASS**:
 mutant floor raised to 1000, a fake one-mutant suite, and a fake suite with
 no survivor assertion. The first complete run of the 115-suite gate finished
 **115/115 PASS, 0 skipped, 0 failed** in 64 minutes with the APK gate 3/3 and
-the same two partial suites. This is the current release-candidate evidence.
+the same two partial suites.
+
+`sanitizer-checks.sh` then took the set to **116**. Its standalone run is
+recorded in §7; the first complete run of the resulting gate finished
+**116/116 PASS, 0 skipped, 0 failed** in 38 minutes with `CI_JOBS=4` on a
+4-vCPU host, the APK gate 3/3, and the same two suites (`icon-checks`,
+`resource-table-checks`) each keeping one optional SKIP layer. The cached
+compiler was the strict build
+`63bd132e44c2838629905b8bfc9115ae1fadd1e47c18341f2d5dfd9a426204bc`, and the
+run covered the README/language-summary rewrite (`82e01a7`) unchanged. This
+is the current release-candidate evidence.
 
 ### 9. What is still open in P1
 
-- **Nightly execution and governance** remain. The gate can run isolated
-  suites in parallel (`CI_JOBS`), and the four-job run is green, but there is
-  no scheduled workflow in the repository yet. `LICENSE`, a scheduled
-  workflow, `CONTRIBUTING`, `SECURITY` and release tags are still open.
+- **Nightly execution** remains. A clean `--depth=1` clone runs the four-job
+  gate **115/115** (37m53s), so the gate does not depend on the maintainer's
+  tree, but there is still no scheduled workflow in the repository: the
+  workflow is ready on a local branch and the fine-grained token lacks the
+  `workflow` scope to push it. The repository is private (temporarily public
+  for convenience), so `LICENSE`, `CONTRIBUTING`, `SECURITY` and release tags
+  are deliberately out of scope and not part of the remediation plan.
 - **Bespoke mutation layers** that build their mutants by hand do not yet
   join the census. The standardized corpus is 24 suites / 155 mutants with
   floors 24/150/2, and a green gate means 155/155 caught; the hand-built

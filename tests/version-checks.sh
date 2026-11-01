@@ -35,6 +35,22 @@ grep -q '^constexpr const char\* kVersion = ASTER_VERSION_STRING;$' src/aster.cp
     || { echo "FAIL: kVersion is no longer defined from ASTER_VERSION_STRING" >&2; exit 1; }
 echo "OK: kVersion expands the shared version macro"
 
+# CMake carries the same version for its project() metadata. It is the one
+# build system file that names a version, and a bump that forgets it would
+# ship a CMake project claiming an older release than the binary it builds.
+cmake_ver=$(sed -n 's/^project(aster_bootstrap VERSION \([0-9][0-9.]*\) .*/\1/p' \
+    CMakeLists.txt | head -1)
+expect_ver=${VER%-dev}
+if [ -z "$cmake_ver" ]; then
+    echo "FAIL: could not read the project version from CMakeLists.txt" >&2
+    exit 1
+fi
+if [ "$cmake_ver" != "$expect_ver" ]; then
+    echo "FAIL: CMakeLists.txt project version is $cmake_ver, source is $expect_ver" >&2
+    exit 1
+fi
+echo "OK: CMakeLists.txt project version matches the source ($expect_ver)"
+
 # 3) The version literal must appear exactly once in the source: in the macro
 #    itself. A second copy is a second chance to forget to update it.
 # Quoted, because the version is also mentioned in comments ("// v0.23.13-dev:
@@ -53,6 +69,25 @@ if ! head -1 README.md | grep -q "$VER"; then
 fi
 echo "OK: README.md title names $VER"
 
+# The architecture map states the size of the translation unit. It once said
+# "~2.5k lines" while the file had grown past 13k; a stale size is how a reader
+# concludes the document is about a compiler that no longer exists. Keep the
+# claim within 10% of the real file so a major change forces a doc review.
+arch_k=$(sed -n 's/^One C++17 translation unit, ~\([0-9][0-9]*\)k lines,.*/\1/p' \
+    ARCHITECTURE.md | head -1)
+if [ -z "$arch_k" ]; then
+    echo "FAIL: could not read the line-count claim from ARCHITECTURE.md" >&2
+    exit 1
+fi
+actual_lines=$(wc -l < src/aster.cpp | tr -d ' ')
+arch_lo=$((arch_k * 900))
+arch_hi=$((arch_k * 1100))
+if [ "$actual_lines" -lt "$arch_lo" ] || [ "$actual_lines" -gt "$arch_hi" ]; then
+    echo "FAIL: ARCHITECTURE.md claims ~${arch_k}k lines; src/aster.cpp has $actual_lines (allowed ${arch_lo}-${arch_hi})" >&2
+    exit 1
+fi
+echo "OK: ARCHITECTURE.md line-count claim (~${arch_k}k) matches src/aster.cpp ($actual_lines)"
+
 # 4) VERSION_HISTORY's newest entry must be this version (its first heading).
 top=$(grep -m1 '^## ' VERSION_HISTORY.md)
 case "$top" in
@@ -68,5 +103,30 @@ if [ ! -f "VALIDATION-v$VER.md" ]; then
     exit 1
 fi
 echo "OK: VALIDATION-v$VER.md exists"
+
+# 6) The feature summary must not regress to the pre-Android text. It was true
+#    at v0.18 and has been false since v0.23.46-dev; a reader who lands on that
+#    sentence concludes the project does not do what every section above it
+#    demonstrates. The same sentence was copied into docs/language-spec.md, so
+#    both files are checked.
+stale_claim='Android NativeActivity, APK packaging/signing, runtime APIs, and self-hosting are'
+if grep -q "$stale_claim.*not implemented" README.md; then
+    echo "FAIL: README still claims Android/APK/runtime/self-hosting are not implemented" >&2
+    exit 1
+fi
+if grep -q "$stale_claim.*not implemented" docs/language-spec.md; then
+    echo "FAIL: docs/language-spec.md still claims Android/APK/runtime/self-hosting are not implemented" >&2
+    exit 1
+fi
+echo "OK: neither README nor docs/language-spec.md claims the shipped products are unimplemented"
+
+# The call-nesting limit was 124 in the pre-pointer-ABI compiler and is 14 (or
+# 4 for struct results) now. A stale number is worse than no number: it sends a
+# reader debugging a limit the compiler no longer has.
+if grep -Eq 'pointer-signature Aster-to-Aster calls are not yet supported|124 levels of nested calls' README.md docs/language-spec.md; then
+    echo "FAIL: a document still carries a retired call-nesting/pointer-call limit" >&2
+    exit 1
+fi
+echo "OK: the retired 124-level / pointer-signature-call claims are gone"
 
 echo "=== version checks: ALL PASSED ==="
