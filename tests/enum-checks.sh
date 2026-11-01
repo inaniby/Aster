@@ -60,8 +60,8 @@ fi
 # [2/9] Source guards. Each change is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: enum'
-grep -qF '#define ASTER_VERSION_STRING "0.23.62-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.62-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.63-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.63-dev" >&2; exit 1; }
 # the lexer recognises `enum` as a reserved word
 grep -qF 'else if(x=="enum")k=TK::Enum;' src/aster.cpp \
     || { echo "FAIL: the lexer no longer recognises enum" >&2; exit 1; }
@@ -129,8 +129,11 @@ check "$A" 'enum arithmetic'                    5 'enum C { A = 2, B = 3 } fn ma
 check "$A" 'sizeof(enum) == 4'                 4 'enum C { A } fn main() -> i32 { return sizeof(C); }'
 # --- an enum value compares against an enumerator (both are i32 under the hood) ---
 check "$A" 'enum comparison'                   7 'enum C { A, B } fn main() -> i32 { let c: C = B; if (c == B) { return 7; } return 0; }'
-# --- distinct enums that happen to share a value still compare equal as i32 ---
-check "$A" 'distinct enums, same value, compared' 1 'enum A { X = 1 } enum B { Y = 1 } fn main() -> i32 { let a: A = X; let b: B = Y; if (a == b) { return 1; } return 0; }'
+# --- an enum value compares against an i32: the underlying storage is i32 ---
+# v0.23.63-dev: the case that used to sit here — two distinct enums that happen
+# to share a value comparing equal — was the P1-2 defect written down as an
+# expectation. It is a refusal now, and lives in [5/9].
+check "$A" 'enum vs i32 constant'            7 'enum C { A, B } fn main() -> i32 { let c: C = B; if (c == 1) { return 7; } return 0; }'
 else
     printf '%s\n' '  SKIP: the behavioural cases need qemu to run'
 fi
@@ -189,6 +192,21 @@ reject 'duplicate enum name' "duplicate enum declaration: A" \
     'enum A { X } enum A { Y } fn main() -> i32 { return 0; }'
 reject 'duplicate enumerator' "duplicate enumerator: X" \
     'enum A { X, X } fn main() -> i32 { return 0; }'
+# v0.23.63-dev: a comparison is a place where two types meet, so it is a place
+# nominal isolation has to hold. Two enums that share a value are still two
+# enums — the case this suite once asserted as legal, and the audit's P1-2.
+reject 'cross-enum comparison' "cannot compare two different enum types" \
+    'enum A { X = 1 } enum B { Y = 1 } fn main() -> i32 { let a: A = X; let b: B = Y; if (a == b) { return 1; } return 0; }'
+reject 'cross-enum comparison, !=' "cannot compare two different enum types" \
+    'enum A { X = 1 } enum B { Y = 1 } fn main() -> i32 { let a: A = X; let b: B = Y; if (a != b) { return 1; } return 0; }'
+reject 'enum compared against an i64' "an enum may only be compared with the same enum or with an i32" \
+    'enum A { X } fn main() -> i32 { let a: A = X; let v: i64 = 1; if (a == v) { return 1; } return 0; }'
+# v0.23.63-dev: the auto-increment is range-checked, not just the `= value`.
+reject 'enumerator auto-increment out of i32' "enumerator value out of i32 range: Y" \
+    'enum A { X = 2147483647, Y } fn main() -> i32 { return 0; }'
+# v0.23.63-dev: an enum slot is an i32, so a constant past i32 does not fit it.
+reject 'enum from a constant past i32' "type mismatch initializing 'c'" \
+    'enum A { X } fn main() -> i32 { let c: A = 4294967296; return 0; }'
 printf '%s\n' 'PASS: the rejection matrix holds'
 
 # ---------------------------------------------------------------------------

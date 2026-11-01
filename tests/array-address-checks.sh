@@ -234,10 +234,13 @@ check "$A" 'u16 array through ptr<u16>'  24 'fn main() -> i32 {
     return h[0] + h[1] + h[2] + h[3]; }'
 # --- an array parameter: `fn f(a: i64[4])` takes the array by address and
 #     indexes it at eight bytes, which is the same value `&w` handed over.
+# v0.23.63-dev: `return fill(w);` narrowed i64 -> i32 implicitly, which is now
+# refused, so the cast is spelled out. The array still travels by address and is
+# still indexed at eight bytes; the cast is after the call, not around `a`.
 check "$A" 'i64 array parameter'         24 'fn fill(a: i64[4]) -> i64 {
     a[0] = 3; a[1] = 5; a[2] = 7; a[3] = 9;
     return a[0] + a[1] + a[2] + a[3]; }
-fn main() -> i32 { let w: i64[4] = 0; return fill(w); }'
+fn main() -> i32 { let w: i64[4] = 0; return i32(fill(w)); }'
 # --- the same parameter shape for a 1-byte element.
 check "$A" 'u8 array parameter'          24 'fn fill(a: u8[4]) -> i32 {
     a[0] = 3; a[1] = 5; a[2] = 7; a[3] = 9;

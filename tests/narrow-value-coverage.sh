@@ -90,14 +90,14 @@ int main(void){ return g(40000); }
 @@@
 14~i64_passthrough
 fn g(a: i64) -> i64 { return a; }
-fn main() -> i32 { return g(1234567890); }
+fn main() -> i32 { return i32(g(1234567890)); }
 @C@
 long long g(long long a){ return a; }
-int main(void){ return g(1234567890LL); }
+int main(void){ return (int)g(1234567890LL); }
 @@@
 15~mixed_narrow_args_return_i64
 fn g(a: u8, b: u16, c: i64) -> i64 { return c; }
-fn main() -> i32 { return g(1, 2, 1234567890); }
+fn main() -> i32 { return i32(g(1, 2, 1234567890)); }
 @C@
 long long g(unsigned char a, unsigned short b, long long c){ return c; }
 int main(void){ return (int)g(1, 2, 1234567890LL); }

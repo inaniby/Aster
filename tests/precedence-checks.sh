@@ -209,10 +209,11 @@ check "$A" 'u16 at 65535'             1 'fn main() -> i32 { let b: u16 = 65535; 
 check "$A" 'u32 at 4000000000'        1 'fn main() -> i32 { let b: u32 = 4000000000; if (b > 0) { return 1; } return 0; }'
 check "$A" 'u8[4] at 200'             1 'fn main() -> i32 { let a: u8[4] = 200; if (a[3] == 200) { return 1; } return 0; }'
 check "$A" 'u16[2] at 65535'          1 'fn main() -> i32 { let a: u16[2] = 65535; if (a[1] == 65535) { return 1; } return 0; }'
-# What the round does *not* change: narrowing a value has always been allowed
-# in both scopes, and still is.
-check "$A" 'i32 from an i64 value'    5 'fn main() -> i32 { let a: i64 = 5; let b: i32 = a; return b; }'
-check "$A" 'u8 from an i32 value'     1 'fn main() -> i32 { let a: i32 = 200; let b: u8 = a; if (b == 200) { return 1; } return 0; }'
+# v0.23.63-dev changed this one: narrowing a *value* used to be allowed in both
+# scopes and now is not, so what stays legal is the spelled-out truncation. The
+# un-cast forms moved down to the rejection matrix as two of its rows.
+check "$A" 'i32 from an i64 value, cast' 5 'fn main() -> i32 { let a: i64 = 5; let b: i32 = i32(a); return b; }'
+check "$A" 'u8 from an i32 value, cast'  1 'fn main() -> i32 { let a: i32 = 200; let b: u8 = u8(a); if (b == 200) { return 1; } return 0; }'
 check "$A" 'i32 from a wide literal'  1 'fn main() -> i32 { let a: i32 = 5000000000; if (a != 0) { return 1; } return 0; }'
 
 # ---------------------------------------------------------------------------
@@ -364,6 +365,14 @@ reject 'local u16[2] = 65536' 'local array initializer does not fit in u16' \
 # `200 + 100` is the same mistake as `300`.
 reject 'local u8 = 200 + 100' 'local initializer does not fit in u8' \
     'fn main() -> i32 { let b: u8 = 200 + 100; return b; }'
+# v0.23.63-dev: an implicit narrowing in a store is refused at last — the rule
+# `checkArgument` always applied to an argument now applies to a `let` too.
+# A constant that does not fit is still diagnosed as a range problem first, so
+# these two are the *value* shape the rows above are not.
+reject 'local i32 from an i64 value' 'type mismatch initializing' \
+    'fn main() -> i32 { let a: i64 = 5; let b: i32 = a; return b; }'
+reject 'local u8 from an i32 value' 'type mismatch initializing' \
+    'fn main() -> i32 { let a: i32 = 200; let b: u8 = a; return b; }'
 # The prefix operators still refuse the operands they always refused: a bool
 # cannot be negated arithmetically, and a struct is not a number. (`&` is no
 # longer in this set — v0.23.58-dev generalized it to every lvalue, so taking
@@ -413,8 +422,8 @@ u16 at 65535                          range           the top of the range is fi
 u32 at 4000000000                     range           unsigned, above i32's top
 u8[4] at 200                          range           an array element constant
 u16[2] at 65535                       range           an array element constant
-i32 from an i64 value                 range           narrowing a value: still allowed
-u8 from an i32 value                  range           narrowing a value: still allowed
+i32 from an i64 value, cast           range           narrowing a value: refused since v0.23.63-dev, the cast is legal
+u8 from an i32 value, cast            range           narrowing a value: refused since v0.23.63-dev, the cast is legal
 i32 from a wide literal               range           a bare literal: still allowed
 MAP
 # Every case named in the map ran in layer [3/9]; the map is the record of
@@ -541,29 +550,37 @@ mutate 'm7: equality allows a chain' \
 # sema, once in codegen — so it takes three mutants to pin down: each half on
 # its own has to be sufficient, and the pair has to be the whole gate.
 # m8: sema drops the scalar check; codegen's twin has to catch it.
+#
+# The probe case is `u32 = 0 - 1`, not the `u8 = 300` the rejection matrix
+# uses. v0.23.63-dev added a *second*, independent gate in front of a `let`:
+# an implicit narrowing is refused (§5.1). `300` into a `u8` is both out of
+# range and a narrowing, so it is now refused twice over and the range check is
+# no longer the only reason it fails — a mutant that withdraws the range check
+# would still be caught, by the wrong rule. `0 - 1` into a `u32` is **in** the
+# assignable width (i32 and u32 are one 32-bit representation) and out of range
+# for one reason only, which is what isolates the check under test.
 mutate 'm8: sema drops the scalar check' \
     's/if(constantInteger(\*s.expr,v)&&!initializerFits(s.ty,\*s.expr,v))/if(false)/' \
-    must_still_say 'local u8 = 300' 'local initializer does not fit in u8' 'fn main() -> i32 { let b: u8 = 300; return b; }'
+    must_still_say 'local u32 = 0 - 1' 'local initializer does not fit in u32' 'fn main() -> i32 { let b: u32 = 0 - 1; return 0; }'
 # m9: both passes drop the scalar check — the bug the round closes comes back:
-# `let b: u8 = 300;` compiles again and stores 44. (One sed program, two
-# substitutions: this is the shape m4 of the null round taught.)
+# `let b: u32 = 0 - 1;` compiles again and stores 4294967295.
 mutate 'm9: both passes drop the scalar check' \
     's/if(constantInteger(\*s.expr,v)&&!initializerFits(s.ty,\*s.expr,v))/if(false)/;s/if(constantInteger(\*s.expr,cv)&&!initializerFits(s.ty,\*s.expr,cv))/if(false)/' \
-    must_now_compile 'local u8 = 300' 'fn main() -> i32 { let b: u8 = 300; return b; }'
+    must_now_compile 'local u32 = 0 - 1' 'fn main() -> i32 { let b: u32 = 0 - 1; return 0; }'
 # m10: sema drops the array check; codegen's twin has to catch it.
 mutate 'm10: sema drops the array check' \
     's/if(!initializerFits(s.ty,\*s.expr,v))/if(false)/' \
-    must_still_say 'local u8[4] = 300' 'local array initializer does not fit in u8' 'fn main() -> i32 { let a: u8[4] = 300; return a[0]; }'
+    must_still_say 'local u32[4] = 0 - 1' 'local array initializer does not fit in u32' 'fn main() -> i32 { let a: u32[4] = 0 - 1; return a[0]; }'
 # m11: both passes drop the array check.
 mutate 'm11: both drop the array check' \
     's/if(!initializerFits(s.ty,\*s.expr,v))/if(false)/;s/if(!initializerFits(elem,\*s.expr,value))/if(false)/' \
-    must_now_compile 'local u8[4] = 300' 'fn main() -> i32 { let a: u8[4] = 300; return a[0]; }'
+    must_now_compile 'local u32[4] = 0 - 1' 'fn main() -> i32 { let a: u32[4] = 0 - 1; return a[0]; }'
 # m12: the range check itself stops refusing anything narrow — the widest
 # possible withdrawal, and the one that would silently restore truncation
 # everywhere, globals included.
 mutate 'm12: initializerFits always true' \
     's/static bool initializerFits(Ty t,const Expr& e,int64_t folded){/static bool initializerFits(Ty t,const Expr\& e,int64_t folded){return true;/' \
-    must_now_compile 'global u8 = 300' 'let b: u8 = 300;
+    must_now_compile 'global u32 = 0 - 1' 'let b: u32 = 0 - 1;
 fn main() -> i32 { return 0; }'
 printf '%s\n' 'PASS: twelve mutated compilers each lose exactly one rule, and the checks notice'
 fi

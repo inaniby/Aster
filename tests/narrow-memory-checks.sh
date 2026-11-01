@@ -321,10 +321,13 @@ int main(void){
     i64_narrow_i32)
         # The documented narrowing: an i64 read into an i32 local keeps the
         # low 32 bits, exactly as any i64-to-i32 conversion in the language.
+        # v0.23.63-dev: the conversion has to be asked for — `let x: i32 =
+        # load_i64(blob);` is an implicit narrowing now, and the cast is the
+        # spelling the diagnostic asks for.
         ast='let blob: u8[16] = 0;
 fn main() -> i32 {
     let a: i64 = store_i64(blob, 0x0123456789ABCDEF);
-    let x: i32 = load_i64(blob);
+    let x: i32 = i32(load_i64(blob));
     return (a % 251) + (x % 251);
 }'
         c='static unsigned char blob[16] __attribute__((aligned(8)));
