@@ -1,6 +1,6 @@
 # Aster — Architecture
 
-**As of v0.23.63-dev.** This document is a structural map of the compiler in
+**As of v0.23.64-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
 carries **no signing key of its own**. It is descriptive, not a feature
 catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the
@@ -427,6 +427,16 @@ three independent APK gates. `tests/smoke.sh` is the fast local subset: it
 compiles a fixed group of examples and asserts the ELF shape without qemu.
 Suite counts are reproducible in two host configurations — default host
 toolchain and `HOSTCC=aarch64-linux-gnu-gcc` — documented in `README.md`.
+
+**v0.23.64-dev:** `smoke.sh` is deliberately *not* in `DEFAULT_SUITES` — it is
+a driver, and every suite it invokes already runs in CI, so registering it
+would run them twice. The orphan gate therefore does not glob
+`tests/*-checks.sh` any more: it enumerates every `tests/*.sh` and subtracts an
+explicit allowlist, each entry with its reason, because that glob is a naming
+convention and four scripts failed it — three of them real suites
+(`c-ptr-memory-structural.sh`, `e2e-so-scope.sh`, `regression-symtab.sh`) that
+had consequently never run. A driver may stay unregistered only while every
+suite it invokes is registered, which `ci-protocol-checks.sh` now asserts.
 
 Three mechanisms keep the suite honest off-device:
 

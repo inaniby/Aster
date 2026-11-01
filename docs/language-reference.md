@@ -161,8 +161,12 @@ Struct layout is AAPCS64 / C: each field starts at the next offset that is a
 multiple of its own alignment, the struct's alignment is the largest of its
 fields', and its size is the final offset rounded up to that alignment.
 
-There is **no** `void`, `float`/`double`, `char`, `union`, `const`, or
-`typedef`/type alias. (Enumerations **do** exist — see §5.2 — but they are a
+There is **no** `void`, `float`/`double`, `union`, `const`, or
+`typedef`/type alias. There is a **character literal** but no `char` *type* —
+`'a'` is an integer literal that folds to `i32` (§3.2, v0.23.50-dev), so
+`let c: i32 = 'a';` is the whole story and `char` is not a spelling anywhere.
+(v0.23.64-dev: an earlier draft of this paragraph said "no `char`" flatly,
+which contradicted §3.2.) (Enumerations **do** exist — see §5.2 — but they are a
 thin, nominal wrapper over `i32`, not a separate numeric kind.) An explicit
 conversion is the **cast** `T(x)` (integers since v0.23.48-dev; `bool`, `ptr`
 and `ptr<T>` since v0.23.60-dev — see §5.1); no other conversion is

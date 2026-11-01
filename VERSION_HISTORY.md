@@ -1,3 +1,88 @@
+## v0.23.64-dev — every suite runs: the orphan gate's blind spot
+
+No compiler change, and no byte change. This round is about the gate.
+
+### An orphan suite was defined by a naming convention
+
+`tests/ci-protocol-checks.sh` decided whether a suite was orphaned like this:
+
+```sh
+for f in "$ROOT"/tests/*-checks.sh; do
+    printf '%s\n' "$registered" | grep -qxF "$(basename "$f")" || orphans="$orphans $b"
+done
+```
+
+`tests/*-checks.sh` is a convention, not a property. Four scripts in
+`tests/` fail that glob, so the gate has never seen them:
+
+| script | what it is | first run |
+| --- | --- | --- |
+| `c-ptr-memory-structural.sh` | the structural twin of `e2e-c-ptr-memory.sh` — `.so` exports and `LDR/STR W` encodings | PASS |
+| `e2e-so-scope.sh` | DSO symbol scopes, loader recovery, close-order and lifecycle, executed through the target toolchain | PASS (SKIP without an AArch64 `HOSTCC`) |
+| `regression-symtab.sh` | the v0.17.0 proof that the source-level symbol table is append-only | **FAIL** — see below |
+| `smoke.sh` | the local driver `FEATURE_STATUS.md` credited with covering 32-argument calls, arithmetic, comparisons, `while`/`break`/`continue` and `build-elf` | driver |
+
+The gate now enumerates every `tests/*.sh` and subtracts an explicit
+allowlist, so a new script is either registered or declared here with a
+reason: `host-toolchain-probe.sh` and `guest-libc-alias.sh` (sourced as
+libraries), `run-aarch64.sh` and `ci.sh` (the qemu prefix and the runner
+itself), `run-on-device.sh` (needs a real target), and `smoke.sh`. Verified
+by adding a throwaway `tests/zzz-orphan-probe.sh`: the gate fails, and passes
+again once it is removed.
+
+A driver is only allowed to stay unregistered while **everything it invokes is
+registered** — now asserted, so "it is just a driver" cannot become a way to
+add a suite nobody runs.
+
+### The one that failed: a frozen reference, not a regression
+
+`regression-symtab.sh` asserted that each product's loaded image still matches
+a committed v0.16.0 fixture byte for byte. Two products differ:
+
+- `examples/hello.ast` — `str w0,[sp,#4]` / `ldr w1,[sp,#4]` became `#8`;
+- `examples/pie_global_rw.ast` — a spill moved from `str w0,[sp,#4080]` to
+  `str x0,[sp,#4032]`.
+
+Both are the documented 8-byte scalar slot (`ARCHITECTURE.md`: "Scalars occupy
+one 8-byte slot each (`slot*8` byte offsets)"), which arrived with the wide
+integers of v0.23.2-dev. Not a regression, and regenerating the fixtures would
+have hidden the change instead of recording it.
+
+That assertion was never what the suite is named for, and an exemption list
+would only grow — every later legitimate frame change would have to be added
+to it by hand. So it is replaced by the invariant the suite exists to hold and
+which still holds everywhere: **the section table is append-only**. The
+program headers are already compared field by field; what is added is that
+`e_shoff` begins at or after `p_offset + p_filesz` of the last `PT_LOAD`, so
+`.symtab`/`.strtab`/`.shstrtab` can never sit inside bytes the program writes
+to.
+
+Two smaller repairs came with it: the suite required a pre-built `./aster`
+instead of building its own (no other suite does that, and a fresh checkout has
+none), and the committed fixtures cover 7 of its 11 cases — the four `obj_*`
+and `so_*` ones were never committed, so its `ET_REL` branch (byte-for-byte
+identity) has still never executed. That gap is recorded rather than papered
+over: regenerating v0.16.0 objects would need a v0.16.0 compiler.
+
+### The claim that pointed at a suite that never ran
+
+`FEATURE_STATUS.md` credited five capabilities to `smoke.sh`. Four had real
+coverage elsewhere and now say so (32-argument calls →
+`e2e-c-abi-32-args.sh`; arithmetic → `operator-checks.sh` and
+`precedence-checks.sh`; comparisons → `bool-checks.sh`; `build-elf` →
+`write-output-checks.sh`). The fifth was a genuine hole:
+
+> no resident suite had an executed `while` loop with an **unlabeled**
+> `break;` or `continue;`. Every case used the *labeled* form (`break outer;`,
+> from the switch round) or put `continue;` inside a `switch`.
+
+Three witnesses now live in `tests/condition-checks.sh` [3/9]: `while` +
+`break;` (5), `while` + `continue;` (18), and a nested loop whose unlabeled
+`break;` leaves only the inner loop while the outer counter still reaches 3
+(33) — the case that distinguishes the two forms at all.
+
+---
+
 ## v0.23.63-dev — semantic strictness: the audit's P1 batch
 
 The second batch of `AUDIT-v0.23.61-dev.md`, and a different kind of defect

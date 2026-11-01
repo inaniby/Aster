@@ -329,4 +329,17 @@ fn main() -> i32 { return i32(f()); }
 
 **字节层面零改动**：121 个例子的 363 行基线全部逐字节相同（0 变、0 新增）——本轮只动「接受哪些程序」，不动「生成什么指令」。
 
-第 3 批（P2/缺口）仍未处理，按上面的路线排队；其中第 3 批第 9、10 项涉及 `.so` 页对齐与结构体布局溢出，建议优先。
+第 3 批第 11 项**已完成，但审计给出的修法（「把 `tests/smoke.sh` 加进 `DEFAULT_SUITES`，一行」）被否决**，因为它会掩盖更大的问题：
+
+| 审计项 | 处理 |
+| --- | --- |
+| 第 3 批 11（`smoke.sh` 未注册） | **已修，但不是注册它。** `smoke.sh` 是**驱动器**：编译编译器、检查 20 个例子的 ELF 头，然后串行调用约 28 个**已注册**的套件——注册它会把那 28 个跑第二遍。真正的洞在门禁本身：孤儿套件的定义是「匹配 `tests/*-checks.sh` 但不在 `DEFAULT_SUITES` 里」，而这是**命名约定，不是性质**，有 4 个脚本不符合该 glob 于是从未被门禁看见。其中 3 个是真套件——`c-ptr-memory-structural.sh`、`e2e-so-scope.sh`、`regression-symtab.sh`。门禁改为枚举**全部** `tests/*.sh` 再减去显式白名单（每条注明理由），并新增一条断言：**驱动器只有在其调用的每一个套件都已注册时才允许不注册**。三套件首次运行的结果：前两个通过；`regression-symtab.sh` 失败，且**不是回归**（见下） |
+| 第 3 批 11（附：`FEATURE_STATUS.md` 的 5 处过时声称） | **已修。** 32 参数 → `e2e-c-abi-32-args.sh`；算术 → `operator-checks.sh` + `precedence-checks.sh`；比较 → `bool-checks.sh`；`build-elf` → `write-output-checks.sh`。第 5 项是**真洞**：`while` + 无标签 `break;`/`continue;` 在任何常驻套件里都没有被执行（只有带标签 `break outer;`，或 `switch` 里的 `continue`），已在 `tests/condition-checks.sh` [3/9] 补 3 条见证，含证明无标签 `break` 只跳出最内层循环的嵌套用例 |
+
+`regression-symtab.sh` 的失败值得单独记一笔：它断言每个产品的加载映像仍与 `tests/baseline/v0.16.0` 下冻结的固件逐字节相同，而 `hello.ast` 的 `str w0,[sp,#4]` 已变 `#8`、`pie_global_rw.ast` 的溢出槽由 `str w0,[sp,#4080]` 变 `str x0,[sp,#4032]`——这是**已文档化的 8 字节标量槽**（`ARCHITECTURE.md`，随 v0.23.2-dev 宽整数落地），不是回归。重生成固件会抹掉这条记录，豁免名单则会无限增长，故该断言被换成套件**本名所指**、且仍然处处成立的不变量：**节表是追加的**（`e_shoff` ≥ 最后一个 `PT_LOAD` 的 `p_offset + p_filesz`）。另外记录一处未修补的缺口：11 个用例只有 7 个固件被提交，`obj_*`/`so_*` 四个从未提交，故其 `ET_REL` 分支（逐字节相同）**至今仍未执行过**。
+
+本轮**不动编译器、不动字节**：121 个例子的 360 行基线全部逐字节相同。套件数 118 → 121。
+
+第 3 批第 12 项（工程卫生）**顺手完成**：`.gitignore` 补 `*.tmp.*`（`tests/ci.sh` 先写 `aster.tmp.$$` 再 `mv`，中断会留下未被忽略的残留）；四处过时文档断言已修正——`ARCHITECTURE.md` 把 `smoke.sh` 称作「fast local subset」（它从未进过门禁）、`FEATURE_STATUS.md` 两处把退役的 `tests/parser-checks.sh` 当作并入目标（该套件已在 #261 删除，词法/语法覆盖现归 `codegen-checks.sh` 三向差分）、`docs/language-reference.md` 一句「没有 `char`」（与 §3.2 自 v0.23.50-dev 起就有的字符字面量矛盾，改为「有字符字面量、无 `char` 类型」）；并清掉根目录 46 个 `core.*`（约 25 MB，变异层中止留下的核心转储，已被忽略但从未清理）。
+
+第 3 批仍剩 9、10、13 三项未处理，按上面的路线排队；其中第 9 项（`.so` 页对齐与 `kRelTlsOff`）与第 10 项（`layoutStruct` 溢出）建议优先。
