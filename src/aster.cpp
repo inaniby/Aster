@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.64-dev"
+#define ASTER_VERSION_STRING "0.23.65-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -689,22 +689,54 @@ static std::string tyNameFull(Ty t) {
 // built, so the struct must already be in it — which it is: the caller appends
 // the (still empty) definition first, then lays it out, so a struct that
 // contains itself is rejected rather than recursing forever.
-static void layoutStruct(StructDef& s) {
-    uint32_t off = 0, align = 1;
+// v0.23.65-dev: the accumulation is 64-bit and the 1024-byte limit is checked
+// *as the fields are placed*, not after. Both changes came out of the same
+// finding: a struct of 8192 fields of 512 x 1024 bytes each reaches exactly
+// 2^32, which a uint32_t accumulator wraps to **0** — and 0 passes the
+// `size > 1024` check that used to run afterwards, so the compiler accepted a
+// 4 GiB struct, reported `sizeof` as 0 and laid every field over whatever the
+// zero-size slot happened to sit on. Accumulating in 64 bits removes the wrap;
+// checking the limit at the first field that crosses it removes the window in
+// which a nonsense size is held at all, and names the field that crossed.
+// The largest struct Aster will lay out. v0.23.65-dev: namespace scope, because
+// layoutStruct enforces it while it places the fields (see below), not the
+// caller after the fact.
+static constexpr uint32_t kMaxStructSize = 1024;
+// The span ceiling is the second guard: `f.offset` is a uint32_t, so no
+// running offset may exceed it even if kMaxStructSize is raised later.
+static void layoutStruct(StructDef& s,const Token& id) {
+    static constexpr uint64_t kMaxStructSpan=0xffffffffULL;
+    uint64_t off = 0; uint32_t align = 1;
+    const auto tooLarge=[&](const StructField& f,uint64_t at){
+        throw Error(loc(id.line,id.col,"struct "+id.s+" is too large: field '"+f.name+
+                        "' reaches offset "+std::to_string(at)+" (limit "+
+                        std::to_string(kMaxStructSize)+" bytes)"));
+    };
     for (auto& f : s.fields) {
         // v0.23.29-dev: an array field owns `sizeof(elem) * len` bytes, aligned
         // to the element's alignment — exactly the storage a same-element array
         // would occupy. A scalar field owns `sizeof(ty)` as before.
         const uint32_t a = tyAlign(f.ty);
-        const uint32_t elemSize = tySize(f.ty);
-        const uint32_t fieldSize = f.len ? elemSize * f.len : elemSize;
+        const uint64_t elemSize = tySize(f.ty);
+        const uint64_t fieldSize = f.len ? elemSize * f.len : elemSize;
         if (a > align) align = a;
-        off = (off + a - 1u) & ~(a - 1u);
-        f.offset = off;
+        off = (off + a - 1u) & ~(uint64_t)(a - 1u);
+        // The check is before the store, not after the loop: `f.offset` is a
+        // uint32_t, and a running offset that has already passed the limit is
+        // a size the struct must never be given.
+        if (off > kMaxStructSpan) tooLarge(f,off);
+        f.offset = (uint32_t)off;
         off += fieldSize;
+        if (off > kMaxStructSpan) tooLarge(f,off);
+        if (off > (uint64_t)kMaxStructSize) tooLarge(f,off);
     }
     s.align = align;
-    s.size = (off + align - 1u) & ~(align - 1u);
+    // The final round-up can still push a struct that was under the limit on
+    // every field over it, so the limit is asserted on the size too — the same
+    // message, so there is one way to be told.
+    const uint64_t size = (off + align - 1u) & ~(uint64_t)(align - 1u);
+    if (size > (uint64_t)kMaxStructSize) tooLarge(s.fields.back(),size);
+    s.size = (uint32_t)size;
 }
 // The single spelling of "this is not a type name", shared by the parameter,
 // return, local and global declaration sites so they cannot drift apart.
@@ -2246,7 +2278,9 @@ class Parser {
     // a field of this same struct type resolves and is then rejected — a
     // struct cannot contain itself. A field may be another struct, but only
     // one that is already declared, exactly as in C.
-    static constexpr uint32_t kMaxStructSize = 1024;
+    // v0.23.65-dev: moved to namespace scope next to layoutStruct, which needs
+    // it — the size limit is enforced while the fields are placed, so the
+    // constant has to be visible there and not only here.
     // The bytes a constant aggregate initializer leaves in the object: one
     // constant per field, written at that field's offset in the struct's own
     // layout. A nested aggregate is folded the same way, field by field, into
@@ -2346,9 +2380,10 @@ class Parser {
         }
         need(TK::RBrace,"expected '}' after struct fields");
         if(s.fields.empty())throw Error(loc(id.line,id.col,"struct "+id.s+" must declare at least one field"));
-        layoutStruct(s);
-        if(s.size>kMaxStructSize)
-            throw Error(loc(id.line,id.col,"struct "+id.s+" is too large: "+std::to_string(s.size)+" bytes (limit "+std::to_string(kMaxStructSize)+")"));
+        // v0.23.65-dev: the size limit is enforced inside the accumulation now
+        // (and reports the field that crossed it), so there is no second check
+        // here that could disagree with it.
+        layoutStruct(s,id);
         g_structs[(size_t)sid]=std::move(s);
     }
     // v0.23.61-dev: enum declarations. Each enumerator is a compile-time i32
@@ -9016,7 +9051,20 @@ void resolveRelocations(std::vector<uint8_t>& text,const std::vector<LinkPending
             // (tlsVaddr + offset); local-exec addresses a variable as
             // TPIDR_EL0 + offset, so the relocation carries the offset alone.
             // bits[20:5]); the access becomes TPIDR_EL0 + offset (local-exec).
-            const uint32_t val=uint32_t((target-tlsVaddr)&0xffffffffu);
+            // v0.23.65-dev: the pair carries 32 bits (MOVZ lo16, MOVK hi16), and
+            // an offset that does not fit used to be masked — `& 0xffffffffu`
+            // — which silently aliased the variable onto another one 4 GiB
+            // earlier in the block. Reachable: 513 thread-locals of 8 MiB each
+            // is a 10 KB source, and the last one's offset is exactly 2^32. A
+            // truncated address is worse than a refused program, so refuse.
+            if(target<tlsVaddr)
+                throw Error("thread-local symbol '"+r.symbol+"' resolves below the thread-local block");
+            const uint64_t off=target-tlsVaddr;
+            if(off>0xffffffffULL)
+                throw Error("thread-local variable '"+r.symbol+"' sits at offset "+
+                            std::to_string(off)+" in the thread-local block, which does not fit the "+
+                            "32-bit MOVZ/MOVK pair a local-exec access carries (limit 4294967295)");
+            const uint32_t val=uint32_t(off);
             uint32_t movz=0;for(int i=0;i<4;++i)movz|=uint32_t(text[(size_t)r.patch+i])<<(i*8);
             movz=(movz&~0x1fffe0u)|((val&0xffffu)<<5);
             for(int i=0;i<4;++i)text[(size_t)r.patch+i]=uint8_t(movz>>(i*8));
