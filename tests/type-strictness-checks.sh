@@ -60,8 +60,8 @@ A=$OUT/aster
 # [2/9] Source guards. Each fix is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: the five rules'
-grep -qF '#define ASTER_VERSION_STRING "0.23.65-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.65-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.66-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.66-dev" >&2; exit 1; }
 grep -qF 'case Expr::Shl: case Expr::Shr: case Expr::BitNot:' src/aster.cpp \
     || { echo "FAIL: the shift family is no longer in the TypedIR exemption" >&2; exit 1; }
 grep -qF 'if(t.k==Ty::Enum)return enumValueFits((int64_t)e.n);' src/aster.cpp \
