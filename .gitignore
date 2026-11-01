@@ -1,6 +1,9 @@
 /aster
 /build/
 /tmp-*
+# v0.23.64-dev: tests/ci.sh writes aster.tmp.$$ and renames it; an interrupted
+# run leaves the temporary behind, and /aster above does not match it.
+*.tmp.*
 *.o
 *.so
 *.elf
