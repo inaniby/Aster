@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.61-dev"
+#define ASTER_VERSION_STRING "0.23.62-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -4396,7 +4396,12 @@ struct Codegen {
                 // carries `a` at its i32/i64 width, so a single compare against
                 // zero is the whole normalization.
                 if(e.ty==Ty::Bool){
-                    emit(cmpZero(a));
+                    // v0.23.62-dev: compare at the operand's own width. `a`
+                    // carries a 64-bit source in its full width, so a 32-bit
+                    // CMP called 0x1_0000_0000 zero and `(bool)` of any value
+                    // whose low half is zero answered false. emitCondition has
+                    // always picked the width this way.
+                    emit(tyIs64(from)?cmpZeroX(a):cmpZero(a));
                     emit(csetBool(a,1));   // CSET Wa, ne  -> 1 when a != 0
                     return a;
                 }
@@ -4710,8 +4715,13 @@ struct Codegen {
         const Ty elem=f->ty;
         const uint32_t len=f->len;
         checkArrayBounds(len,index);
-        emitStructAddr(fbase);                       // X16 = structBase + fieldOffset
+        // v0.23.62-dev: the subscript is evaluated BEFORE the field's base
+        // address — the order emitIndexAddr already documents and uses. A
+        // subscript that reads a global materializes that global's address
+        // into X16, which is where the field's base is about to go, so the old
+        // order left the element address pointing at the wrong offset.
         int r=gen(index);
+        emitStructAddr(fbase);                       // X16 = structBase + fieldOffset
         emitBoundsCheck(len,index,r);
         emitElemIndex(r,elem);                       // X16 += index * sizeof(elem)
         releaseTemp(r);
@@ -5721,9 +5731,16 @@ struct Codegen {
                 // chain's own address, computed level by level, and the store
                 // goes through it exactly as a one-dimensional element's does.
                 if(s.idx->k==Expr::Index&&s.idx->name.empty()){
-                    emitIndexAddr(*s.idx);
-                    if(tyIsStruct(elem)){emitStructStore(*s.expr);return;}
+                    // v0.23.62-dev: a struct store parks the destination in the
+                    // frame itself (emitStructStore reloads X16 per field), so
+                    // it keeps addressing first. A scalar store does not: its
+                    // value is generated BEFORE the address, because evaluating
+                    // the right-hand side can materialize a global's address
+                    // into X16 — where the target address lives — and the store
+                    // used to land on the wrong location entirely.
+                    if(tyIsStruct(elem)){emitIndexAddr(*s.idx);emitStructStore(*s.expr);return;}
                     int v=gen(*s.expr,elem);
+                    emitIndexAddr(*s.idx);
                     emit(storeGlobalT(v,elem)); // STR <T>v, [X16]
                     releaseTemp(v);
                     return;
@@ -5763,7 +5780,13 @@ struct Codegen {
                 if(!exprIsPtr(*s.idx))throw Error("dereference assignment requires a ptr expression");
                 const Ty inner=exprType(*s.idx);
                 const Ty elem=tyIsPtrToElem(inner)?ptrElemType(inner):Ty::I32;
-                int address=gen(*s.idx);int value=gen(*s.expr);
+                // v0.23.62-dev: the value is generated at the element's own
+                // width, the way every other store does (Let, Assign,
+                // FieldAssign, IndexAssign). Taking the default i32 used to
+                // sign-extend a negative into the low half and then store it
+                // with a 64-bit STR, so `*p = -5` on a ptr<i64> wrote
+                // 4294967291.
+                int address=gen(*s.idx);int value=gen(*s.expr,elem);
                 if(tyIsPtrToElem(inner))emit(storeAtT(value,address,0,elem)); // STRB/STRH/STR/STR X (v0.23.61-dev)
                 else if(exprIsPtr(*s.expr))emit(0xf9000000u|(uint32_t(address)<<5)|uint32_t(value)); // STR Xt, [Xn] (ptr store)
                 else emit(0xb9000000u|(uint32_t(address)<<5)|uint32_t(value)); // STR Wt, [Xn] (i32 store)
