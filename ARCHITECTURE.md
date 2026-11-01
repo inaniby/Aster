@@ -1,6 +1,6 @@
 # Aster — Architecture
 
-**As of v0.23.62-dev.** This document is a structural map of the compiler in
+**As of v0.23.63-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
 carries **no signing key of its own**. It is descriptive, not a feature
 catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the
@@ -99,6 +99,28 @@ codegen runs first), and nothing is emitted for a rejected program.
 Constant folding (`constantInteger`) and comparison classification
 (`isComparison`) are file-scope helpers shared by both passes, so the two can
 never disagree about whether an index folds or an expression is a comparison.
+
+**Two resolvers, and the seam between them.** Sema's `typeOf()` and codegen's
+`exprType()` answer the same question and do not always agree: for the
+arithmetic family Sema answers the `i32` placeholder while codegen answers the
+promoted operand width. `gen()`'s entry asserts they agree (the TypedIR
+contract, v0.23.53-dev) with an **exemption list** for that family, and
+v0.23.63-dev named the predicate (`semaTypeIsPlaceholder`) instead of leaving
+eleven anonymous cases. The disagreement is load-bearing in one more place: a
+store rule that trusted Sema would refuse
+`fn add_u8(a: u8, b: u8) -> u8 { return a + b; }`, so the narrow-type story and
+the exemption are the same story. Unifying the resolvers is a semantic decision
+and is deliberately still open.
+
+**The store rules** are one predicate, `tyAssignable`, reached from two
+siblings: `checkArgument` (a call argument, since early) and `checkValue`
+(a `let` initializer, a local `Assign`, a global `Assign` and a `Stmt::Return`,
+since v0.23.63-dev). `checkValue`'s `refuseNarrow` parameter is `false` at its
+two memory-store call sites — a subscript and a field — because
+`bootstrap/aster.ast` stores an `i64` instruction word into an `i32[262144]`
+stream and the bootstrap subset has no cast expression to spell the truncation
+with. A ptr or a bool reaching an integer slot is refused at every store,
+`refuseNarrow` notwithstanding.
 
 **Run-time bounds checking** (`--bounds-check`, v0.23.1-dev / P1.5) is a
 codegen-only concern, so it lives in `Codegen::emitBoundsCheck` and is called

@@ -1,3 +1,105 @@
+## v0.23.63-dev — semantic strictness: the audit's P1 batch
+
+The second batch of `AUDIT-v0.23.61-dev.md`, and a different kind of defect
+from the first. The P0 round was "computes the wrong answer"; this one is
+"answers the wrong thing about a program" — a legal program refused, an
+illegal one accepted. Quieter, and correspondingly harder to notice. No
+language change and, unusually for a round that touches Sema, **no byte
+change**: every one of the 121 examples compiles to exactly the bytes
+v0.23.62-dev produced.
+
+### A legal program no longer aborts the compiler
+
+`let c: i64 = (a + b) << 2;` on two `i64` operands died with `TypedIR MISMATCH
+kind=25` (kind 25 is `Shl`). The TypedIR contract asserts that Sema's type for
+a node agrees with Codegen's, and the arithmetic family is exempt because Sema
+types it `i32` while Codegen promotes to the operand width — but the exemption
+listed `Add/Sub/Mul/Div/Neg/Mod/BitAnd/BitOr/BitXor` and never the shift
+family or `BitNot`. They join it.
+
+The root cause is left alone on purpose: unifying `typeOf` with `exprType`
+would change what Sema accepts, and that is a decision of its own rather than a
+bug fix. It is recorded as the next P1 item.
+
+### enum: nominal isolation reaches a comparison, and one predicate guards the range
+
+- **Two enums compare only when they are the same enum.** The comparison branch
+  refused a `ptr` and a struct and let everything else through, and
+  `tyIsInteger` counts an enum as an integer — so `c == f` between a `Color` and
+  a `Fruit` compiled and answered true. Two enums now compare only at equal
+  `sid`; an enum still compares against an `i32`, whose storage it shares; every
+  other integer width is refused, as it is in an assignment. `tests/enum-checks.sh`
+  had written the defect down as an expectation ("distinct enums, same value,
+  compared" — returning 1); that case is a refusal now, which is the suite doing
+  its job a round late.
+- **One predicate guards the enum range.** `enumValueFits` is asked at the three
+  places a value becomes an enum: an explicit `= value`, the auto-increment
+  (`next = val + 1`, which had no check at all — `enum E { A = 2147483647, B }`
+  produced `B = 2147483648`), and a constant assigned into an enum slot
+  (`initializerFits` had no `Ty::Enum` case and fell through to `return true`,
+  so `let c: Color = 4294967296;` was accepted and truncated). One predicate
+  because three places asked the same question and each used to answer "yes".
+
+### No implicit narrowing, wherever a value is bound
+
+`fn f() -> u8 { let x: i64 = 300; return x; }` compiled and returned `44`.
+`checkArgument` had always refused the same narrowing at a call — the language
+disagreed with itself about its own rule. `tyAssignable` now covers a `let`, a
+local assignment, a global assignment and a return, with the same message
+telling you to write the cast.
+
+A store through a subscript or a field is deliberately left as it was.
+`bootstrap/aster.ast` — the program the self-hosting loop recompiles with its own
+output — stores an `i64` instruction word into an `i32[262144]` stream
+(`textw[textlen] = w;`), and the bootstrap subset's parser rejects every type
+keyword in operand position, so there is no cast to spell that truncation with;
+tightening those two sites would break self-hosting with no way to fix the
+source. The exemption is a named parameter (`checkValue`'s `refuseNarrow`), and
+the honest fix is to give the bootstrap subset a cast.
+
+The one place the change *is* visible in the self-host is
+`data_size = align_up(data_size, w)` — an `i64` result landing in an `i32` slot,
+twice. It now calls a new `align_up32`, so the arithmetic happens at the width the
+slot is and nothing truncates at all.
+
+**An arithmetic result is exempt, and the exemption is the interesting part.**
+Sema answers `Ty::I32` for every arithmetic node (the placeholder the TypedIR
+exemption exists because of), so a naive check refuses
+`fn add_u8(a: u8, b: u8) -> u8 { return a + b; }` — legal since narrow types
+were introduced, and shipped in `examples/narrow_so.ast`. `semaTypeIsPlaceholder`
+names the class and exempts it: the strict rule applies to a value that carries a
+width of its own — a variable, a field, a call, a literal — and an arithmetic
+result keeps its historical treatment until the two resolvers are unified.
+
+A constant that does not fit its slot is still diagnosed as a range problem
+first (`local initializer does not fit in u8: x (300)`), because that says more
+than "the slot will not take an i32".
+
+### Tests
+
+- **`tests/type-strictness-checks.sh`** (9 layers, registered in `DEFAULT_SUITES`
+  and `CRITICAL`). It is **two-sided on purpose**: a suite for this kind of
+  defect that only refuses would pass by refusing everything, and one that only
+  accepts would not be testing a rule at all. [3/9] 17 witnesses prove the
+  strictness did not break a program that has always compiled (this layer is
+  what caught the first draft of the narrowing fix); [5/9] 13 refusals, each
+  asserted against its own diagnostic; [4/9] a 9-case gcc differential
+  (`tests/type-strictness-twin.c`) over the accepting half, with a header that
+  says why the refusing half has no twin — C accepts an implicit narrowing with
+  a warning; [6/9] counts **both** sides; [7/9] six mutants, and because two of
+  the rules refuse and four admit, the layer asserts both directions (`mutant_accepts`
+  and `mutant_refuses`) — a mutant that agrees with the real compiler has not
+  been tested, whichever way it agrees.
+- `tests/enum-checks.sh`: the cross-enum case moves from legal to refused and
+  gains four more (cross-enum `!=`, enum vs `i64`, auto-increment past `i32`, a
+  constant past `i32`); its witness count is preserved by an enum-vs-`i32` case.
+- **Byte baseline.** Zero rows change. `tests/baseline/v0.23.63-dev/` is the
+  previous snapshot under this version's name, and the suite's [8/9] asserts the
+  288 pre-existing rows are byte-identical — which is the round's claim, made
+  mechanically: it answers questions about programs, not about bytes.
+- Five version guards bumped to `0.23.63-dev`. Evidence in
+  `VALIDATION-v0.23.63-dev.md`.
+
 ## v0.23.62-dev — evaluation order and operand width in codegen
 
 Round driven by the full source-level audit recorded in `AUDIT-v0.23.61-dev.md`:

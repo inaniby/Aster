@@ -1,6 +1,6 @@
 # Aster Language Reference
 
-**Applies to: v0.23.62-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.63-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
 source and then **checked against the v0.23.51-dev binary**. Where a rule says a
@@ -193,8 +193,9 @@ cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
   `i32` source sign-extends, a `u32` source zero-extends into it), and a
   `ptr<T>` ↔ `ptr<U>` cast leaves the value unchanged while changing the
   stride/target the pointer carries.
-- This is the only way to ask for a truncation; implicit narrowing of a value
-  remains a compile error where it is checked at all.
+- This is the only way to ask for a truncation. Since v0.23.63-dev an implicit
+  narrowing is a compile error in **every** store position, not just where it
+  happened to be checked — see the rule below.
 
 ### Implicit conversions
 
@@ -205,13 +206,58 @@ cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
 - Everything else is an error. **A narrowing must be asked for** with a cast
   (§5.1): silently dropping bits would be a bug in the program.
 
+#### Where an implicit narrowing is refused (v0.23.63-dev)
+
+The same `tyAssignable` rule an **argument** has always been checked against
+now runs at every position that stores a value:
+
+| Position | Example | Result |
+| --- | --- | --- |
+| A call argument | `f(n)` where `n: i64` and `f` wants `i32` | always was an error |
+| A `let` initializer | `let b: u8 = e;` where `e: i32` | refused since v0.23.63-dev |
+| A local assignment | `b = x;` with a narrowing mismatch | refused since v0.23.63-dev |
+| A global initializer | `let g: u8 = <an i64>;` | refused since v0.23.63-dev |
+| A `return` | `fn f() -> u8 { return n; }` with `n: i64` | refused since v0.23.63-dev |
+| An array element or a struct field | `a[i] = w;` with `w: i64` and `a` an `i32[N]` | **unchanged** — see below |
+
+The diagnostic names both types and says what to write instead:
+`type mismatch initializing 'b': expected u8, got i64 (write an explicit cast
+to truncate)`.
+
+Two things are **not** narrowing errors:
+
+- **A constant that fits.** `let b: u8 = 5;` is fine. When a constant does
+  *not* fit, the range check runs **first**, so `let b: u8 = 300;` reports
+  `local initializer does not fit in u8: x (300)` — the useful message — rather
+  than a type mismatch.
+- **An arithmetic result.** `let c: u8 = a + 1;` with `a: i32` is accepted.
+  This is a documented consequence of the compiler having two type resolvers:
+  Sema's `typeOf()` answers `i32` for every arithmetic node (a placeholder),
+  while codegen's `exprType()` answers the *promoted operand width*. Trusting
+  Sema at a store would refuse programs the compiler has always accepted —
+  `examples/narrow_so.ast` among them — so the arithmetic family is exempt, and
+  the exemption is a named predicate (`semaTypeIsPlaceholder`) rather than an
+  anonymous case list. Unifying the two resolvers is the remaining root fix and
+  is deliberately still open; until it lands, `let c: u8 = a + 1;` truncates
+  silently and `let b: u8 = u8(a + 1);` is the honest spelling.
+- **A store through a subscript or a field.** `a[i] = w;` with `w: i64` and
+  `a` an `i32[N]` is still accepted, and keeps the element's width. This one is
+  a fact the tree carries rather than a principle: `bootstrap/aster.ast` — the
+  program the self-hosting loop recompiles with its own output — stores an
+  `i64` instruction word into an `i32[262144]` stream, and the bootstrap
+  subset's parser rejects every type keyword in operand position, so there is
+  no cast to spell that truncation with. Tightening those two sites would break
+  self-hosting with no way to fix the source. The exemption is a named
+  parameter (`checkValue`'s `refuseNarrow`), and the honest fix is to give the
+  bootstrap subset a cast.
+
 Usual arithmetic conversion for two integer operands: equal types keep their
 own width (`u8 + u8` wraps at 256); a 64-bit operand wins — and since
 v0.23.48-dev `u64` outranks `i64`, so a mixed pair with a `u64` side is
 compared unsigned (`u64 + i64` answers `u64`, not `i64`); a mixed pair widens
 to 32 bits, taking the unsigned reading when either side is unsigned.
 
-### 5.2 Enumerations (v0.23.61-dev)
+### 5.2 Enumerations (v0.23.61-dev, hardened v0.23.63-dev)
 
 A `enum` declaration introduces a **nominal integer type** backed by `i32`. It
 names a set of `i32` constants so the source can read `Red`/`Green`/`Blue`
@@ -228,6 +274,12 @@ enumerator ::= ident ("=" constant)?
 - **Explicit values.** `enum Dir { North=10, East=20, South=20, West=-1 }` is
   legal; a `=` value is any compile-time integer that `constantInteger` can
   fold, so `= -1` works (the negative is folded before the assignment).
+- **Every enumerator value has to fit `i32`** (v0.23.63-dev): an enum is an
+  `i32` underneath, so an explicit `= value`, the auto-increment that follows
+  one, and a constant landing in an enum slot are all checked by a single
+  `enumValueFits` predicate — `-2147483648 .. 2147483647`. `enum E { A =
+  2147483648 }` and an auto-increment that walks past `2147483647` are both
+  `enumerator value out of i32 range: X` instead of a silent wrap.
 - **No trailing comma.** `enum E { A, B, }` is `expected enumerator name at
   L:C`; write `{ A, B }`. (Struct fields and parameter lists are equally
   strict.)
@@ -253,6 +305,24 @@ enum is stricter than C's. `tyAssignable` enforces:
 | `enum E  ←  i32 constant` | allowed **only** if the constant fits the value's range (`initializerFits`) — `let c: Color = Red;` compiles, `let c: Color = 99;` does too if `99` fits, `let c: Color = someVar;` does **not** (a variable is not a compile-time constant) |
 | `i32  ←  enum E` | **free** — an enum value is already `i32` |
 | anything else (cross-enum, `enum ← i32 variable`, `enum ← ptr/bool`, `ptr ← enum`) | refused |
+
+**Comparing enums is nominal too** (v0.23.63-dev). `==` `!=` `<` `<=` `>`
+`>=` accept an enum only against **the same enum** or against an **`i32`**:
+
+```
+let a: Color = Red;
+let b: Dir   = North;
+if (a == b)   { … }   // error: cannot compare two different enum types: Color and Dir
+if (a == 0)   { … }   // ok   — an enum against an i32
+if (a == Red) { … }   // ok   — the same enum
+let n: i64 = 0;
+if (a == n)   { … }   // error: an enum may only be compared with the same enum
+                      //        or with an i32 (got i64)
+```
+
+Two enums whose values coincide are still different types, which is the one
+point where Aster's enum is stricter than C's — C would compare them as
+integers without a word.
 
 Concretely, `let a: Color = Green; let b: Dir = a;` is refused
 (`cannot assign Dir from Color`), and `let x: i32 = someColorVar;` compiles
@@ -630,6 +700,12 @@ one: `*p = -5` on a `ptr<i64>` stores `-5`, not `4294967291`. And an
 integer→`bool` cast tests the operand at its own width, so `0x1_0000_0000` is
 true.
 
+Since v0.23.63-dev the same "at its own width" rule covers the **shift
+family**: `<<`, `>>` and `~` on a 64-bit operand are emitted 64 bits wide, so
+`~(i64 + i64)` is `-4` (a process exit status of `252`), where a 32-bit
+reading would answer `-1` (`255`). A shift's *count* is still an `i32`
+expression, as in C.
+
 ### `if`
 
 ```
@@ -908,12 +984,14 @@ The check is `initializerFits`, the same one a global has always applied, and it
 now runs for a local scalar **and** for a local array's element initializer
 (`let a: u8[4] = 300;` → `local array initializer does not fit in u8: a (300)`),
 in sema and again in codegen — the two passes carry the same message. Only a
-*constant* initializer is checked: narrowing a value (`let b: i32 = <an i64>`,
-`let b: u8 = <an i32>`) is still allowed, as it always was — the slot's range
-is only enforced against constants, and a non-constant narrowing at a `let`
-or assignment site is silently accepted (the strict check guards the two
-argument paths). Since v0.23.48-dev the explicit spelling is a cast
-(§5.1): `let b: u8 = u8(a);` says the truncation was meant.
+*constant* initializer is checked by `initializerFits`, and a constant that does
+not fit is a range error rather than a type mismatch.
+
+*(v0.23.63-dev changed the sentence that used to follow: narrowing a **value**
+was "silently accepted" at a `let` or assignment site and no longer is — see
+§5.1's "Where an implicit narrowing is refused". The two argument paths were
+never the only guarded ones; the guard now covers a `let`, an assignment, a
+global assignment and a `return`.)*
 
 ## 10. Limits and quotas
 
