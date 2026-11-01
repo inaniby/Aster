@@ -25,7 +25,15 @@
 #
 set -eu
 CXX=${CXX:-g++}
-[ -x ./aster ] || { echo "build ./aster first" >&2; exit 2; }
+# v0.23.64-dev: this suite had never run — the CI orphan gate enumerated
+# tests/*-checks.sh and this file does not match that pattern. Two things had
+# to change before it could. First, it required a pre-built ./aster instead of
+# building its own, which no other suite does and which a fresh checkout (or a
+# private worktree) does not have.
+OUT=${OUT:-tmp-regression-symtab}
+mkdir -p "$OUT"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
+ASTER=${ASTER:-./aster}
+[ -x "$ASTER" ] || { $CXX -std=c++17 -O2 -w src/aster.cpp -o "$OUT/aster"; ASTER="$OUT/aster"; }
 FIXTURE_DIR=${FIXTURE_DIR:-tests/baseline/v0.16.0}
 WRITE_FIXTURES=no
 [ "${1:-}" = "--write-fixtures" ] && WRITE_FIXTURES=yes
@@ -78,7 +86,7 @@ else
 fi
 [ "$WRITE_FIXTURES" = yes ] && { echo "PASS: v0.16.0 reference fixtures written"; exit 0; }
 
-for c in $CASES; do build_case "$ROOT/aster" "$c" "$NEW"; done
+for c in $CASES; do build_case "$ROOT/$ASTER" "$c" "$NEW"; done
 
 python3 - "$REF" "$NEW" <<'PY'
 import os, struct, sys
@@ -86,7 +94,24 @@ import os, struct, sys
 refdir, newdir = sys.argv[1], sys.argv[2]
 # e_shoff, e_shentsize, e_shnum, e_shstrndx: the four header fields v0.16.0 left at zero and
 # v0.17.0 fills in. They are the only header bytes allowed to differ.
-MASK = ((40, 8), (58, 2), (60, 2), (62, 2))
+# v0.23.64-dev: the loaded image is no longer compared against the v0.16.0
+# fixture byte for byte. That assertion was never what this suite is for — it
+# is named for the *symbol table* — and it stopped being true when the frame
+# and spill-slot layout was redesigned around 8-byte slots (v0.23.2-dev;
+# ARCHITECTURE.md: "Scalars occupy one 8-byte slot each (slot*8 byte
+# offsets)"). `examples/hello.ast` moved `str w0,[sp,#4]` to `str w0,[sp,#8]`
+# and `examples/pie_global_rw.ast` moved a spill from `str w0,[sp,#4080]` to
+# `str x0,[sp,#4032]`. Both are documented codegen changes, not regressions,
+# and an exemption list would only grow: any later legitimate frame change
+# would have to be added to it by hand.
+#
+# What replaces it is the invariant the suite actually exists to hold, which is
+# still true of every product: the section table is **append-only**. The
+# program header table is already compared field by field above, so what is
+# left is that the table (and therefore .symtab/.strtab/.shstrtab) begins at or
+# after the last byte a loader maps. A symbol table that overlapped the loaded
+# image would be overwritten by the program's own writes.
+LOADED_IMAGE_EXEMPT = set()
 
 
 def read(path):
@@ -128,14 +153,6 @@ def sections(b, e):
     return out
 
 
-def masked(b):
-    b = bytearray(b)
-    for off, n in MASK:
-        if off + n <= len(b):
-            b[off:off + n] = b'\0' * n
-    return bytes(b)
-
-
 passed = 0
 for rel in sorted(os.listdir(refdir)):
     ref, new = read(os.path.join(refdir, rel)), read(os.path.join(newdir, rel))
@@ -156,7 +173,18 @@ for rel in sorted(os.listdir(refdir)):
     # v0.16.0 put the section-name table right after the last loaded byte of a shared object, so its
     # offset is exactly the end of the loaded image; ET_EXEC/PIE had no sections and were pure image.
     limit = secs_r['.shstrtab'][4] if '.shstrtab' in secs_r else len(ref)
-    assert masked(new[:limit]) == masked(ref[:limit]), rel + ': loaded image bytes changed'
+    if rel in LOADED_IMAGE_EXEMPT:
+        print(f'PASS: {rel}: loaded image exempt ({len(new)} bytes) -- program headers, entry '
+              f'and section table still compared below')
+    else:
+        # The section table must begin at or after every byte a loader maps;
+        # see the comment on LOADED_IMAGE_EXEMPT.
+        # p_offset + p_filesz: the last byte the segment occupies in the file,
+        # which for every product this suite builds is also its last mapped
+        # byte (a .so is laid out with vaddr == offset).
+        loaded_end = max([ph[2] + ph[5] for ph in phdrs(new, en) if ph[0] == 1], default=0)
+        assert en['shoff'] >= loaded_end, \
+            (rel, 'section table overlaps the loaded image', en['shoff'], loaded_end)
     assert 'shstrtab' in rel or len(new) > len(ref), rel
 
     unchanged = 0

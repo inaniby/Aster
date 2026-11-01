@@ -149,6 +149,16 @@ check "$A" 'while (0) never runs' 0 'fn main() -> i32 { let c: i32 = 0; while (0
 check "$A" 'negative is true'   3 'fn main() -> i32 { let n: i32 = -3; let c: i32 = 0; while (n) { c = c + 1; n = n + 1; } return c; }'
 check "$A" 'for integer cond'   6 'fn main() -> i32 { let s: i32 = 0; for (let i: i32 = 0; i < 4; i = i + 1) { s = s + i; } return s; }'
 check "$A" 'while (true) + return' 3 'fn main() -> i32 { let c: i32 = 0; while (true) { c = c + 1; if (c == 3) { return c; } } return 0; }'
+# v0.23.64-dev: the unlabeled `break;` and `continue;` inside a `while`. Every
+# resident suite that touched them used the *labeled* form (`break outer;`,
+# from the switch round) or put `continue;` inside a `switch` — so the plain
+# statement in a plain loop, the shape FEATURE_STATUS credited to
+# tests/smoke.sh, had no executed witness anywhere. The third case is the one
+# that distinguishes them: an unlabeled break leaves only the innermost loop,
+# so the outer counter must still reach 3.
+check "$A" 'while + unlabeled break'    5 'fn main() -> i32 { let c: i32 = 0; while (true) { c = c + 1; if (c == 5) { break; } } return c; }'
+check "$A" 'while + continue'          18 'fn main() -> i32 { let s: i32 = 0; let i: i32 = 0; while (i < 6) { i = i + 1; if (i == 3) { continue; } s = s + i; } return s; }'
+check "$A" 'unlabeled break: inner only' 33 'fn main() -> i32 { let s: i32 = 0; let i: i32 = 0; while (i < 3) { i = i + 1; let j: i32 = 0; while (j < 10) { j = j + 1; if (j == 2) { break; } s = s + 1; } } return s * 10 + i; }'
 # The 64-bit zero test: a value whose low half is zero is still non-zero. A
 # 32-bit compare here would read 4294967296 as false.
 check "$A" 'i64 wide zero-test' 1 'fn main() -> i32 { let big: i64 = 4294967296; if (big) { return 1; } return 0; }'
@@ -374,17 +384,20 @@ cat <<'MAP'
   i64 (wide zero-test)                 integer truthiness    i64 wide zero-test, i64 while
   u8 / u16 / u32 (high bit set)        integer truthiness    u8/u16/u32 truthiness
   for-loop integer condition           integer truthiness    for integer cond
+  while + unlabeled break              integer truthiness    while + unlabeled break
+  while + continue                     integer truthiness    while + continue
+  nested loop, unlabeled break         integer truthiness    unlabeled break: inner only
   ptr / struct                         refused              a ptr condition, a struct condition
   bool literal in arithmetic           refused              the + - * / % << >> & | ^ ~ - cases
   bool literal as index / array init   refused              a[true], array init = true
   bool literal to i32 slot / arg       refused              bool literal to i32 / arg / return
   integer in ?:, &&, !                 refused              ?: with an integer, &&, ! cases
 MAP
-# 21 behavioural cases above; the rejection matrix adds its own count. The map
+# 24 behavioural cases above; the rejection matrix adds its own count. The map
 # is only honest if the battery really ran — if qemu was missing, say so here
 # rather than printing a map of cases that never executed.
 if [ "$have_qemu" = yes ]; then
-    printf '%s\n' 'PASS: 21 behavioural cases cover the accepted rows; the refusal rows are covered by the rejection matrix'
+    printf '%s\n' 'PASS: 24 behavioural cases cover the accepted rows; the refusal rows are covered by the rejection matrix'
 else
     printf '%s\n' 'NOTE: the map describes cases that need qemu; the refusal rows ran regardless'
 fi

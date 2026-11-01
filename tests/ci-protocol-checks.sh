@@ -317,8 +317,16 @@ check_ci_jobs "CI_JOBS=abc is rejected before any suite runs" abc \
 # Coverage ratchet. The gate is only as wide as its suite list, and the
 # corpus is only as wide as the examples and the frozen baseline. These are
 # floors, not exact counts: they move up with the project, and moving one
-# down is a reviewed source change. An unregistered *-checks.sh suite is an
-# orphan — it exists and nobody runs it.
+# down is a reviewed source change. An unregistered suite is an orphan — it
+# exists and nobody runs it.
+#
+# v0.23.64-dev: "unregistered" used to mean "matches tests/*-checks.sh and is
+# not in DEFAULT_SUITES". That is a naming convention, not a property, and it
+# is what let four suites sit unrun for dozens of versions — c-ptr-memory-
+# structural.sh, e2e-so-scope.sh, regression-symtab.sh and smoke.sh all fail
+# the glob. The gate now enumerates *every* tests/*.sh and subtracts an
+# explicit allowlist, so a new script is either registered or declared here
+# with a reason.
 # ---------------------------------------------------------------------------
 ROOT=$(CDPATH= cd -- "$HERE/.." && pwd) || aster_fail "cannot resolve the repository root"
 registered=$(awk '/^DEFAULT_SUITES="/{f=1;next} f&&/^"$/{f=0} f' "$HERE/ci.sh" \
@@ -331,19 +339,56 @@ BASE=$(cd "$ROOT" && ASTER_BASELINE_ROOT=tests/baseline \
 rows=0
 if [ -n "$BASE" ] && [ -f "$ROOT/$BASE" ]; then rows=$(wc -l < "$ROOT/$BASE"); fi
 orphans=""
-for f in "$ROOT"/tests/*-checks.sh; do
+for f in "$ROOT"/tests/*.sh; do
     b=$(basename "$f")
-    printf '%s\n' "$registered" | grep -qxF "$b" || orphans="$orphans $b"
+    printf '%s\n' "$registered" | grep -qxF "$b" && continue
+    # The allowlist: a script that is not a suite in its own right. Every entry
+    # says why, and adding one is a reviewed change.
+    case $b in
+        # Sourced by the e2e suites; run as a library, never as a suite.
+        host-toolchain-probe.sh)      continue ;;
+        guest-libc-alias.sh)          continue ;;
+        # The runner itself, and the qemu/native prefix the suites put in
+        # front of a compiled binary. Neither is a suite.
+        ci.sh)                        continue ;;
+        run-aarch64.sh)               continue ;;
+        # Runs only on the target device (or through a full qemu sysroot);
+        # it needs a real dynamic linker and dlopen, which CI does not have.
+        run-on-device.sh)             continue ;;
+        # A developer driver: it compiles the compiler, checks 20 examples'
+        # ELF headers, then invokes a long list of registered suites. It is not
+        # in DEFAULT_SUITES because every suite it calls already is — running
+        # it in CI would run all of them twice. The check below keeps that
+        # claim true.
+        smoke.sh)                     continue ;;
+    esac
+    orphans="$orphans $b"
+done
+# A driver is only allowed to skip registration while everything it invokes is
+# itself registered. Otherwise "it is just a driver" would be a way to add a
+# suite that nobody runs.
+driver_missing=""
+for f in "$ROOT"/tests/smoke.sh; do
+    for c in $(grep -oE '(^|/)(tests/)?[a-z0-9][a-z0-9._-]*\.sh' "$f" \
+               | sed 's|.*/||' | LC_ALL=C sort -u); do
+        [ "$c" = smoke.sh ] && continue
+        printf '%s\n' "$registered" | grep -qxF "$c" || driver_missing="$driver_missing $c"
+    done
 done
 absent=""
 for b in $registered; do
     [ -f "$ROOT/tests/$b" ] || absent="$absent $b"
 done
-if [ "$suite_count" -ge 116 ] && [ "$examples" -ge 120 ] && [ "$rows" -ge 360 ] \
+if [ -n "$driver_missing" ]; then
+    fail "tests/smoke.sh invokes suites that are not in DEFAULT_SUITES:$driver_missing"
+else
+    pass "driver suites: every suite tests/smoke.sh invokes is registered"
+fi
+if [ "$suite_count" -ge 121 ] && [ "$examples" -ge 120 ] && [ "$rows" -ge 360 ] \
         && [ "$mutations" -ge 30 ] && [ -z "$orphans" ] && [ -z "$absent" ]; then
     pass "coverage ratchet: $suite_count suites, $examples examples, $rows baseline rows, $mutations mutation suites, no orphans"
 else
-    fail "coverage ratchet: suites=$suite_count (floor 116), examples=$examples (floor 120), baseline_rows=$rows (floor 360), mutation_suites=$mutations (floor 30), unregistered:$orphans, missing:$absent"
+    fail "coverage ratchet: suites=$suite_count (floor 121), examples=$examples (floor 120), baseline_rows=$rows (floor 360), mutation_suites=$mutations (floor 30), unregistered:$orphans, missing:$absent"
 fi
 
 # ---------------------------------------------------------------------------

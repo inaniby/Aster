@@ -60,8 +60,8 @@ A=$OUT/aster
 # [2/9] Source guards. Each fix is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: the five rules'
-grep -qF '#define ASTER_VERSION_STRING "0.23.63-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.63-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.64-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.64-dev" >&2; exit 1; }
 grep -qF 'case Expr::Shl: case Expr::Shr: case Expr::BitNot:' src/aster.cpp \
     || { echo "FAIL: the shift family is no longer in the TypedIR exemption" >&2; exit 1; }
 grep -qF 'if(t.k==Ty::Enum)return enumValueFits((int64_t)e.n);' src/aster.cpp \
@@ -419,4 +419,4 @@ shape 'return u8(x) — the cast' 'fn f() -> u8 { let x: i64 = 300; return u8(x)
 fn main() -> i32 { return i32(f()); }'
 shape 'return a + b on two u8' 'fn add_u8(a: u8, b: u8) -> u8 { return a + b; }
 fn main() -> i32 { return i32(add_u8(200, 55)); }'
-printf '%s\n' 'PASS: all v0.23.63-dev type-strictness checks'
+printf '%s\n' 'PASS: all v0.23.64-dev type-strictness checks'
