@@ -116,7 +116,7 @@ the new rows directly.
 
 | Gate | Measurement |
 | --- | --- |
-| `coverage-checks.sh` | (see Part III) |
+| `coverage-checks.sh` | **84.71%** of **7526** executable lines (floor 80%) — unchanged by the round |
 | `mutation-score-checks.sh` | 25 suites declare 159 mutant builds (floors: 24 suites, 150 mutants, 2 per suite) — this round's suite adds 1 suite / 4 mutants |
 | `ci-protocol-checks.sh` | 116 suites, 121 examples, 360 baseline rows, 34 mutation-bearing suites, no orphans |
 | `version-checks.sh` | the banner, the single version literal, README, VERSION_HISTORY and this report all name `0.23.62-dev` |
@@ -128,19 +128,29 @@ the new rows directly.
 `LC_ALL=C CXX=g++ HOSTCC=aarch64-linux-gnu-gcc bash tests/ci.sh`
 
 ```
-CI SUMMARY: 116 passed, 0 skipped, 0 failed (of 116 suites)
+CI SUMMARY: 117 passed, 0 skipped, 0 failed (of 117 suites)
 APK GATES : 3 passed, 0 skipped, 0 failed
 ```
 
-116 suites, up from 115 — this round's `eval-order-checks.sh` is the 116th — and
-no skips, so nothing was skipped in order to be green. Measured on the same
-tree:
+116 suites before the remote merge added `sanitizer-checks.sh` (ASan/UBSan over
+hostile inputs), 117 after it; no skips, so nothing was skipped in order to be
+green. Measured on the same tree:
 
 | Gate | Measurement after the round |
 | --- | --- |
 | `coverage-checks.sh` | **84.71%** of **7526** executable lines (floor 80%) |
 | `mutation-score-checks.sh` | **25 suites / 159 mutants** (floors 24 / 150 / 2 per suite) → 159/159 caught |
 | `ci-protocol-checks.sh` | 116 suites, 121 examples, 360 baseline rows, 34 mutation-bearing suites, no orphans |
+
+The merge with the remote branch (`68313b4`, the sanitizer and self-host-execution
+round) was clean — the two rounds touch different files — and the suites it
+brought were re-run against the modified compiler before the gate:
+
+| Suite | Result |
+| --- | --- |
+| `sanitizer-checks.sh` | PASS — examples + 200 syntax + 200 objects + 200 APKs + 100 keys, 0 crashes; the injected `nameLen` over-read is still caught by ASan |
+| `bootstrap-loop-checks.sh` | PASS — the self-host still closes, with the tolerated ELF-layout delta unchanged |
+| `eval-order-checks.sh` | PASS — all nine layers |
 
 ### What the round did not change
 
