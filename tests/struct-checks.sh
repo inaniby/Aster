@@ -35,7 +35,9 @@ printf '%s\n' '[2/8] Source guard: the type lattice, the layout pass and the ABI
 grep -qF 'enum Kind { I32,' src/aster.cpp \
     && grep -qF 'Struct };' src/aster.cpp \
     || { echo 'FAIL: Ty::Kind no longer carries Struct' >&2; exit 1; }
-grep -qF 'static void layoutStruct(StructDef& s) {' src/aster.cpp \
+# v0.23.65-dev: layoutStruct carries the declaration token so that a size-limit
+# failure can name the field that crossed it (and reports at its declaration).
+grep -qF 'static void layoutStruct(StructDef& s,const Token& id) {' src/aster.cpp \
     || { echo 'FAIL: layoutStruct missing' >&2; exit 1; }
 grep -qF 'static uint32_t aapcs64Slots(Ty t){ return (tyIsStruct(t)&&tySize(t)>8u)?2u:1u; }' src/aster.cpp \
     || { echo 'FAIL: AAPCS64 register classification missing' >&2; exit 1; }

@@ -2,6 +2,16 @@
 # v0.23.54-dev (ELF segments) / v0.23.55-dev (build-apk ZIP offset): page-size
 # regression guard for Android 16 KB-page support. v0.23.60-dev adds link-so to
 # the command matrix so the shared-object writer is covered too.
+# v0.23.65-dev: what "aligned" means here was wrong, and the corpus was too
+# narrow to notice. The assertion demanded that every PT_LOAD *start* on a page
+# boundary; the contract is congruence (p_vaddr == p_offset mod p_align), and
+# GNU ld's own `-Wl,-z,max-page-size=16384` output settles which one is real —
+# its second PT_LOAD sits at off 0x3e30 / vaddr 0x7e30 with p_align 0x4000.
+# Nothing in the corpus could have failed the stronger assertion because none
+# of it carried a `.eh_frame`: `-g` is what makes the shared writers emit a
+# fourth segment, at 0x10840 under 16 KB. So the matrix now runs with -g as
+# well, the assertion is congruence, and the GNU ld differential is asserted
+# alongside it so the relaxation cannot quietly become "anything goes".
 #
 # Android 15+ devices that use a 16 KB page reject any app (targetSdk >= 35)
 # whose ELF load segments are not page-aligned to 0x4000: every PT_LOAD must
@@ -111,14 +121,32 @@ def load_segments(path):
     return loads
 
 def check_alignment(path, page, label):
+    # v0.23.65-dev: the invariant is **congruence**, not start-alignment.
+    #
+    # The ELF contract is p_vaddr == p_offset (mod p_align), and it is exactly
+    # what a loader needs: it mmaps from (p_vaddr & ~(page-1)) at file offset
+    # (p_offset & ~(page-1)), so congruence is what makes the mapping correct.
+    # This suite used to assert `off % page == 0 and vaddr % page == 0`, which
+    # is stronger than that — and it only ever passed because no image in the
+    # corpus carried a `.eh_frame`: a `build-so -g` at 16 KB emits a third
+    # PT_LOAD at 0x10840, which is congruent but not start-aligned.
+    #
+    # GNU ld does the same thing, which is the evidence that congruence is the
+    # right line and not a convenient lowering of it: `gcc -shared -fPIC
+    # -Wl,-z,max-page-size=16384` on this machine produces a second PT_LOAD at
+    # off 0x3e30 / vaddr 0x7e30 — congruent mod 0x4000, not start-aligned. The
+    # differential below asserts that fact, so the relaxation cannot rot into
+    # "anything goes".
     loads = load_segments(path)
     assert loads, (path, "no PT_LOAD segment")
     for p in loads:
         align, off, vaddr = p[7], p[2], p[3]
         assert align == page, (label, path, "PT_LOAD align", hex(align), "expected", hex(page))
-        assert off % page == 0 and vaddr % page == 0, (
-            label, path, "PT_LOAD not aligned", hex(off), hex(vaddr), "to", hex(page))
-    print("PASS: %s %s — %d PT_LOAD segment(s) all Align %s, vaddr/offset aligned"
+        assert (vaddr - off) % align == 0, (
+            label, path, "PT_LOAD not congruent mod p_align", hex(off), hex(vaddr), hex(align))
+        assert (vaddr - off) % 4096 == 0, (
+            label, path, "PT_LOAD not congruent mod 4096", hex(off), hex(vaddr))
+    print("PASS: %s %s — %d PT_LOAD segment(s) all Align %s, vaddr == offset (mod p_align)"
           % (label, os.path.basename(path), len(loads), hex(page)))
 
 CMDS = [
@@ -141,6 +169,76 @@ for name, args, inp in CMDS:
     out = os.path.join(W, name + "-16k")
     build(args, os.path.join(W, inp) if inp else None, out, 16384)
     check_alignment(out, 0x4000, "page-size=16384")
+
+# v0.23.65-dev: the same matrix again with -g, because a debug build is the
+# only way to get the segment this round was actually asked about. `-g` adds
+# `.eh_frame` / `.eh_frame_hdr`, and the shared writers give those their own
+# PT_LOAD — the one that declares p_align = pageSize while starting at an
+# offset that is merely congruent to it (0x10840 at 16 KB). Without -g in the
+# corpus, that segment is never emitted and the fourth layer is measuring
+# three segments where the shipped .so has four.
+build(["build-obj", "-g"], os.path.join(W, "source.ast"), os.path.join(W, "source-g.o"), None)
+build(["build-obj", "--pic", "-g"], os.path.join(W, "source.ast"), os.path.join(W, "source-pic-g.o"), None)
+GCMDS = [
+    ("build-elf-g", ["build-elf", "-g"], "source.ast"),
+    ("build-pie-g", ["build-pie", "-g"], "source.ast"),
+    ("build-so-g", ["build-so", "-g"], "source.ast"),
+    ("link-obj-g", ["link-obj", os.path.join(W, "source-g.o")], None),
+    ("link-pie-g", ["link-pie", os.path.join(W, "source-g.o")], None),
+    ("link-so-g", ["link-so", os.path.join(W, "source-pic-g.o")], None),
+]
+for name, args, inp in GCMDS:
+    out = os.path.join(W, name + "-4k")
+    build(args, os.path.join(W, inp) if inp else None, out, None)
+    check_alignment(out, 0x1000, "default -g")
+for name, args, inp in GCMDS:
+    out = os.path.join(W, name + "-16k")
+    build(args, os.path.join(W, inp) if inp else None, out, 16384)
+    check_alignment(out, 0x4000, "page-size=16384 -g")
+
+# The .eh_frame segment has to exist for the paragraph above to mean anything:
+# assert the debug .so really does carry one more PT_LOAD than the plain one.
+def nloads(path):
+    return len(load_segments(path))
+plain = nloads(os.path.join(W, "build-so-16k"))
+dbg = nloads(os.path.join(W, "build-so-g-16k"))
+assert dbg > plain, ("build-so -g did not add a PT_LOAD", plain, dbg)
+print("PASS: build-so -g emits %d PT_LOAD segment(s) against %d without — the .eh_frame "
+      "segment is in the matrix, not assumed" % (dbg, plain))
+
+# The GNU ld differential: congruence is the whole contract, and a real linker
+# is the one that says so. If a cross compiler is available, ask it for the
+# same thing Aster was asked for and read the answer off its own output.
+CC = os.environ.get("HOSTCC") or os.environ.get("CC") or "cc"
+if not any(os.access(os.path.join(d, CC), os.X_OK)
+           for d in (os.environ.get("PATH") or "").split(os.pathsep) if d):
+    CC = "aarch64-linux-gnu-gcc" if any(
+        os.access(os.path.join(d, "aarch64-linux-gnu-gcc"), os.X_OK)
+        for d in (os.environ.get("PATH") or "").split(os.pathsep) if d) else None
+if CC:
+    csrc = os.path.join(W, "ld-probe.c")
+    with open(csrc, "w") as fh:
+        fh.write("int ld_probe_add(int a, int b) { return a + b; }\n")
+    ldso = os.path.join(W, "ld-probe.so")
+    try:
+        subprocess.run([CC, "-shared", "-fPIC", "-Wl,-z,max-page-size=16384", csrc, "-o", ldso],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    except (OSError, subprocess.CalledProcessError):
+        ldso = None
+    if ldso:
+        for p in load_segments(ldso):
+            a2, off2, va2 = p[7], p[2], p[3]
+            assert (va2 - off2) % a2 == 0, ("GNU ld produced a non-congruent PT_LOAD", hex(off2), hex(va2))
+        loose = [p for p in load_segments(ldso)
+                 if (p[2] % p[7]) != 0 or (p[3] % p[7]) != 0]
+        assert loose, "GNU ld start-aligned every PT_LOAD — the congruence reading is unverified"
+        print("PASS: GNU ld (-z max-page-size=16384) emits %d PT_LOAD(s), all congruent mod "
+              "p_align, and %d of them not start-aligned — so congruence, not start-alignment, "
+              "is the contract this suite asserts" % (len(load_segments(ldso)), len(loose)))
+    else:
+        print("SKIP: the GNU ld differential could not build a probe .so with %s" % CC)
+else:
+    print("SKIP: the GNU ld differential needs a C compiler")
 
 # The 16 KB flag must actually change the default build-elf image (it must not
 # be a silent no-op — that is exactly the bug this suite guards against).

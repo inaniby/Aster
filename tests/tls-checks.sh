@@ -105,8 +105,16 @@ grep -qF 'e.type=1;e.flags=0x1|0x2|0x400;e.addr=tlsVaddr;' src/aster.cpp \
 grep -qF 'e.type=8;e.flags=0x1|0x2|0x400;' src/aster.cpp \
     || fail "the .tbss section is not SHT_NOBITS with SHF_WRITE|SHF_ALLOC|SHF_TLS"
 # The kRelTlsOff fill must subtract the PT_TLS base (block-relative offset).
-grep -qF 'const uint32_t val=uint32_t((target-tlsVaddr)&0xffffffffu);' src/aster.cpp \
+grep -qF 'const uint32_t val=uint32_t(off);' src/aster.cpp \
     || fail "kRelTlsOff no longer fills the block-relative offset (target-tlsVaddr)"
+# v0.23.65-dev: the offset used to be masked with `& 0xffffffffu`, which aliased
+# a variable whose offset passed 4 GiB onto another one 4 GiB earlier in the
+# block. It is refused now, so the mask must stay gone. (The witness lives in
+# layout-boundary-checks.sh; this guard is what stops the mask coming back.)
+grep -qF 'if(off>0xffffffffULL)' src/aster.cpp \
+    || fail "kRelTlsOff no longer refuses an offset that overflows the 32-bit MOVZ/MOVK pair"
+[ "$(grep -c '& 0xffffffffu)' src/aster.cpp)" = 0 ] \
+    || fail "the 32-bit mask is back — a thread-local past 4 GiB would alias again"
 # What a shared object still refuses: an `extern tls let`, which has no way to
 # name another module's thread-local through .dynsym.
 grep -qF 'is not supported in a shared object: global' src/aster.cpp \
@@ -448,9 +456,11 @@ fi
 printf '%s\n' '[9/9] The suite can still fail (two mutations)'
 # (a) Halve the local-exec offset fill: layer 8 must notice (wrong value ->
 # wrong exit code), and so must the static structural layers.
-sed 's|const uint32_t val=uint32_t((target-tlsVaddr)\&0xffffffffu);|const uint32_t val=uint32_t(((target-tlsVaddr)/2)\&0xffffffffu);|' \
+# v0.23.65-dev: the fill is `const uint32_t val=uint32_t(off);` now — `off` being
+# the checked block-relative offset, not `(target-tlsVaddr)&0xffffffffu`.
+sed 's|const uint32_t val=uint32_t(off);|const uint32_t val=uint32_t(off/2);|' \
     src/aster.cpp > "$OUT/mutant.cpp"
-grep -q '((target-tlsVaddr)/2)' "$OUT/mutant.cpp" \
+grep -q 'const uint32_t val=uint32_t(off/2);' "$OUT/mutant.cpp" \
     || fail "the local-exec mutation stopped applying — the [9/9] guard is stale"
 ${CXX:-c++} -std=c++17 -O2 "$OUT/mutant.cpp" -o "$OUT/mutant" 2>/dev/null \
     || fail "the local-exec mutation no longer compiles"
