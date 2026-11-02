@@ -1,3 +1,75 @@
+## v0.23.67-dev — close the language gaps (`type` and `const`)
+
+The audit's third part listed the language's gaps in order of
+cost-effectiveness — `typedef` (1), `const` (2), `void` (3), `char` (4),
+`union` (5) — and asked for them to be closed in turn. This round closes the
+first two; `void` stays queued.
+
+No image bytes move: all 123 examples compile to the same bytes as
+v0.23.66-dev, so `tests/baseline/v0.23.67-dev/` is this version's snapshot and
+the byte-baseline layer asserts every pre-existing row is unchanged.
+
+### `type Name = T ;` — a type alias, not a new type
+
+A `Ty` is a `(kind, index)` pair with no room for a spelling. There is no
+`Ty::Alias`: `typeAliasOf` hands `parseType` the underlying `Ty` the moment the
+name is read, so the alias is gone before layout, Sema or codegen ever run.
+Two names for `i32` are `i32`; a value of one is a value of the other. Only the
+spelling was ever abbreviated.
+
+The one thing a `Ty` cannot carry — a function signature — travels in the alias
+record (`TypeAlias{ Ty ty; bool isFunc; FuncSig sig; }`) and is handed back at
+every use through `pendingFuncType`/`pendingFuncSig`. That is what makes
+`type Op = fn(i32) -> i64;` a *real* signature at every declaration that names
+it. Without it `op` is a bare `ptr` to a function, the result is read at `i32`
+width, and a 64-bit answer comes back truncated (the `alias_fn_i64_ret` case:
+22 instead of 11).
+
+An alias cannot stand for an array (`i32[4]` is a declaration form, not a type)
+and is not a cast spelling (`T(x)` is the type keywords alone, so an identifier
+there stays a call). The declaration is refused when the right-hand side is not
+a type, when the name is already taken (by another alias, a struct, or a global
+variable), and when it is used before it is declared.
+
+### `const x : T = e ;` — a read-only binding
+
+At file scope and in a function body, a const is a `let` whose `isConst` bit is
+set in the `Binding` (locals) or in `constGlobals` (globals). One question —
+`isConstName` — answers for every store site, so the five refusals cannot drift
+apart:
+
+- `x = e` and `x += e` and `x++` (all rebuilt as `x = x op e`) at the
+  assignment site, local and global;
+- `a[i] = e` at the element-store site — a const *array* is read-only element by
+  element, not only as a whole;
+- `s.f = e` at the field-store site — the store lands in one field of the
+  binding, so the *base* `s` is refused;
+- `&x` at address-of, because an Aster `ptr` carries no read-only bit of its own
+  and `*p = v` would be the one way back in.
+
+A const must be given a value; reading one is reading a `let`. The guarantee is
+the compiler's, not the image's — a const global occupies the same `.data`
+bytes a `let` global does.
+
+### The two refusals gcc does not share
+
+C hands out a `const int *` happily, because its type system can say "pointer to
+const" and `*p = v` stays forbidden there too. Aster's `ptr` cannot, so refusing
+`&const` is the one refusal this round records as Aster's alone rather than
+pretending gcc agrees. Every other refusal in the matrix has a C twin gcc
+refuses as well.
+
+### The suite
+
+`tests/alias-const-checks.sh` is nine layers: strict build; 26 source guards
+pinning every piece of both features plus the reserved-word list (now 29 words,
+`tls` still a context keyword); an independent reader that expands every alias
+out of the source by hand and requires **byte-identical** output — byte equality
+is the proof the alias is a spelling and not a type; a gcc differential over ten
+cases; a 16-entry refusal matrix; the two shipped examples against their C
+twins; coverage counting; six mutations; and the byte baseline. Evidence in
+`VALIDATION-v0.23.67-dev.md`.
+
 ## v0.23.66-dev — the parts of an ELF image nobody runs
 
 `AUDIT-v0.23.61-dev.md`'s second part listed seven ELF/linker findings marked

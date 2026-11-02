@@ -1,6 +1,6 @@
 # Aster Language Reference
 
-**Applies to: v0.23.66-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.67-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
 source and then **checked against the v0.23.51-dev binary**. Where a rule says a
@@ -25,7 +25,7 @@ explains *why* each rule exists. This file is the lookup table.
 | Whitespace | spaces, tabs, newlines (`isspace`) |
 | Encoding note | UTF-8 inside a comment is fine: comments are consumed before the ASCII check runs |
 
-## 2. Reserved words — 27
+## 2. Reserved words — 29
 
 All 27 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
 fails for every one of them).
@@ -53,6 +53,8 @@ fails for every one of them).
 | `bool` | boolean type | v0.22.51-dev |
 | `struct` | struct declaration | v0.23.5-dev |
 | `enum` | enumeration declaration (named `i32` constants) | v0.23.61-dev |
+| `type` | type-alias declaration (`type Name = T ;`) | v0.23.67-dev |
+| `const` | read-only binding (`const x : T = e ;`) | v0.23.67-dev |
 | `include` | `include "file.ast";` declaration sharing | v0.23.13-dev |
 | `true` | Bool literal, value 1 | v0.23.25-dev |
 | `false` | Bool literal, value 0 | v0.23.25-dev |
@@ -77,7 +79,8 @@ The type names are likewise ordinary identifiers, which is what lets
 identifier everywhere except at the **start of a top-level declaration**, where
 `tls let name: type …;` declares a thread-local global (§8). `let tls: i32 = 1;`
 compiles — a variable named `tls` is fine; only the declaration prefix is
-special. The reserved-word count therefore stays **27**.
+special. The reserved-word count is therefore **29** (the `type` and `const`
+keywords joined it in v0.23.67-dev).
 
 ### Identifiers
 
@@ -632,6 +635,24 @@ join the integer widths, at file scope and inside a function alike. (Before that
 round a local `T[N]` was gated on `T` being an integer — a local `ptr[N]` was
 refused outright — and a global `bool[N]` / `S[N]` did not parse at all.)
 
+### `const` (local, v0.23.67-dev)
+
+```
+const-decl ::= 'const' ident ':' type '=' expr ';'
+```
+
+- A local `const` is a `let` whose value may not change: it must have an
+  initializer (`expected '='`), and the initializer is the same expression a
+  `let` takes (including a call — `const k: i32 = bump(41);` is fine).
+- Every store to it is refused: `k = e`, `k += e`, `k++`, an element store
+  `a[i] = e`, a field store `s.f = e`, and its address `&k`. The last is refused
+  because an Aster `ptr` carries no read-only bit, so `*p = v` would be the one
+  way back in; C instead hands out a `const int *`, so `&const` is the single
+  refusal in the language this round records as Aster's alone rather than one a
+  C compiler also makes.
+- Reading a `const` is reading a `let` — no special codegen, no byte difference
+  from a `let` of the same value.
+
 **Since v0.23.29-dev an array may also be a struct field** — `nums: i32[4]`
 inside a `struct` — indexed as `s.nums[i]`, walked as `s.pts[1].a`, addressed as
 `&s.pts[1]`, and scaled by the same shift-or-`UMADDL` rule a named array uses. A
@@ -800,7 +821,9 @@ same name in one scope → `duplicate variable in scope: x`.
 program   ::= decl*
 decl      ::= 'include' string ';'
             | struct-decl
+            | 'type' ident '=' type ';'
             | 'let' ident ':' type [ '[' length ']' ] [ '@align' '(' n ')' ] '=' expr ';'
+            | 'const' ident ':' type '=' expr ';'
             | 'tls' [ 'extern' ] 'let' ident ':' type [ '[' length ']' ] '=' expr ';'
             | 'extern' 'let' ident ':' type [ '[' length ']' ] ';'
             | [ 'extern' ] 'fn' name '(' params ')' '->' type ( block | ';' )
@@ -826,8 +849,8 @@ name      ::= ident | 'main'
 
 - `tls` is a **context keyword**: it is only special at the start of a
   top-level declaration, so it stays a usable identifier everywhere else
-  (`let tls: i32 = 5;` is an ordinary local). The reserved-word count does
-  not move — still 27 (since v0.23.61-dev added `enum` as a reserved word).
+  (`let tls: i32 = 5;` is an ordinary local). The reserved-word count is
+  29 (the `type` and `const` keywords joined it in v0.23.67-dev).
 - Same shapes as a plain global — scalars and arrays, the same types, the
   same constant-initializer rules, the same length bounds. `tls extern let
   name: type;` declares one defined elsewhere, exactly like `extern let` —
@@ -912,6 +935,50 @@ overridable with `--include-dir`. Cycles are an error
 
 `@embed` paths resolve like `include`. Limits: the file must exist, be
 non-empty, not a directory, and ≤ 16 MiB. The same file embedded twice is one
+
+### Type aliases (v0.23.67-dev)
+
+```
+type Name = T ;
+```
+
+- `T` is **any type the grammar accepts** — a scalar, a struct, an enum, a
+  `ptr<…>`, or a `fn(…) -> …`. The name expands by the same `parseType` every
+  declaration site uses, so it is gone before layout, Sema and codegen run.
+- There is no "alias type": two names for `i32` are `i32`, and a value of one
+  is a value of the other. The one thing a `Ty` cannot carry — a **function
+  signature** — travels in the alias record and is handed back at every use, so
+  `type Op = fn(i32) -> i64;` is a real signature and a 64-bit result is read
+  at full width.
+- An alias **cannot** stand for an array (`i32[4]` is a declaration form, not a
+  type → `expected ';' after a type alias declaration`), and is **not** a cast
+  spelling (`T(x)` is the type keywords alone, so an identifier there stays a
+  call).
+- A declaration is refused when the right-hand side is not a type
+  (`expected a type after '=' in the declaration of type alias N`),
+  when the name is already taken (`duplicate type alias: N` / `type alias
+  conflicts with a struct: N` / `type alias conflicts with a global variable: N`),
+  and when used before it is declared (`expected i32, i64, …` where a type was
+  wanted).
+- Aliases may chain (`type A = S; type B = A;`) and an alias may name an
+  earlier alias in its right-hand side.
+
+### `const` globals (v0.23.67-dev)
+
+```
+const name : type = expr ;
+```
+
+- A top-level `const` is a read-only global: the same `.data` bytes a `let`
+  global occupies, just never written by the program. It must have an
+  initializer (`expected '=' in global variable declaration`), and the
+  initializer is the same constant-or-run-time expression a `let` global takes.
+- Sema refuses `name = e`, `name += e`, `name++`, an element store
+  `name[i] = e`, a field store `s.f = e`, and `&name` — the last because an
+  Aster `ptr` carries no read-only bit, so `*p = v` would be the one way back
+  in. C hands out a `const int *` for the same, so `&const` is the one refusal
+  Aster records as its own.
+- A `const` local binding has the same rules and is documented in §7.
 copy. An unknown attribute → `unknown attribute '@x' at L:C`.
 
 ## 9. Four places Aster used to differ from C — closed in v0.23.27-dev

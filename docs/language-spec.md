@@ -1373,12 +1373,12 @@ The contract is `bootstrap/LEXER-SPEC.md` (13 sections, frozen); this section
 is the summary a reader of the language needs, and where the two disagree the
 frozen document wins.
 
-**77 token kinds**, numbered in the exact order of `enum class TK` in this
-compiler: `End`(0), `Ident`(1), `Number`(2), `String`(3), `Char`(4), the 26
-keywords (`Fn`(5) … `Include`(30), in the order `fn extern main let return if
+**80 token kinds**, numbered in the exact order of `enum class TK` in this
+compiler: `End`(0), `Ident`(1), `Number`(2), `String`(3), `Char`(4), the 29
+keywords (`Fn`(5) … `Include`(33), in the order `fn extern main let return if
 else while for break continue i32 ptr bool switch case default i64 u8 u16 u32
-u64 true false struct include`), then the operators and punctuation
-(`LParen`(31) … `Amp`(76)). The dump
+u64 true false struct enum type const include`), then the operators and
+punctuation (`LParen`(34) … `Amp`(79)). The dump
 prints the *name*; the number is part of the contract both implementations
 key off. (The count was 72 through v0.23.50-dev: the switch keywords, the
 `u64` type keyword and the `Char` token each joined `enum class TK` after the

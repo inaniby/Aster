@@ -1,6 +1,6 @@
 # Aster — Architecture
 
-**As of v0.23.66-dev.** This document is a structural map of the compiler in
+**As of v0.23.67-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
 carries **no signing key of its own**. It is descriptive, not a feature
 catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the
@@ -54,6 +54,34 @@ dedicated diagnostic.
   entered into the table *before* its fields are read, so a field of the same
   struct resolves and is then rejected — a struct cannot contain itself.
   `Expr` gains `Field`, `AddrOf` and `StructLit`; `Stmt` gains `FieldAssign`.
+
+- **Type aliases** (v0.23.67-dev) — `type Name = T ;` is parsed by
+  `typeAliasDeclaration()` into a global table (`g_typeAlias`) holding a
+  `TypeAlias{ Ty ty; bool isFunc; FuncSig sig; }`. There is no `Ty::Alias`:
+  `parseType()` consults `typeAliasOf()` **first**, before it reads any keyword
+  or `ptr<…>`, and substitutes the underlying `Ty` on the spot. A `Ty` is a
+  `(kind, index)` pair with no room for a spelling, so the name is gone before
+  layout, Sema or codegen run — two names for `i32` are `i32`, and a value of
+  one is a value of the other. Only the function-signature half cannot live in a
+  `Ty`: when the alias is a `fn(…) -> …`, `parseType` sets
+  `pendingFuncType`/`pendingFuncSig` and the caller (a variable, parameter or
+  return slot) adopts the signature the way a spelled-out `fn(…)` would, so
+  `type Op = fn(i32) -> i64;` is a real signature at every declaration that
+  names it. An alias is refused when its right-hand side is not a type, when its
+  name collides with another alias / a struct / a global, and when used before
+  declared. It cannot stand for an array (`i32[4]` is a declaration form, not a
+  type) and is not a cast spelling (`T(x)` is the type keywords alone).
+- **Const bindings** (v0.23.67-dev) — `const x : T = e ;` is a `let` whose
+  `isConst` bit is set: on a local `Binding` (via `letStatement(isConst)`) and
+  on a `Global` (flagged through `globalDeclaration(false, false, /*isConst=*/true)`,
+  reaching Sema as a name in `constGlobals`). One predicate, `isConstName(n)`,
+  answers for every store site — a local/global `x = e` and its `+=`/`++`
+  desugarings, an element store `a[i] = e`, a field store `s.f = e` (the *base*
+  `s` is refused, because the store lands in one field of the binding), and
+  `&x` at `AddrOf` (an Aster `ptr` carries no read-only bit, so `*p = v` would be
+  the one way back in). A const must be initialized; reading one is reading a
+  `let`. The guarantee is the compiler's, not the image's — a const global
+  occupies the same `.data` bytes a `let` global does, so no codegen path moves.
   Globals may also be struct-typed.
 - **`@embed` / `@embed_len` (v0.23.7-dev).** The parser owns them, because both
   have to be answered during parsing. `embedFile(path)` resolves the path

@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.66-dev.** One table per area. "Since" is the version that
+**As of v0.23.67-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -10,6 +10,8 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | Feature | Status | Since | Coverage |
 | --- | --- | --- | --- |
 | `i32` type (signed 32-bit) | shipped | early | all suites |
+| `type Name = T ;` — a **type alias**: `Name` expands by the same `parseType` every declaration site uses, so it may stand for a scalar, a struct, an enum, a `ptr<...>`, or a `fn(...) -> ...`. There is no `Ty::Alias` — a `Ty` is a `(kind, index)` pair with no room for a spelling — so the name is gone before layout, Sema and codegen run; two names for `i32` are `i32`. The one thing a `Ty` cannot carry, a **function signature**, rides in the alias record and is handed back at every use (`type Op = fn(i32) -> i64;` is a real signature, not a bare `ptr`), so a 64-bit result is read at full width. An alias cannot stand for an array and is not a cast spelling | shipped | v0.23.67-dev | `alias-const-checks.sh` [2/9] guards, [3/9] hand-expansion byte-equality, [8/9] m1/m6 |
+| `const x : T = e ;` — a **read-only binding** at file scope and in a function body. The `isConst` bit rides in the `Binding` (locals) and in `constGlobals` (globals); one `isConstName` answers for every store site, so the five refusals cannot drift apart: a whole-binding assignment/`+=`/`++` (local and global), an element store `a[i] = e`, a field store `s.f = e` (the *base* is refused), and `&x` (an Aster `ptr` carries no read-only bit, `*p = v` would be the one way back in). A const must be initialized; reading one is reading a `let`; a const global occupies the same `.data` bytes a `let` global does | shipped | v0.23.67-dev | `alias-const-checks.sh` [2/9] guards, [5/9] 16-refusal matrix, [8/9] m2/m3/m5 |
 | `enum Name { … }` — nominal `i32`-backed enumeration; enumerators are named `i32` constants (auto-increment or `= value`), `enum<->enum` requires the same `sid`, `i32 <- enum` is free, `enum <- i32` only from a fitting constant; every value that becomes an enumerator (an `= value`, an auto-increment, a constant in an enum slot) has to sit in `i32`'s signed range since v0.23.63-dev; two **different** enums are never comparable even when their values coincide; an enum value is a legal condition and arithmetic operand; `sizeof` is 4 | shipped (hardened v0.23.63-dev) | v0.23.61-dev | `enum-checks.sh` [9/9] — qemu witnesses, 10-rejection matrix, 2-mutant layer |
 | `ptr` type (64-bit address value) | shipped | v0.22.x | `pointer-index-checks.sh`, `c-ptr-*` e2e |
 | `fn` / `extern fn` / `main` (exported as `_start`) | shipped | early | `object-checks.sh`, `linker-checks.sh` |
