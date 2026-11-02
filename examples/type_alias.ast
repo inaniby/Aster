@@ -1,0 +1,55 @@
+// Type aliases: a name for a type, expanded where the name is read.
+//
+// Before v0.23.67-dev every use of a type spelled the type out. `ptr<Point>`
+// was written in full in each declaration that wanted it, and a callback
+// signature was repeated in every parameter list that took one.
+// `type Name = T ;` gives a type a name:
+//
+//   - the name is expanded by the very same parseType every declaration site
+//     uses, so an alias can stand for anything a type can be spelled as — a
+//     scalar, a struct, an enum, a ptr<...>, or a fn(...) -> ...;
+//   - nothing downstream ever sees the name. A Ty is a (kind, index) pair with
+//     no room for a spelling, so the alias is gone by the time layout, Sema
+//     and codegen run — which is also why an aliased type is not a *distinct*
+//     type: two names for i32 are i32, and a value of one is a value of the
+//     other. Only the spelling was ever abbreviated.
+//
+// What an alias cannot do: stand for an array (`i32[4]` is a declaration form,
+// not a type), or appear as a cast target (`T(x)` is spelled with the type
+// keywords alone, so an identifier there stays a call).
+//
+// This example puts a name in every place a type may be spelled: a global, a
+// local, a parameter, a return type, an array element, a struct field, a
+// ptr<...> element, both halves of a function type, and sizeof.
+// Its C twin is tests/type-alias-twin.c; the two agree on the exit status.
+
+struct Point { x: i32, y: i32 }
+enum Color { Red = 0, Green = 1, Blue = 2 }
+
+type Coord = i32;             // a scalar
+type Ptr = ptr<Point>;        // a pointer that knows what struct it points at
+type Shade = Color;           // an enum
+type BinOp = fn(Coord, Coord) -> Coord;   // a function type
+type W = u16;                 // a narrow scalar
+
+struct Pair { a: Coord, b: W }        // an alias as a field type
+
+let gp: Coord = 4;                    // an alias as a global's type
+
+fn add(x: Coord, y: Coord) -> Coord { return x + y; }
+fn mul(x: Coord, y: Coord) -> Coord { return x * y; }
+fn use(q: Ptr) -> Coord { return q.x * 10 + q.y; }
+fn via(op: BinOp, x: Coord, y: Coord) -> Coord { return op(x, y); }
+
+fn main() -> i32 {
+    let p: Point = Point { 3, 7 };
+    let q: Ptr = &p;                  // 3*10+7   = 37
+    let c: Shade = Blue;              // 2
+    let pr: Pair = Pair { 5, 6 };     // 5, 6
+    let arr: Coord[2] = 9;            // arr[1]   = 9
+    let w: W = 30;                    // 30
+    let op: BinOp = add;              // via = 1+2 = 3
+    return use(q) + via(op, 1, 2) + pr.a + pr.b + arr[1] + w + c + gp + sizeof(Coord);
+    //     37     +   3          + 5    + 6    + 9      + 30 + 2 + 4  + 4
+    // 100
+}

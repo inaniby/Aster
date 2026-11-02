@@ -138,15 +138,15 @@ AST
 # `tls` must still be absent from the reserved-word list: it is a context
 # keyword, not a reserved word. The authoritative list is
 # bootstrap/gen_lexer_names.py's KEYWORDS (the generator asserts its own length
-# is 27 since v0.23.61-dev added `enum`); `tls` must be absent from it.
+# is 29 since v0.23.67-dev added `enum`); `tls` must be absent from it.
 python3 - <<'PY' || exit 1
 import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 27, ('reserved-word count moved', len(entries), entries)
+assert len(entries) == 29, ("reserved-word count moved", len(entries), entries)
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 27 reserved words, tls absent (context keyword)')
+print('PASS: 29 reserved words, tls absent (context keyword)')
 PY
 
 # ---------------------------------------------------------------- 4. static structure

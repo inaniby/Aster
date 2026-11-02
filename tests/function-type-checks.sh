@@ -61,9 +61,11 @@ grep -qF 'if(pendingFuncType){s.funcSig=pendingFuncSig;s.isFunc=true;' src/aster
     || { echo 'FAIL: a local fn-pointer no longer captures its signature' >&2; exit 1; }
 grep -qF 'if(pendingFuncType){f.paramFuncSig.push_back(pendingFuncSig);f.paramIsFunc.push_back(true);' src/aster.cpp \
     || { echo 'FAIL: a fn-pointer parameter no longer captures its signature' >&2; exit 1; }
-# The Binding carries it.
-grep -qF 'FuncSig funcSig; bool isFunc=false; };' src/aster.cpp \
+# The Binding carries it (fn-pointer machinery + the new read-only bit).
+grep -qF 'FuncSig funcSig; bool isFunc=false;' src/aster.cpp \
     || { echo 'FAIL: Binding no longer carries a function signature' >&2; exit 1; }
+grep -qF 'bool isConst=false; };' src/aster.cpp \
+    || { echo 'FAIL: Binding no longer carries the read-only const bit' >&2; exit 1; }
 # The two resolvers.
 grep -qF 'const FuncSig* funcSigOf(const std::string& n) const {' src/aster.cpp \
     || { echo "FAIL: sema's funcSigOf resolver is missing" >&2; exit 1; }

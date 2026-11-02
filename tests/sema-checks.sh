@@ -38,7 +38,7 @@ grep -qF 'void check(const Function& f){' src/aster.cpp \
     || { echo 'FAIL: per-function semantic entry point missing' >&2; exit 1; }
 grep -qF 'void checkCondition(const Expr& e){' src/aster.cpp \
     || { echo 'FAIL: semantic condition rule missing' >&2; exit 1; }
-grep -qF 'Sema sema{arities,globalNames,externFunctions,arrayGlobals,boolGlobals,pointerReturnFunctions,boolReturnFunctions,' src/aster.cpp \
+grep -qF 'Sema sema{arities,globalNames,externFunctions,arrayGlobals,boolGlobals,constGlobals,pointerReturnFunctions,boolReturnFunctions,' src/aster.cpp \
     || { echo 'FAIL: semantic pass not constructed in compileProgram' >&2; exit 1; }
 grep -qF 'sema.check(*f);' src/aster.cpp \
     || { echo 'FAIL: functions are not type-checked before codegen' >&2; exit 1; }

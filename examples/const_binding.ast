@@ -1,0 +1,41 @@
+// Read-only bindings: `const x : T = e;`
+//
+// `let` was the only binding Aster had, and a `let` may be written to as often
+// as the program likes. v0.23.67-dev adds `const`, which binds a value no
+// assignment may change:
+//
+//   - every store is refused at check time — `x = e`, `x += e`, `x++`, an
+//     element store `a[i] = e`, a field store `s.f = e`, and the address
+//     `&x` (an Aster ptr carries no read-only bit of its own, so handing one
+//     out would be the one way to write the value back);
+//   - a const is required to have an initializer, because a binding that can
+//     never be written and was never given a value has no value at all;
+//   - reading one is exactly reading a let.
+//
+// The initializer is an ordinary expression, not a compile-time constant: a
+// const may be given the answer of a call, as `n` below is. What is fixed is
+// the binding, not how its first value was arrived at.
+//
+// The guarantee is the compiler's, not the image's: a const global occupies
+// the same .data bytes a let global does, and nothing marks them read-only.
+//
+// This example reads a const of every shape — a file-scope scalar, a
+// file-scope struct, a local, an array and a struct local. Its C twin
+// tests/const-binding-twin.c agrees on the exit status.
+
+struct Pt { x: i32, y: i32 }
+
+const kBase: i32 = 10;
+const kHome: Pt = Pt { 1, 2 };
+
+fn bump(v: i32) -> i32 { return v + 1; }
+
+fn main() -> i32 {
+    const k: i32 = 5;
+    const xs: i32[3] = 7;            // every element is 7
+    const home: Pt = Pt { 3, 4 };
+    const n: i32 = bump(k);          // an initializer may be a call
+    return kBase + kHome.x + kHome.y + k + xs[0] + xs[2] + home.x + home.y + n;
+    //     10    + 1       + 2       + 5 + 7      + 7      + 3      + 4      + 6
+    // 45
+}
