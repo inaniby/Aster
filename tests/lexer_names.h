@@ -43,6 +43,8 @@ enum {
     TK_False,
     TK_Struct,
     TK_Enum,
+    TK_Type,
+    TK_Const,
     TK_Include,
     TK_LParen,
     TK_RParen,
@@ -92,7 +94,7 @@ enum {
     TK_Amp,
 };
 
-#define TK_COUNT 78
+#define TK_COUNT 80
 static const char *const TK_NAMES[TK_COUNT] = {
     "End",
     "Ident",
@@ -125,6 +127,8 @@ static const char *const TK_NAMES[TK_COUNT] = {
     "False",
     "Struct",
     "Enum",
+    "Type",
+    "Const",
     "Include",
     "LParen",
     "RParen",
@@ -174,7 +178,7 @@ static const char *const TK_NAMES[TK_COUNT] = {
     "Amp",
 };
 
-#define KW_COUNT 27
+#define KW_COUNT 29
 static const struct { const char *spelling; int kind; } KEYWORDS[KW_COUNT] = {
     { "fn", TK_Fn },
     { "extern", TK_Extern },
@@ -200,6 +204,8 @@ static const struct { const char *spelling; int kind; } KEYWORDS[KW_COUNT] = {
     { "u64", TK_U64 },
     { "struct", TK_Struct },
     { "enum", TK_Enum },
+    { "type", TK_Type },
+    { "const", TK_Const },
     { "include", TK_Include },
     { "true", TK_True },
     { "false", TK_False },

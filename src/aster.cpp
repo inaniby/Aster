@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.66-dev"
+#define ASTER_VERSION_STRING "0.23.67-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -201,6 +201,8 @@ enum class TK { End, Ident, Number, String,
     True, False,         // v0.23.25-dev: Bool literals — the first the language has had
     Struct,              // v0.23.5-dev (P3.3): struct declarations
     Enum,                // v0.23.61-dev: enum declarations — C-style named integer constants over an i32
+    Type,                // v0.23.67-dev: `type Name = T;` — a type alias, expanded where a type is spelled
+    Const,               // v0.23.67-dev: `const x : T = e;` — a binding no assignment may change
     Include,             // v0.23.13-dev (P3.4): include "file.ast" declaration sharing
     LParen, RParen, LBrace, RBrace, Colon, Semi, Comma, Arrow, Eq, EqEq, Ne,
     Lt, Le, Gt, Ge, Plus, Minus, Star, Slash, LBracket, RBracket, At, And, Or, Not,
@@ -275,6 +277,13 @@ public:
                 if(x=="fn")k=TK::Fn; else if(x=="extern")k=TK::Extern; else if(x=="main")k=TK::Main; else if(x=="let")k=TK::Let;
                 else if(x=="return")k=TK::Return; else if(x=="if")k=TK::If; else if(x=="else")k=TK::Else; else if(x=="while")k=TK::While; else if(x=="for")k=TK::For; else if(x=="break")k=TK::Break; else if(x=="continue")k=TK::Continue; else if(x=="switch")k=TK::Switch; else if(x=="case")k=TK::Case; else if(x=="default")k=TK::Default; else if(x=="i32")k=TK::I32; else if(x=="ptr")k=TK::Ptr; else if(x=="bool")k=TK::Bool;
                 else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct; else if(x=="enum")k=TK::Enum;
+                // v0.23.67-dev: `type` and `const`. Neither is an identifier
+                // anywhere in the shipped corpus — the byte baseline's examples,
+                // stdlib and the self-hosting source all spell their own names
+                // without them — so reserving both costs no existing program a
+                // byte. (That is checked, not assumed: the alias-const suite
+                // greps the corpus for both spellings before it uses them.)
+                else if(x=="type")k=TK::Type; else if(x=="const")k=TK::Const;
                 else if(x=="include")k=TK::Include;   // v0.23.13-dev (P3.4)
                 // v0.23.25-dev: true/false are reserved words now. No shipped
                 // example or suite used either as an identifier, so the byte
@@ -589,6 +598,22 @@ static const EnumDef& enumOf(int sid) {
     return g_enums[(size_t)sid];
 }
 static const char* enumNameOf(int sid) { return enumOf(sid).name.c_str(); }
+// v0.23.67-dev: a type alias, `type P = ptr<Point>;`. There is no Ty::Alias —
+// an alias is *expanded* at the moment its name is read by parseType, so every
+// later pass (layout, Sema, codegen) sees the type it stands for and none of
+// them learns that a name was ever involved. That is the whole design: a Ty is
+// a (kind, index) pair with no room for a spelling, and giving it one would
+// mean teaching ~40 call sites to see through a name. The one thing a Ty cannot
+// carry is a *function* signature, which rides beside one in a parallel record
+// (as it does beside a ptr binding), so an alias to `fn(...) -> ...` keeps the
+// signature here and hands it back at every use.
+struct TypeAlias { Ty ty=Ty::I32; bool isFunc=false; FuncSig sig; };
+static std::map<std::string,TypeAlias> g_typeAlias;
+// The type an alias name stands for, or null when the name is not one.
+static const TypeAlias* typeAliasOf(const std::string& name){
+    auto it=g_typeAlias.find(name);
+    return it==g_typeAlias.end()?nullptr:&it->second;
+}
 // Width in bytes of one value of this type as it sits in memory.
 static uint32_t tySize(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).size;
@@ -906,6 +931,11 @@ struct Stmt {
     // only ever wanted "how many elements" keeps working unchanged. A
     // one-dimensional array has `dims.size() == 1` and `dims[0] == count`.
     std::vector<uint32_t> dims;
+    // v0.23.67-dev: `const x : T = e;` — the same declaration a `let` builds,
+    // with every later store to the name refused. One flag rather than a new
+    // statement kind, because a const *is* a let everywhere else: it reserves
+    // a frame slot, takes the same initializer checks, and reads the same way.
+    bool isConst=false;
     // v0.23.31-dev: how many subscripts an IndexAssign wrote on its target.
     // One subscript arrives as itself; two or more arrive as an Index chain.
     // Sema needs the difference to tell "stores an element" from "stores a
@@ -939,6 +969,11 @@ struct Global { std::string name; bool external=false; int32_t init=0; uint64_t 
     // thread sees its own copy and there is no need for a dynamic loader's
     // TLS descriptor.
     bool tls=false;
+    // v0.23.67-dev: `const g : T = e;` — a file-scope binding no assignment
+    // may change. It occupies the same .data/.bss bytes a `let` global does;
+    // the guarantee is the compiler's (every store is refused at check time),
+    // not the image's (nothing marks the bytes read-only).
+    bool isConst=false;
     std::vector<uint8_t> rawData;
     // v0.23.31-dev: the per-dimension lengths of a multi-dimensional global
     // (`T[N][M]`), outermost first. `count` stays the total element count, so
@@ -1149,6 +1184,16 @@ class Parser {
                 // v0.23.61-dev: an enum name is a type spelling too.
                 auto ei=g_enumIndex.find(cur().s);
                 if(ei!=g_enumIndex.end()){out=Ty::ofEnum(ei->second);++p;return true;}
+                // v0.23.67-dev: a type alias is a type spelling too. The name
+                // is replaced by the type it stands for and nothing downstream
+                // ever sees the alias again; when it stands for a function
+                // type the signature comes with it, exactly as it would have
+                // had the signature been written out at this spot.
+                if(const TypeAlias* ta=typeAliasOf(cur().s)){
+                    out=ta->ty;
+                    if(ta->isFunc){pendingFuncType=true;pendingFuncSig=ta->sig;}
+                    ++p;return true;
+                }
                 return false;
             }
             // v0.23.37-dev: a function type spelling `fn (P1, …, Pn) -> R`.
@@ -1502,11 +1547,21 @@ class Parser {
             // S { v1, v2 } : an aggregate literal, one value per field, in
             // declaration order. The name must be a declared struct, which is
             // what tells this apart from an identifier followed by a block.
-            if(cur().k==TK::LBrace&&g_structIndex.count(tok.s)){
-                ++p;E z(new Expr(Expr::StructLit));z->name=tok.s;z->line=tok.line;z->col=tok.col;
+            // v0.23.67-dev: the name may also be a type alias that stands for a
+            // struct — `type P = Point; let p : P = P { 1, 2 };`. The literal
+            // still carries the *struct's* name, because every later lookup
+            // (the layout table, the constant image) keys off that.
+            if(cur().k==TK::LBrace){
+                int litSid=-1;
+                auto si=g_structIndex.find(tok.s);
+                if(si!=g_structIndex.end())litSid=si->second;
+                else if(const TypeAlias* ta=typeAliasOf(tok.s)){if(ta->ty.k==Ty::Struct)litSid=ta->ty.sid;}
+                if(litSid>=0){
+                ++p;E z(new Expr(Expr::StructLit));z->name=structOf(litSid).name;z->line=tok.line;z->col=tok.col;
                 if(cur().k!=TK::RBrace){do{z->args.push_back(expr());}while(eat(TK::Comma));}
                 need(TK::RBrace,"expected '}' after struct literal");
                 return z;}
+            }
             E x(new Expr(Expr::Var));x->name=tok.s;x->line=tok.line;x->col=tok.col;return x;
         }
         throw Error("expected expression at "+std::to_string(cur().line)+":"+std::to_string(cur().col));
@@ -1907,10 +1962,14 @@ class Parser {
         }
         return target;
     }
-    Stmt letStatement(){
+    // v0.23.67-dev: `isConst` is the one difference between `let x : T = e;`
+    // and `const x : T = e;`, and it is the parser's to record — Sema reads it
+    // back off the statement. A const is required to have an initializer,
+    // which is the only branch below it closes.
+    Stmt letStatement(bool isConst=false){
         auto id=need(TK::Ident,"expected variable name");need(TK::Colon,"expected ':'");
         const Ty ty=needType(kTypeExpected);
-        Stmt s(Stmt::Let);s.name=id.s;s.line=id.line;s.col=id.col;s.ty=ty;s.isPtr=(ty==Ty::Ptr);s.isBool=(ty==Ty::Bool);
+        Stmt s(Stmt::Let);s.name=id.s;s.line=id.line;s.col=id.col;s.ty=ty;s.isPtr=(ty==Ty::Ptr);s.isBool=(ty==Ty::Bool);s.isConst=isConst;
         // v0.23.37-dev: a fn-pointer let keeps its signature beside the ptr
         // storage type, for Sema/codegen to read at the call site.
         if(pendingFuncType){s.funcSig=pendingFuncSig;s.isFunc=true;pendingFuncType=false;pendingFuncSig=FuncSig();}
@@ -1936,7 +1995,11 @@ class Parser {
         // contains an array field be a local: an array field cannot be set by a
         // struct literal, so for such a struct the literal form is unavailable
         // and zero-fill plus runtime element writes is the only shape.
-        if(tyIsStruct(ty)&&!s.isArray&&cur().k!=TK::Eq){s.expr=nullptr;need(TK::Semi,"expected ';'");return s;}
+        // v0.23.67-dev: not for a const. A binding that cannot be written and
+        // was never given a value has no value at all.
+        if(tyIsStruct(ty)&&!s.isArray&&cur().k!=TK::Eq){
+            if(isConst)throw Error(loc(id.line,id.col,"a const must have an initializer: "+id.s));
+            s.expr=nullptr;need(TK::Semi,"expected ';'");return s;}
         need(TK::Eq,"expected '='");s.expr=expr();need(TK::Semi,"expected ';'");return s;
     }
     Stmt indexAssignStatement(){
@@ -2125,6 +2188,9 @@ class Parser {
         DepthGuard depthGuard(stmtDepth,256,"statement");
         if(cur().k==TK::Star)return derefAssignStatement();
         if(eat(TK::Let))return letStatement();
+        // v0.23.67-dev: `const x : T = e;` in a function body — the same
+        // declaration `let` parses, with every later store to `x` refused.
+        if(eat(TK::Const))return letStatement(true);
         if(eat(TK::Return)){Stmt s(Stmt::Return);s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;need(TK::Semi,"expected ';'");return s;}
         if(eat(TK::If))return ifStatement();
         // v0.23.49-dev: `name:` labels the loop that follows. Only while and
@@ -2436,12 +2502,37 @@ class Parser {
         if(def.consts.empty())throw Error(loc(id.line,id.col,"enum "+id.s+" must declare at least one enumerator"));
         g_enums[(size_t)sid]=std::move(def);
     }
+    // v0.23.67-dev: `type Name = T ;` — a name for a type, declared at file
+    // scope like a struct or an enum and usable everywhere a type is spelled.
+    // The right-hand side is parsed by the very same parseType every
+    // declaration site uses, so an alias can stand for anything a type can be
+    // spelled as: a scalar, a struct, an enum, a ptr<…>, or a fn(…) -> ….
+    // It cannot stand for an array — `i32[4]` is not a Ty in this language but
+    // a declaration form (`let a : i32 [ 4 ]`), so `type Row = i32 [ 4 ];`
+    // stops at the `[` with "expected ';'" rather than pretending.
+    void typeAliasDeclaration(){
+        auto id=need(TK::Ident,"expected type alias name");
+        if(g_structIndex.count(id.s))throw Error(loc(id.line,id.col,"type alias conflicts with a struct: "+id.s));
+        if(g_enumIndex.count(id.s))throw Error(loc(id.line,id.col,"type alias conflicts with an enum: "+id.s));
+        if(g_typeAlias.count(id.s))throw Error(loc(id.line,id.col,"duplicate type alias: "+id.s));
+        for(const auto& g:globals)if(g.name==id.s)throw Error(loc(id.line,id.col,"type alias conflicts with a global variable: "+id.s));
+        for(const auto& f:functions)if(f.name==id.s)throw Error(loc(id.line,id.col,"type alias conflicts with a function: "+id.s));
+        need(TK::Eq,"expected '=' in a type alias declaration");
+        pendingFuncType=false;pendingFuncSig=FuncSig();
+        Ty t=Ty::I32;
+        if(!parseType(t))
+            throw Error(loc(id.line,id.col,"expected a type after '=' in the declaration of type alias "+id.s));
+        TypeAlias a;a.ty=t;
+        if(pendingFuncType){a.isFunc=true;a.sig=pendingFuncSig;pendingFuncType=false;pendingFuncSig=FuncSig();}
+        need(TK::Semi,"expected ';' after a type alias declaration");
+        g_typeAlias[id.s]=std::move(a);
+    }
     // Global declaration grammar (array and @align extension):
     //   let name : T [ '[' length ']' ] [ '@' 'align' '(' power_of_two ')' ] '=' expr ;
     //   extern let name : T [ '[' length ']' ] ;
     // T is the element type for an array and the value type otherwise; the
     // wider integer types (v0.23.2-dev) carry their own storage width.
-    void globalDeclaration(bool external,bool tls=false){
+    void globalDeclaration(bool external,bool tls=false,bool isConst=false){
         auto id=need(TK::Ident,"expected global variable name");
         need(TK::Colon,"expected ':'");
         const Ty ty=needType(kTypeExpected);
@@ -2458,7 +2549,7 @@ class Parser {
             // per element, filled with the same 0/1 an integer array is filled
             // with. The length used to be unreachable here: the Bool branch
             // never looked for a `[`, so a bool array was a syntax error.
-            Global g;g.name=id.s;g.external=external;g.isBool=true;g.ty=Ty::Bool;g.tls=tls;
+            Global g;g.name=id.s;g.external=external;g.isBool=true;g.ty=Ty::Bool;g.tls=tls;g.isConst=isConst;
             for(const auto& old:globals)if(old.name==g.name)throw Error(loc(id.line,id.col,"duplicate global variable: "+g.name));
             if(cur().k==TK::LBracket){
                 // v0.23.31-dev: one `[N]` per dimension, outermost first; the
@@ -2482,7 +2573,7 @@ class Parser {
         // constant aggregate, because there is no run-time initializer for a
         // composite, so its bytes are laid out here and copied to .data as is.
         if(tyIsStruct(ty)){
-            Global g;g.name=id.s;g.external=external;g.ty=ty;g.align=tyAlign(ty);g.tls=tls;
+            Global g;g.name=id.s;g.external=external;g.ty=ty;g.align=tyAlign(ty);g.tls=tls;g.isConst=isConst;
             for(const auto& old:globals)if(old.name==g.name)throw Error(loc(id.line,id.col,"duplicate global variable: "+g.name));
             // v0.23.28-dev: `let pts : Point [ 4 ] = Point { 0, 0 };` — N
             // elements laid out end to end, each a copy of the constant
@@ -2494,6 +2585,11 @@ class Parser {
                 g.dims=arrayDimList("array length",1048576,g.name);
                 if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);}
             }
+            // v0.23.67-dev: a const has to be given a value. A binding no
+            // assignment may change and that was never initialized has no
+            // value at all, and the struct branch is the one place a `let`
+            // may legally omit the `=`.
+            if(isConst&&cur().k!=TK::Eq)throw Error(loc(id.line,id.col,"a const must have an initializer: "+id.s));
             if(external){need(TK::Semi,"expected ';' after extern global declaration");}
             else if(structHasArrayField(ty.sid)){
                 // v0.23.29-dev: a struct with an array field cannot be set by a
@@ -2514,7 +2610,7 @@ class Parser {
             globals.push_back(std::move(g));
             return;
         }
-        Global g;g.name=id.s;g.external=external;g.ty=ty;g.funcSig=funcTypeSig;g.isFunc=isFuncType;g.tls=tls;
+        Global g;g.name=id.s;g.external=external;g.ty=ty;g.funcSig=funcTypeSig;g.isFunc=isFuncType;g.tls=tls;g.isConst=isConst;
         if(cur().k==TK::LBracket){
             // v0.23.31-dev: one `[N]` per dimension. The element type is the
             // type written before the first `[` and every later read, write and
@@ -2539,6 +2635,9 @@ class Parser {
         }
         if(external){need(TK::Semi,"expected ';' after extern global declaration");}
         else if(isFuncType&&cur().k!=TK::Eq){
+            // v0.23.67-dev: the same rule for a fn-pointer global, the other
+            // declaration `let` may leave uninitialized.
+            if(isConst)throw Error(loc(id.line,id.col,"a const must have an initializer: "+id.s));
             // v0.23.37-dev: a fn-pointer global may be declared without an
             // initializer — it holds a null pointer until assigned — the way a
             // struct global may be declared without one. g stays zero, so it
@@ -2709,7 +2808,16 @@ public:
             if(eat(TK::Include)){includeDirective();continue;}
             if(eat(TK::Struct)){structDeclaration();continue;}
             if(eat(TK::Enum)){enumDeclaration();continue;}
+            // v0.23.67-dev: `type P = ptr<Point>;` sits with the other
+            // file-scope declarations. Nothing else in the language begins
+            // with `type`, so this needs no lookahead.
+            if(eat(TK::Type)){typeAliasDeclaration();continue;}
             if(eat(TK::Let)){globalDeclaration(false);continue;}
+            // v0.23.67-dev: `const g : i32 = 5;` — a file-scope binding no
+            // assignment may change. It is the same declaration `let` parses,
+            // with the write-protection on; `extern const` has no meaning
+            // (the guarantee is one side's to keep), so it is not a spelling.
+            if(eat(TK::Const)){globalDeclaration(false,false,true);continue;}
             if(cur().k==TK::Extern&&t[p+1].k==TK::Let){++p;eat(TK::Let);globalDeclaration(true);continue;}
             // v0.23.51-dev: thread-local storage. `tls let x : T = …;` puts x in a
             // per-thread block; `extern tls let x : T;` declares a thread-local
@@ -6369,13 +6477,22 @@ struct Sema {
         // v0.23.37-dev: a fn-pointer binding carries its signature beside the
         // storage type Ty::Ptr, so an indirect call can check arity/argument
         // types and pick the right staging width and return width.
-        FuncSig funcSig; bool isFunc=false; };
+        FuncSig funcSig; bool isFunc=false;
+        // v0.23.67-dev: `const x : T = e;` — every store to this name is
+        // refused. It rides in the binding because that is what a store site
+        // actually has in hand: `find()` walks the scopes and hands back this
+        // record, so the check is one field away at every one of them.
+        bool isConst=false; };
     unsigned typeDepth=0;
     const std::map<std::string,size_t>& arities;
     const std::set<std::string>& globalNames;
     const std::set<std::string>& externFunctions;
     const std::set<std::string>& arrayGlobals;
     const std::set<std::string>& boolGlobals;
+    // v0.23.67-dev: the file-scope names declared `const`. find() walks only
+    // the local scopes, so a global's read-only bit has to travel the same way
+    // every other global fact in this pass does.
+    const std::set<std::string>& constGlobals;
     const std::set<std::string>& pointerReturnFunctions;
     const std::set<std::string>& boolReturnFunctions;
     const std::map<std::string,std::vector<bool>>& paramPointers;
@@ -6417,6 +6534,7 @@ struct Sema {
 
     Sema(const std::map<std::string,size_t>& ar,const std::set<std::string>& gn,const std::set<std::string>& ef,
          const std::set<std::string>& ag,const std::set<std::string>& bg,
+         const std::set<std::string>& cg,
          const std::set<std::string>& prf,const std::set<std::string>& brf,
          const std::map<std::string,std::vector<bool>>& pp,const std::map<std::string,std::vector<bool>>& pb,
          const std::map<std::string,uint32_t>& al,
@@ -6425,11 +6543,19 @@ struct Sema {
          const std::map<std::string,Ty>& rt,const std::map<std::string,FuncSig>& gfs,
          const std::map<std::string,FuncSig>& rfs,
          const std::map<std::string,std::vector<ParamSig>>& pfs)
-      : arities(ar),globalNames(gn),externFunctions(ef),arrayGlobals(ag),boolGlobals(bg),
+      : arities(ar),globalNames(gn),externFunctions(ef),arrayGlobals(ag),boolGlobals(bg),constGlobals(cg),
         pointerReturnFunctions(prf),boolReturnFunctions(brf),paramPointers(pp),paramBools(pb),arrayLengths(al),
         arrayDims(ad),
         globalTypes(gt),paramTypes(pt),returnTypes(rt),globalFuncSig(gfs),returnFuncSig(rfs),paramFuncSig(pfs){}
 
+    // v0.23.67-dev: is this name read-only? A const local binding carries the
+    // bit in its Binding; a const global is named in constGlobals, the way
+    // every other file-scope fact reaches this pass. One question, one answer,
+    // so the four store sites cannot drift apart on which one they consult.
+    bool isConstName(const std::string& n) const {
+        if(const Binding* b=find(n))return b->isConst;
+        return constGlobals.count(n)!=0;
+    }
     const Binding* find(const std::string& n) const {
         for(auto it=scopes.rbegin();it!=scopes.rend();++it){
             auto f=it->find(n);
@@ -6957,6 +7083,14 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             case Expr::AddrOf: {
                 if(!isLValue(*e.a))
                     throw Error(loc(e.line,e.col,"'&' requires a variable, a field, or a dereferenced ptr<S>"));
+                // v0.23.67-dev: the address of a const is not handed out. An
+                // Aster `ptr` is an address with no read-only bit of its own,
+                // so `&c` would be the one way to write a value the language
+                // just promised could not be written — `*p = v` is a store like
+                // any other, and nothing downstream could tell it came from a
+                // const. Refusing the address is what keeps the promise whole.
+                if(e.a->k==Expr::Var&&isConstName(e.a->name))
+                    throw Error(loc(e.line,e.col,"cannot take the address of a const: "+e.a->name));
                 // v0.23.34-dev: an array has an address too — the address of its
                 // first element, typed to stride at the element's real width.
                 // The pointer now carries the element type, so `&arr` works for
@@ -7470,7 +7604,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         if(!initializerFits(s.ty,*s.expr,v))
                             throw Error(loc(s.line,s.col,"local array initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(v)+")"));
                     }
-                    scopes.back()[s.name]=Binding{Ty::Ptr,s.dims[0],s.ty,s.dims,{},false};   // name decays to the frame address
+                    scopes.back()[s.name]=Binding{Ty::Ptr,s.dims[0],s.ty,s.dims,{},false,s.isConst};   // name decays to the frame address
                 } else {
                     // v0.23.29-dev: a struct local declared without an
                     // initializer — the only shape a struct that contains an
@@ -7479,7 +7613,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     // there is no expression to type-check. Register the
                     // binding and move on. (Only a struct local may omit `=`;
                     // every other kind is required to have one by the parser.)
-                    if(!s.expr){scopes.back()[s.name]=Binding{s.ty,0,Ty::I32,{},FuncSig(),false};return;}
+                    if(!s.expr){scopes.back()[s.name]=Binding{s.ty,0,Ty::I32,{},FuncSig(),false,s.isConst};return;}
                     const Ty actual=annotateExpr(*s.expr);
                     if(tyIsStruct(s.ty)||tyIsStruct(actual))
                         checkValue(s.ty,*s.expr,actual,"type mismatch initializing '"+s.name+"'");
@@ -7555,13 +7689,18 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     // declared stride names, so Sema's `p[i]` and codegen's
                     // answer the same type (a u8 element compares unsigned in
                     // both passes, not signed in one and unsigned in the other).
-                    scopes.back()[s.name]=Binding{s.ty,0,tyIsPtrToElem(s.ty)?ptrElemType(s.ty):Ty::I32,{},s.funcSig,s.isFunc};
+                    scopes.back()[s.name]=Binding{s.ty,0,tyIsPtrToElem(s.ty)?ptrElemType(s.ty):Ty::I32,{},s.funcSig,s.isFunc,s.isConst};
                 }
                 return;
             }
             case Stmt::Assign: {
                 const Ty actual=annotateExpr(*s.expr);
                 if(const Binding* b=find(s.name)){
+                    // v0.23.67-dev: a store to a const. `x = e`, `x += e` and
+                    // `x++` all arrive here (a compound and an increment are
+                    // rebuilt as `x = x op e` by the parser), so one refusal
+                    // covers every spelling that writes a whole binding.
+                    if(b->isConst)throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.name));
                     if(b->len)throw Error(loc(s.line,s.col,"cannot assign to an array as a whole: "+s.name));
                     if(tyIsStruct(b->ty)||tyIsStruct(actual))
                         checkValue(b->ty,*s.expr,actual,"type mismatch assigning variable: "+s.name);
@@ -7594,6 +7733,8 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                             throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+": expected "+tyNameFull(b->ty)+", got "+tyNameFull(actual)+" (write an explicit cast to truncate)"));
                     }
                 } else if(globalNames.count(s.name)){
+                    // v0.23.67-dev: the same refusal for a file-scope const.
+                    if(constGlobals.count(s.name))throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.name));
                     if(arrayGlobals.count(s.name))throw Error(loc(s.line,s.col,"cannot assign to an array as a whole: "+s.name));
                     const Ty want=globalTypes.count(s.name)?globalTypes.at(s.name):Ty::I32;
                     if(tyIsStruct(want)||tyIsStruct(actual))
@@ -7656,6 +7797,10 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 // outright whenever it was a ptr, which is what kept `a[0] = p`
                 // out of a `ptr[N]` — and what left `i32arr[0] = true` accepted.
                 if(annotateExpr(*s.idx)==Ty::Ptr)throw Error(loc(s.line,s.col,"pointer indexing is not supported yet"));
+                // v0.23.67-dev: a const array is read-only element by element,
+                // not only as a whole — `const a : i32 [ 3 ]` promises every one
+                // of its three slots.
+                if(isConstName(s.name))throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.name));
                 const Binding* b=find(s.name);
                 if(b){
                     if(b->len)checkArrayBounds(s.name,*s.idx);
@@ -7674,6 +7819,11 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 return;
             }
             case Stmt::FieldAssign: {
+                // v0.23.67-dev: `c.f = v` writes the binding `c` even though
+                // the store lands in one field of it, so a const base is
+                // refused — the promise is about the binding, not the address.
+                if(s.idx->a&&s.idx->a->k==Expr::Var&&isConstName(s.idx->a->name))
+                    throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.idx->a->name));
                 // v0.23.31-dev: the same row rule an IndexAssign gets — a
                 // multi-dimensional array field subscripted once is a row
                 // address, not an element to store through.
@@ -7835,7 +7985,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             const std::vector<uint32_t>& pd = i<f.paramDims.size()?f.paramDims[i]:kEmptyDims;
             const uint32_t plen = pd.empty()?0:(uint32_t)dimsProduct(pd);
             scopes.back()[f.params[i]]=Binding{pty, plen, tyIsPtrToElem(pty)?ptrElemType(pty):Ty::I32, pd,
-                i<f.paramFuncSig.size()?f.paramFuncSig[i]:FuncSig(), i<f.paramIsFunc.size()&&f.paramIsFunc[i]};
+                i<f.paramFuncSig.size()?f.paramFuncSig[i]:FuncSig(), i<f.paramIsFunc.size()&&f.paramIsFunc[i], false};
         }
         for(const auto& s:f.body)checkStmt(s);
     }
@@ -7845,6 +7995,9 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
     std::map<std::string,size_t> arities;for(const auto& f:functions)arities[f.name]=f.params.size();
     std::set<std::string> globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions;
     std::set<std::string> boolGlobals,boolReturnFunctions;
+    // v0.23.67-dev: the file-scope `const` bindings, for Sema to refuse a store to.
+    std::set<std::string> constGlobals;
+    for(const auto& g:globals)if(g.isConst)constGlobals.insert(g.name);
     std::map<std::string,std::vector<bool>> functionParamPointers,functionParamBools;
     std::map<std::string,uint32_t> arrayLengths;
     std::map<std::string,std::vector<uint32_t>> arrayDims;
@@ -7895,7 +8048,7 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
     // P3.1: type-check every emitted function first, in its own pass. Codegen
     // still carries its own checks, so this pass can only report a type error
     // earlier — never accept something codegen would have rejected.
-    Sema sema{arities,globalNames,externFunctions,arrayGlobals,boolGlobals,pointerReturnFunctions,boolReturnFunctions,
+    Sema sema{arities,globalNames,externFunctions,arrayGlobals,boolGlobals,constGlobals,pointerReturnFunctions,boolReturnFunctions,
               functionParamPointers,functionParamBools,arrayLengths,arrayDims,globalTypeMap,argTypeMap,returnTypeMap,globalFuncSigMap,
               returnFuncSigMap,paramFuncSigMap};
     std::vector<CompiledFunction> out;out.reserve(order.size()+1);
