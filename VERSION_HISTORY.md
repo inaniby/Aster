@@ -1,3 +1,65 @@
+## v0.23.69-dev — close the language gaps (`char`)
+
+The audit's third part listed the language's gaps in order of
+cost-effectiveness — `typedef` (1), `const` (2), `void` (3), `char` (4),
+`union` (5) — and asked for them to be closed in turn. v0.23.67-dev closed the
+first two, v0.23.68-dev the third, and this round closes the fourth. `union`
+stays queued.
+
+No image bytes move for the other 124 examples: `tests/baseline/v0.23.69-dev/`
+is this version's snapshot and its byte-baseline layer asserts every
+pre-existing row is unchanged (the three `char_return` rows this round adds are
+pinned separately by `tests/char-checks.sh`).
+
+### `char` — an unsigned 8-bit type riding on `u8`
+
+`char` is the smallest gap: a character literal already exists (`'a'` folds to
+an `i32` since v0.23.50-dev) and the compiler already carries a full unsigned
+8-bit type — `u8` — with its own load/store/extend machinery, its own
+constant-folding, and its own ABI rules. `char` joins as a thin synonym:
+a `Ty::Char` that reuses every `u8` code path (`LDRB`/`STRB`, `UXTB`, one-byte
+size/align, zero-extension on load). Because it is `u8` underneath, `char` is
+byte-for-byte ABI-identical to C `unsigned char`.
+
+`char` is a distinct spelling from the character *literal*: `'a'` is a
+`TK::Char` token (a value, folded to `i32`), while `char` is a `TK::CharType`
+keyword that names the type — the audit line "char literal already lands, add a
+`Ty::Char`" is exactly this split. `char` widens losslessly to any wider integer
+(so `let w: i32 = c;` is allowed), a narrower narrowing (`char = 300`,
+`char = -1`) is refused with `does not fit in char`, and a compile-time
+constant still assigns when `initializerFits`, so `char(300)` truncates to 44.
+`char` is first-class everywhere `u8` is — local, global, `const`, array
+element, struct field, parameter, return type — and `char(x)` is a legal
+narrowing cast.
+
+### The refusals, Aster's own (stricter than C)
+
+C only *warns* on out-of-range narrowing of `unsigned char`, so gcc does not
+reject these; they are pinned here as Aster's stricter rule, each by its exact
+message: `does not fit in char` (local/global/`const`/assignment initializers,
+and folded expressions like `300 + 1`), `expected char, got i32` (a return or
+struct-field or parameter that would need a silent truncation), and `case value
+does not fit the switch subject type` (a switch over a `char`).
+
+### Why this round, and the C-ABI point
+
+`char` is the model of C `unsigned char`, so the most valuable check is a real
+cross-language link: an Aster `char`/`i32` function is compiled to an object and
+linked into a C `main` that calls it; under qemu the hybrid exits 0, exactly as
+a pure-C twin does. The Aster `char` function's ABI — argument truncated to a
+byte in `W0`, return `UXTB W0`, one-byte struct fields and array strides — is
+C's, so no shim is needed on either side.
+
+### The suite
+
+`tests/char-checks.sh` is nine layers: strict build; 15 source guards pinning
+every piece of the feature plus the reserved-word list (now 31 words, `tls`
+still a context keyword); a C-ABI interop witness (C `main` links an Aster
+`char` fn, runs under qemu, exits 0); a gcc differential over six cases; an
+11-entry refusal matrix; the shipped example `examples/char_return.ast` against
+its C twin; coverage counting; six mutations; and the byte baseline pinning the
+three `char_return` rows. Evidence in `VALIDATION-v0.23.69-dev.md`.
+
 ## v0.23.68-dev — close the language gaps (`void`)
 
 The audit's third part listed the language's gaps in order of

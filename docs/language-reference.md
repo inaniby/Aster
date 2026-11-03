@@ -1,6 +1,6 @@
 # Aster Language Reference
 
-**Applies to: v0.23.68-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.69-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
 source and then **checked against the v0.23.51-dev binary**. Where a rule says a
@@ -25,7 +25,7 @@ explains *why* each rule exists. This file is the lookup table.
 | Whitespace | spaces, tabs, newlines (`isspace`) |
 | Encoding note | UTF-8 inside a comment is fine: comments are consumed before the ASCII check runs |
 
-## 2. Reserved words — 30
+## 2. Reserved words — 31
 
 All 27 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
 fails for every one of them).
@@ -56,6 +56,7 @@ fails for every one of them).
 | `type` | type-alias declaration (`type Name = T ;`) | v0.23.67-dev |
 | `const` | read-only binding (`const x : T = e ;`) | v0.23.67-dev |
 | `void` | return type only — names the absence of a result on a function (`fn f() -> void`) | v0.23.68-dev |
+| `char` | unsigned 8-bit integer type (**distinct** from the `'a'` character literal, which still folds to `i32`) | v0.23.69-dev |
 | `include` | `include "file.ast";` declaration sharing | v0.23.13-dev |
 | `true` | Bool literal, value 1 | v0.23.25-dev |
 | `false` | Bool literal, value 0 | v0.23.25-dev |
@@ -80,8 +81,9 @@ The type names are likewise ordinary identifiers, which is what lets
 identifier everywhere except at the **start of a top-level declaration**, where
 `tls let name: type …;` declares a thread-local global (§8). `let tls: i32 = 1;`
 compiles — a variable named `tls` is fine; only the declaration prefix is
-special. The reserved-word count is therefore **30** (the `type` and `const`
-keywords joined it in v0.23.67-dev, and `void` in v0.23.68-dev).
+special. The reserved-word count is therefore **31** (the `type` and `const`
+keywords joined it in v0.23.67-dev, `void` in v0.23.68-dev, and `char` in
+v0.23.69-dev).
 
 ### Identifiers
 
@@ -156,6 +158,7 @@ leading `&` and the bitwise level only sees one in operator position.
 | `ptr<S>` | 8 | 8 | address of an `S`; gives `.field` its offsets |
 | `fn(P1,..,Pn) -> R` | 8 | 8 | function pointer carrying a signature (v0.23.37-dev); stored as a `ptr`. Since v0.23.38-dev it is also legal as a **struct field** type and as a function's **return** type |
 | `u8` | 1 | 1 | zero-extended on load, truncated on store |
+| `char` | 1 | 1 | unsigned 8-bit; **identical width/ABI to `u8`**, so byte-for-byte ABI-compatible with C `unsigned char` (v0.23.69-dev). Distinct from the `'a'` character *literal*, which still folds to `i32` |
 | `u16` | 2 | 2 | same |
 | `bool` | 4 | 4 | holds 0 or 1 |
 | `E` (an enum) | 4 | 4 | named integer constants over `i32` (v0.23.61-dev) |
@@ -170,14 +173,15 @@ There is **no** `float`/`double`, `union`, or `typedef`/type alias. `void` exist
 as a **return type only** (v0.23.68-dev) — it names the absence of a result on a
 function (`fn f() -> void`) and can never be a value, a parameter, a local, a
 field, an alias or an array element; see §5.0. There is a **character literal**
-but no `char` *type* — `'a'` is an integer literal that folds to `i32` (§3.2,
-v0.23.50-dev), so `let c: i32 = 'a';` is the whole story and `char` is not a
-spelling anywhere.
-(v0.23.64-dev: an earlier draft of this paragraph said "no `char`" flatly,
-which contradicted §3.2.) (Enumerations **do** exist — see §5.2 — but they are a
-thin, nominal wrapper over `i32`, not a separate numeric kind.) An explicit
+(`'a'`) that still folds to `i32` (§3.2, v0.23.50-dev), **and** a distinct
+`char` *type* (v0.23.69-dev) — `char` is an unsigned 8-bit integer type
+(`Ty::Char`), byte-for-byte ABI-identical to C `unsigned char`, and a *separate*
+spelling from the `Char` literal token: `let c: char = 'a';` is the typed story,
+while `let c: i32 = 'a';` (the literal folded to `i32`) still works; see §5.1.
+(Enumerations **do** exist — see §5.3 — but they are a thin, nominal wrapper
+over `i32`, not a separate numeric kind.) An explicit
 conversion is the **cast** `T(x)` (integers since v0.23.48-dev; `bool`, `ptr`
-and `ptr<T>` since v0.23.60-dev — see §5.1); no other conversion is
+and `ptr<T>` since v0.23.60-dev — see §5.2); no other conversion is
 expressible. (`sizeof` and `len` are operators since v0.23.35-dev — see §6.)
 
 ### 5.0 `void` — a return type only (v0.23.68-dev)
@@ -214,10 +218,41 @@ point is C-ABI interop: an Aster `void` function takes its argument in `W0` and
 returns nothing, exactly as C does, so a C `main` can link one with no shim on
 either side.
 
-### 5.1 The cast: `T(x)`
+### 5.1 `char` — an unsigned 8-bit integer type (v0.23.69-dev)
+
+`char` is a real, first-class integer type of its own (`Ty::Char`), **distinct**
+from the `'a'` character *literal*. The literal still folds to `i32` (§3.2,
+v0.23.50-dev) — `'a'` is an `i32` constant — so `let c: i32 = 'a';` keeps
+working; `char` is the type you may now *spell* for it. Its keyword is `char`
+(`TK::CharType`), deliberately separate from the `Char` literal token, so the two
+never collide.
+
+`char` reuses the entire `u8` width/ABI machinery — 1-byte size, 1-byte
+alignment, `LDRB`/`STRB`, `UXTB`, zero-extending loads — so a `char` is
+byte-for-byte ABI-identical to C `unsigned char`. Concretely:
+
+- a `char` **parameter** rides in `W0` truncated to a byte (`UXTB W0`);
+- a `char` **return** is `UXTB W0`;
+- a `char` **struct field** is a one-byte slot in the AAPCS64 layout;
+- a `char` **array** strides one byte per element;
+- a `char` **global** lives in `.data`/`.bss` as one byte.
+
+`char` is a legal operand and result everywhere `u8` is: a local, a global, an
+array element, a struct field, a parameter and a return type. `promoteInt`
+answers `char + char == char` (a `==` b returns `a`), and a `char` widens
+losslessly to any wider integer — `let m: i32 = c;` (where `c: char`) is
+accepted and reads `c` zero-extended to 32 bits.
+
+Narrowing into a `char` follows the same discipline as `u8`: a compile-time
+constant that fits 0..255 assigns directly (`let c: char = 'q';` — `'q'` is 113,
+in range), but a value that does not fit is refused — `char = 300` and
+`char = -1` both fail with `does not fit in char: c (…)`. The spelled-out
+truncation is the cast `char(x)` (§5.2): `char(300)` is `44`.
+
+### 5.2 The cast: `T(x)`
 
 ```
-cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "char"
           | "bool" | "ptr" [ "<" (type | ident) ">" ] ) "(" expr ")"
 ```
 
@@ -250,7 +285,7 @@ cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
 - `i32` ↔ `u32` interconvert (one 32-bit representation).
 - A narrower integer widens losslessly to a wider one.
 - Everything else is an error. **A narrowing must be asked for** with a cast
-  (§5.1): silently dropping bits would be a bug in the program.
+  (§5.2): silently dropping bits would be a bug in the program.
 
 #### Where an implicit narrowing is refused (v0.23.63-dev)
 
@@ -303,7 +338,7 @@ v0.23.48-dev `u64` outranks `i64`, so a mixed pair with a `u64` side is
 compared unsigned (`u64 + i64` answers `u64`, not `i64`); a mixed pair widens
 to 32 bits, taking the unsigned reading when either side is unsigned.
 
-### 5.2 Enumerations (v0.23.61-dev, hardened v0.23.63-dev)
+### 5.3 Enumerations (v0.23.61-dev, hardened v0.23.63-dev)
 
 A `enum` declaration introduces a **nominal integer type** backed by `i32`. It
 names a set of `i32` constants so the source can read `Red`/`Green`/`Blue`
@@ -1099,7 +1134,7 @@ not fit is a range error rather than a type mismatch.
 
 *(v0.23.63-dev changed the sentence that used to follow: narrowing a **value**
 was "silently accepted" at a `let` or assignment site and no longer is — see
-§5.1's "Where an implicit narrowing is refused". The two argument paths were
+§5.2's "Where an implicit narrowing is refused". The two argument paths were
 never the only guarded ones; the guard now covers a `let`, an assignment, a
 global assignment and a `return`.)*
 

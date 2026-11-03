@@ -401,3 +401,15 @@ fn main() -> i32 { return i32(f()); }
 新增常驻套件 `tests/void-checks.sh`（9 层，注册进 `DEFAULT_SUITES` 与 `CRITICAL`）：24 条源码守卫（钉死特性的每段代码与保留字表）、**C-ABI 互操作见证**（C 的 `main` 链接 Aster 提供的 `void` 函数，qemu 下退出码 0）、5 例 **gcc 差分**、11 条拒绝矩阵（其中 5 条 gcc 孪生同样拒绝，其余为 Aster 独有）、shipped 例子 `examples/void_return.ast` 对 C 孪生、覆盖计数、6 个变异体、字节基线（钉死 3 个 `void_return` 行）。
 
 第 3 批第 13 项已完成三项中的前三项（`typedef`/`const`/`void`），剩 `char` 与 `union` 排队。
+
+## 修复记录（v0.23.69-dev）
+
+第三部分「语言层面的缺口」Top5 关闭第四项的 `char`。审计原文第四项写道「char literal 已在 v0.23.50 落地（折叠为 i32），加一个 `Ty::Char` 即可闭合，成本远低于新特性」——本轮正是这条路线：**不新增任何代码生成路径，把 `char` 接到既有的 `u8` 宽度/ABI 机架上**。本轮**不改动任何既有例子字节**——其余例子输出与 v0.23.68-dev 逐一字节相同，故本轮同样是「纯语言特性」。新增一个保留字 `char`，保留字数 30 → 31；`tls` 仍是上下文关键字。
+
+| 审计项 | 处理 |
+| --- | --- |
+| `char` | **新增 `char` 作为独立的无符号 8 位类型。** 编译器新增 `Ty::Char`（插在 `Ty::Kind` 枚举中 `Void` 之前），其关键字是 `char`（`TK::CharType`），**刻意与** `Char` **字面量 token**（`TK::Char`）分开——`'a'` 仍按 v0.23.50-dev 折叠为 `i32` 常量，`char` 是你可以拼写出来的类型。`Ty::Char` 复用了 `Ty::U8` 已经拥有的全部机: `tySize`/`tyAlign` 答 1，`tyIsInteger`/`tyIsUnsigned` 纳入它，`initializerFits`/`caseValueFits` 把它约束到 0..255，`castConstValue` 经 `uint8_t` 截断，且所有 `== Ty::U8` 的代码生成宽度点（共 12 处：var/global/stack 的 load-store 对、非缩放偏移守卫、`LDRB W16` 加载、`gen()` 内的 `UXTB`、`loadBaseT` ×2、返回处的 `retTy`）也都读 `== Ty::Char`，因此 `char` 与 C 的 `unsigned char` 字节级 ABI 完全一致：`char` 参数走 `W0` 截断到一字节、`char` 返回是 `UXTB W0`、`char` 结构体字段是一字节槽位、`char` 数组每元素跨一字节。因此一个 Aster 的 `char`/`i32` 函数与 C 调用方链接，在 qemu 下退出码与 C 孪生逐一对齐。转型处接纳 `char` 作目标类型（`Cast` 分支本就发出 `UXTB`，转型守卫新增 `TK::CharType`，故 `char(300)` 截断为 44）。`promoteInt` 答 `char + char == char`（a==b 返回 a），`char` 可无损拓宽到任意更宽整数；`tyAssignable` 拒绝 `char = 300`/`char = -1`（`does not fit in char`），同时仍接受吻合的编译期常量 |
+
+新增常驻套件 `tests/char-checks.sh`（9 层，注册进 `DEFAULT_SUITES` 与 `CRITICAL`）：24 条源码守卫（钉死特性的每段代码与保留字表）、**C-ABI 互操作见证**（Aster 的 `char`/`i32` 函数被 C 调用方链接，qemu 下退出码 0）、6 例 **gcc 差分**、9 条拒绝矩阵（大多与 C 孪生共享）、shipped 例子 `examples/char_return.ast` 对 C 孪生、覆盖计数、6 个变异体、字节基线（钉死 3 个 `char_return` 行）。
+
+第 3 批第 13 项已完成四项中的前四项（`typedef`/`const`/`void`/`char`），仅剩 `union` 排队。

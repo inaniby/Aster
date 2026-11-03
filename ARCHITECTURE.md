@@ -1,6 +1,6 @@
 # Aster — Architecture
 
-**As of v0.23.68-dev.** This document is a structural map of the compiler in
+**As of v0.23.69-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
 carries **no signing key of its own**. It is descriptive, not a feature
 catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the
@@ -103,6 +103,30 @@ dedicated diagnostic.
   (`a void value cannot be used in an expression`). The point of the feature is
   C-ABI interop: an Aster `void` function takes its argument in `W0` and returns
   nothing, exactly as C does, so a C `main` links one with no shim.
+- **`char` as a distinct unsigned 8-bit type** (v0.23.69-dev) — `char` is a
+  `Ty::Char`, a *new* `Ty::Kind` inserted before `Void` in the enum. Its keyword
+  is `char` (`TK::CharType`), deliberately separate from the `Char` **literal**
+  token (`TK::Char`) the lexer has carried since v0.23.50-dev — a character
+  literal `'a'` still folds to an `i32` constant, and `char` is the type you may
+  now *spell*. The whole feature is one decision: `Ty::Char` routes through the
+  *same* machinery `Ty::U8` already owns — `tySize`/`tyAlign` answer 1,
+  `tyIsInteger`/`tyIsUnsigned` include it, `initializerFits`/`caseValueFits`
+  bound it to 0..255, `castConstValue` truncates through `uint8_t`, and every
+  codegen width site that reads `== Ty::U8` also reads `== Ty::Char` (12 sites:
+  `loadVarT`/`storeVarT`, `loadGlobalT`/`storeGlobalT`, `loadStackT` ×2, the
+  unscaled-offset guard, the `LDRB W16` load, the `UXTB` in `gen()`, `loadBaseT`
+  ×2, and the `retTy` at a return). The cast site admits `char` as a target (the
+  `Cast` arm already emitted `0x53001c00u` `UXTB`), and the cast-guard admits
+  `TK::CharType` so `char(300)` truncates to 44. Because it shares `u8`'s
+  ABI/width, a `char` is byte-for-byte identical to a C `unsigned char`: a
+  `char` parameter rides in `W0` truncated to a byte, a `char` return is `UXTB
+  W0`, a `char` field is a one-byte slot in the struct layout, and a `char`
+  array strides one byte — so an Aster `char`/`i32` function links against a C
+  caller and agrees with its C twin exit-for-exit under qemu. `promoteInt`
+  answers `char + char == char` (a==b returns a), and a `char` widens
+  losslessly to any wider integer; `tyAssignable` refuses `char = 300` /
+  `char = -1` (`does not fit in char`) while still accepting a fitting
+  compile-time constant. The reserved-word count rises 30 → 31.
 - **`@embed` / `@embed_len` (v0.23.7-dev).** The parser owns them, because both
   have to be answered during parsing. `embedFile(path)` resolves the path
   (relative → the source file's own directory, or `--embed-dir`), `stat`s it,
