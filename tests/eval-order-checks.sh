@@ -53,8 +53,8 @@ fi
 # comment that states the order; the two width fixes are pinned by the code.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: evaluation order and width'
-grep -qF '#define ASTER_VERSION_STRING "0.23.68-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.68-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.69-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.69-dev" >&2; exit 1; }
 grep -qF 'v0.23.62-dev: a struct store parks the destination in the' src/aster.cpp \
     || { echo "FAIL: the multi-dimensional store no longer generates its value first" >&2; exit 1; }
 grep -qF 'v0.23.62-dev: the subscript is evaluated BEFORE the field' src/aster.cpp \
@@ -311,10 +311,10 @@ if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
 fi
 old=$(wc -l < "$OUT/expected-old.txt")
 new=$(wc -l < "$OUT/got-old.txt")
-[ "$old" -eq 288 ] \
-    || { echo "FAIL: expected 288 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 288 ] \
-    || { echo "FAIL: expected 288 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 291 ] \
+    || { echo "FAIL: expected 291 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 291 ] \
+    || { echo "FAIL: expected 291 rows of pre-existing output, found $new" >&2; exit 1; }
 printf '  %-44s %s\n' 'pre-existing rows byte-identical' "$old"
 printf '%s\n' 'PASS: byte-identity baseline holds'
 

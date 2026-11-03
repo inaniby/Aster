@@ -1,0 +1,26 @@
+// examples/char_return.ast — exercise the `char` type in every position it may
+// occupy (local, global, array element, struct field, parameter, return type)
+// and prove it is byte-for-byte ABI-identical to C `unsigned char`: the same
+// operations, run through the same AAPCS64 register/stack rules, yield the same
+// exit status as tests/char-return-twin.c under qemu. Returns 0.
+struct S { c: char, n: i32 }
+
+fn toUpper(c: char) -> char { return char(c - 32); }   // 'a' -> 'A' (97-32=65)
+
+let g: char = 'm';   // 'm' = 109
+
+fn main() -> i32 {
+    let a: char = 'A';
+    let b: char = 'B';
+    let s: char = a + b;          // 65 + 66 = 131
+    let arr: char[4] = 0;
+    arr[0] = 'x';                 // 120
+    arr[1] = 'y';                 // 121
+    let st: S = S { 'q', 7 };     // 'q' = 113
+    let r: char = toUpper('a');   // 65
+    let wide: i32 = g;            // widening char -> i32, 109
+    let narrowed: char = char(300); // truncation, 44
+    let total: i32 = i32(s) + i32(arr[0]) + i32(arr[1]) + i32(st.c) + i32(r) + wide + i32(narrowed);
+    if (total == 703) { return 0; }
+    return 1;
+}

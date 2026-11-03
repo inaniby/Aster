@@ -90,8 +90,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.68-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.68-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.69-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.69-dev" >&2; exit 1; }
 guard '    Type,                // v0.23.67-dev: `type Name = T;`' 'the Type token'
 guard '    Const,               // v0.23.67-dev: `const x : T = e;`' 'the Const token'
 guard 'else if(x=="type")k=TK::Type; else if(x=="const")k=TK::Const;' 'the two new reserved words'
@@ -123,17 +123,18 @@ guard_count=$((guard_count + 1))
 [ "$(grep -c 'a const must have an initializer: ' src/aster.cpp)" = 3 ] \
     || { echo 'FAIL: expected three "a const must have an initializer" sites' >&2; exit 1; }
 guard_count=$((guard_count + 1))
-# The reserved-word list is generated, not hand-written: 30 words now that
-# `type`, `const` and `void` joined it, and `tls` is still a context keyword.
+# The reserved-word list is generated, not hand-written: 31 words now that
+# `type`, `const`, `void` and `char` joined it, and `tls` is still a context
+# keyword.
 python3 - <<'PY' || exit 1
 import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 30, ('reserved-word count moved', len(entries), entries)
+assert len(entries) == 31, ('reserved-word count moved', len(entries), entries)
 assert 'type' in entries and 'const' in entries, 'type/const are not reserved words'
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 30 reserved words, type and const among them, tls still a context keyword')
+print('PASS: 31 reserved words, type and const among them, tls still a context keyword')
 PY
 guard_count=$((guard_count + 1))
 printf '  %-30s %s\n' "guards passed" "$guard_count"
@@ -588,7 +589,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# [9/9] The byte baseline. Two claims: the 369 rows reproduce, and every row
+# [9/9] The byte baseline. Two claims: the 372 rows reproduce, and every row
 # that already existed in v0.23.66-dev is byte-identical still — earlier rounds
 # added four files (type_alias, const_binding, void_return among them) and no
 # program written before them may compile to different bytes because of any.
@@ -618,7 +619,7 @@ rows=$(wc -l < "$OUT/hashes.filtered.txt")
 # 124 examples x 3 modes, less the three address_of_abi rows every release
 # filters (v0.23.68-dev adds examples/void_return.ast). Asserted so a later
 # round cannot silently drop one.
-[ "$rows" = 369 ] || { echo "FAIL: $rows baseline rows, expected 369" >&2; exit 1; }
+[ "$rows" = 372 ] || { echo "FAIL: $rows baseline rows, expected 372" >&2; exit 1; }
 printf '  %-30s %s\n' "baseline rows reproduced" "$rows"
 # The previous release's frozen baseline — derived, never a hardcoded path
 # (the CI protocol check forbids literal versioned baseline paths).

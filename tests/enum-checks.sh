@@ -60,13 +60,13 @@ fi
 # [2/9] Source guards. Each change is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: enum'
-grep -qF '#define ASTER_VERSION_STRING "0.23.68-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.68-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.69-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.69-dev" >&2; exit 1; }
 # the lexer recognises `enum` as a reserved word
 grep -qF 'else if(x=="enum")k=TK::Enum;' src/aster.cpp \
     || { echo "FAIL: the lexer no longer recognises enum" >&2; exit 1; }
 # the type system carries a distinct enum kind
-grep -qF 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Void };' src/aster.cpp \
+grep -qF 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };' src/aster.cpp \
     || { echo "FAIL: Ty::Kind no longer lists Enum" >&2; exit 1; }
 # the declaration parser builds the enum tables
 grep -qF 'void enumDeclaration(){' src/aster.cpp \
@@ -297,10 +297,10 @@ if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
 fi
 old=$(wc -l < "$OUT/expected-old.txt")
 new=$(wc -l < "$OUT/got-old.txt")
-[ "$old" -eq 288 ] \
-    || { echo "FAIL: expected 288 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 288 ] \
-    || { echo "FAIL: expected 288 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 291 ] \
+    || { echo "FAIL: expected 291 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 291 ] \
+    || { echo "FAIL: expected 291 rows of pre-existing output, found $new" >&2; exit 1; }
 [ "$(grep -c '^enum_demo\.' "$OUT/hashes.txt")" -eq 3 ] \
     || { echo 'FAIL: enum_demo.ast is not in the baseline in all three modes' >&2; exit 1; }
 printf '  %-38s %s\n' 'pre-existing rows byte-identical' "$old"

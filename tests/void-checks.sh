@@ -86,11 +86,11 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.68-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.68-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.69-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.69-dev" >&2; exit 1; }
 guard ' Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool, Void,' 'the Void token'
 guard 'else if(x=="void")k=TK::Void;' 'the void reserved word'
-guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Void };' 'the Void type'
+guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };' 'the Void type'
 guard 'if (t.k == Ty::Void) return 0u;' 'void has no storage (tySize)'
 guard 'if (t.k == Ty::Void) return 1u;' 'void never used as storage (tyAlign)'
 guard 'case Ty::Void: return "void";' 'void names itself'
@@ -119,17 +119,18 @@ guard_count=$((guard_count + 1))
 [ "$(grep -c 'a void value cannot be used in an expression' src/aster.cpp)" = 2 ] \
     || { echo 'FAIL: expected two "a void value cannot be used in an expression" sites' >&2; exit 1; }
 guard_count=$((guard_count + 1))
-# The reserved-word list is generated, not hand-written: 30 words now that
-# `void` joined `type` and `const`, and `tls` is still a context keyword.
+# The reserved-word list is generated, not hand-written: 31 words now that
+# `void` joined `type` and `const`, `char` joined `void`, and `tls` is still a
+# context keyword.
 python3 - <<'PY' || exit 1
 import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 30, ('reserved-word count moved', len(entries), entries)
+assert len(entries) == 31, ('reserved-word count moved', len(entries), entries)
 assert 'void' in entries, 'void is not a reserved word'
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 30 reserved words, void among them, tls still a context keyword')
+print('PASS: 31 reserved words, void among them, tls still a context keyword')
 PY
 guard_count=$((guard_count + 1))
 printf '  %-30s %s\n' "guards passed" "$guard_count"

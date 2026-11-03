@@ -602,10 +602,10 @@ if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
 fi
 old=$(wc -l < "$OUT/expected-old.txt")
 new=$(wc -l < "$OUT/got-old.txt")
-[ "$old" -eq 288 ] \
-    || { echo "FAIL: expected 288 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 288 ] \
-    || { echo "FAIL: expected 288 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 291 ] \
+    || { echo "FAIL: expected 291 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 291 ] \
+    || { echo "FAIL: expected 291 rows of pre-existing output, found $new" >&2; exit 1; }
 [ "$(grep -c '^array_address\.' "$OUT/hashes.txt")" -eq 3 ] \
     || { echo 'FAIL: array_address.ast is not in the baseline in all three modes' >&2; exit 1; }
 printf '  %-34s %s\n' 'pre-existing rows byte-identical' "$old"
