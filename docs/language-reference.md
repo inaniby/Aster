@@ -1,6 +1,6 @@
 # Aster Language Reference
 
-**Applies to: v0.23.67-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.68-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
 source and then **checked against the v0.23.51-dev binary**. Where a rule says a
@@ -25,7 +25,7 @@ explains *why* each rule exists. This file is the lookup table.
 | Whitespace | spaces, tabs, newlines (`isspace`) |
 | Encoding note | UTF-8 inside a comment is fine: comments are consumed before the ASCII check runs |
 
-## 2. Reserved words — 29
+## 2. Reserved words — 30
 
 All 27 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
 fails for every one of them).
@@ -55,6 +55,7 @@ fails for every one of them).
 | `enum` | enumeration declaration (named `i32` constants) | v0.23.61-dev |
 | `type` | type-alias declaration (`type Name = T ;`) | v0.23.67-dev |
 | `const` | read-only binding (`const x : T = e ;`) | v0.23.67-dev |
+| `void` | return type only — names the absence of a result on a function (`fn f() -> void`) | v0.23.68-dev |
 | `include` | `include "file.ast";` declaration sharing | v0.23.13-dev |
 | `true` | Bool literal, value 1 | v0.23.25-dev |
 | `false` | Bool literal, value 0 | v0.23.25-dev |
@@ -79,8 +80,8 @@ The type names are likewise ordinary identifiers, which is what lets
 identifier everywhere except at the **start of a top-level declaration**, where
 `tls let name: type …;` declares a thread-local global (§8). `let tls: i32 = 1;`
 compiles — a variable named `tls` is fine; only the declaration prefix is
-special. The reserved-word count is therefore **29** (the `type` and `const`
-keywords joined it in v0.23.67-dev).
+special. The reserved-word count is therefore **30** (the `type` and `const`
+keywords joined it in v0.23.67-dev, and `void` in v0.23.68-dev).
 
 ### Identifiers
 
@@ -159,21 +160,59 @@ leading `&` and the bitwise level only sees one in operator position.
 | `bool` | 4 | 4 | holds 0 or 1 |
 | `E` (an enum) | 4 | 4 | named integer constants over `i32` (v0.23.61-dev) |
 | `S` (a struct) | layout | layout | passed and returned by address |
+| `void` | — | — | **return type only** (v0.23.68-dev) — names the absence of a result; never a value you can hold |
 
 Struct layout is AAPCS64 / C: each field starts at the next offset that is a
 multiple of its own alignment, the struct's alignment is the largest of its
 fields', and its size is the final offset rounded up to that alignment.
 
-There is **no** `void`, `float`/`double`, `union`, `const`, or
-`typedef`/type alias. There is a **character literal** but no `char` *type* —
-`'a'` is an integer literal that folds to `i32` (§3.2, v0.23.50-dev), so
-`let c: i32 = 'a';` is the whole story and `char` is not a spelling anywhere.
+There is **no** `float`/`double`, `union`, or `typedef`/type alias. `void` exists
+as a **return type only** (v0.23.68-dev) — it names the absence of a result on a
+function (`fn f() -> void`) and can never be a value, a parameter, a local, a
+field, an alias or an array element; see §5.0. There is a **character literal**
+but no `char` *type* — `'a'` is an integer literal that folds to `i32` (§3.2,
+v0.23.50-dev), so `let c: i32 = 'a';` is the whole story and `char` is not a
+spelling anywhere.
 (v0.23.64-dev: an earlier draft of this paragraph said "no `char`" flatly,
 which contradicted §3.2.) (Enumerations **do** exist — see §5.2 — but they are a
 thin, nominal wrapper over `i32`, not a separate numeric kind.) An explicit
 conversion is the **cast** `T(x)` (integers since v0.23.48-dev; `bool`, `ptr`
 and `ptr<T>` since v0.23.60-dev — see §5.1); no other conversion is
 expressible. (`sizeof` and `len` are operators since v0.23.35-dev — see §6.)
+
+### 5.0 `void` — a return type only (v0.23.68-dev)
+
+`void` is the one type that names the **absence** of a result rather than a
+thing to compute. It is a `Ty::Void`, but it can appear **only** in a function's
+return slot — a function declaration's `-> void`, or a function type's `-> void`
+(`fn() -> void`). `parseType` accepts the `void` keyword solely behind
+`needType`'s `allowVoid` gate, which the two return-parsers pass `true` to and
+every value position passes `false`.
+
+Anywhere else `void` is refused:
+
+- as a **parameter** type — `fn f(a: void) -> i32` → `void is only a function return type`;
+- as a **local** type — `let x: void = …` → the same;
+- as a **struct field** — the same;
+- as a **type alias** — `type V = void` → `a type alias cannot be void: V`.
+
+A `void` function behaves like any other function except for the return
+discipline:
+
+- `return;` (no expression) is legal, and so is reaching the end of the body
+  with no `return` — there is no value to be missing;
+- `return e;` in a `void` function is refused: `cannot return a value from a void function`;
+- the function still gets a prologue and an epilogue, takes its arguments in the
+  usual registers, and returns under the same AAPCS64 ABI as a value-returning
+  function — it simply returns nothing.
+
+A `void` *result* cannot be used as a value. `let x: i32 = f()`,
+`return f()`, and `g(f())` are refused because a `void` value is not assignable
+to anything (`got void`); the operand form `f() + 1` is caught first by the
+operator check with `a void value cannot be used in an expression`. The whole
+point is C-ABI interop: an Aster `void` function takes its argument in `W0` and
+returns nothing, exactly as C does, so a C `main` can link one with no shim on
+either side.
 
 ### 5.1 The cast: `T(x)`
 

@@ -389,3 +389,15 @@ fn main() -> i32 { return i32(f()); }
 新常驻套件 `tests/alias-const-checks.sh`（9 层，注册进 `DEFAULT_SUITES` 与 `CRITICAL`）：26 条源码守卫（钉死两特性的每段代码与保留字表）、**独立读取器**（手写别名展开器，把源里每个别名手工展开后要求**字节相同**输出——字节相等即证明别名是拼写而非类型）、10 例 **gcc 差分**（`typedef`/`const` 都是 C 写法，每个行为用例都有 C 孪生、qemu 下退出码一致）、16 条拒绝矩阵（其中 6 条 gcc 孪生同样拒绝）、两个 shipped 例子对 C 孪生、覆盖计数、6 个变异体、字节基线（断言每个既有行不变）。
 
 第 3 批第 13 项已完成前两项（`typedef`/`const`），剩 `void` 排队。
+
+## 修复记录（v0.23.68-dev）
+
+第三部分「语言层面的缺口」Top5 关闭第三项的 `void`。`void` 是缺口里**唯一做减法的项**——它命名的是「没有返回值」这件事，而非一种新的可计算值。本轮**不改动其余 123 个例子的任何字节**——它们的输出与 v0.23.67-dev 逐一字节相同，369 行基线（123 例 × 3 模式，过滤掉 3 个 `address_of_abi.*`）零改动，故本轮同样是「纯语言特性」。新增一个保留字 `void`，保留字数 29 → 30；`tls` 仍是上下文关键字。
+
+| 审计项 | 处理 |
+| --- | --- |
+| `void` | **新增 `void` 作为返回类型。** 编译器新增 `Ty::Void`；`parseType` 仅在 `needType` 的 `allowVoid` 门后接受 `void` 关键字（函数声明的 `->` 返回与 `fn` 类型的 `->` 传 `true`，其余值位置一律 `false`），因此 `void` 永不能出现在参数、局部、字段、别名或数组元素——各自被拒（`void is only a function return type`，别名情形为 `a type alias cannot be void: V`）。`void` 函数与其余函数仅有返回纪律的不同：可写 `return;`（无表达式）、可自然落空（没有值可缺失），但仍走完整的 prologue/epilogue、走同一套 AAPCS64 ABI；值返回函数依旧被要求「必然返回」。`return e;` 在 `void` 函数里被 Sema 拒绝（`cannot return a value from a void function`）。`void` 的**结果**不能当值用：`let x: i32 = f()`、`return f()`、`g(f())` 因 `tyAssignable(_, Void) == false` 被拒（`got void`）；运算数形式 `f() + 1` 先被 `isVoidUsingOp` 以 `a void value cannot be used in an expression` 拦下。其意义在于 **C-ABI 互操作**：Aster 的 `void` 函数参数走 `W0`、不返回任何值，与 C 完全一致，因此一个 C 的 `main` 无需任何垫片即可链接 Aster 提供的 `void` 函数 |
+
+新增常驻套件 `tests/void-checks.sh`（9 层，注册进 `DEFAULT_SUITES` 与 `CRITICAL`）：24 条源码守卫（钉死特性的每段代码与保留字表）、**C-ABI 互操作见证**（C 的 `main` 链接 Aster 提供的 `void` 函数，qemu 下退出码 0）、5 例 **gcc 差分**、11 条拒绝矩阵（其中 5 条 gcc 孪生同样拒绝，其余为 Aster 独有）、shipped 例子 `examples/void_return.ast` 对 C 孪生、覆盖计数、6 个变异体、字节基线（钉死 3 个 `void_return` 行）。
+
+第 3 批第 13 项已完成三项中的前三项（`typedef`/`const`/`void`），剩 `char` 与 `union` 排队。

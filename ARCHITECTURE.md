@@ -1,6 +1,6 @@
 # Aster — Architecture
 
-**As of v0.23.67-dev.** This document is a structural map of the compiler in
+**As of v0.23.68-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
 carries **no signing key of its own**. It is descriptive, not a feature
 catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the
@@ -83,6 +83,26 @@ dedicated diagnostic.
   `let`. The guarantee is the compiler's, not the image's — a const global
   occupies the same `.data` bytes a `let` global does, so no codegen path moves.
   Globals may also be struct-typed.
+- **`void` as a return type** (v0.23.68-dev) — `void` is a `Ty::Void`, but it is
+  a *return-slot property only*. `parseType()` accepts the `void` keyword solely
+  behind `needType()`'s `allowVoid` gate, which the two return-parsers (a
+  function's `->` and a `fn` type's `->`) pass `true` to and every value position
+  passes `false`. So `void` can never be a parameter, a local, a field, an alias
+  or an array element — each is refused (`void is only a function return type`,
+  or `a type alias cannot be void` for the alias case). A `void` function is just
+  a function whose body need not end in `return`: the prologue still sets
+  `currentReturnType = Ty::Void`, `ret()` falls through to `retVoid()` (an `LDR
+  X30,[SP,#8184]` plus the epilogue), and the fall-through check at line ~6123
+  is widened to `if(f.retType != Ty::Void && !definitelyReturns(f.body))`. The
+  one refusal that is enforced at two sites is `return e;` in a `void` fn — Sema
+  throws `cannot return a value from a void function`, and defensively the
+  integer return path's `checkValue` would still reject `got void`, so mutating
+  one leaves the other. A `void` result used as a value (`let x = f()`,
+  `return f()`, `g(f())`) is refused by `tyAssignable(_, Void) == false`
+  (`got void`); the operand form `f() + 1` is caught first by `isVoidUsingOp`
+  (`a void value cannot be used in an expression`). The point of the feature is
+  C-ABI interop: an Aster `void` function takes its argument in `W0` and returns
+  nothing, exactly as C does, so a C `main` links one with no shim.
 - **`@embed` / `@embed_len` (v0.23.7-dev).** The parser owns them, because both
   have to be answered during parsing. `embedFile(path)` resolves the path
   (relative → the source file's own directory, or `--embed-dir`), `stat`s it,

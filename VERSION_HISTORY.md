@@ -1,3 +1,69 @@
+## v0.23.68-dev — close the language gaps (`void`)
+
+The audit's third part listed the language's gaps in order of
+cost-effectiveness — `typedef` (1), `const` (2), `void` (3), `char` (4),
+`union` (5) — and asked for them to be closed in turn. v0.23.67-dev closed the
+first two; this round closes the third. `char` and `union` stay queued.
+
+No image bytes move for the other 123 examples: `tests/baseline/v0.23.68-dev/`
+is this version's snapshot and its byte-baseline layer asserts every
+pre-existing row is unchanged (the three `void_return` rows this round adds are
+pinned separately by `tests/void-checks.sh`).
+
+### `void` — a return-slot property, never a value
+
+`void` is the one gap that is *subtractive*: it names the absence of a result,
+not a new thing to compute. The compiler gains a `Ty::Void`, and `parseType`
+accepts the `void` keyword only behind `needType`'s `allowVoid` gate — a
+function's `->` return and a `fn` type's `->`. Everywhere else `void` is
+refused with `void is only a function return type`:
+
+- as a parameter type (`fn f(a: void)`);
+- as a local variable type (`let x: void`);
+- as a struct field;
+- as a type alias (`type V = void` is refused with `a type alias cannot be void`).
+
+A `void` function still gets a prologue, an epilogue, and the same AAPCS64 ABI
+as any other function — it takes arguments, loops, and calls other functions
+for their effects. The only rule that moves is the fall-through check: a `void`
+function may reach the end of its body without a `return` (there is no value to
+be missing), while a value-returning function must still definitely return.
+
+### The refusals, singly located
+
+- `return e;` in a `void` function — refused at Sema with `cannot return a value
+  from a void function` (and, defensively, by the integer return path's
+  `checkValue`, so disabling one still leaves the other);
+- a `void` result used as a value — `let x = f()`, `return f()`, `g(f())`, and
+  `f() + 1` — refused because `tyAssignable(_, Void)` is false (`got void`),
+  except the operand form `f() + 1`, which `isVoidUsingOp` catches first with
+  `a void value cannot be used in an expression`;
+- `type V = void` — refused at the alias declaration with `a type alias cannot
+  be void`.
+
+Five of these have a C twin gcc refuses (the `void`-as-value ones, plus the
+`void`-as-type ones where gcc agrees `void` is not a complete object type); the
+rest are Aster-only.
+
+### Why this round, and the C-ABI point
+
+`void` is the missing piece that lets Aster code call, and be called by, C
+functions that return nothing — the most common shape in any C library. The
+suite proves it with a real cross-language link: a C `main` is compiled, linked
+against an Aster-provided `void` function, and run under qemu, exiting 0. The
+Aster `void` function's ABI — argument in `W0`, no value returned — is exactly
+C's, so no shim is needed on either side.
+
+### The suite
+
+`tests/void-checks.sh` is nine layers: strict build; 24 source guards pinning
+every piece of the feature plus the reserved-word list (now 30 words, `tls`
+still a context keyword); a C-ABI interop witness (C `main` links an Aster
+`void` fn, runs under qemu, exits 0); a gcc differential over five cases; an
+11-entry refusal matrix; the shipped example `examples/void_return.ast` against
+its C twin; coverage counting; six mutations; and the byte baseline pinning the
+three `void_return` rows. Evidence in `VALIDATION-v0.23.68-dev.md`.
+
 ## v0.23.67-dev — close the language gaps (`type` and `const`)
 
 The audit's third part listed the language's gaps in order of
