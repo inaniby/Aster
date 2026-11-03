@@ -60,8 +60,8 @@ A=$OUT/aster
 # [2/9] Source guards. Each fix is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: the five rules'
-grep -qF '#define ASTER_VERSION_STRING "0.23.67-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.67-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.68-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.68-dev" >&2; exit 1; }
 grep -qF 'case Expr::Shl: case Expr::Shr: case Expr::BitNot:' src/aster.cpp \
     || { echo "FAIL: the shift family is no longer in the TypedIR exemption" >&2; exit 1; }
 grep -qF 'if(t.k==Ty::Enum)return enumValueFits((int64_t)e.n);' src/aster.cpp \
@@ -382,7 +382,7 @@ for mode in build-so build-elf "build-obj --pic"; do
         fi
     done
 done
-FILTER='-e ^cast-conversions\. -e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^tls_demo\. -e ^so_verstrlen\. -e ^c_ptr_difference\. -e ^address_of\. -e ^address_of_abi\. -e ^so_tls_demo\. -e ^enum_demo\. -e ^type_alias\. -e ^const_binding\.'
+FILTER='-e ^cast-conversions\. -e ^sizeof_len\. -e ^struct_array_field\. -e ^array_elem_types\. -e ^precedence\. -e ^array_address\. -e ^multi_dim_array\. -e ^lifecycle\. -e ^fn_type\. -e ^cb_table\. -e ^fn_ret\. -e ^call-stmt\. -e ^copy\. -e ^arena\. -e ^stdlib_demo\. -e ^integer_cast\. -e ^switch\. -e ^literals\. -e ^tls_demo\. -e ^so_verstrlen\. -e ^c_ptr_difference\. -e ^address_of\. -e ^address_of_abi\. -e ^so_tls_demo\. -e ^enum_demo\. -e ^type_alias\. -e ^const_binding\. -e ^void_return\.'
 grep -v $FILTER "$BASE" | LC_ALL=C sort > "$OUT/expected-old.txt"
 grep -v $FILTER "$OUT/hashes.txt" | LC_ALL=C sort > "$OUT/got-old.txt"
 if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then

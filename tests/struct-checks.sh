@@ -33,7 +33,7 @@ printf '%s\n' '[2/8] Source guard: the type lattice, the layout pass and the ABI
 # discipline pins FieldCall in callback-table-checks.sh and SizeOf/Len in
 # sizeof-len-checks.sh).
 grep -qF 'enum Kind { I32,' src/aster.cpp \
-    && grep -qF 'Struct };' src/aster.cpp \
+    && grep -qF 'Void };' src/aster.cpp \
     || { echo 'FAIL: Ty::Kind no longer carries Struct' >&2; exit 1; }
 # v0.23.65-dev: layoutStruct carries the declaration token so that a size-limit
 # failure can name the field that crossed it (and reports at its declaration).

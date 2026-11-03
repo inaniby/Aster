@@ -1,0 +1,48 @@
+// examples/void_return.ast — `void` as a function return type, exercising every
+// spelling position the language allows and the two shapes a void body may take.
+//
+//   * a file-scope void function, called as a statement with an argument;
+//   * a void function that falls off the end of its body (no explicit return);
+//   * a void function with an explicit trailing `return;`;
+//   * a value-returning function that calls void functions for their effects
+//     (a void call used purely as a statement, never as a value);
+//   * a void function whose body contains a loop and an `if` (effects only).
+//
+// `void` is a return-slot property only: a void function still has a prologue
+// and an epilogue, still links, and still runs under the same ABI as any other
+// Aster function. That is the whole point — it is the missing piece that lets
+// Aster code call, and be called by, C functions that return nothing.
+
+let g: i32 = 0;
+
+fn bump() -> void {
+    g = g + 1;
+    return;
+}
+
+fn add(n: i32) -> void {
+    let i: i32 = 0;
+    while (i < n) {
+        bump();
+        i = i + 1;
+    }
+}
+
+fn no_return() -> void {
+    g = g + 5;
+}
+
+fn maybe(v: i32) -> void {
+    if (v > 0) {
+        g = g + 10;
+    }
+}
+
+fn main() -> i32 {
+    bump();          // g = 1
+    add(3);          // g = 4
+    no_return();     // g = 9
+    maybe(1);        // g = 19
+    maybe(0);        // unchanged
+    return g;        // 19
+}
