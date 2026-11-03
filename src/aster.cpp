@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.67-dev"
+#define ASTER_VERSION_STRING "0.23.68-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -194,7 +194,7 @@ uint64_t alignUp(uint64_t n,uint64_t a){return (n+a-1u)&~(a-1u);}
 
 enum class TK { End, Ident, Number, String,
     Char,                // v0.23.50-dev: the character literal — 'a' lexes to a Char token carrying its byte value (0..255)
-    Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool,
+    Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool, Void,
     Switch, Case, Default, // v0.23.49-dev: the switch statement — Pascal semantics, so no fallthrough and no per-case break
     I64, U8, U16, U32,   // v0.23.2-dev (P3.2): wider integer type keywords
     U64,                 // v0.23.48-dev: the 64-bit unsigned integer — the cast target the language was missing
@@ -275,7 +275,7 @@ public:
                 std::string x; while(std::isalnum((unsigned char)peek())||peek()=='_') x+=take();
                 TK k=TK::Ident;
                 if(x=="fn")k=TK::Fn; else if(x=="extern")k=TK::Extern; else if(x=="main")k=TK::Main; else if(x=="let")k=TK::Let;
-                else if(x=="return")k=TK::Return; else if(x=="if")k=TK::If; else if(x=="else")k=TK::Else; else if(x=="while")k=TK::While; else if(x=="for")k=TK::For; else if(x=="break")k=TK::Break; else if(x=="continue")k=TK::Continue; else if(x=="switch")k=TK::Switch; else if(x=="case")k=TK::Case; else if(x=="default")k=TK::Default; else if(x=="i32")k=TK::I32; else if(x=="ptr")k=TK::Ptr; else if(x=="bool")k=TK::Bool;
+                else if(x=="return")k=TK::Return; else if(x=="if")k=TK::If; else if(x=="else")k=TK::Else; else if(x=="while")k=TK::While; else if(x=="for")k=TK::For; else if(x=="break")k=TK::Break; else if(x=="continue")k=TK::Continue; else if(x=="switch")k=TK::Switch; else if(x=="case")k=TK::Case; else if(x=="default")k=TK::Default; else if(x=="i32")k=TK::I32; else if(x=="ptr")k=TK::Ptr; else if(x=="bool")k=TK::Bool; else if(x=="void")k=TK::Void;
                 else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct; else if(x=="enum")k=TK::Enum;
                 // v0.23.67-dev: `type` and `const`. Neither is an identifier
                 // anywhere in the shipped corpus — the byte baseline's examples,
@@ -484,7 +484,7 @@ public:
 // The Kind keeps the spelling `Ty::I32`, so every site that asks "is this a
 // pointer?" or "how wide is it?" reads exactly as it did before.
 struct Ty {
-    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct };
+    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Void };
     Kind k = I32;
     int sid = -1;                      // struct-table index; see above
     // v0.23.34-dev: a pointer may carry the *element* it strides over, so
@@ -617,12 +617,14 @@ static const TypeAlias* typeAliasOf(const std::string& name){
 // Width in bytes of one value of this type as it sits in memory.
 static uint32_t tySize(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).size;
+    if (t.k == Ty::Void) return 0u;   // v0.23.68-dev: a void has no storage
     return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
 // Alignment in bytes. Structs carry their own; every scalar is naturally
 // aligned. This is the number AAPCS64 rounds a field offset up to.
 static uint32_t tyAlign(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).align;
+    if (t.k == Ty::Void) return 1u;   // v0.23.68-dev: never used as storage
     return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
 static bool tyIsStruct(Ty t) { return t.k == Ty::Struct; }
@@ -689,6 +691,7 @@ static const char* tyName(Ty t) {
         case Ty::I32: return "i32"; case Ty::U32: return "u32"; case Ty::U8: return "u8";
         case Ty::U16: return "u16"; case Ty::I64: return "i64"; case Ty::U64: return "u64"; case Ty::Ptr: return "ptr";
         case Ty::Bool: return "bool";
+        case Ty::Void: return "void";   // v0.23.68-dev
         case Ty::Struct: break;
         // v0.23.61-dev: an enum prints by its declared name, like a struct.
         case Ty::Enum: break;
@@ -1175,6 +1178,7 @@ class Parser {
             case TK::U64: out=Ty::U64;  ++p; return true;   // v0.23.48-dev
             case TK::Ptr: return pointerType(out);
             case TK::Bool:out=Ty::Bool; ++p; return true;
+            case TK::Void:out=Ty::Void; ++p; return true;   // v0.23.68-dev: only valid as a function return type
             // A struct type is spelled with the name it was declared with. An
             // identifier that is not a known struct is left alone: the caller
             // reports "expected a type" naming every spelling it accepts.
@@ -1210,9 +1214,9 @@ class Parser {
                         sig.params.push_back(pt);
                     } while(eat(TK::Comma));
                 }
-                need(TK::RParen,"expected ')' after function parameter types");
-                need(TK::Arrow,"expected '->' in a function type");
-                sig.ret=needType("<function return type>");
+            need(TK::RParen,"expected ')' after function parameter types");
+            need(TK::Arrow,"expected '->' in a function type");
+            sig.ret=needType("<function return type>",/*allowVoid=*/true);
                 out=Ty::Ptr; pendingFuncType=true; pendingFuncSig=std::move(sig);
                 return true;
             }
@@ -1248,7 +1252,7 @@ class Parser {
             throw Error("unknown struct type in ptr<"+id.s+"> at "+std::to_string(id.line)+":"+std::to_string(id.col));
         out=Ty::ptrTo(it->second);return true;
     }
-    Ty needType(const char* what){
+    Ty needType(const char* what, bool allowVoid=false){
         // v0.23.37-dev: a fresh type parse starts with no pending function
         // signature. parseType sets pendingFuncType only when it consumes a
         // fn(…)->… spelling; everything else leaves it false, so a signature
@@ -1256,6 +1260,13 @@ class Parser {
         pendingFuncType=false;pendingFuncSig=FuncSig();
         Ty t=Ty::I32;
         if(!parseType(t))throw Error(std::string(what)+" at "+std::to_string(cur().line)+":"+std::to_string(cur().col));
+        // v0.23.68-dev: `void` is a function-return type only. Every other
+        // spelling site (a let, a global, a parameter, a struct field, a
+        // pointer element, a fn-pointer's parameter type) calls needType with
+        // allowVoid=false, so `void` there is refused with one message; only
+        // the two return-type positions pass allowVoid=true.
+        if(t.k==Ty::Void&&!allowVoid)
+            throw Error(std::string(what)+": void is only a function return type at "+std::to_string(cur().line)+":"+std::to_string(cur().col));
         return t;
     }
     // v0.23.34-dev: a parameter type, which may take the array form `T[N]`
@@ -2191,7 +2202,16 @@ class Parser {
         // v0.23.67-dev: `const x : T = e;` in a function body — the same
         // declaration `let` parses, with every later store to `x` refused.
         if(eat(TK::Const))return letStatement(true);
-        if(eat(TK::Return)){Stmt s(Stmt::Return);s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;need(TK::Semi,"expected ';'");return s;}
+        if(eat(TK::Return)){
+            // v0.23.68-dev: a void function may say `return;` with no value.
+            // A non-void function must still return a value; that is enforced
+            // by Sema (a bare `return;` in a value-returning function is a
+            // type error), not here, so either shape parses.
+            Stmt s(Stmt::Return);
+            if(cur().k!=TK::Semi){s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;}
+            need(TK::Semi,"expected ';'");
+            return s;
+        }
         if(eat(TK::If))return ifStatement();
         // v0.23.49-dev: `name:` labels the loop that follows. Only while and
         // for may carry one — the two statements break and continue can name —
@@ -2522,6 +2542,12 @@ class Parser {
         Ty t=Ty::I32;
         if(!parseType(t))
             throw Error(loc(id.line,id.col,"expected a type after '=' in the declaration of type alias "+id.s));
+        // v0.23.68-dev: `void` is a function-return type only (see needType's
+        // allowVoid guard). An alias that names it would smuggle void into a
+        // value position — `let x : V` — defeating that rule, and aliasing the
+        // one type that has no storage is meaningless anyway.
+        if(t.k==Ty::Void)
+            throw Error(loc(id.line,id.col,"a type alias cannot be void: "+id.s));
         TypeAlias a;a.ty=t;
         if(pendingFuncType){a.isFunc=true;a.sig=pendingFuncSig;pendingFuncType=false;pendingFuncSig=FuncSig();}
         need(TK::Semi,"expected ';' after a type alias declaration");
@@ -2852,7 +2878,7 @@ public:
             }while(eat(TK::Comma));}
             need(TK::RParen,"expected ')' after parameters");
             need(TK::Arrow,"expected ->");
-            const Ty rty=needType(kTypeExpected);
+            const Ty rty=needType(kTypeExpected,/*allowVoid=*/true);
             // v0.23.38-dev: a function may return a fn-pointer. The return
             // type is still `ptr` — an address comes back, not a function
             // value — and the signature travels beside it, the same way it
@@ -3464,8 +3490,36 @@ struct Codegen {
     // `t == Ptr`, "is it a bool?" is `t == Bool`, and "which instruction
     // width?" falls out of the same answer. One definition means the three
     // questions can never disagree.
+    // v0.23.68-dev: a void expression — the result of calling a void function —
+    // has no value and must not be used as one. These are exactly the operators
+    // that demand a value on their operand(s); a void operand is a misuse. The
+    // void check lives at the single type-resolution chokepoint every consumer
+    // (codegen, the semantic pass, the condition checker) passes through, so a
+    // void result can never reach codegen and be silently miscompiled.
+    static bool isVoidUsingOp(Expr::Kind k){
+        switch(k){
+            case Expr::Add: case Expr::Sub: case Expr::Mul: case Expr::Div:
+            case Expr::Mod: case Expr::Neg: case Expr::Shl: case Expr::Shr:
+            case Expr::BitAnd: case Expr::BitOr: case Expr::BitXor: case Expr::BitNot:
+            case Expr::Eq: case Expr::Ne: case Expr::Lt: case Expr::Le:
+            case Expr::Gt: case Expr::Ge: case Expr::And: case Expr::Or:
+            case Expr::Not:
+                return true;
+            default: return false;
+        }
+    }
     Ty exprType(const Expr& e) const {
         RecursionGuard depthGuard(typeDepth,2048,"expression type");
+        // v0.23.68-dev: refuse to use a void result as a value. The recursive
+        // exprType calls resolve each operand type (a void call resolves to
+        // Ty::Void), and the message points at the operator. This lives before
+        // the type switch so it runs for every operator that demands a value.
+        if(isVoidUsingOp(e.k)){
+            if(e.a&&exprType(*e.a)==Ty::Void)
+                throw Error(loc(e.line,e.col,"a void value cannot be used in an expression"));
+            if(e.b&&exprType(*e.b)==Ty::Void)
+                throw Error(loc(e.line,e.col,"a void value cannot be used in an expression"));
+        }
         switch(e.k){
             case Expr::Num:
                 if(e.boolLit) return Ty::Bool;
@@ -5625,6 +5679,13 @@ struct Codegen {
         if(retTy==Ty::U8)emit(0x53001c00u);       // UXTB W0, W0
         else if(retTy==Ty::U16)emit(0x53003c00u); // UXTH W0, W0
         }
+        retVoid();
+    }
+    // v0.23.68-dev: the epilogue shared by value-returning and void returns.
+    // A void function's `return;` lands here directly; a value-returning
+    // function's ret() fills X0 first and then calls this. The emitted
+    // sequence is the same either way — only whether X0 holds a value differs.
+    void retVoid(){
         if(isMain){emit(0xd2800000u|(93u<<5)|8u);emit(0xd4000001u);}
         else {emit(0xf94003feu|(uint32_t(1023)<<10)); // LDR X30, [SP, #8184]
             epilogueAdds.push_back(code.size());emit(0);emit(0xd65f03c0u);}
@@ -5974,7 +6035,10 @@ struct Codegen {
                 // is the top of the temp pool, so it is released here the same
                 // way an assignment releases the value it just stored.
                 int d=gen(*s.expr);releaseTemp(d);
-            } else if(s.k==Stmt::Return){ret(*s.expr);}
+            } else if(s.k==Stmt::Return){
+                // v0.23.68-dev: a void function's `return;` carries no value.
+                if(s.expr)ret(*s.expr);else retVoid();
+            }
             else if(s.k==Stmt::If){
                 size_t toElse;const int cond=emitCondition(*s.expr,toElse);
                 block(s.thenBody,true);size_t toEnd=code.size();emit(0);patchCond(toElse,cond,(int)code.size());block(s.elseBody,true);patchBranch(toEnd,code.size());
@@ -6053,7 +6117,10 @@ struct Codegen {
         if(newScope)scopes.pop_back();
     }
     std::vector<uint32_t> run(const Function& f){
-        if(!definitelyReturns(f.body))throw Error(functionName+" may fall through without returning "+(f.returnPtr?"ptr":f.returnBool?"bool":"i32")+"; add a return or make both if/else branches return");
+        // v0.23.68-dev: a void function returns nothing, so it may fall off
+        // the end of its body — there is no value to be missing. Only a
+        // value-returning function must definitely return.
+        if(f.retType!=Ty::Void&&!definitelyReturns(f.body))throw Error(functionName+" may fall through without returning "+(f.returnPtr?"ptr":f.returnBool?"bool":"i32")+"; add a return or make both if/else branches return");
         // The prologue belongs to the declaration, not to the first statement.
         if(emitLineInfo&&f.line!=0)lineRows.push_back({0u,f.line});
         scopes.emplace_back();
@@ -6152,6 +6219,13 @@ struct Codegen {
         }
         if(injectInit&&isMain){size_t at=code.size();emit(0x94000000u);relocations.push_back({uint64_t(at)*4,initSymbol,kRelCall26});}
         block(f.body);
+        // v0.23.68-dev: a void function may fall off the end of its body with
+        // no explicit `return;`, in which case the epilogue must still be
+        // emitted — there is simply no value to place in X0. A value-returning
+        // function is guaranteed by the definitelyReturns check to end in a
+        // return of its own, so it needs nothing here; for a void function we
+        // append the epilogue only when control can actually reach the end.
+        if(f.retType==Ty::Void&&!definitelyReturns(f.body))retVoid();
         if(nextTemp!=0)throw Error("internal compiler error: temporary register leak");
         if(nextSlot>kMaxLocals)throw Error("too many local declarations (limit 500, including parameters)");
         code[0]=0xd1400bffu; // SUB SP, SP, #8192
@@ -7855,6 +7929,16 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 return;
             }
             case Stmt::Return: {
+                // v0.23.68-dev: void vs value return discipline.
+                if(retType==Ty::Void){
+                    // A void function may only say `return;` — handing it a
+                    // value is a type error, the same way `voidFn() = 1;` is.
+                    if(s.expr)
+                        throw Error(loc(s.line,s.col,"cannot return a value from a void function "+fn));
+                    return;
+                }
+                if(!s.expr)
+                    throw Error(loc(s.line,s.col,"a function returning "+std::string(tyName(retType))+" must return a value: "+fn));
                 if(s.expr->k==Expr::Var){
                     const Binding* b=find(s.expr->name);
                     if(b&&b->len)

@@ -37,7 +37,7 @@
 // is gone; `reverse_digits` comes along because utoa ends by calling it.
 
 // ---- BEGIN GENERATED: lexer names (bootstrap/gen_lexer_names.py) ----
-// The 80 token kinds, numbered exactly as `enum class TK`
+// The 81 token kinds, numbered exactly as `enum class TK`
 // in src/aster.cpp. Regenerate: python3 bootstrap/gen_lexer_names.py
 let K_End: i32 = 0;
 let K_Ident: i32 = 1;
@@ -58,67 +58,68 @@ let K_Continue: i32 = 15;
 let K_I32: i32 = 16;
 let K_Ptr: i32 = 17;
 let K_Bool: i32 = 18;
-let K_Switch: i32 = 19;
-let K_Case: i32 = 20;
-let K_Default: i32 = 21;
-let K_I64: i32 = 22;
-let K_U8: i32 = 23;
-let K_U16: i32 = 24;
-let K_U32: i32 = 25;
-let K_U64: i32 = 26;
-let K_True: i32 = 27;
-let K_False: i32 = 28;
-let K_Struct: i32 = 29;
-let K_Enum: i32 = 30;
-let K_Type: i32 = 31;
-let K_Const: i32 = 32;
-let K_Include: i32 = 33;
-let K_LParen: i32 = 34;
-let K_RParen: i32 = 35;
-let K_LBrace: i32 = 36;
-let K_RBrace: i32 = 37;
-let K_Colon: i32 = 38;
-let K_Semi: i32 = 39;
-let K_Comma: i32 = 40;
-let K_Arrow: i32 = 41;
-let K_Eq: i32 = 42;
-let K_EqEq: i32 = 43;
-let K_Ne: i32 = 44;
-let K_Lt: i32 = 45;
-let K_Le: i32 = 46;
-let K_Gt: i32 = 47;
-let K_Ge: i32 = 48;
-let K_Plus: i32 = 49;
-let K_Minus: i32 = 50;
-let K_Star: i32 = 51;
-let K_Slash: i32 = 52;
-let K_LBracket: i32 = 53;
-let K_RBracket: i32 = 54;
-let K_At: i32 = 55;
-let K_And: i32 = 56;
-let K_Or: i32 = 57;
-let K_Not: i32 = 58;
-let K_Percent: i32 = 59;
-let K_Shl: i32 = 60;
-let K_Shr: i32 = 61;
-let K_BitXor: i32 = 62;
-let K_BitOr: i32 = 63;
-let K_Tilde: i32 = 64;
-let K_Question: i32 = 65;
-let K_PlusEq: i32 = 66;
-let K_MinusEq: i32 = 67;
-let K_StarEq: i32 = 68;
-let K_SlashEq: i32 = 69;
-let K_PercentEq: i32 = 70;
-let K_ShlEq: i32 = 71;
-let K_ShrEq: i32 = 72;
-let K_AndEq: i32 = 73;
-let K_OrEq: i32 = 74;
-let K_XorEq: i32 = 75;
-let K_PlusPlus: i32 = 76;
-let K_MinusMinus: i32 = 77;
-let K_Dot: i32 = 78;
-let K_Amp: i32 = 79;
+let K_Void: i32 = 19;
+let K_Switch: i32 = 20;
+let K_Case: i32 = 21;
+let K_Default: i32 = 22;
+let K_I64: i32 = 23;
+let K_U8: i32 = 24;
+let K_U16: i32 = 25;
+let K_U32: i32 = 26;
+let K_U64: i32 = 27;
+let K_True: i32 = 28;
+let K_False: i32 = 29;
+let K_Struct: i32 = 30;
+let K_Enum: i32 = 31;
+let K_Type: i32 = 32;
+let K_Const: i32 = 33;
+let K_Include: i32 = 34;
+let K_LParen: i32 = 35;
+let K_RParen: i32 = 36;
+let K_LBrace: i32 = 37;
+let K_RBrace: i32 = 38;
+let K_Colon: i32 = 39;
+let K_Semi: i32 = 40;
+let K_Comma: i32 = 41;
+let K_Arrow: i32 = 42;
+let K_Eq: i32 = 43;
+let K_EqEq: i32 = 44;
+let K_Ne: i32 = 45;
+let K_Lt: i32 = 46;
+let K_Le: i32 = 47;
+let K_Gt: i32 = 48;
+let K_Ge: i32 = 49;
+let K_Plus: i32 = 50;
+let K_Minus: i32 = 51;
+let K_Star: i32 = 52;
+let K_Slash: i32 = 53;
+let K_LBracket: i32 = 54;
+let K_RBracket: i32 = 55;
+let K_At: i32 = 56;
+let K_And: i32 = 57;
+let K_Or: i32 = 58;
+let K_Not: i32 = 59;
+let K_Percent: i32 = 60;
+let K_Shl: i32 = 61;
+let K_Shr: i32 = 62;
+let K_BitXor: i32 = 63;
+let K_BitOr: i32 = 64;
+let K_Tilde: i32 = 65;
+let K_Question: i32 = 66;
+let K_PlusEq: i32 = 67;
+let K_MinusEq: i32 = 68;
+let K_StarEq: i32 = 69;
+let K_SlashEq: i32 = 70;
+let K_PercentEq: i32 = 71;
+let K_ShlEq: i32 = 72;
+let K_ShrEq: i32 = 73;
+let K_AndEq: i32 = 74;
+let K_OrEq: i32 = 75;
+let K_XorEq: i32 = 76;
+let K_PlusPlus: i32 = 77;
+let K_MinusMinus: i32 = 78;
+let K_Dot: i32 = 79;
+let K_Amp: i32 = 80;
 
 // Byte-wise equality of n bytes at id against the
 // NUL-terminated literal lit; the terminator must sit
@@ -133,7 +134,7 @@ fn ident_is(lit: ptr<u8>, id: ptr<u8>, n: i32) -> i32 {
     return 1;
 }
 
-// Keyword recognition — the 29 reserved words, one branch
+// Keyword recognition — the 30 reserved words, one branch
 // each, from the same list as the C twin's table
 // (tests/lexer_names.h). No match is K_Ident.
 fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
@@ -154,6 +155,7 @@ fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
     if (ident_is("i32", id, n)) { return K_I32; }
     if (ident_is("ptr", id, n)) { return K_Ptr; }
     if (ident_is("bool", id, n)) { return K_Bool; }
+    if (ident_is("void", id, n)) { return K_Void; }
     if (ident_is("i64", id, n)) { return K_I64; }
     if (ident_is("u8", id, n)) { return K_U8; }
     if (ident_is("u16", id, n)) { return K_U16; }

@@ -40,7 +40,7 @@ TOKENS = [
     "End", "Ident", "Number", "String",
     "Char",               # v0.23.50-dev: the character literal — 'a' lexes here
     "Fn", "Extern", "Main", "Let", "Return", "If", "Else", "While", "For",
-    "Break", "Continue", "I32", "Ptr", "Bool",
+    "Break", "Continue", "I32", "Ptr", "Bool", "Void",
     "Switch", "Case", "Default",   # v0.23.49-dev: the switch statement — Pascal semantics
     "I64", "U8", "U16", "U32",
     "U64",                 # v0.23.48-dev: the 64-bit unsigned integer
@@ -68,7 +68,7 @@ KEYWORDS = [
     ("return", "Return"), ("if", "If"), ("else", "Else"), ("while", "While"),
     ("for", "For"), ("break", "Break"), ("continue", "Continue"),
     ("switch", "Switch"), ("case", "Case"), ("default", "Default"),   # v0.23.49-dev
-    ("i32", "I32"), ("ptr", "Ptr"), ("bool", "Bool"),
+    ("i32", "I32"), ("ptr", "Ptr"), ("bool", "Bool"), ("void", "Void"),
     ("i64", "I64"), ("u8", "U8"), ("u16", "U16"), ("u32", "U32"),
     ("u64", "U64"),       # v0.23.48-dev
     ("struct", "Struct"), ("enum", "Enum"),
@@ -103,8 +103,8 @@ def die(msg):
 # Self-checks: the list must be well-formed before anything is emitted.
 # ---------------------------------------------------------------------------
 def check_list():
-    if TOKEN_COUNT != 80:
-        die("expected 80 token kinds, list has %d" % TOKEN_COUNT)
+    if TOKEN_COUNT != 81:
+        die("expected 81 token kinds, list has %d" % TOKEN_COUNT)
     if len(set(TOKENS)) != TOKEN_COUNT:
         die("duplicate token kind name")
     for name in TOKENS:
@@ -113,8 +113,8 @@ def check_list():
         if len(name) >= RECORD:
             die("token kind name %r does not fit a %d-byte record"
                 % (name, RECORD))
-    if KEYWORD_COUNT != 29:
-        die("expected 29 keywords, list has %d" % KEYWORD_COUNT)
+    if KEYWORD_COUNT != 30:
+        die("expected 30 keywords, list has %d" % KEYWORD_COUNT)
     kinds = [k for _, k in KEYWORDS]
     if len(set(kinds)) != KEYWORD_COUNT:
         die("two keywords map to the same kind")
