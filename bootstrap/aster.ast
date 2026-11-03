@@ -37,7 +37,7 @@
 // is gone; `reverse_digits` comes along because utoa ends by calling it.
 
 // ---- BEGIN GENERATED: lexer names (bootstrap/gen_lexer_names.py) ----
-// The 81 token kinds, numbered exactly as `enum class TK`
+// The 82 token kinds, numbered exactly as `enum class TK`
 // in src/aster.cpp. Regenerate: python3 bootstrap/gen_lexer_names.py
 let K_End: i32 = 0;
 let K_Ident: i32 = 1;
@@ -120,6 +120,7 @@ let K_PlusPlus: i32 = 77;
 let K_MinusMinus: i32 = 78;
 let K_Dot: i32 = 79;
 let K_Amp: i32 = 80;
+let K_CharType: i32 = 81;
 
 // Byte-wise equality of n bytes at id against the
 // NUL-terminated literal lit; the terminator must sit
@@ -134,7 +135,7 @@ fn ident_is(lit: ptr<u8>, id: ptr<u8>, n: i32) -> i32 {
     return 1;
 }
 
-// Keyword recognition — the 30 reserved words, one branch
+// Keyword recognition — the 31 reserved words, one branch
 // each, from the same list as the C twin's table
 // (tests/lexer_names.h). No match is K_Ident.
 fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
@@ -168,6 +169,7 @@ fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
     if (ident_is("include", id, n)) { return K_Include; }
     if (ident_is("true", id, n)) { return K_True; }
     if (ident_is("false", id, n)) { return K_False; }
+    if (ident_is("char", id, n)) { return K_CharType; }
     return K_Ident;
 }
 // ---- END GENERATED: lexer names ----

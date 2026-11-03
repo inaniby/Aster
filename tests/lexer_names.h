@@ -93,9 +93,10 @@ enum {
     TK_MinusMinus,
     TK_Dot,
     TK_Amp,
+    TK_CharType,
 };
 
-#define TK_COUNT 81
+#define TK_COUNT 82
 static const char *const TK_NAMES[TK_COUNT] = {
     "End",
     "Ident",
@@ -178,9 +179,10 @@ static const char *const TK_NAMES[TK_COUNT] = {
     "MinusMinus",
     "Dot",
     "Amp",
+    "CharType",
 };
 
-#define KW_COUNT 30
+#define KW_COUNT 31
 static const struct { const char *spelling; int kind; } KEYWORDS[KW_COUNT] = {
     { "fn", TK_Fn },
     { "extern", TK_Extern },
@@ -212,6 +214,7 @@ static const struct { const char *spelling; int kind; } KEYWORDS[KW_COUNT] = {
     { "include", TK_Include },
     { "true", TK_True },
     { "false", TK_False },
+    { "char", TK_CharType },
 };
 
 #endif /* ASTER_LEXER_NAMES_H */

@@ -57,6 +57,7 @@ TOKENS = [
     "AndEq", "OrEq", "XorEq",
     "PlusPlus", "MinusMinus",
     "Dot", "Amp",
+    "CharType",          # v0.23.69-dev: the `char` type keyword — distinct from the `Char` literal token
 ]
 
 # The 29 reserved words, each spelling mapped to the kind it lexes to. Order
@@ -75,6 +76,7 @@ KEYWORDS = [
     ("type", "Type"), ("const", "Const"),   # v0.23.67-dev
     ("include", "Include"),   # v0.23.61-dev
     ("true", "True"), ("false", "False"),
+    ("char", "CharType"),   # v0.23.69-dev
 ]
 
 # The record width the retired packed name table used; kept as the name-length
@@ -103,8 +105,8 @@ def die(msg):
 # Self-checks: the list must be well-formed before anything is emitted.
 # ---------------------------------------------------------------------------
 def check_list():
-    if TOKEN_COUNT != 81:
-        die("expected 81 token kinds, list has %d" % TOKEN_COUNT)
+    if TOKEN_COUNT != 82:
+        die("expected 82 token kinds, list has %d" % TOKEN_COUNT)
     if len(set(TOKENS)) != TOKEN_COUNT:
         die("duplicate token kind name")
     for name in TOKENS:
@@ -113,8 +115,8 @@ def check_list():
         if len(name) >= RECORD:
             die("token kind name %r does not fit a %d-byte record"
                 % (name, RECORD))
-    if KEYWORD_COUNT != 30:
-        die("expected 30 keywords, list has %d" % KEYWORD_COUNT)
+    if KEYWORD_COUNT != 31:
+        die("expected 31 keywords, list has %d" % KEYWORD_COUNT)
     kinds = [k for _, k in KEYWORDS]
     if len(set(kinds)) != KEYWORD_COUNT:
         die("two keywords map to the same kind")

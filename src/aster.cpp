@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.68-dev"
+#define ASTER_VERSION_STRING "0.23.69-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -212,7 +212,8 @@ enum class TK { End, Ident, Number, String,
     Percent, Shl, Shr, BitXor, BitOr, Tilde, Question,
     PlusEq, MinusEq, StarEq, SlashEq, PercentEq, ShlEq, ShrEq, AndEq, OrEq, XorEq,
     PlusPlus, MinusMinus,
-    Dot, Amp };          // v0.23.5-dev (P3.3): '.' field access, '&' address-of
+    Dot, Amp,            // v0.23.5-dev (P3.3): '.' field access, '&' address-of
+    CharType };          // v0.23.69-dev: the `char` type keyword (distinct from the `Char` literal token)
 struct Token { TK k; std::string s; unsigned line, col; };
 class Lexer {
     const std::string& s; size_t p=0; unsigned line=1, col=1;
@@ -288,7 +289,7 @@ public:
                 // v0.23.25-dev: true/false are reserved words now. No shipped
                 // example or suite used either as an identifier, so the byte
                 // baseline holds by construction.
-                else if(x=="true")k=TK::True; else if(x=="false")k=TK::False;
+                else if(x=="true")k=TK::True; else if(x=="false")k=TK::False; else if(x=="char")k=TK::CharType;   // v0.23.69-dev
                 v.push_back({k,x,l,c}); continue;
             }
             if(std::isdigit((unsigned char)ch)) {
@@ -484,7 +485,7 @@ public:
 // The Kind keeps the spelling `Ty::I32`, so every site that asks "is this a
 // pointer?" or "how wide is it?" reads exactly as it did before.
 struct Ty {
-    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Void };
+    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };
     Kind k = I32;
     int sid = -1;                      // struct-table index; see above
     // v0.23.34-dev: a pointer may carry the *element* it strides over, so
@@ -618,6 +619,7 @@ static const TypeAlias* typeAliasOf(const std::string& name){
 static uint32_t tySize(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).size;
     if (t.k == Ty::Void) return 0u;   // v0.23.68-dev: a void has no storage
+    if (t.k == Ty::Char) return 1u;   // v0.23.69-dev: unsigned 8-bit
     return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
 // Alignment in bytes. Structs carry their own; every scalar is naturally
@@ -625,6 +627,7 @@ static uint32_t tySize(Ty t) {
 static uint32_t tyAlign(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).align;
     if (t.k == Ty::Void) return 1u;   // v0.23.68-dev: never used as storage
+    if (t.k == Ty::Char) return 1u;   // v0.23.69-dev: unsigned 8-bit
     return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
 static bool tyIsStruct(Ty t) { return t.k == Ty::Struct; }
@@ -669,10 +672,10 @@ static uint64_t sizeofTypeValue(Ty t, const std::vector<uint32_t>& dims) {
 static bool tyIs64(Ty t) { return t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr; }
 // I32/U32/U8/U16/I64/U64: arithmetic and comparison operands that are not bool,
 // not an address, and not a composite.
-static bool tyIsInteger(Ty t) { return t.k == Ty::I32 || t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Enum; }
+static bool tyIsInteger(Ty t) { return t.k == Ty::I32 || t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Char || t.k == Ty::Enum; }
 // U32/U8/U16/U64 compare with the unsigned condition codes (LO/LS/HI/HS) and divide
 // with UDIV, unlike i32/i64.
-static bool tyIsUnsigned(Ty t) { return t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::U64; }
+static bool tyIsUnsigned(Ty t) { return t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::U64 || t.k == Ty::Char; }
 // v0.23.28-dev: log2(tySize(t)) when the size is a power of two — the shift
 // `ADD Xd, Xn, Wm, UXTW #sh` folds into one instruction — or -1 when it is
 // not. Only a struct reaches the second case: a struct's size is a multiple of
@@ -692,6 +695,7 @@ static const char* tyName(Ty t) {
         case Ty::U16: return "u16"; case Ty::I64: return "i64"; case Ty::U64: return "u64"; case Ty::Ptr: return "ptr";
         case Ty::Bool: return "bool";
         case Ty::Void: return "void";   // v0.23.68-dev
+        case Ty::Char: return "char";   // v0.23.69-dev
         case Ty::Struct: break;
         // v0.23.61-dev: an enum prints by its declared name, like a struct.
         case Ty::Enum: break;
@@ -866,6 +870,7 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
         // only when its value is inside that slot's range; the 32-bit-and-wider
         // slots accept any literal (their low bits are stored, as i32 always did).
         if(t==Ty::U8) return (uint64_t)e.n<=255u;
+        if(t==Ty::Char)return (uint64_t)e.n<=255u;   // v0.23.69-dev
         if(t==Ty::U16)return (uint64_t)e.n<=65535u;
         if(t==Ty::Bool)return (uint64_t)e.n<=1u;
         // v0.23.61-dev: u32 is 32 bits wide too. Accepting any literal let
@@ -886,6 +891,7 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
     }
     switch(t.k){
         case Ty::U8:  return folded>=0&&folded<=255;
+        case Ty::Char:return folded>=0&&folded<=255;   // v0.23.69-dev
         case Ty::U16: return folded>=0&&folded<=65535;
         case Ty::U32: return folded>=0&&(uint64_t)folded<=0xFFFFFFFFu;
         // v0.23.48-dev: u64 holds every folded value's bit pattern exactly: a
@@ -910,6 +916,7 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
 static bool caseValueFits(Ty t,int64_t folded){
     switch(t.k){
         case Ty::U8:  return folded>=0&&folded<=255;
+        case Ty::Char:return folded>=0&&folded<=255;   // v0.23.69-dev
         case Ty::U16: return folded>=0&&folded<=65535;
         case Ty::U32: return folded>=0&&(uint64_t)folded<=0xFFFFFFFFu;
         case Ty::I32: return folded>=INT32_MIN&&folded<=INT32_MAX;
@@ -1089,6 +1096,7 @@ struct IncludeState {
 static int64_t castConstValue(int64_t v,Ty to){
     switch(to.k){
         case Ty::U8:  return (int64_t)(uint64_t)(uint8_t)(uint64_t)v;
+        case Ty::Char:return (int64_t)(uint64_t)(uint8_t)(uint64_t)v;   // v0.23.69-dev: truncate to low 8 bits like u8
         case Ty::U16: return (int64_t)(uint64_t)(uint16_t)(uint64_t)v;
         case Ty::U32: return (int64_t)(uint64_t)(uint32_t)(uint64_t)v;
         case Ty::I32: return (int64_t)(int32_t)v;
@@ -1176,6 +1184,7 @@ class Parser {
             case TK::U16: out=Ty::U16;  ++p; return true;
             case TK::U32: out=Ty::U32;  ++p; return true;
             case TK::U64: out=Ty::U64;  ++p; return true;   // v0.23.48-dev
+            case TK::CharType: out=Ty::Char; ++p; return true;   // v0.23.69-dev: unsigned 8-bit type
             case TK::Ptr: return pointerType(out);
             case TK::Bool:out=Ty::Bool; ++p; return true;
             case TK::Void:out=Ty::Void; ++p; return true;   // v0.23.68-dev: only valid as a function return type
@@ -1422,7 +1431,7 @@ class Parser {
         // struct is spellable — bool <-> integer, integer <-> ptr, ptr<S> <->
         // ptr<U>. (Which *combinations* are legal is decided in Sema's typeOf;
         // the parser only assembles the node and its target type here.)
-        if(cur().k==TK::I32||cur().k==TK::I64||cur().k==TK::U8||cur().k==TK::U16||cur().k==TK::U32||cur().k==TK::U64||cur().k==TK::Bool||cur().k==TK::Ptr){
+        if(cur().k==TK::I32||cur().k==TK::I64||cur().k==TK::U8||cur().k==TK::U16||cur().k==TK::U32||cur().k==TK::U64||cur().k==TK::CharType||cur().k==TK::Bool||cur().k==TK::Ptr){
             const Token kw=t[p++];
             // Parse the target type first — for `ptr` this may consume a
             // `<T>`/`<S>` argument that precedes the operand's '(' — then the
@@ -1436,6 +1445,7 @@ class Parser {
                 case TK::U16: t=Ty::U16; break;
                 case TK::U32: t=Ty::U32; break;
                 case TK::U64: t=Ty::U64; break;
+                case TK::CharType: t=Ty::Char; break;   // v0.23.69-dev
                 case TK::Bool: t=Ty::Bool; break;
                 case TK::Ptr: {
                     // The `ptr` keyword is already consumed as kw, so the
@@ -3331,13 +3341,13 @@ struct Codegen {
     // global: every new width is handled here and nowhere else.
     static uint32_t loadVarT(int reg,int slot,Ty t){
         if(tyIs64(t))return loadVar64(reg,slot);
-        if(t==Ty::U8)return loadVar8(reg,slot);
+        if(t==Ty::U8||t==Ty::Char)return loadVar8(reg,slot);
         if(t==Ty::U16)return loadVar16(reg,slot);
         return loadVar32(reg,slot);
     }
     static uint32_t storeVarT(int reg,int slot,Ty t){
         if(tyIs64(t))return storeVar64(reg,slot);
-        if(t==Ty::U8)return storeVar8(reg,slot);
+        if(t==Ty::U8||t==Ty::Char)return storeVar8(reg,slot);
         if(t==Ty::U16)return storeVar16(reg,slot);
         return storeVar32(reg,slot);
     }
@@ -3837,13 +3847,13 @@ struct Codegen {
     }
     // Load/store between a register and the global whose address sits in x16.
     static uint32_t loadGlobalT(int reg,Ty t){
-        if(t==Ty::U8) return 0x39400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDRB Wt, [X16]
+        if(t==Ty::U8||t==Ty::Char) return 0x39400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDRB Wt, [X16]
         if(t==Ty::U16)return 0x79400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDRH Wt, [X16]
         if(tyIs64(t)) return 0xf9400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDR  Xt, [X16]
         return loadGlobal(reg);
     }
     static uint32_t storeGlobalT(int reg,Ty t){
-        if(t==Ty::U8) return 0x39000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STRB Wt, [X16]
+        if(t==Ty::U8||t==Ty::Char) return 0x39000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STRB Wt, [X16]
         if(t==Ty::U16)return 0x79000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STRH Wt, [X16]
         if(tyIs64(t)) return 0xf9000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STR  Xt, [X16]
         return storeGlobal(reg);
@@ -3852,13 +3862,13 @@ struct Codegen {
     // and array elements), where the offset is not on the slot grid.
     static uint32_t loadStackT(int reg,uint32_t off,Ty t){
         if(tyIs64(t))return 0xf94003e0u|((off/8)<<10)|uint32_t(reg);
-        if(t==Ty::U8) return 0x394003e0u|(off<<10)|uint32_t(reg);
+        if(t==Ty::U8||t==Ty::Char) return 0x394003e0u|(off<<10)|uint32_t(reg);
         if(t==Ty::U16)return 0x794003e0u|((off/2)<<10)|uint32_t(reg);
         return 0xb94003e0u|((off/4)<<10)|uint32_t(reg);
     }
     static uint32_t storeStackT(int reg,uint32_t off,Ty t){
         if(tyIs64(t))return 0xf90003e0u|((off/8)<<10)|uint32_t(reg);
-        if(t==Ty::U8) return 0x390003e0u|(off<<10)|uint32_t(reg);
+        if(t==Ty::U8||t==Ty::Char) return 0x390003e0u|(off<<10)|uint32_t(reg);
         if(t==Ty::U16)return 0x790003e0u|((off/2)<<10)|uint32_t(reg);
         return 0xb90003e0u|((off/4)<<10)|uint32_t(reg);
     }
@@ -3887,7 +3897,7 @@ struct Codegen {
     // Struct fields cannot reach it either — a struct is capped at 1024 bytes.
     // ----------------------------------------------------------------------
     static bool stackOffFits(uint32_t off,Ty t){
-        if(t==Ty::U8) return off<=4095u;                     // unscaled 12 bits
+        if(t==Ty::U8||t==Ty::Char) return off<=4095u;                     // unscaled 12 bits
         if(t==Ty::U16)return off<=8190u&&(off&1u)==0u;       // imm12 << 1
         if(tyIs64(t)) return off<=32760u&&(off&7u)==0u;      // imm12 << 3
         return off<=16380u&&(off&3u)==0u;                    // imm12 << 2
@@ -3926,7 +3936,7 @@ struct Codegen {
     // the v0.23.2 type lattice, so every pre-existing example is unchanged.
     static uint32_t loadIncomingArgT(uint32_t off,Ty t){
         if(tyIs64(t))return 0xf9400210u|((off/8)<<10);          // LDR  X16, [X16, #off]
-        if(t==Ty::U8) return 0x39400000u|(off<<10)|0x210u;      // LDRB W16, [X16, #off]
+        if(t==Ty::U8||t==Ty::Char) return 0x39400000u|(off<<10)|0x210u;      // LDRB W16, [X16, #off]
         if(t==Ty::U16)return 0x79400000u|((off/2)<<10)|0x210u;  // LDRH W16, [X16, #off]
         return 0xb9400210u|((off/4)<<10);                       // LDR  W16, [X16, #off]
     }
@@ -4638,7 +4648,7 @@ struct Codegen {
                 }
                 const uint32_t wf=tySize(from),wt=tySize(e.ty);
                 if(wf>wt){
-                    if(e.ty==Ty::U8)       emit(0x53001c00u|(uint32_t(a)<<5)|uint32_t(a)); // UXTB Wa, Wa
+                    if(e.ty==Ty::U8||e.ty==Ty::Char)       emit(0x53001c00u|(uint32_t(a)<<5)|uint32_t(a)); // UXTB Wa, Wa
                     else if(e.ty==Ty::U16) emit(0x53003c00u|(uint32_t(a)<<5)|uint32_t(a)); // UXTH Wa, Wa
                     else if(e.ty==Ty::U32) emit(0x2a0003e0u|(uint32_t(a)<<16)|uint32_t(a)); // MOV Wa, Wa (the UXTW form)
                     else                   emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa
@@ -4833,13 +4843,13 @@ struct Codegen {
     // may apply and off is a byte offset inside a struct.
     static uint32_t loadAtT(int reg,int base,uint32_t off,Ty t){
         if(tyIs64(t))return 0xf9400000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
-        if(t==Ty::U8) return 0x39400000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);
+        if(t==Ty::U8||t==Ty::Char) return 0x39400000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         if(t==Ty::U16)return 0x79400000u|((off/2)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         return 0xb9400000u|((off/4)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
     }
     static uint32_t storeAtT(int reg,int base,uint32_t off,Ty t){
         if(tyIs64(t))return 0xf9000000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
-        if(t==Ty::U8) return 0x39000000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);
+        if(t==Ty::U8||t==Ty::Char) return 0x39000000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         if(t==Ty::U16)return 0x79000000u|((off/2)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         return 0xb9000000u|((off/4)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
     }
@@ -5676,7 +5686,7 @@ struct Codegen {
         emit((tyIs64(retTy)||currentReturnPtr?0xaa0003e0u:0x2a0003e0u)|(uint32_t(v)<<16));releaseTemp(v);
         // A u8/u16 return is narrowed to its declared width before the caller
         // can consume it, exactly as a u8/u16 store is (v0.23.61-dev).
-        if(retTy==Ty::U8)emit(0x53001c00u);       // UXTB W0, W0
+        if(retTy==Ty::U8||retTy==Ty::Char)emit(0x53001c00u);       // UXTB W0, W0
         else if(retTy==Ty::U16)emit(0x53003c00u); // UXTH W0, W0
         }
         retVoid();
@@ -8589,6 +8599,7 @@ struct DwarfDieWriter {
             case Ty::I32:  nm="i32"; size=4;enc=0x05;break;
             case Ty::U32:  nm="u32"; size=4;enc=0x07;break;   // DW_ATE_unsigned
             case Ty::U8:   nm="u8";  size=1;enc=0x07;break;
+            case Ty::Char: nm="char";size=1;enc=0x08;break;   // v0.23.69-dev: DW_ATE_unsigned_char
             case Ty::U16:  nm="u16"; size=2;enc=0x07;break;
             case Ty::I64:  nm="i64"; size=8;enc=0x05;break;
             case Ty::U64:  nm="u64"; size=8;enc=0x07;break;   // v0.23.48-dev: DW_ATE_unsigned
