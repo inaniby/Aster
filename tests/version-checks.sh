@@ -129,4 +129,29 @@ if grep -Eq 'pointer-signature Aster-to-Aster calls are not yet supported|124 le
 fi
 echo "OK: the retired 124-level / pointer-signature-call claims are gone"
 
+# 7) Four documents open with a "this document describes version X" status
+#    line. They are prose, not metadata, so a version bump has to edit them by
+#    hand — and v0.23.70-dev proved the point: ROADMAP.md and
+#    docs/language-reference.md still opened with v0.23.69-dev while everything
+#    else said v0.23.70-dev. Check the first such line in the first eight lines
+#    of each file, so a historical mention further down cannot satisfy it.
+check_status_line() {
+    doc=$1; prefix=$2
+    line=$(sed -n '1,8p' "$doc" | grep -m1 "^\*\*$prefix" || true)
+    if [ -z "$line" ]; then
+        echo "FAIL: $doc has no '$prefix' status line in its opening" >&2
+        exit 1
+    fi
+    case "$line" in
+        *"v$VER"*) : ;;
+        *) echo "FAIL: $doc opens with '$line', which does not name $VER" >&2
+           exit 1 ;;
+    esac
+    echo "OK: $doc status line names $VER"
+}
+check_status_line ROADMAP.md              'Status as of'
+check_status_line ARCHITECTURE.md         'As of'
+check_status_line FEATURE_STATUS.md       'As of'
+check_status_line docs/language-reference.md 'Applies to:'
+
 echo "=== version checks: ALL PASSED ==="
