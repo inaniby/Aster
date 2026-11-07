@@ -413,3 +413,18 @@ fn main() -> i32 { return i32(f()); }
 新增常驻套件 `tests/char-checks.sh`（9 层，注册进 `DEFAULT_SUITES` 与 `CRITICAL`）：24 条源码守卫（钉死特性的每段代码与保留字表）、**C-ABI 互操作见证**（Aster 的 `char`/`i32` 函数被 C 调用方链接，qemu 下退出码 0）、6 例 **gcc 差分**、9 条拒绝矩阵（大多与 C 孪生共享）、shipped 例子 `examples/char_return.ast` 对 C 孪生、覆盖计数、6 个变异体、字节基线（钉死 3 个 `char_return` 行）。
 
 第 3 批第 13 项已完成四项中的前四项（`typedef`/`const`/`void`/`char`），仅剩 `union` 排队。
+
+
+## 修复记录（v0.23.70-dev）
+
+第三部分「语言层面的缺口」Top5 关闭第五项 `union`，**五项至此全部结清**。审计原文的处方是「复用 struct 布局（`ObjectLayout`），仅重叠偏移，收益是 C 头文件互操作」——本轮正是这条路线，且没有引入 `Ty::Union`：一个 union 仍是 `Ty::Struct`，只由 `StructDef::isUnion` 一个位区分，因此字段访问、`sizeof`、常量折叠与 AAPCS64 聚合 ABI 全部自动继承，改动面最小、风险最低。
+
+| 审计项 | 处理 |
+| --- | --- |
+| `union` | **新增 `union U { … }` 声明，与 struct 共用标签命名空间（`g_structIndex`），与 C 一致。** `layoutStruct` 早返回分支把每个成员 `f.offset = 0`，取最宽成员的对齐，并把最宽成员的大小向上取整；`emitStructAddr` 的 `if (f->offset)` 在 0 时天然跳过 ADD，`tySize`/`tyAlign`/`sizeofTypeValue`/`elemShiftOf` 全部经 `structOf(sid).size/.align` 得到正确值，AAPCS64 的分档函数只看 `tyIsStruct(t) && tySize(t)`，故 ≤8 / 9..16 / >16 的传参与返回路径无需任何改动。**字面量**恰好一个值、初始化首字段、其余字节清零（编译期 `raw(sd.size,0)` + 运行期 `STR XZR/WZR`，仅在 `if (sd.isUnion)` 内执行），与 C 的 `union U u = {5};` 一致；`structHasArrayField` 对 union 只看首字段，故非首数组字段不阻挡字面量。**允许 type punning**，不追踪活跃成员，与 C 一致。**`-g` 发出真正的 `DW_TAG_union_type (0x17)`**：`kAbbrUnion=15` 无条件加入 abbrev 表（链接器只保留第一份 `.debug_abbrev`，条件化会静默损坏其它目标文件），`typeRef` 以 `sd.isUnion ? kAbbrUnion : kAbbrStruct` 选择，`tests/debuginfo-decode.py` 增加 `0x17`。新增一个保留字 `union`，保留字数 31 → 32；`tls` 仍是上下文关键字 |
+
+新增常驻套件 `tests/union-checks.sh`（9 层，注册进 `DEFAULT_SUITES` 与 `CRITICAL`，126 → 127 套件）：24 条源码守卫、**C-ABI 互操作见证**（C 的 `main` 链接 Aster 提供的 `pack`/`widen` union 函数，qemu 下退出码 0，并以纯 C 镜像对照）、6 例 **gcc 差分**、13 条拒绝矩阵（含「非首数组字段不阻挡」的正向对照）、shipped 例子 `examples/union_layout.ast` 对 `tests/union-layout-twin.c`、覆盖计数、6 个变异体（声明位 / 值数分叉 / XZR 清零 / 首字段数组规则 / 布局分叉 / DWARF tag，各以编译翻转或产物哈希变化见证）、字节基线 3 行。
+
+**没有任何既有例子的字节变动**：`tests/baseline/v0.23.70-dev/` 是本版快照，共 375 行，其中 372 行既有产物与 v0.23.69-dev 逐一字节相同（`alias-const-checks.sh` 的 `pre-existing rows unchanged 372` 与 `elf-metadata-checks.sh` 的 `baseline rows reproduced 375` 双重确认）。全量门禁 127 套件 0 失败，APK 3/3。
+
+第 3 批第 13 项已完成全部五项（`typedef`/`const`/`void`/`char`/`union`）。

@@ -25,9 +25,9 @@ explains *why* each rule exists. This file is the lookup table.
 | Whitespace | spaces, tabs, newlines (`isspace`) |
 | Encoding note | UTF-8 inside a comment is fine: comments are consumed before the ASCII check runs |
 
-## 2. Reserved words — 31
+## 2. Reserved words — 32
 
-All 27 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
+All 32 are rejected as identifiers (verified one by one: `let <kw>: i32 = 1;`
 fails for every one of them).
 
 | Word | Role | Since |
@@ -57,6 +57,7 @@ fails for every one of them).
 | `const` | read-only binding (`const x : T = e ;`) | v0.23.67-dev |
 | `void` | return type only — names the absence of a result on a function (`fn f() -> void`) | v0.23.68-dev |
 | `char` | unsigned 8-bit integer type (**distinct** from the `'a'` character literal, which still folds to `i32`) | v0.23.69-dev |
+| `union` | union declaration (`union U { … }`) | v0.23.70-dev |
 | `include` | `include "file.ast";` declaration sharing | v0.23.13-dev |
 | `true` | Bool literal, value 1 | v0.23.25-dev |
 | `false` | Bool literal, value 0 | v0.23.25-dev |
@@ -81,9 +82,9 @@ The type names are likewise ordinary identifiers, which is what lets
 identifier everywhere except at the **start of a top-level declaration**, where
 `tls let name: type …;` declares a thread-local global (§8). `let tls: i32 = 1;`
 compiles — a variable named `tls` is fine; only the declaration prefix is
-special. The reserved-word count is therefore **31** (the `type` and `const`
-keywords joined it in v0.23.67-dev, `void` in v0.23.68-dev, and `char` in
-v0.23.69-dev).
+special. The reserved-word count is therefore **32** (the `type` and `const`
+keywords joined it in v0.23.67-dev, `void` in v0.23.68-dev, `char` in
+v0.23.69-dev, and `union` in v0.23.70-dev).
 
 ### Identifiers
 
@@ -163,13 +164,17 @@ leading `&` and the bitwise level only sees one in operator position.
 | `bool` | 4 | 4 | holds 0 or 1 |
 | `E` (an enum) | 4 | 4 | named integer constants over `i32` (v0.23.61-dev) |
 | `S` (a struct) | layout | layout | passed and returned by address |
+| `U` (a union) | widest member | widest member | every member at offset 0; **byte-for-byte C union ABI** (v0.23.70-dev), see §5.4 |
 | `void` | — | — | **return type only** (v0.23.68-dev) — names the absence of a result; never a value you can hold |
 
 Struct layout is AAPCS64 / C: each field starts at the next offset that is a
 multiple of its own alignment, the struct's alignment is the largest of its
-fields', and its size is the final offset rounded up to that alignment.
+fields', and its size is the final offset rounded up to that alignment. A
+**union** uses the same table with every offset set to 0 — see §5.4.
 
-There is **no** `float`/`double`, `union`, or `typedef`/type alias. `void` exists
+There is **no** `float`/`double`. `typedef` is spelled `type Name = T ;`
+(v0.23.67-dev, §8) and `union U { … }` is a real union (v0.23.70-dev, §5.4);
+both exist. `void` exists
 as a **return type only** (v0.23.68-dev) — it names the absence of a result on a
 function (`fn f() -> void`) and can never be a value, a parameter, a local, a
 field, an alias or an array element; see §5.0. There is a **character literal**
@@ -418,6 +423,47 @@ vs non-zero — and a legal arithmetic operand alongside `i32`).
 **Debug info.** Each enum is emitted to DWARF as a `DW_TAG_enumeration_type`
 of `DW_AT_byte_size 4`, `DW_AT_type_encoding 0x05` (signed), so a debugger
 shows the named constants rather than bare integers.
+
+### 5.4 `union` — overlapping members (v0.23.70-dev)
+
+`union U { f1: T1, f2: T2, … }` declares an aggregate whose **every member
+sits at offset 0**. It is the struct layout with one rule changed: the
+alignment is the widest member's, and the size is the widest member's size
+rounded up to that alignment. `sizeof(U)` reports that rounded size, not the
+sum — `union U { w: i32, q: i64, lo: u8, c: char }` is **8 bytes**, aligned to
+8. A union shares the **struct tag namespace**, so a union and a struct may
+not share a name, exactly as in C.
+
+Everything else is inherited from `struct` unchanged: field access (`u.q`),
+`sizeof`, a union as a struct field, as a parameter and as a return value, and
+the AAPCS64 aggregate classification (≤ 8 bytes in one register, 9…16 in two,
+> 16 copied through memory). Because a union is a `Ty::Struct` with the same
+`tySize` / `tyAlign`, a C `main` links an Aster function taking or returning a
+union with no shim at all.
+
+**Literal.** A union literal takes **exactly one value**: `U { 5 }`
+initializes the **first** member and zeroes every other byte, matching C's
+`union U u = {5};`. Zero or more than one value is refused (`union literal for
+'U' has 2 values but a union takes exactly 1`). The zero fill happens both in
+a constant initializer (a zero-filled `raw` image) and at run time (`STR
+XZR/WZR` over the whole object before the single member store). Only the
+**first** member matters for the "contains an array field" rule: an array in a
+later member does not block a literal, because a literal never writes it.
+
+**Type punning.** Writing one member and reading another is allowed and is
+pure byte reinterpretation — there is no active-member tracking, as in C. With
+the union above, `U { 0x11223344 }` leaves `u.q == 0x11223344` (the upper four
+bytes zeroed) and `u.lo == 0x44`; assigning `u.q = 0x1122334455667788` then
+makes `u.w == 0x55667788` and `u.lo == 0x88` on a little-endian AArch64.
+
+**Debug info.** `-g` emits a real `DW_TAG_union_type (0x17)` DIE with one
+`DW_TAG_member` child per field, each at `DW_AT_data_member_location = 0`.
+
+**Refusals.** An empty union, a duplicate field, a self-containing union, a
+duplicate declaration, a name colliding with a global or a function, a first
+member that is an array (a literal cannot initialize it), and a union whose
+widest member crosses the 1024-byte limit are all refused with a
+`union`-worded diagnostic.
 
 ## 6. Expressions — precedence, highest first
 
@@ -895,6 +941,7 @@ same name in one scope → `duplicate variable in scope: x`.
 program   ::= decl*
 decl      ::= 'include' string ';'
             | struct-decl
+            | union-decl
             | 'type' ident '=' type ';'
             | 'let' ident ':' type [ '[' length ']' ] [ '@align' '(' n ')' ] '=' expr ';'
             | 'const' ident ':' type '=' expr ';'
@@ -902,6 +949,7 @@ decl      ::= 'include' string ';'
             | 'extern' 'let' ident ':' type [ '[' length ']' ] ';'
             | [ 'extern' ] 'fn' name '(' params ')' '->' type ( block | ';' )
 struct-decl ::= 'struct' ident '{' field (',' field)* '}'
+union-decl  ::= 'union' ident '{' field (',' field)* '}'
 field     ::= ident ':' type
 params    ::= ε | ident ':' type (',' ident ':' type)*
 name      ::= ident | 'main'
@@ -924,7 +972,8 @@ name      ::= ident | 'main'
 - `tls` is a **context keyword**: it is only special at the start of a
   top-level declaration, so it stays a usable identifier everywhere else
   (`let tls: i32 = 5;` is an ordinary local). The reserved-word count is
-  29 (the `type` and `const` keywords joined it in v0.23.67-dev).
+  32 (the `type` and `const` keywords joined it in v0.23.67-dev, `void`
+  in v0.23.68-dev, `char` in v0.23.69-dev and `union` in v0.23.70-dev).
 - Same shapes as a plain global — scalars and arrays, the same types, the
   same constant-initializer rules, the same length bounds. `tls extern let
   name: type;` declares one defined elsewhere, exactly like `extern let` —
@@ -958,6 +1007,19 @@ name      ::= ident | 'main'
   fixed surplus constant would only reject modules that load fine, and could
   not see the *host* process's own TLS footprint at compile time, so the
   runtime error is the honest contract.
+
+### `union` (v0.23.70-dev)
+
+- At least one field; no self-containment, no duplicate field names, and the
+  same 1024-byte size limit as a struct (checked against the widest member).
+- Every field sits at **offset 0**; the size is the widest member's size
+  rounded up to the widest member's alignment (§5.4).
+- Shares the struct tag namespace: a `union U` and a `struct U` collide.
+- Literal: `U { v }` — **one** value, initializing the first member and
+  zeroing the rest. An array in a later member does not block it.
+- A union is a legal struct field, parameter and return type, with the same
+  AAPCS64 aggregate ABI as an equally-sized struct. Type punning is allowed.
+- `-g` emits `DW_TAG_union_type (0x17)` with each member at location 0.
 
 ### Functions
 

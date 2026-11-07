@@ -1,3 +1,69 @@
+## v0.23.70-dev — close the language gaps (`union`)
+
+The audit's third part listed the language's gaps in order of
+cost-effectiveness — `typedef` (1), `const` (2), `void` (3), `char` (4),
+`union` (5) — and asked for them to be closed in turn. v0.23.67-dev closed the
+first two, v0.23.68-dev the third, v0.23.69-dev the fourth, and this round
+closes the fifth. **All five gaps are now closed.**
+
+No image bytes move for the other 124+1 examples: `tests/baseline/v0.23.70-dev/`
+is this version's snapshot at **375 rows**, and the byte-baseline layer asserts
+all **372 pre-existing rows** are unchanged (the three `union_layout` rows this
+round adds are pinned separately by `tests/union-checks.sh`).
+
+### `union` — the struct layout with the offsets overlapped
+
+The audit's prescription was: reuse the struct layout, only overlap the offsets,
+for C header interop. That is exactly the implementation. A union stays a
+`Ty::Struct` in the type lattice and shares `g_structs` / `g_structIndex`, so it
+shares the struct tag namespace (as C does). `StructDef` gains one `isUnion`
+bit; `layoutStruct` takes an early branch that sets every `f.offset = 0`, takes
+the widest member's alignment and rounds the widest member's size up to it.
+Everything else — `emitStructAddr`'s `if (f->offset)` gate (naturally skipped at
+0), `tySize` / `tyAlign` / `sizeofTypeValue` / `elemShiftOf`, and the AAPCS64
+aggregate classification (`aapcs64Slots` / `structInMemory` / `argBytes`, which
+look only at `tyIsStruct(t) && tySize(t)`) — is inherited untouched. A C `main`
+therefore links an Aster function taking or returning a union with no shim.
+
+### The three semantics the user confirmed
+
+1. **One-value literal, first member, rest zero.** `U { 5 }` is C's
+   `union U u = {5};`. `checkStructLit`, `structConstantImage` and
+   `emitStructStore` each fork their value count to exactly one; the constant
+   image is `std::vector<uint8_t> raw(sd.size, 0)` so the tail is zero by
+   construction, and the run-time store emits `STR XZR/WZR` over the whole
+   object (`storeAtT(31, 17, b, …)`) before the single member write. The
+   zeroing is behind `if (sd.isUnion)`, so no struct byte can move.
+2. **Type punning is allowed.** Writing `q` and reading `w` / `lo` is pure byte
+   reinterpretation; there is no active-member tracking, as in C.
+3. **A real `DW_TAG_union_type (0x17)`.** `kAbbrUnion = 15` is added to the
+   abbrev table **unconditionally** — the linker keeps only the first
+   `.debug_abbrev`, so a conditional entry would silently corrupt other
+   objects — and `typeRef` selects it via `sd.isUnion ? kAbbrUnion :
+   kAbbrStruct`. `tests/debuginfo-decode.py` learns `0x17`.
+
+### The refusals, each with a `union`-worded diagnostic
+
+Zero or multiple literal values, a field type mismatch, an empty union, a
+duplicate field, a self-containing union, a duplicate declaration, a name
+colliding with a global or a function, a first member that is an array, a union
+too large for the 1024-byte limit, a non-literal global initializer, and a
+union literal in a non-aggregate slot. The "contains an array field" rule looks
+**only at the first member** for a union, so an array in a later member does
+not block a literal — a positive witness asserts exactly that.
+
+### The 9-layer suite and the gate
+
+`tests/union-checks.sh` [9/9]: 24 source guards (including the generated
+32-word reserved list and the `0x17` decoder entry), a C-ABI interop witness
+(Aster `pack` / `widen` linked into a C `main`, qemu exit 0, plus a pure-C
+mirror), a 6-case gcc differential, 13 refusals, the shipped example against
+`tests/union-layout-twin.c`, coverage counting, six mutations (declaration bit,
+value-count fork, XZR zeroing, first-member-only array rule, layout branch,
+DWARF tag — each witnessed by a build flip or a product hash change), and the
+three baseline rows. Registered in both `CRITICAL` and `DEFAULT_SUITES`:
+**126 → 127 suites**. Full gate: 127 suites, 0 failed, APK 3/3.
+
 ## v0.23.69-dev — close the language gaps (`char`)
 
 The audit's third part listed the language's gaps in order of
