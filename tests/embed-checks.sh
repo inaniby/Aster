@@ -360,9 +360,11 @@ w('len-off-by-one', [
      'return E(new Expr(Expr::Num, (uint64_t)data.size() - 1));'),
 ])
 # 2. no deduplication: the file is embedded once per mention
+# v0.23.71-dev: the dedup hit branch grew (a second request now raises the
+# single blob's alignment), so pin just the lookup line and make it miss.
 w('no-dedup', [
-    ('        auto seen = embedBlobs.find(full);\n        if (seen != embedBlobs.end()) return seen->second;',
-     '        auto seen = embedBlobs.find(full + "#");\n        if (seen != embedBlobs.end()) return seen->second;'),
+    ('        auto seen = embedBlobs.find(full);\n        if (seen != embedBlobs.end()) {',
+     '        auto seen = embedBlobs.find(full + "#");\n        if (seen != embedBlobs.end()) {'),
 ])
 # 3. a trailing NUL, as if an embedded file were a string literal
 w('adds-nul', [

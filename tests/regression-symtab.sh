@@ -16,12 +16,33 @@
 #     gains a .debug_* section;
 #   * ET_REL objects are still byte-for-byte identical to v0.16.0.
 #
+# v0.23.71-dev: four of the eleven CASES had no reference at all --
+# so_math.so, so_rtinit.so, obj_globals.o and obj_array.o. The comparison
+# loop iterated os.listdir(refdir), so those four products were built and
+# then silently never looked at; worse, both ET_REL products were among the
+# missing four, so the ET_REL branch (er['type'] == 1) had never executed.
+# There is no v0.16.0 tag or commit in this repository's history, so a real
+# v0.16.0 reference cannot be regenerated. Instead the four are committed as
+# an explicitly-labelled v0.23.71-dev frozen snapshot under
+# tests/baseline/symtab-frozen/ -- a cross-release shape baseline, never
+# passed off as a v0.16.0 image. Against that snapshot the ET_REL assertion
+# is the honest section-level invariant (same section set, same header fields,
+# same section bytes, .symtab/.strtab present, no .debug_*), not a whole-file
+# byte comparison, which for a same-version snapshot would be a tautology and
+# would break on any legitimate section-table relayout.
+# The loop now walks all eleven products and asserts the fixture set is
+# complete, so a missing reference fails loudly instead of shrinking coverage.
+#
 # Reference images are produced by a real v0.16.0 compiler when ASTER_V16_DIR points at a v0.16.0
 # checkout (the directory that holds its src/aster.cpp). Without it the fixtures committed under
 # tests/baseline/v0.16.0 are used, so the script always runs. Regenerate the fixtures with:
 #
 #   ASTER_V16_DIR=/path/to/aster-v0.16.0 FIXTURE_DIR=tests/baseline/v0.16.0 \
 #       sh tests/regression-symtab.sh --write-fixtures
+#
+# Refresh the frozen snapshot (only when a deliberate ET_REL / .so shape change lands):
+#
+#   sh tests/regression-symtab.sh --write-frozen
 #
 set -eu
 CXX=${CXX:-g++}
@@ -35,8 +56,11 @@ mkdir -p "$OUT"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 ASTER=${ASTER:-./aster}
 [ -x "$ASTER" ] || { $CXX -std=c++17 -O2 -w src/aster.cpp -o "$OUT/aster"; ASTER="$OUT/aster"; }
 FIXTURE_DIR=${FIXTURE_DIR:-tests/baseline/v0.16.0}
+FROZEN_DIR=${FROZEN_DIR:-tests/baseline/symtab-frozen}
 WRITE_FIXTURES=no
+WRITE_FROZEN=no
 [ "${1:-}" = "--write-fixtures" ] && WRITE_FIXTURES=yes
+[ "${1:-}" = "--write-frozen" ]   && WRITE_FROZEN=yes
 
 CASES="exec_plain exec_globals exec_align exec_rtinit pie_plain pie_globals so_math so_rtinit obj_globals obj_array link_multi"
 
@@ -66,6 +90,18 @@ ROOT=$(pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
+# --write-frozen uses the *current* compiler, not a v0.16.0 reference: these
+# four fixtures are explicitly a v0.23.71-dev shape baseline, never a claim
+# about what v0.16.0 emitted.
+if [ "$WRITE_FROZEN" = yes ]; then
+  rm -rf "$ROOT/$FROZEN_DIR"; mkdir -p "$ROOT/$FROZEN_DIR"
+  for c in so_math so_rtinit obj_globals obj_array; do
+      build_case "$ROOT/$ASTER" "$c" "$ROOT/$FROZEN_DIR"
+  done
+  echo "PASS: v0.23.71-dev frozen symtab snapshot written to $FROZEN_DIR"
+  exit 0
+fi
+
 REF="$WORK/ref"
 NEW="$WORK/new"
 
@@ -82,11 +118,23 @@ else
   [ -d "$FIXTURE_DIR" ] || { echo "no v0.16.0 reference: set ASTER_V16_DIR or restore $FIXTURE_DIR" >&2; exit 2; }
   echo "# reference images taken from the committed fixtures in $FIXTURE_DIR"
   echo "# (set ASTER_V16_DIR=/path/to/aster-v0.16.0 to regenerate them from a real v0.16.0 compiler)"
-  mkdir -p "$REF"; cp "$FIXTURE_DIR"/* "$REF"/
+  echo "# four products use the v0.23.71-dev frozen snapshot in $FROZEN_DIR"
+  [ -d "$FROZEN_DIR" ] || { echo "no frozen snapshot: restore $FROZEN_DIR or run --write-frozen" >&2; exit 2; }
+  mkdir -p "$REF"; cp "$FIXTURE_DIR"/* "$REF"/; cp "$FROZEN_DIR"/* "$REF"/
 fi
 [ "$WRITE_FIXTURES" = yes ] && { echo "PASS: v0.16.0 reference fixtures written"; exit 0; }
 
 for c in $CASES; do build_case "$ROOT/$ASTER" "$c" "$NEW"; done
+
+# Only the committed-fixture path has "frozen" references. A real ASTER_V16_DIR
+# build produces all eleven products from v0.16.0 itself, so every one of them
+# goes through the historical assertions.
+if [ -z "${ASTER_V16_DIR:-}" ]; then
+  FROZEN_FILES="so_math.so so_rtinit.so obj_globals.o obj_array.o"
+else
+  FROZEN_FILES=""
+fi
+export FROZEN_FILES
 
 python3 - "$REF" "$NEW" <<'PY'
 import os, struct, sys
@@ -112,6 +160,48 @@ refdir, newdir = sys.argv[1], sys.argv[2]
 # after the last byte a loader maps. A symbol table that overlapped the loaded
 # image would be overwritten by the program's own writes.
 LOADED_IMAGE_EXEMPT = set()
+
+# v0.23.71-dev: the four products that had no v0.16.0 fixture. They are
+# compared against the v0.23.71-dev frozen snapshot with section-level
+# invariants instead. A real ASTER_V16_DIR build produces all eleven references
+# itself, so in that mode nothing is frozen.
+FROZEN = set(os.environ.get('FROZEN_FILES', '').split())
+EXPECTED_FILES = {
+    'exec_plain', 'exec_globals', 'exec_align', 'exec_rtinit',
+    'pie_plain', 'pie_globals', 'link_multi',
+    'so_math.so', 'so_rtinit.so', 'obj_globals.o', 'obj_array.o',
+}
+
+
+def frozen_invariants(rel, ref, new, er, en):
+    """A same-version snapshot can only honestly promise section-level shape.
+
+    Whole-file equality would be a tautology here and would fail on any
+    legitimate section-table relayout. sh_offset is therefore deliberately
+    not pinned; everything a loader or a linker reads is.
+    """
+    secs_r, secs_n = sections(ref, er), sections(new, en)
+    assert (en['type'], en['machine'], en['flags'], en['ehsize']) == \
+           (er['type'], er['machine'], er['flags'], er['ehsize']), (rel, 'ELF header changed')
+    assert set(secs_r) == set(secs_n), \
+        (rel, 'section set changed', sorted(set(secs_r) ^ set(secs_n)))
+    for name, s in secs_r.items():
+        if not name:
+            continue
+        t = secs_n[name]
+        assert (s[1], s[2], s[3], s[5], s[6], s[7], s[8], s[9]) == \
+               (t[1], t[2], t[3], t[5], t[6], t[7], t[8], t[9]), \
+            (rel, 'section header changed', name, s, t)
+        if s[1] != 8:                                          # NOBITS has no file bytes
+            assert ref[s[4]:s[4] + s[5]] == new[t[4]:t[4] + t[5]], \
+                (rel, 'section content changed', name)
+    assert '.symtab' in secs_n and '.strtab' in secs_n, \
+        (rel, 'symbol table missing', sorted(secs_n))
+    assert not any(n.startswith('.debug') for n in secs_n), (rel, 'unexpected debug section')
+    if er['type'] != 1:
+        loaded_end = max([ph[2] + ph[5] for ph in phdrs(new, en) if ph[0] == 1], default=0)
+        assert en['shoff'] >= loaded_end, (rel, 'section table overlaps the loaded image')
+    return len(secs_n)
 
 
 def read(path):
@@ -153,14 +243,40 @@ def sections(b, e):
     return out
 
 
+# A missing reference must fail the suite, not quietly shrink the loop. This
+# is the guard that would have caught the four missing products in the first
+# place: the old loop iterated os.listdir(refdir) and compared only what it
+# happened to find.
+available = set(os.listdir(refdir))
+assert available == EXPECTED_FILES, \
+    ('incomplete reference set', sorted(EXPECTED_FILES - available),
+     sorted(available - EXPECTED_FILES))
+assert all(os.path.isfile(os.path.join(newdir, rel)) for rel in EXPECTED_FILES), \
+    'not every CASES product was built'
+
 passed = 0
-for rel in sorted(os.listdir(refdir)):
+etrel = 0
+for rel in sorted(available):
     ref, new = read(os.path.join(refdir, rel)), read(os.path.join(newdir, rel))
     er, en = header(ref), header(new)
+    frozen = rel in FROZEN
 
-    if er['type'] == 1:                                        # ET_REL: must be identical
-        assert new == ref, rel + ': relocatable object changed'
-        print(f'PASS: {rel}: ET_REL object byte-for-byte identical to v0.16.0 ({len(new)} bytes)')
+    if er['type'] == 1:                                        # ET_REL branch
+        etrel += 1
+        if frozen:
+            n = frozen_invariants(rel, ref, new, er, en)
+            print(f'PASS: {rel}: ET_REL section-level invariants against the '
+                  f'v0.23.71-dev frozen snapshot ({n} sections)')
+        else:
+            assert new == ref, rel + ': relocatable object changed'
+            print(f'PASS: {rel}: ET_REL object byte-for-byte identical to v0.16.0 ({len(new)} bytes)')
+        passed += 1
+        continue
+
+    if frozen:
+        n = frozen_invariants(rel, ref, new, er, en)
+        print(f'PASS: {rel}: ET_DYN section-level invariants against the '
+              f'v0.23.71-dev frozen snapshot ({n} sections)')
         passed += 1
         continue
 
@@ -222,6 +338,10 @@ for rel in sorted(os.listdir(refdir)):
           f'file {len(ref)} -> {len(new)} bytes')
     passed += 1
 
-print(f'PASS: {passed} product(s) compared against the v0.16.0 reference: only the symbol table is new')
+assert passed == len(EXPECTED_FILES), ('not every product was compared', passed)
+assert etrel >= 2, ('the ET_REL branch did not execute', etrel)
+print(f'PASS: {passed} product(s) compared ({passed - len(FROZEN)} against the v0.16.0 '
+      f'reference, {len(FROZEN)} against the v0.23.71-dev frozen snapshot); '
+      f'ET_REL branch executed {etrel} time(s)')
 PY
 echo "PASS: all v0.17.0 source-level-symbol-table regression checks"

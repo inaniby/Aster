@@ -66,8 +66,8 @@ fi
 printf '%s\n' '[2/10] Source guards: the u64 grid and the cast'
 # the version constant — pinned to the current dev line so a stale compiler
 # (or a forgotten version bump) fails loudly rather than silently.
-grep -qF '#define ASTER_VERSION_STRING "0.23.70-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.70-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.71-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.71-dev" >&2; exit 1; }
 # the token and the keyword
 grep -qF '    U64,' src/aster.cpp \
     || { echo "FAIL: enum class TK no longer declares U64" >&2; exit 1; }
@@ -494,10 +494,10 @@ new=$(wc -l < "$OUT/got-old.txt")
 # stayed 288; v0.23.48-dev adds integer_cast, the fifteenth — the same 288,
 # 333 recorded, 45 of them belonging to the fifteen rounds this suite knows
 # are new.
-[ "$old" -eq 294 ] \
-    || { echo "FAIL: expected 294 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 294 ] \
-    || { echo "FAIL: expected 294 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 297 ] \
+    || { echo "FAIL: expected 297 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 297 ] \
+    || { echo "FAIL: expected 297 rows of pre-existing output, found $new" >&2; exit 1; }
 # And this round's example is recorded, in all three modes.
 [ "$(grep -c '^integer_cast\.' "$OUT/hashes.txt")" -eq 3 ] \
     || { echo 'FAIL: integer_cast.ast is not in the baseline in all three modes' >&2; exit 1; }

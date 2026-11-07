@@ -9,6 +9,12 @@
 *.elf
 *.apk
 
+# v0.23.71-dev: these four are committed reference fixtures, not build
+# products. The generic *.o / *.so rules above would otherwise hide them and
+# a fresh checkout would have no frozen symtab snapshot to compare against.
+!tests/baseline/symtab-frozen/*.o
+!tests/baseline/symtab-frozen/*.so
+
 # Coredumps / debug artifacts
 core
 core.*

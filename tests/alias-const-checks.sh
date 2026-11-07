@@ -90,8 +90,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.70-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.70-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.71-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.71-dev" >&2; exit 1; }
 guard '    Type,                // v0.23.67-dev: `type Name = T;`' 'the Type token'
 guard '    Const,               // v0.23.67-dev: `const x : T = e;`' 'the Const token'
 guard 'else if(x=="type")k=TK::Type; else if(x=="const")k=TK::Const;' 'the two new reserved words'
@@ -619,7 +619,7 @@ rows=$(wc -l < "$OUT/hashes.filtered.txt")
 # 124 examples x 3 modes, less the three address_of_abi rows every release
 # filters (v0.23.68-dev adds examples/void_return.ast). Asserted so a later
 # round cannot silently drop one.
-[ "$rows" = 375 ] || { echo "FAIL: $rows baseline rows, expected 375" >&2; exit 1; }
+[ "$rows" = 378 ] || { echo "FAIL: $rows baseline rows, expected 378" >&2; exit 1; }
 printf '  %-30s %s\n' "baseline rows reproduced" "$rows"
 # The previous release's frozen baseline — derived, never a hardcoded path
 # (the CI protocol check forbids literal versioned baseline paths).

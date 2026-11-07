@@ -47,8 +47,8 @@ fi
 printf '%s\n' '[2/9] Source guards: the literal surface'
 # the version constant — pinned to the current dev line so a stale compiler
 # (or a forgotten version bump) fails loudly rather than silently.
-grep -qF '#define ASTER_VERSION_STRING "0.23.70-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.70-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.71-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.71-dev" >&2; exit 1; }
 # the character-literal token, sitting beside the other value tokens
 grep -qF '    Char,                // v0.23.50-dev: the character literal' src/aster.cpp \
     || { echo "FAIL: TK no longer declares Char" >&2; exit 1; }
@@ -343,10 +343,10 @@ if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
 fi
 old=$(wc -l < "$OUT/expected-old.txt")
 new=$(wc -l < "$OUT/got-old.txt")
-[ "$old" -eq 294 ] \
-    || { echo "FAIL: expected 294 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 294 ] \
-    || { echo "FAIL: expected 294 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 297 ] \
+    || { echo "FAIL: expected 297 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 297 ] \
+    || { echo "FAIL: expected 297 rows of pre-existing output, found $new" >&2; exit 1; }
 [ "$(grep -c '^literals\.' "$OUT/hashes.txt")" -eq 3 ] \
     || { echo 'FAIL: literals.ast is not in the baseline in all three modes' >&2; exit 1; }
 printf '  %-42s %s\n' 'pre-existing rows byte-identical' "$old"

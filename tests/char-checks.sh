@@ -90,8 +90,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.70-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.70-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.71-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.71-dev" >&2; exit 1; }
 guard 'else if(x=="char")k=TK::CharType;' 'the char reserved word'
 guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };' 'the Char type'
 guard 'case TK::CharType: out=Ty::Char; ++p; return true;' 'char parsed as a type'
