@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.70-dev.** One table per area. "Since" is the version that
+**As of v0.23.71-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -275,6 +275,8 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | `resources.arsc` as a real table: N types, N entries, ids derived from the table, `--string NAME=VALUE` | shipped | v0.23.7-dev | `resource-table-checks.sh` [2/5]–[5/5], `validate_apk.py` [4d], androguard + AXMLPrinter |
 | `android:label` as `TYPE_REFERENCE` to `@string/app_name` instead of a literal in the manifest | shipped | v0.23.7-dev | `resource-table-checks.sh` [3/5][5/5], `validate_apk.py` [4d] |
 | `@embed("path")` / `@embed_len("path")` — compile-time file inlining into `.rodata`, path base = the source file's directory, `--embed-dir`, dedup | shipped | v0.23.7-dev | `embed-checks.sh` [1/6]–[6/6] |
+| `@embed("path", N)` — an optional literal alignment for the embedded bytes: a power of two in `1..4096` (the `@align(N)` rule; 4096 is Aster's minimum page size). `.rodata` declares `sh_addralign = N` and all six writers place it at a congruent address and file offset; the two linkers take the **maximum** of their inputs' requests. The default is `1`, so every pre-existing image stays byte-identical. One path stays one blob — a second request raises its alignment to the maximum instead of copying or refusing — and `@embed_len` takes no alignment argument | shipped | v0.23.71-dev | `embed-align-checks.sh` [2/9] 26 guards, [3/9] 12 refusals, [4/9] dedup + 4096 boundary, [5/9] 6 writers + gcc twin, [8/9] 6 mutations, [9/9] 3 baseline rows |
+| `regression-symtab.sh` compares **all eleven** products against a complete reference set; the four that had no v0.16.0 fixture use an explicitly-labelled v0.23.71-dev frozen snapshot, the `ET_REL` branch runs, and a missing fixture fails the suite instead of shrinking the loop | shipped | v0.23.71-dev | `regression-symtab.sh` (fixture-completeness + ET_REL coverage assertions, both mutation-tested) |
 | Global `ptr` initialization from a pointer-yielding expression (needed for `let g: ptr = @embed(...)`) | shipped | v0.23.7-dev | `embed-checks.sh` [5/6] |
 | `examples/icon_text_demo.ast` — a NativeActivity that draws an `@embed`ed 48×48 RGBA icon and three lines of `@embed`ed 8×8 bitmap text | shipped | v0.23.7-dev | `icon-text-demo-checks.sh` [3/5]–[5/5], `validate_apk.py`, `verify-apk` |
 | `validate_apk.py` verifies the v1 PKCS#7 signature **in-process** (public key lifted out of `CERT.RSA`, `pow(sig, e, n)`, stdlib only); `openssl` is a second opinion and its absence is a SKIP, not a FAIL | shipped | v0.23.7-dev | `signing-checks.sh` [9b/10], `apk-checks.sh` |

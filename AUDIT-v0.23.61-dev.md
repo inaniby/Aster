@@ -428,3 +428,17 @@ fn main() -> i32 { return i32(f()); }
 **没有任何既有例子的字节变动**：`tests/baseline/v0.23.70-dev/` 是本版快照，共 375 行，其中 372 行既有产物与 v0.23.69-dev 逐一字节相同（`alias-const-checks.sh` 的 `pre-existing rows unchanged 372` 与 `elf-metadata-checks.sh` 的 `baseline rows reproduced 375` 双重确认）。全量门禁 127 套件 0 失败，APK 3/3。
 
 第 3 批第 13 项已完成全部五项（`typedef`/`const`/`void`/`char`/`union`）。
+
+
+## 修复记录（v0.23.71-dev）
+
+审计第二部分结尾长期挂着两项「仍开放」：`.rodata` 的对象节头恒写 `addralign 1`，使 `@embed` 数据无法请求更高对齐；以及 `regression-symtab.sh` 的 `ET_REL` 分支从未执行。本轮两项一起关闭，且**没有任何既有例子的字节发生变动**。
+
+| 审计项 | 处理 |
+| --- | --- |
+| `.rodata` / `@embed` 对齐 | 新增 `@embed("path", N)` 可选第二参数：`N` 必须是整数字面量、2 的幂、`1..4096`（与 `@align(N)` 同一规则，4096 是 Aster 最小页大小）。链接器侧原本已有「读回 `rodataAlign` 并填充合并 blob」的半套机制（`parseObject` + 两处 `while(obj.rodataAlign>1&&...)`），本轮补齐产生端：`Global::align`、`ObjectLayout::rodataAlign`、`SoDynSpec::rodataAlign`，贯通 `embedFile` 去重取 max、`layoutObject` 对齐填充、`writeObject` 节头与偏移、`build-so`/`link-so` 传参、`writeSharedObjectDyn` 节头并对非同余地址显式拒绝。默认 `N=1`，保证 375 行既有基线零漂移。同路径重复嵌入仍是一份对象，两次请求取 max；`@embed_len` 拒绝第二参数 |
+| `ET_REL` 盲区 | `CASES` 11 个产品只提交了 7 个 v0.16.0 固件，Python 循环按 `os.listdir(refdir)` 遍历，于是 `so_math`/`so_rtinit`/`obj_globals`/`obj_array` 被构建却从未比较，且两个 `ET_REL` 产品恰在缺失之列。仓库无 v0.16.0 tag/commit 可重建真参考，故四个改为**明确标注的 v0.23.71-dev 冻结快照**（`tests/baseline/symtab-frozen/`），绝不伪装成 v0.16.0 产物。对该快照的 `ET_REL` 断言改为诚实的节级不变量（节集合、节头字段、节内容字节、`.symtab`/`.strtab` 存在、无 `.debug_*`），而非对同版本快照等于自证、且会被合法节表重排误伤的整文件逐字节相同。循环改为遍历全部 11 个产品，新增固件集合完整性断言与 `ET_REL` 分支执行次数断言，两条守卫均经变异验证 |
+
+新增常驻套件 `tests/embed-align-checks.sh`（9 层，注册进 `DEFAULT_SUITES` 与 `CRITICAL`，127 → 128 套件）：26 条源码守卫、12 条拒绝矩阵、`build-obj` 节头/节字节布局与去重/4096 边界、四个直接写出器 + qemu + gcc C 孪生、两个链接器传播、运行时 writer 覆盖计数、6 个变异体、3 行字节基线。shipped 例子 `examples/embed_align.ast` 与 `tests/embed-align-twin.c` 在 qemu 下均退出 215；`.rodata` 83 字节，`head@0 / tail@64 / third@80`，填充全零。
+
+**没有任何既有例子的字节变动**：`tests/baseline/v0.23.71-dev/` 是本版快照，共 378 行，其中 375 行与 v0.23.70-dev 逐一相同（生成前以独立脚本复核 `ROWS=375 / ZERO_DRIFT_OK`，并由 `alias-const-checks.sh` 与 `elf-metadata-checks.sh` 双重确认）。审计第二部分两项「仍开放」至此结清。

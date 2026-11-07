@@ -1,3 +1,50 @@
+## v0.23.71-dev — close the last two audit items (`@embed` alignment, the `ET_REL` blind spot)
+
+The audit's second part left two items "still open": `.rodata` carried
+`addralign 1` where GNU ld uses 8, so `@embed` data could not ask for more
+than byte alignment; and `regression-symtab.sh`'s `ET_REL` branch had never
+run. Both are closed here, with no byte change to any pre-existing program.
+
+**`@embed("path", N)`.** The optional second argument is an integer literal,
+a power of two in `1..4096` — exactly `@align(N)`'s rule, 4096 being Aster's
+minimum page size. A non-literal, a non-power of two, a value above 4096, a
+negative literal, an empty argument and a third argument are each refused with
+its own message; `@embed_len` takes no alignment argument. The compiler
+already had half the contract: `parseObject` read `rodataAlign` back from the
+section header and both linkers padded the merged `.rodata` to it. What was
+missing was the producing end — `embedFile` pinned `g.align` to 1,
+`layoutObject` forced string-like globals to `a=1`, and `writeObject`
+hard-coded both `alignUp(..., 1)` and `sh_addralign = 1`. v0.23.71-dev adds
+`Global::align`, `ObjectLayout::rodataAlign` and `SoDynSpec::rodataAlign`,
+wires them through `layoutObject()` / `writeObject()` / `build-so` /
+`link-so` / `writeSharedObjectDyn()`, and makes the dyn writer reject a
+non-congruent `.rodata` address instead of silently declaring a lie. The
+default of 1 keeps the old layout byte-for-byte.
+
+One path stays one object (the dedup rule since v0.23.7-dev): a second
+`@embed` of the same file with a different request **raises** that blob's
+alignment to the maximum, so no include combination is broken by a conflict.
+
+**The `ET_REL` blind spot.** `CASES` has eleven products but only seven
+v0.16.0 fixtures were ever committed. The Python loop iterated
+`os.listdir(refdir)`, so `so_math`, `so_rtinit`, `obj_globals` and `obj_array`
+were built and then never looked at — and both `ET_REL` products were among
+them. There is no v0.16.0 tag or commit to regenerate a real reference from,
+so the four are committed as an explicitly-labelled **v0.23.71-dev frozen
+snapshot** in `tests/baseline/symtab-frozen/`, never passed off as v0.16.0
+images. Against that snapshot the `ET_REL` assertion is the honest
+section-level invariant (same section set, same header fields, same section
+bytes, `.symtab`/`.strtab` present, no `.debug_*`) rather than whole-file
+equality, which would be a tautology for a same-version snapshot. The loop now
+walks all eleven products, asserts the fixture set is complete and asserts the
+`ET_REL` branch ran at least twice; both guards were mutation-tested.
+
+`tests/embed-align-checks.sh` [9/9] is added and registered in `tests/ci.sh`
+(`DEFAULT_SUITES` 127 → 128, `CRITICAL` 18 → 19).
+`tests/baseline/v0.23.71-dev/example-hashes.txt` is **378 rows**: the 375
+unchanged rows of v0.23.70-dev plus the three `embed_align` rows. No reserved
+word is added (32 unchanged, `tls` still contextual).
+
 ## v0.23.70-dev — close the language gaps (`union`)
 
 The audit's third part listed the language's gaps in order of

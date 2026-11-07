@@ -1,6 +1,6 @@
 # Aster Language Reference
 
-**Applies to: v0.23.70-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.71-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
 source and then **checked against the v0.23.51-dev binary**. Where a rule says a
@@ -1066,11 +1066,28 @@ overridable with `--include-dir`. Cycles are an error
 | Form | Meaning |
 | --- | --- |
 | `@embed("path")` | `ptr` to the file's bytes, copied into rodata at parse time |
+| `@embed("path", N)` | as above, and the blob starts at an `N`-byte boundary (v0.23.71-dev) |
 | `@embed_len("path")` | the byte count, folded to a literal |
 | `@align(N)` | on a global declaration only |
 
 `@embed` paths resolve like `include`. Limits: the file must exist, be
 non-empty, not a directory, and ≤ 16 MiB. The same file embedded twice is one
+blob: both names point at the same bytes, so a second `@embed` never copies
+the file into `.rodata` again.
+
+**Optional alignment (v0.23.71-dev).** `@embed("path", N)` asks for the
+boundary the blob's first byte starts at. `N` must be an integer literal, a
+power of two, and at most 4096 — the same rule `@align(N)` uses, 4096 being
+Aster's minimum page size. A non-literal (`@embed(p, n)`), a non-power of two
+(`3`, `0`, `6`, `0x18`), a value above 4096, a negative literal, an empty
+argument or a third argument are all refused, and `@embed_len` takes no
+alignment argument. `.rodata` declares `sh_addralign = N` and is placed at an
+address and file offset congruent to `N` by all six writers (`build-obj`,
+`build-elf`, `build-pie`, `build-so`, `link-obj`, `link-so`); the two linkers
+take the **maximum** of the requests in their input objects. If the same path
+is embedded twice with different requests, the single blob's alignment is
+raised to the maximum rather than lowered or refused. The default is `1`, so
+every program written before v0.23.71-dev stays byte-identical.
 
 ### Type aliases (v0.23.67-dev)
 
