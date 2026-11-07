@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.69-dev"
+#define ASTER_VERSION_STRING "0.23.70-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -213,7 +213,8 @@ enum class TK { End, Ident, Number, String,
     PlusEq, MinusEq, StarEq, SlashEq, PercentEq, ShlEq, ShrEq, AndEq, OrEq, XorEq,
     PlusPlus, MinusMinus,
     Dot, Amp,            // v0.23.5-dev (P3.3): '.' field access, '&' address-of
-    CharType };          // v0.23.69-dev: the `char` type keyword (distinct from the `Char` literal token)
+    CharType,            // v0.23.69-dev: the `char` type keyword (distinct from the `Char` literal token)
+    Union };             // v0.23.70-dev: Union names a `union U { ... }` declaration
 struct Token { TK k; std::string s; unsigned line, col; };
 class Lexer {
     const std::string& s; size_t p=0; unsigned line=1, col=1;
@@ -290,6 +291,7 @@ public:
                 // example or suite used either as an identifier, so the byte
                 // baseline holds by construction.
                 else if(x=="true")k=TK::True; else if(x=="false")k=TK::False; else if(x=="char")k=TK::CharType;   // v0.23.69-dev
+                else if(x=="union")k=TK::Union;   // v0.23.70-dev: a union declaration shares the struct tag namespace
                 v.push_back({k,x,l,c}); continue;
             }
             if(std::isdigit((unsigned char)ch)) {
@@ -563,11 +565,19 @@ struct StructDef {
     std::string name;
     std::vector<StructField> fields;
     uint32_t size = 0, align = 1;
+    // v0.23.70-dev: a union reuses the struct table and every struct code path;
+    // the only difference is that all its members overlap at offset 0 and its
+    // size is the widest member, not the sum. It stays a Ty::Struct.
+    bool isUnion = false;
     const StructField* find(const std::string& n) const {
         for (const auto& f : fields) if (f.name == n) return &f;
         return nullptr;
     }
 };
+// v0.23.70-dev: one place decides the noun in a diagnostic, so a union never
+// has to say "struct" while the struct spelling stays byte-for-byte what every
+// existing suite asserts.
+static const char* structKindName(const StructDef& s){ return s.isUnion ? "union" : "struct"; }
 // v0.23.61-dev: an enum is a nominal i32. Its enumerators are compile-time
 // integer constants (folded to Num at parse time in primary()), and the enum
 // name is a type spelling that resolves to Ty::Enum(sid). Two enums are
@@ -740,10 +750,34 @@ static void layoutStruct(StructDef& s,const Token& id) {
     static constexpr uint64_t kMaxStructSpan=0xffffffffULL;
     uint64_t off = 0; uint32_t align = 1;
     const auto tooLarge=[&](const StructField& f,uint64_t at){
-        throw Error(loc(id.line,id.col,"struct "+id.s+" is too large: field '"+f.name+
+        throw Error(loc(id.line,id.col,std::string(structKindName(s))+" "+id.s+" is too large: field '"+f.name+
                         "' reaches offset "+std::to_string(at)+" (limit "+
                         std::to_string(kMaxStructSize)+" bytes)"));
     };
+    // v0.23.70-dev: a union is the struct layout with one difference — every
+    // member sits at offset 0, so its alignment is the widest member's and its
+    // size is the widest member's size rounded up to that alignment. That is
+    // exactly C's union layout, so an Aster union is byte-for-byte ABI-equal to
+    // the C header's. `widest` (not fields.back(), which for a union need not
+    // be the largest) names the field a size overflow is reported against.
+    if (s.isUnion) {
+        uint64_t maxSize = 0;
+        const StructField* widest = &s.fields.front();
+        for (auto& f : s.fields) {
+            f.offset = 0;
+            const uint32_t a = tyAlign(f.ty);
+            if (a > align) align = a;
+            const uint64_t elemSize = tySize(f.ty);
+            const uint64_t fieldSize = f.len ? elemSize * f.len : elemSize;
+            if (fieldSize > maxSize) { maxSize = fieldSize; widest = &f; }
+            if (fieldSize > kMaxStructSpan) tooLarge(f,fieldSize);
+            if (fieldSize > (uint64_t)kMaxStructSize) tooLarge(f,fieldSize);
+        }
+        const uint64_t size = (maxSize + align - 1u) & ~(uint64_t)(align - 1u);
+        if (size > (uint64_t)kMaxStructSize) tooLarge(*widest,size);
+        s.align = align; s.size = (uint32_t)size;
+        return;
+    }
     for (auto& f : s.fields) {
         // v0.23.29-dev: an array field owns `sizeof(elem) * len` bytes, aligned
         // to the element's alignment — exactly the storage a same-element array
@@ -1037,6 +1071,12 @@ static const StructField* structFieldOf(Ty base,const std::string& field){
 // nested inside a struct field. Such a struct is populated at runtime instead.
 static bool structHasArrayField(uint32_t sid){
     const StructDef& s=structOf(sid);
+    // v0.23.70-dev: a union literal initializes only its first member, so an
+    // array in any other member does not stand in the way of a literal.
+    if(s.isUnion){
+        const StructField& f=s.fields.front();
+        return f.len>0||(tyIsStruct(f.ty)&&structHasArrayField(f.ty.sid));
+    }
     for(const auto& f:s.fields){
         if(f.len>0)return true;
         if(tyIsStruct(f.ty)&&structHasArrayField(f.ty.sid))return true;
@@ -2386,13 +2426,19 @@ class Parser {
     std::vector<uint8_t> structConstantImage(Ty ty,const Expr& init,const std::string& name){
         const StructDef& sd=structOf(ty.sid);
         if(structHasArrayField(ty.sid))
-            throw Error(loc(init.line,init.col,"struct '"+sd.name+"' contains an array field and cannot be initialized by a literal; declare it without an initializer or fill its elements at runtime: "+name));
+            throw Error(loc(init.line,init.col,std::string(structKindName(sd))+" '"+sd.name+"' contains an array field and cannot be initialized by a literal; declare it without an initializer or fill its elements at runtime: "+name));
         if(init.k!=Expr::StructLit)
             throw Error(loc(init.line,init.col,"global struct initializer must be a struct literal: "+name));
-        if(init.args.size()!=sd.fields.size())
+        const bool isU=sd.isUnion;
+        const size_t want=isU?1u:sd.fields.size();
+        if(init.args.size()!=want){
+            if(isU)
+                throw Error(loc(init.line,init.col,"union literal for '"+sd.name+"' has "+std::to_string(init.args.size())+" values but a union takes exactly 1: "+name));
             throw Error(loc(init.line,init.col,"struct literal for '"+sd.name+"' has "+std::to_string(init.args.size())+" values but the struct has "+std::to_string(sd.fields.size())+" fields: "+name));
+        }
         std::vector<uint8_t> raw(sd.size,0);
-        for(size_t i=0;i<sd.fields.size();++i){
+        const size_t n=isU?1u:sd.fields.size();
+        for(size_t i=0;i<n;++i){
             const StructField& f=sd.fields[i];
             const Expr& e=*init.args[i];
             if(f.ty==Ty::Ptr)
@@ -2424,12 +2470,16 @@ class Parser {
         }
         return raw;
     }
-    void structDeclaration(){
+    // v0.23.70-dev: a union is the same declaration with every member placed
+    // at offset 0. The bool overload is the shared parser; the no-argument
+    // overload keeps the struct entry point (and its source guards) unchanged.
+    void structDeclaration(bool isUnion){
         auto id=need(TK::Ident,"expected struct name");
-        if(g_structIndex.count(id.s))throw Error(loc(id.line,id.col,"duplicate struct declaration: "+id.s));
-        for(const auto& g:globals)if(g.name==id.s)throw Error(loc(id.line,id.col,"struct name conflicts with a global variable: "+id.s));
-        for(const auto& f:functions)if(f.name==id.s)throw Error(loc(id.line,id.col,"struct name conflicts with a function: "+id.s));
-        StructDef s;s.name=id.s;
+        const std::string kind=isUnion?"union":"struct";
+        if(g_structIndex.count(id.s))throw Error(loc(id.line,id.col,"duplicate "+kind+" declaration: "+id.s));
+        for(const auto& g:globals)if(g.name==id.s)throw Error(loc(id.line,id.col,kind+" name conflicts with a global variable: "+id.s));
+        for(const auto& f:functions)if(f.name==id.s)throw Error(loc(id.line,id.col,kind+" name conflicts with a function: "+id.s));
+        StructDef s;s.name=id.s;s.isUnion=isUnion;
         const int sid=(int)g_structs.size();
         g_structs.push_back(StructDef());
         g_structIndex[id.s]=sid;
@@ -2448,7 +2498,7 @@ class Parser {
                 // signature the same way those two do.
                 bool fieldIsFunc=false; FuncSig fieldFuncSig;
                 if(pendingFuncType){fieldIsFunc=true;fieldFuncSig=pendingFuncSig;pendingFuncType=false;pendingFuncSig=FuncSig();}
-                if(tyIsStruct(fty)&&fty.sid==sid)throw Error(loc(id.line,id.col,"struct "+id.s+" cannot contain itself"));
+                if(tyIsStruct(fty)&&fty.sid==sid)throw Error(loc(id.line,id.col,kind+" "+id.s+" cannot contain itself"));
                 // v0.23.29-dev: a field may be a fixed-length array (`xs: T[N]`).
                 // Any element type is allowed (scalar, bool, struct or ptr) —
                 // the element is a value of its own type once indexed. The
@@ -2470,18 +2520,19 @@ class Parser {
                         throw Error(loc(fn.line,fn.col,"an array of function pointers is not supported: "+id.s+"."+fn.s));
                     flen=dimsTotal(dims,1000,"array field length",id.s+"."+fn.s,fn.line,fn.col);
                 }
-                for(const auto& old:s.fields)if(old.name==fn.s)throw Error(loc(fn.line,fn.col,"duplicate field in struct "+id.s+": "+fn.s));
+                for(const auto& old:s.fields)if(old.name==fn.s)throw Error(loc(fn.line,fn.col,"duplicate field in "+kind+" "+id.s+": "+fn.s));
                 s.fields.push_back({fn.s,fty,0,flen,std::move(dims),std::move(fieldFuncSig),fieldIsFunc});
             } while(eat(TK::Comma));
         }
         need(TK::RBrace,"expected '}' after struct fields");
-        if(s.fields.empty())throw Error(loc(id.line,id.col,"struct "+id.s+" must declare at least one field"));
+        if(s.fields.empty())throw Error(loc(id.line,id.col,kind+" "+id.s+" must declare at least one field"));
         // v0.23.65-dev: the size limit is enforced inside the accumulation now
         // (and reports the field that crossed it), so there is no second check
         // here that could disagree with it.
         layoutStruct(s,id);
         g_structs[(size_t)sid]=std::move(s);
     }
+    void structDeclaration(){ structDeclaration(false); }
     // v0.23.61-dev: enum declarations. Each enumerator is a compile-time i32
     // constant (folded to Num in primary() through g_enumConsts); the enum name
     // is a nominal type spelled Ty::Enum(sid). C-style: values auto-increment
@@ -2843,6 +2894,9 @@ public:
         while(cur().k!=TK::End){
             if(eat(TK::Include)){includeDirective();continue;}
             if(eat(TK::Struct)){structDeclaration();continue;}
+            // v0.23.70-dev: a union shares the struct tag namespace and the
+            // entire declaration parser; only the isUnion bit differs.
+            if(eat(TK::Union)){structDeclaration(true);continue;}
             if(eat(TK::Enum)){enumDeclaration();continue;}
             // v0.23.67-dev: `type P = ptr<Point>;` sits with the other
             // file-scope declarations. Nothing else in the language begins
@@ -5433,7 +5487,7 @@ struct Codegen {
         if(e.k==Expr::StructLit){
             const StructDef& sd=structOf(t.sid);
             if(structHasArrayField(t.sid))
-                throw Error("struct '"+sd.name+"' contains an array field and cannot be initialized by a literal; fill its elements at runtime");
+                throw Error(std::string(structKindName(sd))+" '"+sd.name+"' contains an array field and cannot be initialized by a literal; fill its elements at runtime");
             if(structStoreDepth>=8)throw Error("struct literals nested more than 8 levels deep");
             const uint32_t save=kStoreScratchBase+uint32_t(structStoreDepth)*8+spAdj;
             ++structStoreDepth;
@@ -5442,7 +5496,18 @@ struct Codegen {
             // it is parked in the frame and reloaded for every field.
             emit(movX(17,kGlobalBase));
             storeStackOff(17,save,Ty::I64);
-            for(size_t i=0;i<sd.fields.size();++i){
+            // v0.23.70-dev: a union literal writes only its first member, so
+            // every other byte has to be zero before that write. The struct
+            // branch never reaches this, which keeps its codegen identical.
+            if(sd.isUnion){
+                uint32_t b=0;
+                for(;size-b>=8;b+=8)emit(storeAtT(31,17,b,Ty::I64));
+                if(size-b>=4){emit(storeAtT(31,17,b,Ty::I32));b+=4;}
+                if(size-b>=2){emit(storeAtT(31,17,b,Ty::U16));b+=2;}
+                if(size-b>=1)emit(storeAtT(31,17,b,Ty::U8));
+            }
+            const size_t n=sd.isUnion?1u:sd.fields.size();
+            for(size_t i=0;i<n;++i){
                 const StructField& f=sd.fields[i];
                 loadStackOff(17,save,Ty::I64);
                 if(tyIsStruct(f.ty)){
@@ -6787,12 +6852,17 @@ struct Sema {
         auto it=g_structIndex.find(e.name);
         if(it==g_structIndex.end())throw Error(loc(e.line,e.col,"unknown struct: "+e.name));
         const StructDef& sd=structOf(it->second);
-        if(e.args.size()!=sd.fields.size())
+        const bool isU=sd.isUnion;
+        const size_t want=isU?1u:sd.fields.size();
+        if(e.args.size()!=want){
+            if(isU)
+                throw Error(loc(e.line,e.col,"union literal for '"+sd.name+"' has "+std::to_string(e.args.size())+" values but a union takes exactly 1"));
             throw Error(loc(e.line,e.col,"struct literal for '"+sd.name+"' has "+std::to_string(e.args.size())+" values but the struct has "+std::to_string(sd.fields.size())+" fields"));
-        for(size_t i=0;i<sd.fields.size();++i){
+        }
+        for(size_t i=0;i<want;++i){
             const StructField& f=sd.fields[i];
             const Ty actual=typeOf(*e.args[i]);
-            const std::string what="type mismatch in struct literal for '"+sd.name+"' field '"+f.name+"': expected ";
+            const std::string what="type mismatch in "+std::string(structKindName(sd))+" literal for '"+sd.name+"' field '"+f.name+"': expected ";
             if(tyIsStruct(f.ty)){
                 if(!tyIsStruct(actual)||actual.sid!=f.ty.sid)
                     throw Error(loc(e.args[i]->line,e.args[i]->col,what+tyNameFull(f.ty)+", got "+tyNameFull(actual)));
@@ -8471,7 +8541,9 @@ enum : uint8_t {
     // return type and parameter types — not the bare return type — so a debugger
     // reads `p foo` as the whole signature, and DW_AT_decl_file names the source
     // file (index 1, the one entry the line table emits).
-    kAbbrSubroutineType=13,kAbbrFormalParam=14
+    kAbbrSubroutineType=13,kAbbrFormalParam=14,
+    // v0.23.70-dev: a union is DW_TAG_union_type, not a structure_type.
+    kAbbrUnion=15
 };
 // DWARF v4, 64-bit addresses: unit_length, version, debug_abbrev_offset,
 // address_size. A DW_FORM_ref4 is an offset from the byte after this header,
@@ -8496,6 +8568,10 @@ static const std::vector<uint8_t>& debugAbbrevTable(){
             {kAbbrArray,0x01,1,{{kType,fRef4}}},
             {kAbbrSubrange,0x21,0,{{kUpper,fData4}}},
             {kAbbrStruct,0x13,1,{{kName,fStr},{kByteSize,fData2}}},
+            // v0.23.70-dev: DW_TAG_union_type — same attributes, different tag.
+            // Always present: the linker keeps only the first .debug_abbrev, so
+            // a conditional entry would silently corrupt other objects.
+            {kAbbrUnion,0x17,1,{{kName,fStr},{kByteSize,fData2}}},
             {kAbbrMember,0x0d,0,{{kName,fStr},{kType,fRef4},{kMemberLoc,fData4}}},
             {kAbbrSubprogram,0x2e,1,{{kName,fStr},{kLowPc,fAddr},{kHighPc,fData8},{kFrameBase,fExpr},
                                      {kType,fRef4},{kDeclFile,fData1},{kDeclLine,fData4},{kExternal,fFlagPresent}}},
@@ -8584,7 +8660,7 @@ struct DwarfDieWriter {
         }
         if(t.k==Ty::Struct){
             const StructDef& sd=structOf(t.sid);
-            dbgUleb(info,kAbbrStruct);name(sd.name);dbgPut16(info,(uint16_t)sd.size);
+            dbgUleb(info,sd.isUnion ? kAbbrUnion : kAbbrStruct);name(sd.name);dbgPut16(info,(uint16_t)sd.size);
             for(const StructField& f:sd.fields){
                 std::vector<uint32_t> fd=f.dims;
                 if(fd.empty()&&f.len>0)fd.push_back((uint32_t)f.len);

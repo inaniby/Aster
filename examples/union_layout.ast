@@ -1,0 +1,51 @@
+// examples/union_layout.ast — prove an Aster `union` is byte-for-byte the C
+// `union`: every member sits at offset 0, the size is the widest member's,
+// and a one-value literal initializes the first member while zeroing the rest.
+//
+// The same checks, in the same order, live in tests/union-layout-twin.c; both
+// programs return 0 under qemu. Compile + run:
+//   aster build-elf examples/union_layout.ast -o union_layout.elf
+//   qemu-aarch64 union_layout.elf
+// Expects exit 0.
+union U { w: i32, q: i64, lo: u8, c: char }
+struct Box { tag: i32, u: U }
+
+fn make(v: i32) -> U { return U { v }; }
+fn id(u: U) -> U { return u; }
+fn boxTag(b: Box) -> i32 { return b.tag + b.u.w; }
+
+fn main() -> i32 {
+    // sizeof(U) is 8: i64 is the widest member, and the alignment is 8.
+    if (sizeof(U) != 8) { return 11; }
+    if (sizeof(Box) != 16) { return 12; }
+
+    // U { 0x11223344 } writes the first member (w: i32) and zeroes the upper
+    // four bytes. Reading q as one i64 proves both the zero fill and that the
+    // machine is little-endian.
+    let u: U = U { 0x11223344 };
+    if (u.q != 0x11223344) { return 1; }
+    // lo and c are u8/char at offset 0 — the low byte of w.
+    if (i32(u.lo) != 0x44) { return 2; }
+    if (i32(u.c) != 0x44) { return 3; }
+
+    // Type punning: write the i64 member, then read the i32 and u8 members.
+    // This is byte reinterpretation, exactly as in C; no active member is
+    // tracked. u.w sees the low half, u.lo the low byte.
+    u.q = 0x1122334455667788;
+    if (u.w != 0x55667788) { return 4; }
+    if (i32(u.lo) != 0x88) { return 5; }
+
+    // A union is a struct field with its own 8-byte alignment: Box is 16 bytes
+    // and travels in two registers under AAPCS64.
+    let b: Box = Box { 7, U { 9 } };
+    if (b.tag != 7) { return 6; }
+    if (b.u.w != 9) { return 7; }
+    if (boxTag(b) != 16) { return 8; }
+
+    // A union is a first-class parameter and return value (one 8-byte register).
+    let t: U = id(U { 5 });
+    if (t.w != 5) { return 9; }
+    let m: U = make(11);
+    if (m.w != 11) { return 10; }
+    return 0;
+}

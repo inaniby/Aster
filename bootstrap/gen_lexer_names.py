@@ -58,9 +58,10 @@ TOKENS = [
     "PlusPlus", "MinusMinus",
     "Dot", "Amp",
     "CharType",          # v0.23.69-dev: the `char` type keyword — distinct from the `Char` literal token
+    "Union",             # v0.23.70-dev: the `union` declaration keyword
 ]
 
-# The 29 reserved words, each spelling mapped to the kind it lexes to. Order
+# The 32 reserved words, each spelling mapped to the kind it lexes to. Order
 # is the order the host compiler's chain tests them in; since every spelling
 # is distinct the order carries no meaning, but keeping it identical makes
 # the generated chain diff against the C++ one line for line.
@@ -77,6 +78,7 @@ KEYWORDS = [
     ("include", "Include"),   # v0.23.61-dev
     ("true", "True"), ("false", "False"),
     ("char", "CharType"),   # v0.23.69-dev
+    ("union", "Union"),     # v0.23.70-dev
 ]
 
 # The record width the retired packed name table used; kept as the name-length
@@ -105,8 +107,8 @@ def die(msg):
 # Self-checks: the list must be well-formed before anything is emitted.
 # ---------------------------------------------------------------------------
 def check_list():
-    if TOKEN_COUNT != 82:
-        die("expected 82 token kinds, list has %d" % TOKEN_COUNT)
+    if TOKEN_COUNT != 83:
+        die("expected 83 token kinds, list has %d" % TOKEN_COUNT)
     if len(set(TOKENS)) != TOKEN_COUNT:
         die("duplicate token kind name")
     for name in TOKENS:
@@ -115,8 +117,8 @@ def check_list():
         if len(name) >= RECORD:
             die("token kind name %r does not fit a %d-byte record"
                 % (name, RECORD))
-    if KEYWORD_COUNT != 31:
-        die("expected 31 keywords, list has %d" % KEYWORD_COUNT)
+    if KEYWORD_COUNT != 32:
+        die("expected 32 keywords, list has %d" % KEYWORD_COUNT)
     kinds = [k for _, k in KEYWORDS]
     if len(set(kinds)) != KEYWORD_COUNT:
         die("two keywords map to the same kind")

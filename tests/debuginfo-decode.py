@@ -117,6 +117,7 @@ TAGS = {
     0x0f: "POINTER_TYPE", 0x11: "COMPILE_UNIT", 0x13: "STRUCTURE_TYPE",
     0x21: "SUBRANGE_TYPE", 0x24: "BASE_TYPE", 0x2e: "SUBPROGRAM",
     0x34: "VARIABLE", 0x3b: "UNSPECIFIED_TYPE",
+    0x17: "UNION_TYPE",   # v0.23.70-dev: DW_TAG_union_type
 }
 ATTRS = {
     0x01: "sibling", 0x02: "location", 0x03: "name", 0x0b: "byte_size",
