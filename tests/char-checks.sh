@@ -90,8 +90,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.69-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.69-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.70-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.70-dev" >&2; exit 1; }
 guard 'else if(x=="char")k=TK::CharType;' 'the char reserved word'
 guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };' 'the Char type'
 guard 'case TK::CharType: out=Ty::Char; ++p; return true;' 'char parsed as a type'
@@ -116,7 +116,7 @@ guard '|| t.k == Ty::U64 || t.k == Ty::Char;' 'char is unsigned (tyIsUnsigned)'
 [ "$(grep -c 't==Ty::U8||t==Ty::Char' src/aster.cpp)" -ge 10 ] \
     || { echo 'FAIL: fewer than ten u8/char codegen sites remain' >&2; exit 1; }
 guard_count=$((guard_count + 1))
-# The reserved-word list is generated, not hand-written: 31 words now that
+# The reserved-word list is generated, not hand-written: 32 words now that
 # `type`, `const`, `void` and `char` joined it, and `tls` is still a context
 # keyword.
 python3 - <<'PY' || exit 1
@@ -124,10 +124,10 @@ import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 31, ('reserved-word count moved', len(entries), entries)
+assert len(entries) == 32, ('reserved-word count moved', len(entries), entries)
 assert 'char' in entries, 'char is not a reserved word'
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 31 reserved words, char among them, tls still a context keyword')
+print('PASS: 32 reserved words, char among them, tls still a context keyword')
 PY
 guard_count=$((guard_count + 1))
 printf '  %-30s %s\n' "guards passed" "$guard_count"

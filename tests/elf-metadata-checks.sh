@@ -80,8 +80,8 @@ fi
 # [2/9] Source guards. Every fix is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: the width check, the symbol order, and three header fields'
-grep -qF '#define ASTER_VERSION_STRING "0.23.69-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.69-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.70-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.70-dev" >&2; exit 1; }
 # (1) a relocation's footprint is per-type, not always one instruction
 grep -qF 'const uint64_t need=(type==kRelTlsOff)?8u:4u;' src/aster.cpp \
     || { echo "FAIL: the relocation footprint is a constant again" >&2; exit 1; }
@@ -507,6 +507,6 @@ fi
 rows=$(wc -l < "$OUT/hashes.filtered.txt")
 # v0.23.66-dev moved exactly the build-so rows, and every .so kept its length;
 # assert the row count so a later round cannot silently drop one.
-[ "$rows" = 372 ] || { echo "FAIL: $rows baseline rows, expected 372" >&2; exit 1; }
+[ "$rows" = 375 ] || { echo "FAIL: $rows baseline rows, expected 375" >&2; exit 1; }
 printf '  %-30s %s\n' "baseline rows reproduced" "$rows"
 printf '%s\n' 'PASS: all v0.23.66-dev ELF metadata checks'

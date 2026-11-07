@@ -772,10 +772,10 @@ new=$(wc -l < "$OUT/got-old.txt")
 # same way, so fifteen families are skipped and the pre-existing count is still
 # 288: 333 recorded, 45 of them belonging to the fifteen rounds this suite
 # knows are new.
-[ "$old" -eq 291 ] \
-    || { echo "FAIL: expected 291 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 291 ] \
-    || { echo "FAIL: expected 291 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 294 ] \
+    || { echo "FAIL: expected 294 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 294 ] \
+    || { echo "FAIL: expected 294 rows of pre-existing output, found $new" >&2; exit 1; }
 # And this round's example is recorded, in all three modes, or the baseline is
 # not doing its job.
 [ "$(grep -c '^array_elem_types\.' "$OUT/hashes.txt")" -eq 3 ] \
