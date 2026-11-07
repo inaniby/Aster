@@ -1,0 +1,8 @@
+// Control: the same case value on an i32 subject is refused.
+fn main() -> i32 {
+    let c: i32 = 0;
+    switch (c) {
+        case 4294967296: return 1;
+        default: return 0;
+    }
+}

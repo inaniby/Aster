@@ -90,8 +90,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.71-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.71-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.72-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.72-dev" >&2; exit 1; }
 guard '    Type,                // v0.23.67-dev: `type Name = T;`' 'the Type token'
 guard '    Const,               // v0.23.67-dev: `const x : T = e;`' 'the Const token'
 guard 'else if(x=="type")k=TK::Type; else if(x=="const")k=TK::Const;' 'the two new reserved words'

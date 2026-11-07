@@ -1,0 +1,10 @@
+// F-01 (P0): 7 scalars + a 9..16B aggregate as argument #8.
+// The aggregate is put on the stack because ngrn=7 cannot fit need=2,
+// but ngrn is not raised to 8, so index 7 is written by NEITHER the
+// register loop (i<8, reg[7]<0 -> continue) NOR the stack loop (i>=8).
+// Expected 60; actual EXIT=0 (all three fields read uninitialised bytes).
+struct T { a: i32, b: i32, c: i32 }
+fn sum(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T)->i32 {
+    return w.a + w.b + w.c;
+}
+fn main()->i32 { return sum(1,2,3,4,5,6,7,T{10,20,30}); }

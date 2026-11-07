@@ -1,0 +1,7 @@
+// Control: i32[2][63] stride 252 is not a power of two -> UMADDL -> EXIT=0.
+fn main()->i32 {
+    let a: i32[2][63] = 0;
+    a[1][0] = 42;
+    if (a[0][0] == 0) { return 0; }
+    return 1;
+}

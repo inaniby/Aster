@@ -1,0 +1,4 @@
+// F-13 (P2): an absolute path is returned verbatim by resolveEmbedPath.
+// Building this embeds /etc/hostname (13 bytes of .rodata).
+let x: ptr = @embed("/etc/hostname");
+fn main()->i32{return 0;}

@@ -1,0 +1,5 @@
+// F-03 (P1): rejected with "addition overflows i64 in global
+// variable initializer", while the single literal 9223372036854775808
+// and the same expression evaluated at run time are both accepted.
+let g: u64 = 9223372036854775807 + 1;
+fn main() -> i32 { return 0; }

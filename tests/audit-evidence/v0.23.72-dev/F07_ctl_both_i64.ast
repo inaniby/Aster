@@ -1,0 +1,7 @@
+// Control: both i64 -> EXIT=1.
+fn main()->i32 {
+    let a: i64 = -5;
+    let b: i64 = 3;
+    if (a < b) { return 1; }
+    return 0;
+}

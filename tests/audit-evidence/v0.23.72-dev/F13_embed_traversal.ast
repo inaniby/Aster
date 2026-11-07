@@ -1,0 +1,3 @@
+// F-13 (P2): ".." is not filtered either.
+let x: ptr = @embed("../../../etc/hostname");
+fn main()->i32{return 0;}

@@ -1,0 +1,5 @@
+// F-09 source object: a small .rodata via @embed pushes .data to
+// 0x403000, which is 4096- but not 8192-aligned.
+let blob: ptr = @embed("tiny.bin");
+let g: i32 @align(64) = 7;
+fn main()->i32{return g;}

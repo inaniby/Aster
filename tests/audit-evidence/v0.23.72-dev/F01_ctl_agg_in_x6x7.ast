@@ -1,0 +1,4 @@
+// Control: 6 scalars + aggregate lands in x6/x7 -> 60, correct.
+struct T { a: i32, b: i32, c: i32 }
+fn sum(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,w:T)->i32 { return w.a+w.b+w.c; }
+fn main()->i32 { return sum(1,2,3,4,5,6,T{10,20,30}); }

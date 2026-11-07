@@ -1,0 +1,5 @@
+// Control: 8 scalars all in x0..x7 -> 88, correct.
+fn sum(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:i32)->i32 {
+    return p+q+r+s+t+u+v+w;
+}
+fn main()->i32 { return sum(1,2,3,4,5,6,7,60); }

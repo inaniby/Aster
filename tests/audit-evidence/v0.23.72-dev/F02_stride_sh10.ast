@@ -1,0 +1,8 @@
+// F-02 (P0): i32[2][256] stride 1024 = 2^10 -> LSL #2 (x4).
+// a[1][0] lands on a[0][1]; read a[0][1] to expose it.
+fn main()->i32 {
+    let a: i32[2][256] = 0;
+    a[1][0] = 42;
+    if (a[0][1] == 0) { return 0; }   // correct
+    return 1;                          // actual on v0.23.72-dev
+}

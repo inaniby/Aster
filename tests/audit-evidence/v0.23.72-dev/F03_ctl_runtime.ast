@@ -1,0 +1,7 @@
+// Control: same expression at run time -> BUILD_OK (u64 wrap).
+fn main() -> i32 {
+    let a: u64 = 9223372036854775807;
+    let b: u64 = 1;
+    let c: u64 = a + b;
+    return 0;
+}

@@ -1,0 +1,10 @@
+// F-05 (P1): caseValueFits has no Enum arm (default: return true),
+// so case 2^32 is accepted, truncated to 0 and matches Red. EXIT=1.
+enum Color { Red = 0 }
+fn main() -> i32 {
+    let c: Color = Red;
+    switch (c) {
+        case 4294967296: return 1;
+        default: return 0;
+    }
+}

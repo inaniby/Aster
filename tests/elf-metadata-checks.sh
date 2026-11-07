@@ -80,8 +80,8 @@ fi
 # [2/9] Source guards. Every fix is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: the width check, the symbol order, and three header fields'
-grep -qF '#define ASTER_VERSION_STRING "0.23.71-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.71-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.72-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.72-dev" >&2; exit 1; }
 # (1) a relocation's footprint is per-type, not always one instruction
 grep -qF 'const uint64_t need=(type==kRelTlsOff)?8u:4u;' src/aster.cpp \
     || { echo "FAIL: the relocation footprint is a constant again" >&2; exit 1; }

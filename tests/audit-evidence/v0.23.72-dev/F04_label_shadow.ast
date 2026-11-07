@@ -1,0 +1,6 @@
+// F-04 (P1): alias declared first, struct P second -> accepted.
+// The alias is silently shadowed: afterwards P resolves to the struct,
+// so "let v: P = 5" is refused with "expected P, got i32".
+type P = i32;
+struct P { x: i32 }
+fn main()->i32 { let v: P = 5; return v; }

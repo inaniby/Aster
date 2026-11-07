@@ -1,0 +1,4 @@
+// Control: the reverse order is refused -> order-dependence, not a design.
+struct P { x: i32 }
+type P = i32;
+fn main() -> i32 { return 0; }

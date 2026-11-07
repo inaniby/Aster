@@ -1,0 +1,6 @@
+// F-08/F-10 source object: .tdata (non-zero TLS) + .tbss (zero TLS)
+// + an @align(64) global so .data exists.
+tls let a: i32 = 10;
+tls let b: i32 = 0;
+let g: i32 @align(64) = 7;
+fn main() -> i32 { return a + b + g; }

@@ -1,0 +1,8 @@
+// F-07 (P1): promoteInt(i64,u32)=I64 (signed) but the condition code
+// is chosen by "either operand is unsigned" -> EXIT=0, expected 1.
+fn main()->i32 {
+    let a: i64 = -5;
+    let b: u32 = 3;
+    if (a < b) { return 1; }
+    return 0;
+}

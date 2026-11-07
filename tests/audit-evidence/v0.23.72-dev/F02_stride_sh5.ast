@@ -1,0 +1,8 @@
+// F-02 (P0): i32[2][8] stride 32 = 2^5 -> UXTW #5 is a reserved
+// AArch64 encoding; qemu raises SIGILL (EXIT=132, core dumped).
+fn main()->i32 {
+    let a: i32[2][8] = 0;
+    a[1][0] = 42;
+    if (a[0][0] == 0) { return 0; }
+    return 1;
+}

@@ -1,0 +1,11 @@
+// F-02 (P0): i32[2][64] has an outer stride of 256 = 2^8.
+// emitElemStride emits (sh<<10)|(0b010<<13); sh=8 carries into the
+// option field, turning UXTW #8 into LSL #0 (uxtx): the row scales
+// by x1 instead of x256, so a[1][0] lands at base+1 and overwrites
+// the first element. Conditional return avoids the 8-bit exit-code trap.
+fn main()->i32 {
+    let a: i32[2][64] = 0;
+    a[1][0] = 42;
+    if (a[0][0] == 0) { return 0; }   // correct
+    return 1;                          // actual on v0.23.72-dev
+}

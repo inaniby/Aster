@@ -1,0 +1,6 @@
+// Control: the same value assigned directly is refused.
+fn main() -> i32 {
+    let a: i64 = 7;
+    a = true;
+    return 0;
+}

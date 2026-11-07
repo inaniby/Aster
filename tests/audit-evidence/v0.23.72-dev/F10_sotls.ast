@@ -1,0 +1,4 @@
+// F-10: PIC object with .tdata + .tbss for link-so.
+tls let a: i32 = 10;
+tls let b: i32 = 0;
+fn get()->i32 { return a + b; }
