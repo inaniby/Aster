@@ -1,3 +1,108 @@
+## v0.23.72-dev — the second full source audit
+
+A **pure audit round**. The compiler source is byte-for-byte v0.23.71-dev
+(`d5f073b9`) except for `ASTER_VERSION_STRING` and the CMake project version:
+no behaviour changes, no new resident suite, no gate changes. The finding is
+about the gate, not about a feature — a build that reports `128 passed,
+0 failed / APK 3 passed` with 378 frozen baseline rows at zero drift still
+hides two P0 defects.
+
+### Method
+
+Five parallel read-only source reviews — front end and semantics, codegen and
+the call ABI, ELF writers and the linker, DWARF/APK/periphery, and gate
+effectiveness plus the self-hosting chain — produced 30 candidates (20 marked
+"confirmed", 10 "to be measured"). Two of route two's items merged into one
+root cause, so there are 29 independent verdicts.
+
+Every candidate was then compiled into a probe and executed on `qemu-aarch64`
+with a control group: C semantics against `aarch64-linux-gnu-gcc -static -O2`,
+emitted encodings read back with `aarch64-linux-gnu-objdump -d`, ELF contracts
+with `readelf -SW/-lW`, and the high-alignment object path reached by rewriting
+the ELF64 `Shdr+48 sh_addralign` field with `bump_align.py`. An inference from
+reading source was never counted as a defect. Process exit codes are only eight
+bits wide, so every read-back check uses
+`if (v == expected) { return 0; } return 1;` — two early probes were false
+negatives because `10852 & 0xff = 100` and `10752 & 0xff = 0`.
+
+### Result
+
+| # | Defect | Level |
+| --- | --- | --- |
+| F-01 | `layoutArgs` does not set `ngrn = 8` on spill, so the eighth argument is written by neither loop | **P0** |
+| F-02 | `sh << 10` overflows imm3 / the option field: reserved encoding (SIGILL) or lost scaling | **P0** |
+| F-03 | A `u64` global constant expression is refused under signed-`i64` overflow rules | P1 |
+| F-04 | Tag-namespace collision is order-dependent; a struct silently shadows an alias | P1 |
+| F-05 | `switch(enum)` does not range-check case values, so they are silently truncated | P1 |
+| F-06 | An overflowing constant skips the compile-time bounds check and wraps to the array's start | P1 |
+| F-07 | Wide compare/divide/modulo pick the condition code from "either operand is unsigned" | P1 |
+| F-08 | `.tbss` starts at fixed 16-byte alignment while declaring `maxTlsAlign` | P1 |
+| F-09 | `.data`/`.bss` start only `pageSize`-aligned while declaring a larger alignment | P1 |
+| F-10 | `link-so`'s `maxTlsAlign` is dead; `PT_TLS p_align` is always 16 | P1 |
+| F-11 | `DerefAssign` does not type-check its right-hand side | P2 |
+| F-12 | `parseObject` wrongly rejects legal `sh_addralign = 0` on TLS/data sections | P2 |
+| F-13 | `@embed` has no absolute-path / traversal / symlink constraint (threat-model dependent) | P2 |
+
+Also: **7 gate meta-findings** (G-01…G-07), 6 static observations awaiting
+dynamic reproduction, 2 items not reported, 1 refuted inference (`0x_a` is
+rejected, not accepted), and 1 known structural debt (`typeOf` / `exprType`
+divergence plus the TypedIR exemption list) carried forward from the previous
+audit. Nothing here repeats the 10 findings of `AUDIT-v0.23.61-dev.md`: those
+were closed across v0.23.62–v0.23.71.
+
+The two P0s are the ones a green gate should have caught. F-01 needs only a
+runtime argument (`sum(1,…,7,T{10,20,30})`); F-02 needs only a variable index
+into an array with a 2^5-or-larger power-of-two row stride. Existing suites
+almost all use constant indexes and constant right-hand sides.
+
+### Why the green gate did not catch them
+
+G-01: `ci.sh`'s `classify_suite` calls a suite with `rc == 0`, zero `PASS`
+marks and zero `SKIP` marks a `PASS`, so a script containing only `exit 0` is
+green (reproduced). G-02: `CI_SKIP_APK_GATE=1` skips all three APK gates while
+the final verdict stays green (reproduced). G-03: the three-way differential has
+no oracle for the "both reject" path, so byte agreement cannot prove
+correctness. G-04: the coverage ratchet is a static grep with a hard-coded
+floor (`suite_count >= 121`), so deleting 7 of 128 suites would still pass.
+G-05: the 378-row baseline pins only three writers (`build-so`, `build-elf`,
+`build-obj --pic`); F-08/F-09/F-10 change no example's bytes at all. G-06 and
+G-07 record weaker mutation evidence and a `/tmp/`-based parallel grouping.
+
+### Deliverables and non-changes
+
+- `AUDIT-v0.23.72-dev.md` — the report: scope, method, grading, all 13 defects
+  with reproduction / control / oracle, the meta-findings, document drift, and
+  the repair route.
+- `tests/audit-evidence/v0.23.72-dev/` — 32 probe files (30 `.ast`, one C
+  oracle, one `.bin`), `EVIDENCE.md`, and `bump_align.py`. **Deliberately not
+  registered** in `tests/ci.sh`'s `DEFAULT_SUITES`: these programs intentionally
+  retain the defects, so a green run would assert the bug. The repair rounds
+  convert them into real resident suites.
+- `tests/baseline/v0.23.72-dev/example-hashes.txt` — a byte-for-byte copy of
+  v0.23.71-dev's 378 rows.
+- No change to `tests/ci.sh` (128 suites), `CRITICAL` (19),
+  `tests/version-checks.sh`, `tests/ci-protocol-checks.sh`, `examples/` (127),
+  or the three APK gates. The green `128/128` result is itself the field
+  evidence for meta-findings 1 and 4. The 13 per-suite version guards and one
+  previous-baseline row-count assertion are realigned as release bookkeeping,
+  not behaviour changes; no assertion is added, removed or weakened.
+- `AUDIT-v0.23.61-dev.md` gains a top note pointing here, since its original
+  status line still reads as a live summary. `ROADMAP.md`'s backlog row that
+  still called the `ET_REL` branch "never executed" is corrected; that item was
+  closed in v0.23.71-dev.
+
+### Repair route (one theme per version)
+
+| Version | Theme |
+| --- | --- |
+| v0.23.73-dev | Fix F-01 + F-02 (both P0), with 9-layer resident suites |
+| v0.23.74-dev | Front-end semantics: F-03/F-04/F-05/F-06 + F-11 |
+| v0.23.75-dev | Signedness: F-07 |
+| v0.23.76-dev | ELF alignment contract: F-08/F-09/F-10/F-12 |
+| later | Gate hardening G-01…G-07; dynamic evidence for S-01…S-07; F-13 as a design decision; K-01 needs a semantic ruling first |
+
+Evidence in `VALIDATION-v0.23.72-dev.md`.
+
 ## v0.23.71-dev — close the last two audit items (`@embed` alignment, the `ET_REL` blind spot)
 
 The audit's second part left two items "still open": `.rodata` carried
