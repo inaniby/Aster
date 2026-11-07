@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.70-dev"
+#define ASTER_VERSION_STRING "0.23.71-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -1384,10 +1384,20 @@ class Parser {
     // The bytes of `path`, read once and remembered. Every failure here is a
     // diagnostic rather than silence, because the alternative is a pointer to
     // something the program did not mean to point at.
-    const std::vector<uint8_t>& embedFile(const std::string& path, unsigned line, unsigned col) {
+    const std::vector<uint8_t>& embedFile(const std::string& path, unsigned line, unsigned col, uint64_t align) {
         const std::string full = resolveEmbedPath(path);
         auto seen = embedBlobs.find(full);
-        if (seen != embedBlobs.end()) return seen->second;
+        if (seen != embedBlobs.end()) {
+            // v0.23.71-dev: one path is one object (the dedup rule since
+            // v0.23.7-dev). A second request may ask for a stricter
+            // alignment; satisfy both by raising the single blob's alignment
+            // to the maximum rather than creating a second copy or refusing
+            // an include combination.
+            auto sym=embedSymbols.find(full);
+            if(sym!=embedSymbols.end())for(auto& g:globals)
+                if(g.fromEmbed&&g.name==sym->second){if(align>g.align)g.align=align;break;}
+            return seen->second;
+        }
         struct stat st{};
         if (::stat(full.c_str(), &st) != 0) {
             throw Error("cannot open embedded file \"" + path + "\" (looked for \"" + full + "\") at "
@@ -1419,7 +1429,7 @@ class Parser {
         Global g; g.name = symName;
         g.isString = true;                 // rodata, laid out as the bytes it holds
         g.rawData = data;
-        g.align = 1;
+        g.align = align;
         g.fromEmbed = true;                // v0.23.13-dev: not a declared global
         globals.push_back(std::move(g));
         embedSymbols[full] = symName;
@@ -1532,8 +1542,25 @@ class Parser {
             const std::string wantPath = "expected a file path after '@" + kw.s + "('";
             need(TK::LParen, afterAt.c_str());
             auto pathTok = need(TK::String, wantPath.c_str());
+            // v0.23.71-dev: an optional second argument asks for the blob to
+            // start at a power-of-two boundary. It is a literal, not an
+            // expression: layoutObject has to know the alignment while it is
+            // placing the bytes, long before codegen runs. The rule is exactly
+            // @align(N)'s (power of two, at most 4096), because 4096 is also
+            // the smallest page size Aster lays .rodata out against.
+            uint64_t embedAlign=1;
+            if(eat(TK::Comma)){
+                if(kw.s!="embed")
+                    throw Error("@embed_len takes no alignment argument at "+std::to_string(at.line)+":"+std::to_string(at.col));
+                auto av=need(TK::Number,"expected a power-of-two alignment after '@embed(\"path\",'");
+                embedAlign=unsignedLiteral(av,"embedded alignment");
+                if(embedAlign==0||(embedAlign&(embedAlign-1))!=0)
+                    throw Error("embedded alignment must be a power of two at "+std::to_string(av.line)+":"+std::to_string(av.col));
+                if(embedAlign>4096)
+                    throw Error("embedded alignment must not exceed 4096 bytes at "+std::to_string(av.line)+":"+std::to_string(av.col));
+            }
             need(TK::RParen, "expected ')' after the file path");
-            const std::vector<uint8_t>& data = embedFile(pathTok.s, at.line, at.col);
+            const std::vector<uint8_t>& data = embedFile(pathTok.s, at.line, at.col, embedAlign);
             if (kw.s == "embed_len") {
                 // Folded here, so it is a literal everywhere downstream: a
                 // global initializer, an array bound, a return value.
@@ -8254,6 +8281,11 @@ struct ObjectLayout {
     std::map<std::string,std::pair<uint64_t,uint64_t>> functions; // name -> (text offset, size)
     std::vector<uint8_t> data;
     std::vector<uint8_t> rodata;
+    // v0.23.71-dev: the alignment declared for this object's .rodata, the
+    // maximum of every @embed request in it. 1 keeps every pre-existing
+    // object byte-identical; writeObject emits it and parseObject/linkObjects
+    // already carry it through to the linked image.
+    uint64_t rodataAlign=1;
     uint64_t bssSize=0;
     // v0.23.51-dev: the thread-local block, one copy per thread. `tls` globals
     // are laid out here and reached through TPIDR_EL0; the static image carries
@@ -8321,8 +8353,13 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
         // A global is aligned to at least its own storage width: an i64 sits on
         // an 8-byte boundary. For i32/bool/u8/u16 the width is <= the previous
         // floor of 4, so every pre-existing layout is unchanged.
-        const uint64_t a=g.isString?1:std::max<uint64_t>(g.align<4?4:g.align,tySize(g.ty));
-        if(g.isString){L.rodata.resize((size_t)alignUp(L.rodata.size(),a),0);uint64_t off=L.rodata.size();L.globals.push_back({g.name,3,off,g.rawData.size()});L.rodata.insert(L.rodata.end(),g.rawData.begin(),g.rawData.end());continue;}
+        // v0.23.71-dev: an @embed blob may ask for a boundary; an ordinary
+        // string literal still packs at byte granularity (a=1), so nothing
+        // pre-existing moves. The section's declared alignment is the maximum
+        // of all requests, and the zero padding that reaches it is emitted
+        // into .rodata itself.
+        const uint64_t a=g.isString?(g.fromEmbed?g.align:1):std::max<uint64_t>(g.align<4?4:g.align,tySize(g.ty));
+        if(g.isString){if(a>L.rodataAlign)L.rodataAlign=a;L.rodata.resize((size_t)alignUp(L.rodata.size(),a),0);uint64_t off=L.rodata.size();L.globals.push_back({g.name,3,off,g.rawData.size()});L.rodata.insert(L.rodata.end(),g.rawData.begin(),g.rawData.end());continue;}
         const uint64_t esz=tySize(g.ty);                       // bytes per element
         const uint64_t sz=g.isArray?uint64_t(g.count)*esz:esz;
         // Every global object is laid out as a 4-byte-sized slot so the object
@@ -9017,7 +9054,12 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
         const uint64_t a=g.align<4?4:g.align;
         if((tyIs64(g.ty)?g.wideInit==0:g.init==0)){if(a>bssAlign)bssAlign=a;}else{if(a>dataAlign)dataAlign=a;}}
     const uint64_t dataOff=hasData?alignUp(textOff+textSize,dataAlign>8?dataAlign:8):0;
-    const uint64_t rodataOff=hasRodata?alignUp((hasData?dataOff+L.data.size():textOff+textSize),1):0;
+    // v0.23.71-dev: the section's own alignment, not a hard-coded 1. An
+    // @embed blob that asked for 16 must find its bytes at a 16-aligned
+    // address both in this object and in the image the linker builds from
+    // it — parseObject reads this back and linkObjects merges with it.
+    const uint64_t rodataAlign=L.rodataAlign;
+    const uint64_t rodataOff=hasRodata?alignUp((hasData?dataOff+L.data.size():textOff+textSize),rodataAlign):0;
     const uint64_t afterLast=hasRodata?rodataOff+L.rodata.size():(hasData?dataOff+L.data.size():textOff+textSize);
     // v0.23.51-dev: the thread-local block sits right after the last ordinary
     // section, block aligned; debug sections and the symbol table follow it.
@@ -9042,7 +9084,7 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     sh[1].name=nameAt(".text");sh[1].type=1;sh[1].flags=0x6;sh[1].offset=textOff;sh[1].size=textSize;sh[1].addralign=4;
     if(hasData){sh[idxData].name=nameAt(".data");sh[idxData].type=1;sh[idxData].flags=0x3;sh[idxData].offset=dataOff;sh[idxData].size=L.data.size();sh[idxData].addralign=dataAlign;}
     if(hasBss){sh[idxBss].name=nameAt(".bss");sh[idxBss].type=8;sh[idxBss].flags=0x3;sh[idxBss].offset=hasRodata?rodataOff+L.rodata.size():(hasData?dataOff+L.data.size():textOff+textSize);sh[idxBss].size=L.bssSize;sh[idxBss].addralign=bssAlign;}
-    if(hasRodata){sh[idxRodata].name=nameAt(".rodata");sh[idxRodata].type=1;sh[idxRodata].flags=0x2;sh[idxRodata].offset=rodataOff;sh[idxRodata].size=L.rodata.size();sh[idxRodata].addralign=1;}
+    if(hasRodata){sh[idxRodata].name=nameAt(".rodata");sh[idxRodata].type=1;sh[idxRodata].flags=0x2;sh[idxRodata].offset=rodataOff;sh[idxRodata].size=L.rodata.size();sh[idxRodata].addralign=rodataAlign;}
     // WAT (SHF_WRITE|SHF_ALLOC|SHF_TLS) is the flag combination GNU ld gives
     // both sections, read off this machine's own compiler output. .tdata is the
     // initializer template for one thread's block and .tbss is the zeroed tail
@@ -9970,6 +10012,9 @@ struct SoDynSpec {
     std::vector<std::string> funcAddrRefs;         // defined functions referenced by address (callback tables)
     std::vector<uint8_t> data;
     std::vector<uint8_t> rodata;
+    // v0.23.71-dev: the alignment declared for .rodata, carried from the
+    // source object (build-so) or from the merged inputs (link-so).
+    uint64_t rodataAlign=1;
     // v0.23.52-dev: the thread-local block. `tls` is its .tdata bytes (empty when
     // every thread-local is zero-initialized); `tbssSize` is the .tbss tail, which
     // owns no file bytes. Which globals are thread-local travels in `globals` as
@@ -10441,7 +10486,14 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     // ld differential is what settles it. Aster used to write 0, i.e. "these
     // relocations apply to nothing".
     setSh(S_RELAPLT,4,0x2,relaPltOff,relaPltOff,relaPltSize,S_DYNSYM,S_GOTPLT,8,sizeof(Rela));
-    if(S_RODATA)setSh(S_RODATA,1,0x2,rodataVaddr,rodataVaddr,rodataSize,0,0,1,0);
+    // v0.23.71-dev: declare the alignment the blobs asked for. The address
+    // is already page-aligned and every request is <= 4096, so it satisfies
+    // it; the check keeps a future layout change from silently breaking that.
+    if(S_RODATA){
+        if(spec.rodataAlign>1&&rodataVaddr%spec.rodataAlign)
+            throw Error("internal error: .rodata address is not aligned to its declared alignment");
+        setSh(S_RODATA,1,0x2,rodataVaddr,rodataVaddr,rodataSize,0,0,spec.rodataAlign,0);
+    }
     setSh(S_DATA,1,0x3,dataVaddr,dataVaddr,dataSize,0,0,8,0);
     setSh(S_GOTPLT,1,0x3,gotPltVaddr,gotPltVaddr,gotPltSize,0,0,8,0);
     setSh(S_GOT,1,0x3,gotVaddr,gotVaddr,gotSize,0,0,8,0);
@@ -10518,7 +10570,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
                        // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
                        uint64_t pageSize=4096){
     if(inputs.empty())throw Error("link-so requires at least one input object");
-    std::vector<uint8_t> mergedText,mergedData,mergedRodata,mergedTls;uint64_t mergedBss=0,mergedTbss=0,maxTlsAlign=kTlsBlockAlign;
+    std::vector<uint8_t> mergedText,mergedData,mergedRodata,mergedTls;uint64_t mergedBss=0,mergedTbss=0,maxTlsAlign=kTlsBlockAlign,maxRodataAlign=1;
     struct Def{uint64_t off;uint32_t kind;uint64_t size;}; // 0 = .text, 1 = .data, 2 = .bss, 3 = .rodata, 4 = .tdata (TLS), 5 = .tbss (TLS)
     std::map<std::string,Def> definitions;
     std::vector<LinkPending> pending;
@@ -10550,6 +10602,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         while(obj.dataAlign>1&&mergedData.size()%obj.dataAlign)mergedData.push_back(0);
         while(obj.bssAlign>1&&mergedBss%obj.bssAlign)++mergedBss;
         while(obj.rodataAlign>1&&mergedRodata.size()%obj.rodataAlign)mergedRodata.push_back(0);
+        if(obj.rodataAlign>maxRodataAlign)maxRodataAlign=obj.rodataAlign;
         // v0.23.52-dev: the thread-local block, merged exactly as linkObjects
         // does — the alignment padding has to be part of this object's base
         // before any symbol is offset against it.
@@ -10633,6 +10686,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
     }
     SoDynSpec spec;spec.soname=sonameIn.empty()?baseNameOf(output):sonameIn;spec.needed=needed;
     spec.data=mergedData;spec.rodata=mergedRodata;spec.bssSize=mergedBss;
+    spec.rodataAlign=maxRodataAlign;
     // v0.23.52-dev: the merged thread-local block. .tbss starts at the first
     // block-aligned offset past the merged .tdata, which the writer recomputes
     // from these two sizes — an object's own .tbss offsets already sit past its
@@ -13393,6 +13447,7 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
     // Split the still-undefined references into functions (PLT) and objects (GOT).
     SoDynSpec spec;spec.soname=soname;spec.needed=needed;spec.exports=exports;spec.globals=L.globals;
     spec.data=L.data;spec.rodata=L.rodata;spec.bssSize=L.bssSize;spec.initOffset=initOffset;
+    spec.rodataAlign=L.rodataAlign;
     // v0.23.52-dev: the thread-local block, handed to the writer the same way a
     // link-so does — .tdata bytes plus the size of the .tbss tail behind them.
     spec.tls=L.tls;spec.tbssSize=L.tbssSize;

@@ -1,0 +1,36 @@
+// v0.23.71-dev — @embed can ask for the boundary its bytes start at.
+//
+// Every path below is relative to THIS file's directory, the same rule
+// `include` uses (v0.23.13-dev). The three blobs are deliberately tiny and
+// deliberately not aligned with each other: without an alignment request
+// they would simply be concatenated at 0, 1 and 3.
+//
+//   head.bin   1 byte, no request          -> offset 0
+//   tail.bin   2 bytes, @embed(..., 64)   -> offset 64 (63 zero bytes between)
+//   third.bin  3 bytes, @embed(..., 16)   -> offset 80 (the first 16-aligned
+//                                            offset at or after 66)
+//
+// `g_again` embeds tail.bin a second time with a *smaller* request (16).
+// One path is one object (the dedup rule since v0.23.7-dev), so the single
+// blob's alignment is raised to the maximum of the two requests, 64, and
+// both pointers name the same two bytes. The object therefore declares
+// `.rodata` with sh_addralign 64, and every writer that lays that section
+// out has to put it at a 64-aligned address.
+//
+// Building this file with no alignment request at all still produces the
+// historical, byte-identical image: the default is 1.
+let g_head:  ptr = @embed("embed_align_assets/head.bin");
+let g_tail:  ptr = @embed("embed_align_assets/tail.bin", 64);
+let g_again: ptr = @embed("embed_align_assets/tail.bin", 16);
+let g_third: ptr = @embed("embed_align_assets/third.bin", 16);
+
+fn align_sum() -> i32 {
+    return load_u8(g_head)
+         + load_u8(g_tail) + load_u8(g_tail + 1)
+         + load_u8(g_again)
+         + load_u8(g_third) + load_u8(g_third + 1) + load_u8(g_third + 2);
+}
+
+fn main() -> i32 {
+    return align_sum();
+}
