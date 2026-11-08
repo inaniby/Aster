@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.74-dev.** One table per area. "Since" is the version that
+**As of v0.23.75-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -319,6 +319,7 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | **Order-independent tag namespaces** — one `rejectTagConflict()` called by struct/union, enum and type-alias declarations cross-checks `g_structIndex` / `g_enumIndex` / `g_typeAlias`, preserving the historical collision messages (fixes F-04) | shipped | v0.23.74-dev | `front-sema-checks.sh` [2–4/9], [8/9] |
 | **Enum switch case range** — `caseValueFits()` applies `enumValueFits()` to `Ty::Enum`, so an out-of-i32 case label is refused instead of matching a truncated value (fixes F-05) | shipped | v0.23.74-dev | `front-sema-checks.sh` [3–4/9], [8/9] |
 | **Typed pointer stores are type-checked** — Sema's `DerefAssign` checks the right-hand side against `ptrElemType(inner)`; an untyped `ptr` keeps its historical 64-bit store (fixes F-11) | shipped | v0.23.74-dev | `front-sema-checks.sh` [3–4/9], [8/9], `examples/front_sema.ast` |
+| **Promoted-type signedness** — `opIsUnsigned()` derives the signedness of a comparison / division / remainder from `promoteInt(ta,tb)`, so `i64 × u32` (and `u8` / `u16` / `char`, in either order) uses signed condition codes and SDIV, while `u64` and genuinely `u32` / `u8` expressions stay unsigned (fixes F-07 of `AUDIT-v0.23.72-dev.md`) | shipped | v0.23.75-dev | `signedness-checks.sh` [2/9] guards, [3/9] six `objdump` invariants, [4/9] 121-case matrix, [5/9] gcc twin + 121-case gcc oracle, [8/9] 6 mutations, `examples/signedness.ast` |
 
 ## Runtime API surface (what generated code can call)
 

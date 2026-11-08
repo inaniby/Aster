@@ -1,3 +1,53 @@
+## v0.23.75-dev — signedness: the promoted result type decides
+
+The third repair round after `AUDIT-v0.23.72-dev.md`. It closes **F-07** (P1),
+the §8 "符号性" item: one coherent theme, one type-system rule, four code
+generation sites.
+
+### The defect
+
+`promoteInt(i64, u32)` answers `I64` — a signed 64-bit value represents every
+`u32` — and `exprType` used that answer for every arithmetic and comparison
+node. The condition codes and the divide opcode ignored it and instead asked
+`tyIsUnsigned(ta) || tyIsUnsigned(tb)`. A negative `i64` was therefore read as
+`2^64 - |a|`:
+
+| Probe | Before | After | gcc oracle |
+| --- | --- | --- | --- |
+| `a:i64=-84; b:u32=5; a < b` | `EXIT=0` | `EXIT=1` | `1` |
+| `a:i64=-84; b:u32=5; a / b == -16` | `EXIT=0` | `EXIT=1` | `1` |
+| `a:i64=-84; b:u32=5; a % b == -4` | `EXIT=0` | `EXIT=1` | `1` |
+| `a:u32=84; b:i64=-5; a > b` | `EXIT=0` | `EXIT=1` | `1` |
+
+`==` / `!=` were unaffected: their condition codes do not depend on
+signedness. Across a 121-case matrix, **48 cases** (32 ordered comparisons +
+16 div/mod) were wrong. All eight affected type pairs share one shape: a
+64-bit signed operand mixed with a narrower unsigned one, in either order.
+
+### What changed in `src/aster.cpp`
+
+| Edit | Detail |
+| --- | --- |
+| `opIsUnsigned(Ty,Ty)` | New helper beside `promoteInt`: `tyIsUnsigned(promoteInt(a,b))`. The single source of truth for the signedness of a binary result. |
+| Four decision sites | `genBool`'s CSET condition, `emitCondition`'s inverted branch condition, `Expr::Mod`'s SDIV/UDIV and `Expr::Div`'s opcode bit 10 all call it. The old `tyIsUnsigned(ta)||tyIsUnsigned(tb)` spelling is gone. |
+| Comments | The `tyIsUnsigned` header comment, the `%` promotion note and the division opcode comment now describe the promoted-result rule. |
+
+No syntax, no Sema rule and no new rejection. Operand widths are unchanged:
+only condition codes and the UDIV/SDIV bit move.
+
+### Evidence
+
+- **Strict build**: `g++ -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp` — `BUILD_EXIT=0`.
+- **One new 9-layer resident suite**: `tests/signedness-checks.sh` — strict build, eight source guards, six instruction-level `objdump` invariants, a **121-case** behavioural matrix, a shipped-example C twin and a generated **121-case gcc matrix oracle**, all four ELF writers, a coverage census, six mutations and the byte baseline. **6/6 mutations caught**; 139 invariants exercised (floor 130).
+- **One shipped example**: `examples/signedness.ast` → **63** (1+2+4+8+16+32), `tests/signedness-twin.c` → 63; the same program returns **0** under v0.23.74-dev.
+- **Instruction-level before/after**: `b.cs → b.ge`, `udiv x0 → sdiv x0`, `cset cc → cset lt`; the genuinely unsigned `u32 × u32` controls keep `b.cs` and `udiv w0`.
+- **One stale source pin realigned**: `tests/bool-checks.sh` pins `comparisonCond(c.k,opIsUnsigned(ta,tb))^1`.
+- **Zero drift**: `tests/baseline/v0.23.75-dev/example-hashes.txt` has **393 rows** — all **390** inherited rows are byte-identical (an A/B over 131 examples × 3 writers found zero moved rows), plus the 3 rows for the new example.
+- **Gate census**: 133 suites, 132 examples, 393 baseline rows, 47 mutation suites, 37 suites declaring 230 mutant builds (100% caught), and 84.91% line coverage (floor 80%).
+- **Full CI**: recorded in `VALIDATION-v0.23.75-dev.md` §7a after the run.
+
+---
+
 ## v0.23.74-dev — frontend semantics: u64 folding, tag namespaces, case ranges, pointer stores
 
 The second repair round after `AUDIT-v0.23.72-dev.md`. It closes **F-03**,
