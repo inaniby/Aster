@@ -82,7 +82,7 @@ grep -qF 'bool isCompoundAssign(TK t)const' src/aster.cpp \
     || { echo 'FAIL: compound-assignment recognition missing' >&2; exit 1; }
 # Constant folding has to cover the new operators too, or a global initializer
 # that uses one silently becomes a runtime store.
-grep -qF 'case Expr::BitNot: return ~foldConst(*e.a);' src/aster.cpp \
+grep -qF 'case Expr::BitNot: return ~foldConst(*e.a,u64Target);' src/aster.cpp \
     || { echo 'FAIL: ~ is missing from the constant folder' >&2; exit 1; }
 
 printf '%s\n' '[3/8] Rejection matrix: every misuse the new operators allow'

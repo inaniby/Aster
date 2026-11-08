@@ -60,8 +60,8 @@ A=$OUT/aster
 # [2/9] Source guards. Each fix is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: the five rules'
-grep -qF '#define ASTER_VERSION_STRING "0.23.73-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.73-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.74-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.74-dev" >&2; exit 1; }
 grep -qF 'case Expr::Shl: case Expr::Shr: case Expr::BitNot:' src/aster.cpp \
     || { echo "FAIL: the shift family is no longer in the TypedIR exemption" >&2; exit 1; }
 grep -qF 'if(t.k==Ty::Enum)return enumValueFits((int64_t)e.n);' src/aster.cpp \
@@ -74,13 +74,14 @@ grep -qF 'cannot compare two different enum types: ' src/aster.cpp \
     || { echo "FAIL: a comparison no longer isolates two enums" >&2; exit 1; }
 grep -qF 'if(!refuseNarrow||semaTypeIsPlaceholder(e))return;' src/aster.cpp \
     || { echo "FAIL: an arithmetic result is no longer exempt from the narrowing check" >&2; exit 1; }
-# The two positions the round leaves alone are pinned too, so the carve-out
-# cannot quietly become universal or quietly disappear: `refuseNarrow` is the
-# parameter that names it, and two call sites pass false.
+# The positions the round leaves alone are pinned too, so the carve-out cannot
+# quietly become universal or quietly disappear: `refuseNarrow` is the
+# parameter that names it. v0.23.74-dev (F-11) adds a third call site — the
+# store through a typed pointer — so three call sites now pass false.
 grep -qF 'const std::string& what,bool refuseNarrow=true)' src/aster.cpp \
     || { echo "FAIL: the narrowing rule no longer has a named exemption" >&2; exit 1; }
-[ "$(grep -c 'checkValue(.*,\*s\.expr,actual,.*,false);' src/aster.cpp)" = 2 ] \
-    || { echo "FAIL: the element/field store exemption is not exactly two call sites" >&2; exit 1; }
+[ "$(grep -c 'checkValue(.*,\*s\.expr,actual,.*,false);' src/aster.cpp)" = 3 ] \
+    || { echo "FAIL: the element/field/DerefAssign store exemption is not exactly three call sites" >&2; exit 1; }
 grep -qF 'checkValue(retType,*s.expr,actual,"return type mismatch in function "+fn);' src/aster.cpp \
     || { echo "FAIL: a return no longer goes through the same rule an argument does" >&2; exit 1; }
 printf '%s\n' 'PASS: all five rules are pinned in the source'
@@ -392,10 +393,10 @@ if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
 fi
 old=$(wc -l < "$OUT/expected-old.txt")
 new=$(wc -l < "$OUT/got-old.txt")
-[ "$old" -eq 303 ] \
-    || { echo "FAIL: expected 303 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 303 ] \
-    || { echo "FAIL: expected 303 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 309 ] \
+    || { echo "FAIL: expected 309 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 309 ] \
+    || { echo "FAIL: expected 309 rows of pre-existing output, found $new" >&2; exit 1; }
 printf '  %-44s %s\n' 'pre-existing rows byte-identical' "$old"
 printf '%s\n' 'PASS: byte-identity baseline holds'
 

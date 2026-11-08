@@ -1,0 +1,20 @@
+// v0.23.74-dev (F-03): a u64 global initializer is folded with uint64_t
+// wrap semantics. Before this round all three expressions below were refused
+// with "addition/multiplication/left shift overflows i64 in global variable
+// initializer", although the same expressions at run time wrapped cleanly.
+let gwrap: u64 = 9223372036854775807 + 1;    // 2^63
+let gmul:  u64 = 9223372036854775807 * 2;    // 2^64 - 2
+let gshl:  u64 = 1 << 63;                    // 2^63
+// v0.23.74-dev (F-06): a constant-shaped index that folds is still
+// bounds-checked; one whose folding fails is now a hard error instead of
+// silently skipping the check and wrapping back to element 0.
+let a: i32[4] = 0;
+fn main() -> i32 {
+    let r: i32 = 0;
+    if (gwrap == 9223372036854775808)     { r = r + 1; }
+    if (gmul  == 18446744073709551614)    { r = r + 2; }
+    if (gshl  == 9223372036854775808)     { r = r + 4; }
+    a[0] = 11; a[1] = 22; a[2] = 33; a[3] = 44;
+    if (a[1 + 1] == 33)                   { r = r + 8; }
+    return r;
+}

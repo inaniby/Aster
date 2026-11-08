@@ -63,7 +63,7 @@ case "$SUITE_DIR" in
     *) SUITE_DIR="$PWD/$SUITE_DIR" ;;
 esac
 
-CRITICAL=${CI_CRITICAL-apk-checks.sh signing-checks.sh tls-checks.sh linker-checks.sh codegen-checks.sh struct-checks.sh enum-checks.sh eval-order-checks.sh type-strictness-checks.sh resource-table-checks.sh page-size-checks.sh layout-boundary-checks.sh elf-metadata-checks.sh alias-const-checks.sh void-checks.sh char-checks.sh union-checks.sh embed-align-checks.sh stack-arg-abi-checks.sh stride-scale-checks.sh version-checks.sh}
+CRITICAL=${CI_CRITICAL-apk-checks.sh signing-checks.sh tls-checks.sh linker-checks.sh codegen-checks.sh struct-checks.sh enum-checks.sh eval-order-checks.sh type-strictness-checks.sh resource-table-checks.sh page-size-checks.sh layout-boundary-checks.sh elf-metadata-checks.sh alias-const-checks.sh void-checks.sh char-checks.sh union-checks.sh embed-align-checks.sh stack-arg-abi-checks.sh stride-scale-checks.sh const-fold-u64-checks.sh front-sema-checks.sh version-checks.sh}
 ALLOW_MISSING=${CI_ALLOW_MISSING:-0}
 SKIP_APK_GATE=${CI_SKIP_APK_GATE:-0}
 KEEP_ARTIFACTS=${CI_KEEP_ARTIFACTS:-0}
@@ -277,7 +277,7 @@ pixel-offset-checks.sh pointer-index-checks.sh precedence-checks.sh
 array-elem-types-checks.sh array-param-bounds-checks.sh relro-checks.sh struct-array-field-checks.sh
 array-address-checks.sh multi-dim-array-checks.sh sizeof-len-checks.sh integer-cast-checks.sh cast-conversions-checks.sh switch-checks.sh enum-checks.sh eval-order-checks.sh type-strictness-checks.sh resource-table-checks.sh runtime-bounds-checks.sh sema-checks.sh signing-checks.sh typedir-mutation.sh
 so-argument-checks.sh so-dependency-chain-checks.sh so-dyn-checks.sh so-negative-checks.sh
-so-scope-checks.sh symbol-versioning-checks.sh struct-checks.sh layout-boundary-checks.sh elf-metadata-checks.sh alias-const-checks.sh void-checks.sh char-checks.sh union-checks.sh embed-align-checks.sh stack-arg-abi-checks.sh stride-scale-checks.sh symtab-checks.sh regression-symtab.sh wide-int-checks.sh wide-int-literal-checks.sh literals-checks.sh narrow-int-abi-checks.sh narrow-value-coverage.sh write-output-checks.sh syscall-io-checks.sh heap-checks.sh stdlib-checks.sh codegen-checks.sh syntax-relief-checks.sh narrow-memory-checks.sh compiler-other-faces-audit.sh diagnostics-checks.sh
+so-scope-checks.sh symbol-versioning-checks.sh struct-checks.sh layout-boundary-checks.sh elf-metadata-checks.sh alias-const-checks.sh void-checks.sh char-checks.sh union-checks.sh embed-align-checks.sh stack-arg-abi-checks.sh stride-scale-checks.sh const-fold-u64-checks.sh front-sema-checks.sh symtab-checks.sh regression-symtab.sh wide-int-checks.sh wide-int-literal-checks.sh literals-checks.sh narrow-int-abi-checks.sh narrow-value-coverage.sh write-output-checks.sh syscall-io-checks.sh heap-checks.sh stdlib-checks.sh codegen-checks.sh syntax-relief-checks.sh narrow-memory-checks.sh compiler-other-faces-audit.sh diagnostics-checks.sh
 fuzz-checks.sh sanitizer-checks.sh debugline-checks.sh debug-info-checks.sh eh-frame-checks.sh include-checks.sh version-checks.sh ci-protocol-checks.sh coverage-checks.sh mutation-score-checks.sh
 touch-checks.sh page-size-checks.sh bootstrap-loop-checks.sh pointer-difference-checks.sh c-ptr-memory-structural.sh address-of-checks.sh
 e2e-c-abi-32-args.sh e2e-c-abi-32-external.sh e2e-c-abi.sh e2e-c-libc-strings.sh

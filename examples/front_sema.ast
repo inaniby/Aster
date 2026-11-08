@@ -1,0 +1,24 @@
+// v0.23.74-dev: the frontend's static semantics in one program.
+// (F-04) the type-alias, struct and enum tag namespaces are cross-checked
+//        at declaration, so no tag can shadow another in either order.
+// (F-05) switch(enum) case values are range-checked like any subject.
+// (F-11) a store through a typed pointer checks its right-hand side.
+type Word = i32;
+struct Box { v: i32 }
+enum Color { Red = 0, Green = 1, Blue = 2 }
+fn main() -> i32 {
+    let w: Word = 3;
+    let b: Box = Box { 4 };
+    let c: Color = Green;
+    let r: i32 = w + b.v;
+    switch (c) {
+        case 0: return 100;
+        case 1: r = r + 20;
+        default: return 200;
+    }
+    let a: i64 = 7;
+    let p: ptr<i64> = &a;
+    *p = 42;
+    if (a == 42) { r = r + 1; }
+    return r;
+}

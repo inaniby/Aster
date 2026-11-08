@@ -644,10 +644,10 @@ new=$(wc -l < "$OUT/got-old.txt")
 # same way, so fifteen families are skipped and the pre-existing count is still
 # 288: 333 recorded, 45 of them belonging to the fifteen rounds this suite
 # knows are new.
-[ "$old" -eq 303 ] \
-    || { echo "FAIL: expected 303 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 303 ] \
-    || { echo "FAIL: expected 303 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 309 ] \
+    || { echo "FAIL: expected 309 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 309 ] \
+    || { echo "FAIL: expected 309 rows of pre-existing output, found $new" >&2; exit 1; }
 printf '  %-34s %s\n' 'pre-existing rows byte-identical' "$old"
 printf '  %-34s %s\n' 'rows total' "$new"
 printf '%s\n' 'PASS: byte-identity baseline holds'

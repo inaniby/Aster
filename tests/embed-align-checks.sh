@@ -169,8 +169,8 @@ saw(){ WRITERS="$WRITERS $1"; }
 printf '%s\n' '[1/9] Strictly build Aster compiler'
 $CXX -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 A=$OUT/aster
-grep -qF '#define ASTER_VERSION_STRING "0.23.73-dev"' src/aster.cpp \
-    || { echo 'FAIL: the version constant is not 0.23.73-dev' >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.74-dev"' src/aster.cpp \
+    || { echo 'FAIL: the version constant is not 0.23.74-dev' >&2; exit 1; }
 bump
 
 # ---------------------------------------------------------------------------
@@ -398,7 +398,7 @@ mutate 'm6: dedup lowers the alignment' \
     'if(align>g.align)g.align=align;' 'g.align=1;'
 
 # ---------------------------------------------------------------------------
-printf '%s\n' '[9/9] Byte baseline: three new rows, 378 old rows unchanged'
+printf '%s\n' '[9/9] Byte baseline: three embed_align rows, all inherited rows unchanged'
 BASE=$(aster_baseline_file)
 rows=$(grep '^embed_align\.' "$BASE" | LC_ALL=C sort)
 [ "$(printf '%s\n' "$rows" | wc -l)" = 3 ] \
@@ -431,6 +431,6 @@ moved=$(awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' "$PREV" "
 [ -z "$moved" ] \
     || { echo "FAIL: this round moved bytes of an older program: $moved" >&2; exit 1; }
 prev_rows=$(wc -l < "$PREV")
-[ "$prev_rows" = 378 ] || { echo "FAIL: previous baseline has $prev_rows rows" >&2; exit 1; }
+[ "$prev_rows" = 384 ] || { echo "FAIL: previous baseline has $prev_rows rows" >&2; exit 1; }
 printf '  %-30s %s\n' "pre-existing rows unchanged" "$prev_rows"; bump
 printf '%s\n' 'PASS: all embed-align checks'

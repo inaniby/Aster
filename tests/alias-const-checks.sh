@@ -90,8 +90,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.73-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.73-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.74-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.74-dev" >&2; exit 1; }
 guard '    Type,                // v0.23.67-dev: `type Name = T;`' 'the Type token'
 guard '    Const,               // v0.23.67-dev: `const x : T = e;`' 'the Const token'
 guard 'else if(x=="type")k=TK::Type; else if(x=="const")k=TK::Const;' 'the two new reserved words'
@@ -577,8 +577,10 @@ if "$OUT/m5" build-elf "$W/m5.ast" -o "$W/m5" >/dev/null 2>&1; then
 else
     echo 'FAIL: mutation (e) went unnoticed — the initializer rule is not what blocks it' >&2; exit 1
 fi
-# (f) A duplicate type alias is refused.
-mutate m6 's|if(g_typeAlias.count(id.s))throw Error(loc(id.line,id.col,"duplicate type alias: "|if(false)throw Error(loc(id.line,id.col,"duplicate type alias: "|'
+# (f) A duplicate type alias is refused. v0.23.74-dev (F-04) moved the
+# duplicate-name check into the shared rejectTagConflict(); neutralise the
+# alias-table branch there so the refusal goes inert.
+mutate m6 's|if(g_typeAlias.count(id.s)){|if(false){|'
 printf '%s\n' 'type P = i32;
 type P = u16;
 fn main() -> i32 { let x: P = 300; return x; }' > "$W/m6.ast"
@@ -616,11 +618,11 @@ if ! diff -u "$OUT/base.sorted.txt" "$OUT/hashes.filtered.txt" > "$OUT/hashes.di
     exit 1
 fi
 rows=$(wc -l < "$OUT/hashes.filtered.txt")
-# 129 examples x 3 modes, less the three address_of_abi rows every release
+# 131 examples x 3 modes, less the three address_of_abi rows every release
 # filters (v0.23.73-dev adds examples/stack_arg_abi.ast and
 # examples/stride_scale.ast). Asserted so a later round cannot silently drop
-# one; the 378 rows inherited from v0.23.72-dev are all byte-identical.
-[ "$rows" = 384 ] || { echo "FAIL: $rows baseline rows, expected 384" >&2; exit 1; }
+# one; every row inherited from the previous release is byte-identical.
+[ "$rows" = 390 ] || { echo "FAIL: $rows baseline rows, expected 390" >&2; exit 1; }
 printf '  %-30s %s\n' "baseline rows reproduced" "$rows"
 # The previous release's frozen baseline — derived, never a hardcoded path
 # (the CI protocol check forbids literal versioned baseline paths).
