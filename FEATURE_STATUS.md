@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.72-dev.** One table per area. "Since" is the version that
+**As of v0.23.73-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -312,6 +312,8 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | One-command CI (smoke + apk + validate_apk) | **shipped** — see Toolchain table (v0.23.8-dev) | v0.23.8-dev | `ci.sh` |
 | Random syntax fuzzer (thousands of inputs, no crashes) | shipped | v0.23.11-dev | `fuzz-checks.sh` |
 | **ASan/UBSan hostile-input campaign** — the sanitizer build runs the shipped examples, a generated syntax corpus, and deterministic mutations of real ELF objects, APKs and DER/PEM signing keys; every input must be accepted (0) or rejected with a diagnostic (1), never crash or hang. The suite re-injects the historical `readZip` `nameLen` over-read into a copy of the source and requires ASan to catch it | shipped | v0.23.61-dev | `sanitizer-checks.sh` [8/8] |
+| **AAPCS64 C.12 stack arguments** — `layoutArgs` pins `ngrn = 8` on the first spill and the caller's stack loop walks *every* argument, so a 9–16-byte aggregate in slot 8 and each later scalar really reach the outgoing area; the layout is checked against a real `aarch64-linux-gnu-gcc` callee linked by `link-obj` (fixes F-01 of `AUDIT-v0.23.72-dev.md`) | shipped | v0.23.73-dev | `stack-arg-abi-checks.sh` [1–9/9], `examples/stack_arg_abi.ast` |
+| **Exact element and row scaling** — one `emitScaledAdd` shared by `emitElemIndex` and `emitElemStride`: `ADD … UXTW #sh` only for `sh <= 4`, otherwise `UMADDL` with an explicit MOVZ/MOVK 32-bit multiplier; the 2^0..2^12 stride spectrum, 32/64-byte struct elements and a 100000-byte row are all exact (fixes F-02) | shipped | v0.23.73-dev | `stride-scale-checks.sh` [1–9/9], `examples/stride_scale.ast` |
 
 ## Runtime API surface (what generated code can call)
 

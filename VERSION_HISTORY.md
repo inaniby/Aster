@@ -1,3 +1,105 @@
+## v0.23.73-dev — fix the two P0s: AAPCS64 stack arguments and the UXTW scale
+
+The first repair round after `AUDIT-v0.23.72-dev.md`. It fixes **F-01** and
+**F-02**, the two P0 defects that a fully green `128 passed / APK 3 passed`
+gate with 378 zero-drift baseline rows had hidden. One coherent theme: both are
+code-generation bugs in the *caller* / *address-scaling* path, neither adds
+syntax, and neither changes a single byte of any program written before this
+round.
+
+### What changed in `src/aster.cpp`
+
+| Fix | Edit |
+| --- | --- |
+| F-01 | `layoutArgs` now sets `ngrn = 8` in its spill branch (AAPCS64 C.12), so once an argument cannot fit in registers every later argument goes on the stack. The caller's stack loop changed from `for (i = 8; i < nargs; ++i)` to a full walk that skips `lay.reg[i] >= 0`: a slot *below* 8 can itself be a stack argument, and starting at 8 lost it entirely. |
+| F-02 | New `emitScaledAdd(idxReg, scale)` owns the one scaling rule. Only a power of two with `sh <= 4` keeps `ADD X16,X16,Widx,UXTW #sh`; every other scale takes `UMADDL` with an explicit 32-bit multiplier emitted by MOVZ/MOVK. `emitElemIndex` (element size) and `emitElemStride` (outer row stride) both call it, so a 2^5 row and a 32-byte struct element cannot disagree. |
+
+Before F-02, `sh = 5..7` produced a reserved AArch64 encoding (SIGILL under
+qemu) and `sh >= 8` carried into the option field, turning UXTW into LSL/UXTX
+so the scale disappeared — `i32[2][64]` wrote `a[1][0]` at `base+1`. The
+non-power-of-two `UMADDL` path was already correct, which is why the bug only
+hit power-of-two strides at or above 2^5. Before F-01, seven scalars followed
+by a 9–16-byte aggregate left `ngrn = 7`; the aggregate was written by neither
+loop and the next scalar landed in x7, where no AAPCS64 callee looks.
+
+The audit's field evidence all flips on this build: `F01_stack_arg_lost` goes
+from `EXIT=0` to `60`, and every `F02_stride_sh5/sh8/sh10/struct32` probe goes
+from `132`/`1` to `0`, while the three F-01 controls (88 / 60 / 9) and the F-02
+controls (`uxtw #4`, non-power-of-two) stay correct. `objdump` confirms `2^5`
+now emits `umaddl` and `2^4` still emits `uxtw #4`.
+
+### Resident coverage
+
+Two new 9-layer suites, both registered in `DEFAULT_SUITES` and `CRITICAL`:
+
+- `tests/stack-arg-abi-checks.sh` — source guards on both edits; a static
+  disassembly assertion that the `aggOnStack` call reserves a 32-byte outgoing
+  area and stores the aggregate plus two scalars at `[sp,#0/16/24]`; a
+  seven-case behavioural matrix of register/stack boundaries (8-byte, 12-byte
+  and 16-byte aggregates at every position, two aggregates, 16 scalars, a
+  nested call); a **real `aarch64-linux-gnu-gcc` callee linked by `link-obj`
+  against an Aster caller** plus a pure-C oracle; cross-object, `build-pie` and
+  `build-so` paths; six mutations; and the byte baseline.
+- `tests/stride-scale-checks.sh` — an instruction-encoding sweep over
+  `2^0..2^12` plus a 100000-byte row, decoding every `ADD (extended register)`
+  word to assert `option == UXTW` and `imm3 <= 4` with no `undefined` or
+  `uxtx`; 17 behavioural cases with variable indexes and asymmetric
+  write-then-read probes; a gcc twin; five addressing paths (local, global,
+  struct field, array parameter, typed pointer, 3-D chain); six mutations; and
+  the byte baseline.
+
+The asymmetric probes matter: a wrong scale that is used for *both* the write
+and the read agrees with itself. Three mutations (`pow2 = true`, no MOVK, and
+the non-power-of-two case) initially survived for exactly that reason, so the
+probes now also read a neighbouring element that a wrong scale would corrupt,
+and `mut_check` asserts the emitted `umaddl` / `movk` directly. All twelve
+mutations are caught.
+
+Two shipped examples: `examples/stack_arg_abi.ast` (four AAPCS64 witnesses,
+returns 15) and `examples/stride_scale.ast` (six stride/element witnesses,
+returns 63). Every result uses a conditional return — `1041 & 0xff == 17`, so
+returning a sum directly would mask a wrong answer.
+
+### Zero drift
+
+All **378** baseline rows inherited from v0.23.72-dev are byte-identical; the
+v0.23.73-dev baseline is those 378 rows plus the 6 rows for the two new
+examples (384 total, 58 expected `FAILED`). `AUDIT-v0.23.72-dev.md` §8 had
+warned that fixing these paths might move a few existing examples; no example
+in the corpus exercises a spilled eighth aggregate or a stride at/above 2^5, so
+the drift range is exactly zero. The 9-layer baseline layers in both new
+suites assert the inherited rows are unchanged.
+
+### Gates and bookkeeping
+
+- `tests/ci.sh`: `DEFAULT_SUITES` 128 → **130**, `CRITICAL` 19 → **21**.
+- `tests/alias-const-checks.sh` and `tests/elf-metadata-checks.sh`: their
+  current-baseline row assertions 378 → 384. Thirteen suites that census
+  "pre-existing output" rows assert 297 → 303, because the two new examples
+  are not in their historical FILTER. The three `prev_rows = 378` assertions
+  stay — PREV resolves to v0.23.72-dev.
+- The 13 per-suite version guards are realigned to `0.23.73-dev` (26 lines).
+  Three full CI runs: the first was stopped at three suites when a pre-flight
+  sweep found the row-count assertions; the second went end to end and reported
+  `128 passed, 2 failed` because two resident suites pinned source text that
+  F-02's new `emitScaledAdd` leaf had retired (an XZR/SP wording guard, m1/m2
+  driven through the now ASR-only `elemShiftOf`, and m5's removed MOVZ
+  immediate). All were re-pinned to `emitScaledAdd`, both `mutate()` helpers
+  gained a "sed changed nothing" guard, and the two suites re-ran standalone
+  9/9 before the third, green run. See `VALIDATION-v0.23.73-dev.md` §7.
+- `tests/ci-protocol-checks.sh`: 130 suites, 129 examples, 384 rows, 44
+  mutation suites, no orphans. `tests/mutation-score-checks.sh`: 34 suites,
+  212 declared mutant builds, 100% caught.
+- Full CI: `130 passed, 0 skipped, 0 failed` / `APK GATES: 3 passed`.
+
+The remaining 11 defects (8 P1, 3 P2), the 7 gate meta-findings and the
+structural `typeOf` debt are **still open** and keep their
+`AUDIT-v0.23.72-dev.md` §8 route: v0.23.74-dev for front-end semantics,
+v0.23.75-dev for signedness, v0.23.76-dev for the ELF alignment contract, and
+a later round for gate hardening.
+
+Evidence in `VALIDATION-v0.23.73-dev.md`.
+
 ## v0.23.72-dev — the second full source audit
 
 A **pure audit round**. The compiler source is byte-for-byte v0.23.71-dev
