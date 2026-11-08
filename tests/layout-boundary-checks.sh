@@ -65,8 +65,8 @@ A=$OUT/aster
 # cannot quietly put the mask or the 32-bit accumulator back.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: the two ceilings'
-grep -qF '#define ASTER_VERSION_STRING "0.23.75-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.75-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.76-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.76-dev" >&2; exit 1; }
 # (1) the thread-local offset must fit the MOVZ/MOVK pair, and the refusal is
 # at the point of the lossy conversion rather than in the caller.
 grep -qF 'if(off>0xffffffffULL)' src/aster.cpp \
