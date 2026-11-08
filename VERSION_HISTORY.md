@@ -1,3 +1,71 @@
+## v0.23.76-dev — ELF section-alignment contracts: declared alignment is the layout
+
+The fourth repair round after `AUDIT-v0.23.72-dev.md`. It closes **F-08**,
+**F-09**, **F-10** and **F-12** (three P1 and one P2), the §8 "ELF 对齐契约"
+item: one coherent theme, one rule — a section's declared `sh_addralign` is a
+promise its `sh_addr` must keep.
+
+### The four defects
+
+| Id | Defect | Repair |
+| --- | --- | --- |
+| F-08 | `.tbss` started at the fixed `kTlsBlockAlign` (16) while its header declared the merged `tlsAlign`. | `writeElfBytes` starts `.tbss` at `alignUp(tlsFileEnd,tlsAlign)`; `linkObjects` aligns `tbssVaddr` to `maxTlsAlign`; the merged `.tbss` symbol base follows the same alignment. |
+| F-09 | `.data`/`.bss` started at `alignUp(afterRodata,pageSize)` while their headers declared the input object's alignment. | Both writers compute `dataStartAlign = max(pageSize, dataAlign, bssAlign, tlsAlign)` for the data PT_LOAD start. |
+| F-10 | `link-so` computed `maxTlsAlign` but never used it: `SoDynSpec` had no field, so `PT_TLS p_align` and both TLS headers stayed 16. | `SoDynSpec` gains `tlsAlign`, `linkSharedObjects` forwards the merged maximum, and `writeSharedObjectDyn` uses it for `tdataVaddr`, `tbssVaddr`, `ptls.align` and both `setSh` calls. |
+| F-12 | `parseObject` rejected `sh_addralign = 0`, which ELF64 defines as "no alignment requirement", while `.rodata` already exempted it. | `sectionAlignOrMinimum(a,minimum)` normalises 0 to the section's minimum (16 for `.tdata`/`.tbss`, 4 for `.data`/`.bss`); illegal values are still refused. |
+
+A fifth, adjacent defect surfaced while validating the spectrum: `linkObjects`
+resolved kind-5 symbols as `tbssVaddr + off` where `off` already contained the
+block base, so the base was counted twice. At 16 the doubled offset landed in
+zero padding and merely looked correct; at 4096 the TLS load ran past the
+PT_LOAD and the program took SIGSEGV. `linkObjects` now drops the extra base;
+`linkSharedObjects` keeps it, because its writer resolves TLS offsets as
+`tlsVaddr + off`. The 16..16384 spectrum now returns 17 at every step.
+
+### Evidence
+
+- `tests/section-align-contract-checks.sh`: 9 layers — strict build; 19 source
+  guards; eight refusal diagnostics; a behavioural matrix of 10 TLS alignments,
+  7 `.data` alignments, five zero-alignment normalisations and 5 `link-so`
+  alignments, each asserting `Addr % Align == 0`; an independent ELF64 binary
+  parser cross-checked against GNU readelf; four writers and two links; a
+  coverage census (71 invariants); six mutations (6/6 caught); the byte
+  baseline. The suite carries its own ELF section-header surgery, so it does
+  not depend on the read-only audit evidence directory.
+- `tls-checks.sh`, `elf-metadata-checks.sh` and `embed-align-checks.sh` still
+  pass with one stale source pin realigned.
+
+### Byte baseline
+
+**Zero drift.** 132 examples × 3 writer modes were rebuilt with the committed
+v0.23.75-dev compiler and with v0.23.76-dev: no row moved, no example stopped
+building. `tests/baseline/v0.23.76-dev/example-hashes.txt` is byte-identical
+to the 393-row v0.23.75-dev baseline. No new shipped example was added: these
+defects only appear when a *link* consumes an object whose section headers
+declare a stricter alignment, which no `.ast` source can express. The suite's
+constructed-input evidence is what pins the contract instead.
+
+### Realignment
+
+18 version guards, six `prev_rows` assertions (390 → 393), one stale source pin
+in `elf-metadata-checks.sh`, and `tests/ci.sh` registering the new suite in
+`DEFAULT_SUITES` and `CRITICAL`. All row-count assertions stay put because the
+example count did not change.
+
+### Full CI
+
+`LC_ALL=C CXX=g++ HOSTCC=aarch64-linux-gnu-gcc CI_JOBS=3 bash tests/ci.sh`:
+**134 passed, 0 skipped, 0 failed** (of 134 suites), **APK 3 passed**,
+`CI_EXIT=0`, one run with no restart and no fix-up. Full record in
+`VALIDATION-v0.23.76-dev.md` §7a.
+
+### Still open
+
+The seven gate meta-findings (G-01…G-07), the dynamic observation items
+(S-01/S-03…S-07), the `K-01` semantic decision and `F-13` remain as recorded
+in `AUDIT-v0.23.72-dev.md` §8 / §9. Every code-level defect from the second
+full source audit is now closed.
+
 ## v0.23.75-dev — signedness: the promoted result type decides
 
 The third repair round after `AUDIT-v0.23.72-dev.md`. It closes **F-07** (P1),

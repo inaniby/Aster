@@ -1,9 +1,19 @@
 # Aster — Feature Status
 
-**As of v0.23.75-dev.** One table per area. "Since" is the version that
+**As of v0.23.76-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
+
+## ELF section alignment
+
+| Feature | Status | Since | Coverage |
+| --- | --- | --- | --- |
+| Data PT_LOAD starts at every declared section alignment | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [2/9], [4/9], [8/9] |
+| `.tbss` start follows the declared TLS alignment | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [4/9], [8/9] |
+| `link-so` forwards the merged TLS alignment to `PT_TLS` and both headers | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [4/9], [8/9] |
+| `sh_addralign = 0` means "no requirement" for data/bss/TLS sections | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [3/9], [4/9], [8/9] |
+| `.tbss` symbol offsets are not double-counted | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [4/9] (16..16384 spectrum), [8/9], `tls-checks.sh` |
 
 ## Language core
 
