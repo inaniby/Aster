@@ -342,6 +342,14 @@ mutate() {   # mutate <name> <sed-script> <expectation...>
     if ! sed -i.bak "$script" "$OUT/mut.cpp" 2>/dev/null; then
         echo "FAIL: mutant $name could not be applied" >&2; exit 1
     fi
+    # v0.23.73-dev: a sed script that matches nothing still exits 0 and leaves
+    # the file byte-identical, so the "mutant" is really the unmodified compiler
+    # and every expectation below turns into a false positive (this is exactly
+    # how m5's stale pin to the removed MOVZ immediate went unnoticed). Require
+    # the script to change the source before compiling it.
+    if cmp -s "$OUT/mut.cpp" "$OUT/mut.cpp.bak"; then
+        echo "FAIL: mutant $name changed nothing — its source pin is stale" >&2; exit 1
+    fi
     if ! $CXX -std=c++17 -O2 -w "$OUT/mut.cpp" -o "$OUT/mut.aster" >"$OUT/mut.build" 2>&1; then
         echo "FAIL: mutant $name does not build" >&2; sed -n '1,3p' "$OUT/mut.build" >&2; exit 1
     fi
@@ -385,8 +393,11 @@ fn main() -> i32 { let b: B; b.nums[0] = 11; b.nums[3] = 33;
 # from a second element, not the one written: b.pts[1].a lands at offset 4 under
 # the broken stride and at offset 12 under the real one, so b.pts[0].b — offset
 # 4 either way — reads 100 (broken) instead of 0 (real).
+# v0.23.73-dev (F-02): the scaling leaf is now emitScaledAdd(idxReg, scale), so
+# the mutation withdraws the real element size at that call instead of rewriting
+# the MOVZ immediate that emitElemIndex used to emit itself.
 mutate 'm5: struct element scaled as i32' \
-    's/emit(movInt(sz,tySize(elem)));/emit(movInt(sz,4));/' \
+    's/emitScaledAdd(idxReg,tySize(elem));/emitScaledAdd(idxReg,4);/' \
     must_differ 'struct field element' 0 'struct V { a: i32, b: i32, c: i32 }
 struct B { pts: V[2] }
 fn main() -> i32 { let b: B; b.pts[1].a = 100; return b.pts[0].b; }'
@@ -468,10 +479,10 @@ new=$(wc -l < "$OUT/got-old.txt")
 # same way, so fifteen families are skipped and the pre-existing count is still
 # 288: 333 recorded, 45 of them belonging to the fifteen rounds this suite
 # knows are new.
-[ "$old" -eq 297 ] \
-    || { echo "FAIL: expected 297 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 297 ] \
-    || { echo "FAIL: expected 297 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 303 ] \
+    || { echo "FAIL: expected 303 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 303 ] \
+    || { echo "FAIL: expected 303 rows of pre-existing output, found $new" >&2; exit 1; }
 [ "$(grep -c '^struct_array_field\.' "$OUT/hashes.txt")" -eq 3 ] \
     || { echo 'FAIL: struct_array_field.ast is not in the baseline in all three modes' >&2; exit 1; }
 printf '  %-34s %s\n' 'pre-existing rows byte-identical' "$old"

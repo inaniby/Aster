@@ -1,0 +1,41 @@
+// v0.23.73-dev — AAPCS64 C.12: once an argument cannot be allocated to
+// registers, NGRN is pinned at 8 and every remaining argument goes on the
+// stack. This example is the shipped witness for F-01 of the second audit.
+//
+// Before this round, a 9..16-byte aggregate in slot 8 (seven scalars already
+// in x0-x6, need=2) was placed on the stack but left NGRN at 7. The caller's
+// register loop skipped it (reg[7] < 0) and its stack loop started at i=8, so
+// the aggregate was never written at all; a following scalar then landed in
+// x7, a register no AAPCS64 callee reads for a stack argument. The four calls
+// below pin the exact window plus its three controls: all eight scalars in
+// registers, the aggregate still fitting x6/x7, and a pure ninth scalar on
+// the stack.
+//
+// Every result is checked with a conditional return. The broken value here is
+// 1041, whose low eight bits are 17 — returning the sum directly would hide a
+// wrong answer behind the process exit status, which is exactly the trap the
+// audit had to work around.
+
+struct T { a: i32, b: i32, c: i32 }   // 12 bytes: two GPRs when it fits
+
+fn eightScalars(a:i32,b:i32,c:i32,d:i32,e:i32,f:i32,g:i32,h:i32)->i32 {
+    return a+b+c+d+e+f+g+h;                        // 42: x0-x7, all registers
+}
+fn aggInRegs(a:i32,b:i32,c:i32,d:i32,e:i32,f:i32,w:T)->i32 {
+    return a+b+c+d+e+f+w.a+w.b+w.c;                // 81: aggregate in x6/x7
+}
+fn nineScalars(a:i32,b:i32,c:i32,d:i32,e:i32,f:i32,g:i32,h:i32,i:i32)->i32 {
+    return a+b+c+d+e+f+g+h+i;                      // 51: ninth argument on the stack
+}
+fn aggOnStack(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x:i32,y:i32)->i32 {
+    return w.a+w.b+w.c+x*10+y*100+p;               // 1041: w, x and y all on the stack
+}
+
+fn main()->i32 {
+    let r: i32 = 0;
+    if (eightScalars(2,4,6,8,1,3,5,13) == 42) { r = r + 1; }
+    if (aggInRegs(1,2,3,4,5,6,T{10,20,30}) == 81) { r = r + 2; }
+    if (nineScalars(2,4,6,8,1,3,5,13,9) == 51) { r = r + 4; }
+    if (aggOnStack(1,2,3,4,5,6,7,T{10,20,30},8,9) == 1041) { r = r + 8; }
+    return r;                                      // 15: every shape correct
+}

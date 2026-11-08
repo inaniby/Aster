@@ -90,8 +90,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.72-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.72-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.73-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.73-dev" >&2; exit 1; }
 guard '    Type,                // v0.23.67-dev: `type Name = T;`' 'the Type token'
 guard '    Const,               // v0.23.67-dev: `const x : T = e;`' 'the Const token'
 guard 'else if(x=="type")k=TK::Type; else if(x=="const")k=TK::Const;' 'the two new reserved words'
@@ -616,10 +616,11 @@ if ! diff -u "$OUT/base.sorted.txt" "$OUT/hashes.filtered.txt" > "$OUT/hashes.di
     exit 1
 fi
 rows=$(wc -l < "$OUT/hashes.filtered.txt")
-# 124 examples x 3 modes, less the three address_of_abi rows every release
-# filters (v0.23.68-dev adds examples/void_return.ast). Asserted so a later
-# round cannot silently drop one.
-[ "$rows" = 378 ] || { echo "FAIL: $rows baseline rows, expected 378" >&2; exit 1; }
+# 129 examples x 3 modes, less the three address_of_abi rows every release
+# filters (v0.23.73-dev adds examples/stack_arg_abi.ast and
+# examples/stride_scale.ast). Asserted so a later round cannot silently drop
+# one; the 378 rows inherited from v0.23.72-dev are all byte-identical.
+[ "$rows" = 384 ] || { echo "FAIL: $rows baseline rows, expected 384" >&2; exit 1; }
 printf '  %-30s %s\n' "baseline rows reproduced" "$rows"
 # The previous release's frozen baseline — derived, never a hardcoded path
 # (the CI protocol check forbids literal versioned baseline paths).

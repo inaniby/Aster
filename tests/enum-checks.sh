@@ -60,8 +60,8 @@ fi
 # [2/9] Source guards. Each change is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: enum'
-grep -qF '#define ASTER_VERSION_STRING "0.23.72-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.72-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.73-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.73-dev" >&2; exit 1; }
 # the lexer recognises `enum` as a reserved word
 grep -qF 'else if(x=="enum")k=TK::Enum;' src/aster.cpp \
     || { echo "FAIL: the lexer no longer recognises enum" >&2; exit 1; }
@@ -297,10 +297,10 @@ if ! diff -u "$OUT/expected-old.txt" "$OUT/got-old.txt" > "$OUT/old.diff"; then
 fi
 old=$(wc -l < "$OUT/expected-old.txt")
 new=$(wc -l < "$OUT/got-old.txt")
-[ "$old" -eq 297 ] \
-    || { echo "FAIL: expected 297 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 297 ] \
-    || { echo "FAIL: expected 297 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 303 ] \
+    || { echo "FAIL: expected 303 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 303 ] \
+    || { echo "FAIL: expected 303 rows of pre-existing output, found $new" >&2; exit 1; }
 [ "$(grep -c '^enum_demo\.' "$OUT/hashes.txt")" -eq 3 ] \
     || { echo 'FAIL: enum_demo.ast is not in the baseline in all three modes' >&2; exit 1; }
 printf '  %-38s %s\n' 'pre-existing rows byte-identical' "$old"

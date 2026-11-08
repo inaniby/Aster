@@ -1,0 +1,43 @@
+// v0.23.73-dev — the element scale must be exact at every width. This is the
+// shipped witness for F-02 of the second audit.
+//
+// `ADD X16, X16, Widx, UXTW #sh` folds a power-of-two stride into a single
+// instruction, but UXTW's imm3 is three bits: sh=5..7 are reserved encodings
+// (QEMU raises SIGILL) and sh>=8 carries into the option field, turning the
+// add into LSL/UXTX so the scale silently disappears. Before this round both
+// `emitElemIndex` (the innermost element size) and `emitElemStride` (an outer
+// row stride) emitted it for every power of two. Now sh<=4 keeps the folded
+// form and every larger scale — power of two or not — uses UMADDL with an
+// explicit 32-bit multiplier, from one shared helper.
+//
+// These are globals rather than locals so the widest row stride can reach
+// 2^12 without competing with the fixed 8 KiB stack frame. Each case writes
+// row 1 element 0 through a *variable* index and reads row 0 element 0 back:
+// that is exactly the pair of accesses the broken scaling corrupted, and a
+// variable index keeps the compiler from folding the address away.
+//
+// `Big` is a 32-byte struct element, so it exercises the same rule through
+// emitElemIndex instead of emitElemStride.
+
+let g1:    u8[2][1]    = 0;   // row stride 2^0 = 1
+let g16:   u8[2][16]   = 0;   // row stride 2^4 = 16, the last folded shift
+let g32:   u8[2][32]   = 0;   // row stride 2^5 = 32, the first reserved encoding
+let g256:  u8[2][256]  = 0;   // row stride 2^8 = 256, formerly LSL #0
+let g4096: u8[2][4096] = 0;   // row stride 2^12 = 4096, formerly LSL #4
+
+struct Big { a:i32, b:i32, c:i32, d:i32, e:i32, f:i32, g:i32, h:i32 }  // 32 bytes
+let gbig: Big[2] = Big{1,2,3,4,5,6,7,8};
+
+fn main()->i32 {
+    let r: i32 = 0;
+    let i: i32 = 1;                       // variable index: no constant folding
+
+    g1[i][0] = 42;    if (g1[0][0] == 0    && g1[i][0] == 42) { r = r + 1; }
+    g16[i][0] = 42;   if (g16[0][0] == 0   && g16[i][0] == 42) { r = r + 2; }
+    g32[i][0] = 42;   if (g32[0][0] == 0   && g32[i][0] == 42) { r = r + 4; }
+    g256[i][0] = 42;  if (g256[0][0] == 0  && g256[i][0] == 42) { r = r + 8; }
+    g4096[i][0] = 42; if (g4096[0][0] == 0 && g4096[i][0] == 42) { r = r + 16; }
+    gbig[i].a = 42;   if (gbig[0].a == 1 && gbig[i].a == 42) { r = r + 32; }
+
+    return r;                              // 63: every stride and element exact
+}

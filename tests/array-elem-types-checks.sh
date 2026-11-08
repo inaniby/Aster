@@ -112,13 +112,17 @@ grep -qF 'case Ty::I32: return arrayElemTypeOf' src/aster.cpp \
     && { echo 'FAIL: typeOf(Expr::Index) is back to a hardcoded i32' >&2; exit 1; }
 
 # The addressing rule: one shifter that admits it cannot shift, and one index
-# emitter that falls back to a multiply.
+# emitter that falls back to a multiply. v0.23.73-dev (F-02) moved the element
+# scaling decision into emitScaledAdd; elemShiftOf now serves only the ASR
+# pointer-difference path, so pin both halves and the new decision itself.
 grep -qF 'static int elemShiftOf(Ty t){' src/aster.cpp \
     || { echo 'FAIL: elemShiftOf() is missing' >&2; exit 1; }
 grep -qF 'if(sz==0||(sz&(sz-1))!=0u)return -1;' src/aster.cpp \
     || { echo 'FAIL: elemShiftOf() no longer admits a non-power-of-two element' >&2; exit 1; }
 grep -q 'int tyShift' src/aster.cpp \
     && { echo 'FAIL: the old tyShift is still in the source' >&2; exit 1; }
+grep -qF 'const bool pow2=(scale&(scale-1))==0;' src/aster.cpp \
+    || { echo 'FAIL: emitScaledAdd() no longer decides the scale itself' >&2; exit 1; }
 grep -qF '    void emitElemIndex(int idxReg,Ty elem){' src/aster.cpp \
     || { echo 'FAIL: emitElemIndex() is missing' >&2; exit 1; }
 grep -qF 'emit(0x9ba00000u' src/aster.cpp \
@@ -127,8 +131,10 @@ grep -qF '    void emitElemAddr(const std::string& name,const Expr& index){' src
     || { echo 'FAIL: emitElemAddr() is missing — element addresses are computed twice again' >&2; exit 1; }
 # The extended add with XZR as Rn is SP, not zero — that spelling walked every
 # struct array read off the frame, so the trap is recorded next to the emit it
-# replaced and the fallback stays a multiply.
-grep -qF 'Rn == 31 is the stack pointer and not XZR' src/aster.cpp \
+# replaced and the fallback stays a multiply. v0.23.73-dev (F-02) folded the
+# scaling rule into emitScaledAdd and shortened the wording; the trap is still
+# recorded beside the UMADDL fallback, so the guard pins the current phrase.
+grep -qF 'Rn == 31 is SP and not XZR' src/aster.cpp \
     || { echo 'FAIL: the XZR/SP trap is no longer recorded where the emit can see it' >&2; exit 1; }
 
 # An element is an lvalue, so &a[i] and a[i].f are addressable; a struct
@@ -591,6 +597,13 @@ mutate() {   # mutate <name> <sed-script> <expectation...>
     if ! sed -i.bak "$script" "$OUT/mut.cpp" 2>/dev/null; then
         echo "FAIL: mutant $name could not be applied" >&2; exit 1
     fi
+    # v0.23.73-dev: a sed script that matches nothing still exits 0 and leaves
+    # the file byte-identical, so the "mutant" is really the unmodified compiler
+    # and every expectation below becomes a false positive. Require the script
+    # to change the source before compiling it.
+    if cmp -s "$OUT/mut.cpp" "$OUT/mut.cpp.bak"; then
+        echo "FAIL: mutant $name changed nothing — its source pin is stale" >&2; exit 1
+    fi
     if ! $CXX -std=c++17 -O2 -w "$OUT/mut.cpp" -o "$OUT/mut.aster" >"$OUT/mut.build" 2>&1; then
         echo "FAIL: mutant $name does not build" >&2; sed -n '1,3p' "$OUT/mut.build" >&2; exit 1
     fi
@@ -601,11 +614,14 @@ if [ "$have_qemu" = no ]; then
     printf '  SKIP: the mutation layer needs qemu to observe a changed answer\n'
 else
 # -- the addressing rule -----------------------------------------------------
-# m1: elemShiftOf answers 2 for everything again — the old tyShift. A 12-byte
-# element is then scaled by 4, so t[2] lands on t[0].c and the store is visible
-# in a slot the real compiler never touches.
-mutate 'm1: elemShiftOf is tyShift again' \
-    's/static int elemShiftOf(Ty t){/static int elemShiftOf(Ty t){return 2;/' \
+# m1: the shifter no longer admits it cannot shift — every scale, including a
+# 12-byte struct element, is folded as a 4-byte shift, so t[2] lands on t[0].c
+# and the store is visible in a slot the real compiler never touches.
+# v0.23.73-dev (F-02): element scaling no longer goes through elemShiftOf at
+# all; emitScaledAdd owns the decision. The pin follows it there, forcing the
+# 32-bit scale that the old tyShift used to produce.
+mutate 'm1: every scale folds as an i32 shift' \
+    's/const bool pow2=(scale&(scale-1))==0;/scale=4;const bool pow2=(scale\&(scale-1))==0;/' \
     must_differ '12-byte element' 0 'struct T { a: i32, b: i32, c: i32 }
 fn main() -> i32 { let t: T[3] = T { 0, 0, 0 }; t[2].a = 5; return t[0].c; }'
 # m2: the same, from the other end — a non-power-of-two scaled by 1. The
@@ -614,8 +630,10 @@ fn main() -> i32 { let t: T[3] = T { 0, 0, 0 }; t[2].a = 5; return t[0].c; }'
 # element it is t[0].b. (Index 2 was tried first and proved nothing: at 1 byte
 # per element it lands two bytes into t[0].a, where the low byte — the only one
 # a process exit status carries — is untouched.)
+# v0.23.73-dev (F-02): the pin moves from elemShiftOf's return value to the
+# single scaling leaf, forcing scale=1 the way m1 forces scale=4.
 mutate 'm2: a 12-byte element scaled by 1' \
-    's/if(sz==0||(sz&(sz-1))!=0u)return -1;/if(sz==0||(sz\&\&(sz-1))!=0u)return 0;/' \
+    's/const bool pow2=(scale&(scale-1))==0;/scale=1;const bool pow2=(scale\&(scale-1))==0;/' \
     must_differ '12-byte element' 0 'struct T { a: i32, b: i32, c: i32 }
 fn main() -> i32 { let t: T[6] = T { 0, 0, 0 }; t[4].a = 5; return t[0].b; }'
 # m3 and m4: the element's own size, dropped in one scope at a time. Both
@@ -772,10 +790,10 @@ new=$(wc -l < "$OUT/got-old.txt")
 # same way, so fifteen families are skipped and the pre-existing count is still
 # 288: 333 recorded, 45 of them belonging to the fifteen rounds this suite
 # knows are new.
-[ "$old" -eq 297 ] \
-    || { echo "FAIL: expected 297 pre-existing baseline rows, found $old" >&2; exit 1; }
-[ "$new" -eq 297 ] \
-    || { echo "FAIL: expected 297 rows of pre-existing output, found $new" >&2; exit 1; }
+[ "$old" -eq 303 ] \
+    || { echo "FAIL: expected 303 pre-existing baseline rows, found $old" >&2; exit 1; }
+[ "$new" -eq 303 ] \
+    || { echo "FAIL: expected 303 rows of pre-existing output, found $new" >&2; exit 1; }
 # And this round's example is recorded, in all three modes, or the baseline is
 # not doing its job.
 [ "$(grep -c '^array_elem_types\.' "$OUT/hashes.txt")" -eq 3 ] \
