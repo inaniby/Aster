@@ -1,6 +1,6 @@
 # Aster — Architecture
 
-**As of v0.23.73-dev.** This document is a structural map of the compiler in
+**As of v0.23.74-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
 carries **no signing key of its own**. It is descriptive, not a feature
 catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the

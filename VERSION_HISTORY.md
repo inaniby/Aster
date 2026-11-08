@@ -1,3 +1,39 @@
+## v0.23.74-dev — frontend semantics: u64 folding, tag namespaces, case ranges, pointer stores
+
+The second repair round after `AUDIT-v0.23.72-dev.md`. It closes **F-03**,
+**F-04**, **F-05**, **F-06** and **F-11** — the four frontend-semantics items
+grouped in §8 as "前端语义四项", plus the P2 `DerefAssign` check. One coherent
+theme: every one is a *static* rule the compiler applied to the wrong type,
+applied in the wrong declaration order, or skipped entirely. No syntax is
+added, code generation is untouched, and no program written before this round
+compiles to different bytes.
+
+### What changed in `src/aster.cpp`
+
+| Fix | Edit |
+| --- | --- |
+| **F-03** | `foldConst(const Expr&, bool u64Target = false)`. Only the two `u64` global-initializer slots pass `ty.k==Ty::U64`; in that mode `Add`/`Sub`/`Mul`/`Shl` fold through `uint64_t` wrap. `i32`/`i64`/`u32` keep the historical "overflows i64 in global variable initializer" refusals, so the widening cannot leak. |
+| **F-06** | New `constantShape(const Expr&)` (AST-shape only, never a value) and `foldedIndex(const Expr&, int64_t&)`. All three `checkArrayBounds()` sites now call `foldedIndex`: a genuinely dynamic index stays dynamic, a constant-shaped index that cannot fold raises `array index constant expression overflows or is invalid` instead of silently skipping the bounds check. |
+| **F-04** | New `rejectTagConflict(const Token&, const std::string&)` called from `structDeclaration()` (both struct and union), `enumDeclaration()` and `typeAliasDeclaration()`. Cross-checks `g_structIndex` / `g_enumIndex` / `g_typeAlias` regardless of declaration order; the historical messages (`type alias conflicts with a struct: P`, `duplicate type alias: P`) are preserved. |
+| **F-05** | `caseValueFits()` gains `case Ty::Enum: return enumValueFits(folded);` — an enum is an i32 underneath, matching `initializerFits()`. |
+| **F-11** | Sema's `Stmt::DerefAssign` calls `checkValue(ptrElemType(inner), …, false)` for a typed pointer, matching the element Codegen already uses to pick the store width. An untyped `ptr` keeps its historical 64-bit store. |
+
+### Evidence
+
+- **Strict build**: `g++ -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp` — `BUILD_EXIT=0`.
+- **Audit probes, before → after**: `F03_u64_global_const` `REJECTED → BUILD_OK`; `F04_label_shadow` `type mismatch → struct name conflicts with a type alias: P`; `F05_switch_enum_case` `BUILD_OK EXIT=1 → REJECTED`; `F06_overflow_index` `BUILD_OK EXIT=11 → REJECTED`; `F11_deref_bool` `BUILD_OK EXIT=1 → REJECTED`. All eight controls are unchanged, including the historical `F04_ctl_reverse` message.
+- **Two new 9-layer resident suites**: `tests/const-fold-u64-checks.sh` (F-03 + F-06) and `tests/front-sema-checks.sh` (F-04 + F-05 + F-11). Each covers strict build, source guards, static diagnostics with position + caret, an accept/refuse behavioural matrix, a gcc C twin, all four ELF writers, a coverage census, six mutations and the byte baseline. **12/12 mutations caught**.
+- **Two shipped examples**: `examples/const_fold_u64.ast` (→ 15) and `examples/front_sema.ast` (→ 28), with `tests/const-fold-u64-twin.c` and `tests/front-sema-twin.c` as host oracles.
+- **Four stale source pins realigned**: `operator-checks.sh` and `integer-cast-checks.sh` pin the new `foldConst(..., u64Target)` call shapes; `alias-const-checks.sh`'s m6 mutation targets `rejectTagConflict`'s alias-table branch; `type-strictness-checks.sh`'s carve-out census goes from two `checkValue(..., false)` sites to three. 18 high-risk existing suites were re-run individually and all pass.
+- **Zero drift**: `tests/baseline/v0.23.74-dev/example-hashes.txt` has **390 rows** — all **384** inherited v0.23.73-dev rows are byte-identical, plus the 6 rows for the two new examples.
+- **Gate census**: 132 suites, 131 examples, 390 baseline rows, 46 mutation suites, 36 suites declaring 224 mutant builds (100% caught), and 84.88% line coverage (floor 80%).
+
+### Still open
+
+F-07 (signedness), F-08/F-09/F-10/F-12 (ELF alignment contracts), the seven
+gate meta-findings, six static observations and K-01 stay queued on §8's
+route, one theme per version. See `VALIDATION-v0.23.74-dev.md`.
+
 ## v0.23.73-dev — fix the two P0s: AAPCS64 stack arguments and the UXTW scale
 
 The first repair round after `AUDIT-v0.23.72-dev.md`. It fixes **F-01** and
