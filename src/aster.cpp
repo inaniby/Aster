@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.72-dev"
+#define ASTER_VERSION_STRING "0.23.73-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -686,13 +686,19 @@ static bool tyIsInteger(Ty t) { return t.k == Ty::I32 || t.k == Ty::U32 || t.k =
 // U32/U8/U16/U64 compare with the unsigned condition codes (LO/LS/HI/HS) and divide
 // with UDIV, unlike i32/i64.
 static bool tyIsUnsigned(Ty t) { return t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::U64 || t.k == Ty::Char; }
-// v0.23.28-dev: log2(tySize(t)) when the size is a power of two — the shift
-// `ADD Xd, Xn, Wm, UXTW #sh` folds into one instruction — or -1 when it is
-// not. Only a struct reaches the second case: a struct's size is a multiple of
-// its alignment, which need not be a power of two (`{ i32, i32, i32 }` is 12).
+// v0.23.28-dev: log2(tySize(t)) when the size is a power of two — or -1 when
+// it is not. Only a struct reaches the second case: a struct's size is a
+// multiple of its alignment, which need not be a power of two
+// (`{ i32, i32, i32 }` is 12).
 // This replaces the old tyShift, which answered 2 for every type it did not
 // name and so could not scale a struct element at all; for every scalar the
 // two agree, which is why no pre-existing element address moves.
+//
+// v0.23.73-dev (F-02): a non-negative answer does NOT mean the value can be
+// fed to UXTW's imm3 — that field is three bits and the extension is only
+// defined for sh = 0..4. emitScaledAdd owns that check; the other caller here
+// (pointer difference) uses ASR #sh, whose imm6 has no such limit, so sh>=5
+// remains valid on that path.
 static int elemShiftOf(Ty t){
     const uint32_t sz=tySize(t);
     if(sz==0||(sz&(sz-1))!=0u)return -1;
@@ -4897,7 +4903,19 @@ struct Codegen {
             const Ty t=i<ts.size()?ts[i]:Ty::I32;
             const int need=structInMemory(t)?1:int(aapcs64Slots(t));
             if(ngrn+need<=8){l.reg[i]=ngrn;l.count[i]=need;ngrn+=need;}
-            else {l.stackOff[i]=nsaa;nsaa+=argBytes(t);}
+            else {
+                // v0.23.73-dev (F-01): AAPCS64 C.12 — once an argument cannot
+                // be allocated to registers, NGRN is set to 8 and *every*
+                // remaining argument goes on the stack. Without this, a
+                // 9..16-byte aggregate in slot 7 (ngrn=7, need=2) was put on
+                // the stack but left ngrn=7: a following scalar landed in x7,
+                // and the aggregate itself was written by neither the register
+                // loop (it stops at i<8 and skips reg<0) nor the old stack
+                // loop (it started at i=8). The callee then read uninitialised
+                // bytes and the argument was lost entirely.
+                ngrn=8;
+                l.stackOff[i]=nsaa;nsaa+=argBytes(t);
+            }
         }
         l.stackBytes=(nsaa+15u)&~uint32_t(15u);
         return l;
@@ -4934,27 +4952,46 @@ struct Codegen {
         if(t==Ty::U16)return 0x79000000u|((off/2)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         return 0xb9000000u|((off/4)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
     }
-    // X16 += Widx * sizeof(elem) — the element scaling of `a[i]`.
+    // v0.23.73-dev (F-02): X16 += Widx * scale — the one scaling rule behind
+    // both the innermost element index and an outer row stride.
     //
-    // A power-of-two element (every scalar, and a struct whose size happens to
-    // be one) folds into the shifted add this has always used. A 12-byte
-    // struct cannot: no shift reaches it, so the offset is a UMADDL —
-    // `X16 = X16 + Wsize * Windex`, which reads both operands as the 32-bit
-    // values they are and needs no zero-extending of its own. (The first
-    // attempt used MADD with `ADD Xt, XZR, Widx, UXTW #0` to widen the index:
-    // in the *extended* add, Rn == 31 is the stack pointer and not XZR, so
-    // that instruction added SP instead of zero and every struct array read
-    // through this path walked off the frame.)
-    void emitElemIndex(int idxReg,Ty elem){
-        const int sh=elemShiftOf(elem);
-        if(sh>=0){
+    // `ADD X16, X16, Widx, UXTW #sh` folds a power-of-two scale into one
+    // instruction, but UXTW's imm3 is three bits and the extension is defined
+    // only for sh = 0..4. The old code emitted it for every power of two:
+    // sh = 5..7 are reserved encodings (QEMU raises SIGILL), and sh >= 8
+    // carries into the option field, turning the add into LSL/UXTX so the
+    // scale silently disappears. The non-power-of-two path was already exact
+    // — a UMADDL with an explicit multiplier — so every scale that cannot be
+    // folded now takes that same path. Keeping the decision in one function
+    // also stops a 2^5 row stride and a 32-byte struct element from ever
+    // disagreeing about how they are scaled. (UMADDL reads both operands as
+    // the 32-bit values they are; the earlier MADD attempt used
+    // `ADD Xt, XZR, Widx, UXTW #0` to widen the index, but in an *extended*
+    // add Rn == 31 is SP and not XZR, so it added the stack pointer.)
+    void emitScaledAdd(int idxReg,uint64_t scale){
+        if(scale==0)return;                       // every dimension is at least 1
+        if(scale>0xffffffffull)
+            throw Error("internal compiler error: array row stride exceeds 32 bits");
+        const bool pow2=(scale&(scale-1))==0;
+        unsigned sh=0;uint64_t bit=1;
+        if(pow2)while(bit<scale){bit<<=1;++sh;}
+        if(pow2&&sh<=4){
             emit(0x8b200000u|(uint32_t(idxReg)<<16)|(0b010u<<13)|(uint32_t(sh)<<10)|(uint32_t(kGlobalBase)<<5)|uint32_t(kGlobalBase));
             return;
         }
         const int sz=temp();
-        emit(movInt(sz,tySize(elem)));                                                                              // MOVZ Wsz, #sizeof(elem)
+        // MOVZ Wsz, #low / MOVK Wsz, #high, LSL #16 — a row stride is a
+        // product of dimensions, which for a large global can pass 16 bits
+        // (a 1000000-element i32 global strides by 4000000), so the low half
+        // alone is not enough.
+        emit(0x52800000u|((uint32_t(scale)&0xffffu)<<5)|uint32_t(sz));
+        if(scale>>16)emit(0x72a00000u|(((uint32_t(scale)>>16)&0xffffu)<<5)|uint32_t(sz));
         emit(0x9ba00000u|(uint32_t(idxReg)<<16)|(uint32_t(kGlobalBase)<<10)|(uint32_t(sz)<<5)|uint32_t(kGlobalBase)); // UMADDL X16, Wsz, Widx, X16
         releaseTemp(sz);
+    }
+    // X16 += Widx * sizeof(elem) — the element scaling of `a[i]`.
+    void emitElemIndex(int idxReg,Ty elem){
+        emitScaledAdd(idxReg,tySize(elem));
     }
     // The address of one array element, left in X16 — shared by every path that
     // reaches an element (a read, a store, a field of one, &a[i]) so they
@@ -5052,29 +5089,12 @@ struct Codegen {
     // subscript, whose stride is the product of the dimensions below it times
     // the element size. The innermost subscript's stride is the element size
     // itself, which is emitElemIndex's own case; an outer one is a product
-    // that need not be a power of two (a 2x3 i32 grid strides by 12), so the
-    // shifted add is taken only when the product happens to be one and the
-    // UMADDL otherwise — the same two shapes emitElemIndex picks between, for
-    // the same reason.
+    // that need not be a power of two (a 2x3 i32 grid strides by 12).
+    // v0.23.73-dev (F-02): the power-of-two case is now further limited to
+    // sh<=4 by emitScaledAdd, so a 2^5 (or larger) row takes the multiply
+    // path instead of a reserved UXTW encoding. Both callers share one rule.
     void emitElemStride(int idxReg,uint64_t stride){
-        if(stride==0)return;                       // unreachable: every dimension is at least 1
-        if(stride>0xffffffffull)
-            throw Error("internal compiler error: array row stride exceeds 32 bits");
-        if((stride&(stride-1))==0){
-            unsigned sh=0;uint64_t bit=1;
-            while(bit<stride){bit<<=1;++sh;}
-            emit(0x8b200000u|(uint32_t(idxReg)<<16)|(0b010u<<13)|(sh<<10)|(uint32_t(kGlobalBase)<<5)|uint32_t(kGlobalBase));
-            return;
-        }
-        const int sz=temp();
-        // MOVZ Wsz, #low / MOVK Wsz, #high, LSL #16 — a row stride is a
-        // product of dimensions, which for a large global can pass 16 bits
-        // (a 1000000-element i32 global strides by 4000000), so the low half
-        // alone is not enough.
-        emit(0x52800000u|((uint32_t(stride)&0xffffu)<<5)|uint32_t(sz));
-        if(stride>>16)emit(0x72a00000u|(((uint32_t(stride)>>16)&0xffffu)<<5)|uint32_t(sz));
-        emit(0x9ba00000u|(uint32_t(idxReg)<<16)|(uint32_t(kGlobalBase)<<10)|(uint32_t(sz)<<5)|uint32_t(kGlobalBase)); // UMADLL X16, Wsz, Widx, X16
-        releaseTemp(sz);
+        emitScaledAdd(idxReg,stride);
     }
     // v0.23.31-dev: the address a multi-dimensional subscript chain denotes,
     // left in X16 — `a[i][j]`, `a[i][j][k]`, `s.xs[i][j]`. The chain walks
@@ -5461,7 +5481,13 @@ struct Codegen {
             if(structInMemory(at(i))&&lay.reg[i]>=0)
                 emit(addImm(lay.reg[i],31,copyBase+copyOff[i]));
         }
-        for(size_t i=8;i<nargs;++i){
+        // v0.23.73-dev (F-01): walk *every* argument, not just i>=8. A slot
+        // below 8 can itself be a stack argument (a 9..16-byte aggregate at
+        // ngrn=7, or any later spill once NGRN is pinned to 8), and starting
+        // the loop at 8 lost that argument entirely. reg[i]>=0 means the
+        // register loop above has already placed it.
+        for(size_t i=0;i<nargs;++i){
+            if(lay.reg[i]>=0)continue;
             const uint32_t sourceOffset=total+uint32_t(scratchByte+argOff[i]);
             if(sourceOffset>32760)throw Error("argument scratch offset exceeds load range");
             const Ty ty=at(i);
