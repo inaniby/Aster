@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.74-dev"
+#define ASTER_VERSION_STRING "0.23.75-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -684,7 +684,8 @@ static bool tyIs64(Ty t) { return t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty:
 // not an address, and not a composite.
 static bool tyIsInteger(Ty t) { return t.k == Ty::I32 || t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Char || t.k == Ty::Enum; }
 // U32/U8/U16/U64 compare with the unsigned condition codes (LO/LS/HI/HS) and divide
-// with UDIV, unlike i32/i64.
+// with UDIV, unlike i32/i64. For a mixed pair the promoted result type decides —
+// see opIsUnsigned (v0.23.75-dev, F-07).
 static bool tyIsUnsigned(Ty t) { return t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::U64 || t.k == Ty::Char; }
 // v0.23.28-dev: log2(tySize(t)) when the size is a power of two — or -1 when
 // it is not. Only a struct reaches the second case: a struct's size is a
@@ -3201,6 +3202,15 @@ static Ty promoteInt(Ty a,Ty b){
     if(tyIs64(a)||tyIs64(b))return Ty::I64;
     return (tyIsUnsigned(a)||tyIsUnsigned(b))?Ty::U32:Ty::I32;
 }
+// v0.23.75-dev (F-07): signedness belongs to the *promoted* result type, not
+// to the individual operands. promoteInt(i64,u32) answers I64 because a
+// signed 64-bit value represents every u32, so `a:i64=-5; b:u32=3; a<b` must
+// use LT and `a/b` must use SDIV. Asking "is either operand unsigned" instead
+// contradicts the very type exprType/promoteInt computed for the expression
+// and read every mixed i64/narrow-unsigned pair as a 2^64 value: 32 of 96
+// comparison probes and 16 of 24 div/mod probes were miscompiled. Condition
+// codes, UDIV/SDIV and the remainder's divide all consult this one answer.
+static bool opIsUnsigned(Ty a,Ty b){return tyIsUnsigned(promoteInt(a,b));}
 // May a value of type `from` be stored into a slot of type `to`?
 //
 //   * the same type always may;
@@ -3827,7 +3837,7 @@ struct Codegen {
                 return promoteInt(a,b);
             }
             // v0.23.17-dev (round 1). `%` follows Mul/Div (integer promotion,
-            // unsigned picks UDIV). A shift takes the left operand's type and
+            // UDIV when the promoted result is unsigned). A shift takes the left operand's type and
             // ignores the right's — the count is not part of the value type,
             // which is also what makes `u8 << 24` a u8. The bitwise operators
             // promote like the arithmetic ones. `~` keeps its operand's type.
@@ -4725,7 +4735,7 @@ struct Codegen {
                 // the width rules above the emit helpers — so there is
                 // deliberately no SXTW here.
                 int a=gen(*e.a,opWant),b=gen(*e.b,opWant);
-                const bool isUnsigned=tyIsUnsigned(ta)||tyIsUnsigned(tb);
+                const bool isUnsigned=opIsUnsigned(ta,tb);
                 int q=temp();
                 emit(((wide?0x9ac00000u:0x1ac00000u)|(isUnsigned?0x800u:0xc00u))
                      |(uint32_t(b)<<16)|(uint32_t(a)<<5)|uint32_t(q));   // SDIV/UDIV Qq, Wa, Wb
@@ -4911,14 +4921,15 @@ struct Codegen {
                 const Ty opWant=wide?Ty::I64:want;
                 int a=gen(*e.a,opWant),b=gen(*e.b,opWant);
                 // sf (bit 31) selects the 64-bit form of each instruction.
-                // Division additionally picks UDIV when either operand is
-                // unsigned: bit 10 is what separates UDIV from SDIV, and this
-                // is the only place the two differ.
+                // Division picks UDIV when the promoted result type is
+                // unsigned (F-07): bit 10 is what separates UDIV from SDIV,
+                // and this is the only place the two differ. The same
+                // opIsUnsigned answer drives the comparison condition codes.
                 uint32_t base;
                 if(e.k==Expr::Add)      base=wide?0x8b000000u:0x0b000000u;
                 else if(e.k==Expr::Sub) base=wide?0xcb000000u:0x4b000000u;
                 else if(e.k==Expr::Mul) base=wide?0x9b007c00u:0x1b007c00u;
-                else base=(wide?0x9ac00000u:0x1ac00000u)|((tyIsUnsigned(ta)||tyIsUnsigned(tb))?0x800u:0xc00u);
+                else base=(wide?0x9ac00000u:0x1ac00000u)|((opIsUnsigned(ta,tb))?0x800u:0xc00u);
                 // The destination aliases the left operand, reducing temporary pressure.
                 emit(base|(uint32_t(b)<<16)|(uint32_t(a)<<5)|uint32_t(a));
                 releaseTemp(b);
@@ -5734,7 +5745,7 @@ struct Codegen {
             emit((wide?0xeb00001fu:0x6b00001fu)|((uint32_t(b)&0x1f)<<16)|((uint32_t(a)&0x1f)<<5)); // CMP (X or W)
             releaseTemp(b);releaseTemp(a);
             int d=temp();
-            emit(csetBool(d,comparisonCond(e.k,tyIsUnsigned(ta)||tyIsUnsigned(tb)))); // CSET Wd, <cond>
+            emit(csetBool(d,comparisonCond(e.k,opIsUnsigned(ta,tb)))); // CSET Wd, <cond>
             return d;
         }
         if(e.k==Expr::Not){
@@ -5817,7 +5828,7 @@ struct Codegen {
             int a=gen(*c.a,cmpTy),b=gen(*c.b,cmpTy);
             emit((wide?0xeb00001fu:0x6b00001fu)|((uint32_t(b)&0x1f)<<16)|((uint32_t(a)&0x1f)<<5));releaseTemp(b);releaseTemp(a);
             at=code.size();emit(0);
-            return comparisonCond(c.k,tyIsUnsigned(ta)||tyIsUnsigned(tb))^1;    // branch when the comparison is false
+            return comparisonCond(c.k,opIsUnsigned(ta,tb))^1;    // branch when the comparison is false
         }
         const Ty t=exprType(c);
         if(t==Ty::Bool){
