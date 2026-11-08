@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.75-dev"
+#define ASTER_VERSION_STRING "0.23.76-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -6549,8 +6549,12 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     const bool hasData=!data.empty()||bssSize>0||hasTlsSection;
     const bool hasDataSection=!data.empty();
     const bool hasBssSection=bssSize>0;
+    // v0.23.76-dev: the data PT_LOAD must start at a boundary every section
+    // inside it declares. Page alignment alone used to leave .data at
+    // 0x403000 while its section header claimed 8192 from the input object.
+    const uint64_t dataStartAlign=std::max(pageSize,std::max(dataAlign,std::max(bssAlign,tlsAlign)));
     uint64_t dataFileOff=0,dataVaddr=0;
-    if(hasData){dataFileOff=alignUp(afterRodata,pageSize);dataVaddr=base+dataFileOff;}
+    if(hasData){dataFileOff=alignUp(afterRodata,dataStartAlign);dataVaddr=base+dataFileOff;}
     // v0.23.51-dev: the PT_TLS image sits in the data PT_LOAD at file offset
     // (tlsVaddr-base), so the loader maps one copy per thread. The block goes
     // right after .data, not after .bss: a large zero-filled .bss between the
@@ -6562,7 +6566,9 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     // They differ precisely by .tbss: it starts at the block-aligned end of
     // .tdata and occupies address space only, so it moves memsz and not filesz.
     const uint64_t tlsFileEnd=hasTdataSection?tlsFileOff+tls.size():tlsFileOff;
-    const uint64_t tbssFileOff=hasTbssSection?alignUp(tlsFileEnd,kTlsBlockAlign):tlsFileEnd;
+    // v0.23.76-dev: .tbss declares tlsAlign too, so its start has to honour
+    // that same value — a fixed 16 left a 32-aligned section half a block off.
+    const uint64_t tbssFileOff=hasTbssSection?alignUp(tlsFileEnd,tlsAlign):tlsFileEnd;
     // tlsMemEnd is an offset in the same space as the file offsets and is also
     // the distance from `base` to the end of the thread-local block in memory.
     // Addresses add base; sizes subtract the segment's file offset.
@@ -9265,6 +9271,14 @@ uint64_t checkedEnd(uint64_t off,uint64_t size,uint64_t total,const char* what){
 // bytes; ELF requires a power of two anyway, and no real input needs more than
 // a page.
 static bool validSectionAlign(uint64_t a){return a>=1&&a<=65536&&(a&(a-1))==0;}
+// v0.23.76-dev: ELF64 treats sh_addralign 0 and 1 alike as "no alignment
+// requirement". A section still needs a minimum for its own bytes, so 0 is
+// normalised to that minimum rather than rejected; every other value keeps
+// the original validity and minimum-size checks. .rodata already had this
+// carve-out, and normalises 0 to its own minimum of 1.
+static uint64_t sectionAlignOrMinimum(uint64_t a,uint64_t minimum){
+    return a==0?minimum:a;
+}
 std::string sectionName(const std::vector<uint8_t>& file,const Shdr& shstr,uint32_t offset){
     checkedEnd(shstr.offset,shstr.size,file.size(),"section-name table");
     if(offset>=shstr.size)throw Error("malformed object: section name offset is out of bounds");
@@ -9362,20 +9376,20 @@ ParsedObject parseObject(const std::string& input){
     if(text.type!=1||(text.flags&0x6)!=0x6||text.addralign<4||text.size==0||text.size%4)throw Error(input+": unsupported .text section attributes");
     if(sym.type!=2||sym.entsize!=sizeof(Sym)||sym.size%sizeof(Sym)||sym.link!=(uint32_t)strIndex||sym.info>sym.size/sizeof(Sym))throw Error(input+": malformed or unsupported symbol table");
     if(str.type!=3)throw Error(input+": .strtab must be a string table");
-    if(result.dataIndex>=0){const Shdr& d=sections[result.dataIndex];if(d.type!=1||(d.flags&0x3)!=0x3||!validSectionAlign(d.addralign)||d.addralign<4||d.size%4||d.size==0)throw Error(input+": unsupported .data section attributes");result.dataAlign=d.addralign;result.data.assign(file.begin()+d.offset,file.begin()+d.offset+d.size);}
+    if(result.dataIndex>=0){const Shdr& d=sections[result.dataIndex];const uint64_t da=sectionAlignOrMinimum(d.addralign,4);if(d.type!=1||(d.flags&0x3)!=0x3||!validSectionAlign(da)||da<4||d.size%4||d.size==0)throw Error(input+": unsupported .data section attributes");result.dataAlign=da;result.data.assign(file.begin()+d.offset,file.begin()+d.offset+d.size);}
     if(result.rodataIndex>=0){const Shdr& r=sections[result.rodataIndex];if(r.type!=1||(r.flags&0x2)==0||(r.flags&0x1)!=0||r.size==0||(r.addralign!=0&&!validSectionAlign(r.addralign)))throw Error(input+": unsupported .rodata section attributes");result.rodataAlign=r.addralign<1?1:r.addralign;result.rodata.assign(file.begin()+r.offset,file.begin()+r.offset+r.size);}
-    if(result.bssIndex>=0){const Shdr& b=sections[result.bssIndex];if(b.type!=8||(b.flags&0x3)!=0x3||!validSectionAlign(b.addralign)||b.addralign<4||b.size%4||b.size==0)throw Error(input+": unsupported .bss section attributes");result.bssAlign=b.addralign;result.bssSize=b.size;}
-    if(result.tlsIndex>=0){const Shdr& t=sections[result.tlsIndex];if(t.type!=1||(t.flags&0x2u)==0||(t.flags&0x400u)==0||!validSectionAlign(t.addralign)||t.addralign<4||t.size%4)throw Error(input+": unsupported .tdata section attributes");result.tdataAlign=t.addralign<4?16:t.addralign;result.tdata.assign(file.begin()+t.offset,file.begin()+t.offset+t.size);}
+    if(result.bssIndex>=0){const Shdr& b=sections[result.bssIndex];const uint64_t ba=sectionAlignOrMinimum(b.addralign,4);if(b.type!=8||(b.flags&0x3)!=0x3||!validSectionAlign(ba)||ba<4||b.size%4||b.size==0)throw Error(input+": unsupported .bss section attributes");result.bssAlign=ba;result.bssSize=b.size;}
+    if(result.tlsIndex>=0){const Shdr& t=sections[result.tlsIndex];const uint64_t ta=sectionAlignOrMinimum(t.addralign,16);if(t.type!=1||(t.flags&0x2u)==0||(t.flags&0x400u)==0||!validSectionAlign(ta)||ta<4||t.size%4)throw Error(input+": unsupported .tdata section attributes");result.tdataAlign=ta;result.tdata.assign(file.begin()+t.offset,file.begin()+t.offset+t.size);}
     // v0.23.52-dev: .tbss must be SHT_NOBITS — that is the whole point of it, it
     // is the part of the per-thread block that has no bytes to carry. An object
     // whose .tbss were PROGBITS would be claiming file bytes for zeroes.
-    if(result.tbssIndex>=0){const Shdr& t=sections[result.tbssIndex];if(t.type!=8||(t.flags&0x2u)==0||(t.flags&0x400u)==0||!validSectionAlign(t.addralign)||t.addralign<4||t.size%4)throw Error(input+": unsupported .tbss section attributes");result.tbssSize=t.size;
+    if(result.tbssIndex>=0){const Shdr& t=sections[result.tbssIndex];const uint64_t ta=sectionAlignOrMinimum(t.addralign,16);if(t.type!=8||(t.flags&0x2u)==0||(t.flags&0x400u)==0||!validSectionAlign(ta)||ta<4||t.size%4)throw Error(input+": unsupported .tbss section attributes");result.tbssSize=t.size;
         // v0.23.66-dev: carry .tbss's alignment too. A block with no
         // initialized bytes at all used to contribute nothing to the merged
         // block's alignment, so an object whose only thread-locals were
         // zero-initialized could land the block 16 bytes off where its own
         // .tbss said it had to start.
-        result.tbssAlign=t.addralign<4?16:t.addralign;}
+        result.tbssAlign=ta;}
     checkedEnd(text.offset,text.size,file.size(),".text data");result.text.assign(file.begin()+text.offset,file.begin()+text.offset+text.size);
     std::vector<std::string> namesByIndex;
     bool tlsMarkerSeen = false;
@@ -10145,6 +10159,11 @@ struct SoDynSpec {
     // v0.23.71-dev: the alignment declared for .rodata, carried from the
     // source object (build-so) or from the merged inputs (link-so).
     uint64_t rodataAlign=1;
+    // v0.23.76-dev: the merged TLS block's alignment, carried from the input
+    // objects (link-so) or left at the default (build-so). PT_TLS p_align and
+    // the .tdata/.tbss sh_addralign must agree with the address they are laid
+    // out at; the old writer hardcoded 16 and silently downgraded a 32.
+    uint64_t tlsAlign=kTlsBlockAlign;
     // v0.23.52-dev: the thread-local block. `tls` is its .tdata bytes (empty when
     // every thread-local is zero-initialized); `tbssSize` is the .tbss tail, which
     // owns no file bytes. Which globals are thread-local travels in `globals` as
@@ -10344,8 +10363,8 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     // the RELRO page, before .bss: the file's writable PT_LOAD must not stretch
     // across a zero-filled .bss to reach it, which would write the .bss out as
     // padding and make the file grow with it. Order: RELRO | .tdata | .tbss | .bss.
-    const uint64_t tdataVaddr=hasTls?alignUp(relroEnd,kTlsBlockAlign):0,tdataSize=spec.tls.size();
-    const uint64_t tbssVaddr=hasTls?alignUp(tdataVaddr+tdataSize,kTlsBlockAlign):0;
+    const uint64_t tdataVaddr=hasTls?alignUp(relroEnd,spec.tlsAlign):0,tdataSize=spec.tls.size();
+    const uint64_t tbssVaddr=hasTls?alignUp(tdataVaddr+tdataSize,spec.tlsAlign):0;
     const uint64_t tlsMemEnd=hasTbss?tbssVaddr+spec.tbssSize:(hasTls?tdataVaddr+tdataSize:relroEnd);
     const uint64_t bssVaddr=hasTls?alignUp(tlsMemEnd,8):relroEnd;
     const uint64_t bssMemEnd=bssVaddr+spec.bssSize;
@@ -10593,7 +10612,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     Phdr p2{};p2.type=2;p2.flags=6;p2.offset=dynOff;p2.vaddr=dynOff;p2.paddr=dynOff;p2.filesz=dynSize;p2.memsz=dynSize;p2.align=8;
     // v0.23.52-dev: PT_TLS, after PT_DYNAMIC and before PT_GNU_RELRO — the region
     // it describes is deliberately outside RELRO, because .tdata is SHF_WRITE.
-    Phdr ptls{};if(hasTls){ptls.type=7;ptls.flags=6;ptls.offset=tdataVaddr;ptls.vaddr=tdataVaddr;ptls.paddr=tdataVaddr;ptls.filesz=tdataSize;ptls.memsz=tlsMemEnd-tdataVaddr;ptls.align=kTlsBlockAlign;}
+    Phdr ptls{};if(hasTls){ptls.type=7;ptls.flags=6;ptls.offset=tdataVaddr;ptls.vaddr=tdataVaddr;ptls.paddr=tdataVaddr;ptls.filesz=tdataSize;ptls.memsz=tlsMemEnd-tdataVaddr;ptls.align=spec.tlsAlign;}
     Phdr p3{};p3.type=0x6474e552;p3.flags=4;p3.offset=relroVaddr;p3.vaddr=relroVaddr;p3.paddr=relroVaddr;p3.filesz=relroEnd-relroVaddr;p3.memsz=relroEnd-relroVaddr;p3.align=1;
     // v0.23.33-dev: the unwind table is read out of the running image, so it
     // rides in a PT_LOAD of its own past every other segment.
@@ -10632,8 +10651,8 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     // v0.23.52-dev: the thread-local sections. .tdata carries the initialized
     // bytes; .tbss is SHT_NOBITS, so its sh_offset is where those bytes end and
     // it owns none — the loader zeroes it for every thread instead.
-    if(hasTdata)setSh(S_TDATA,1,0x1|0x2|0x400,tdataVaddr,tdataVaddr,tdataSize,0,0,kTlsBlockAlign,0);
-    if(hasTbss) setSh(S_TBSS,8,0x1|0x2|0x400,tbssVaddr,tbssVaddr,spec.tbssSize,0,0,kTlsBlockAlign,0);
+    if(hasTdata)setSh(S_TDATA,1,0x1|0x2|0x400,tdataVaddr,tdataVaddr,tdataSize,0,0,spec.tlsAlign,0);
+    if(hasTbss) setSh(S_TBSS,8,0x1|0x2|0x400,tbssVaddr,tbssVaddr,spec.tbssSize,0,0,spec.tlsAlign,0);
     if(hasInit)setSh(S_INITARR,1,0x3,initArrVaddr,initArrVaddr,initArrSize,0,0,8,0);
     setSh(S_SYMTAB,2,0,0,symOff,symSize,S_STRTAB,outSymbols.empty()?0u:1u,8,sizeof(Sym));
     setSh(S_STRTAB,3,0,0,strOff,st.strtab.size(),0,0,1,0);
@@ -10803,7 +10822,11 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
     }
     // v0.23.52-dev: the .tbss base of the merged block, added now that every
     // object's .tdata has been merged and the .tbss part's start is final.
-    if(!mergedTls.empty()||mergedTbss>0){const uint64_t tb=alignUp(mergedTls.size(),kTlsBlockAlign);
+    // v0.23.76-dev: this linker hands kind-5 offsets straight to the writer,
+    // which resolves them as tlsVaddr + off, so the .tbss base must be added
+    // here. linkObjects instead resolves kind 5 as tbssVaddr + off and must
+    // not add it a second time.
+    if(!mergedTls.empty()||mergedTbss>0){const uint64_t tb=alignUp(mergedTls.size(),maxTlsAlign);
         for(auto& kv:definitions)if(kv.second.kind==5)kv.second.off+=tb;}
     // Chain per-object run-time global initializers in input order (same rule as link-obj).
     uint64_t initEndOff=0;bool hasInitEnd=false;std::string firstInit;
@@ -10817,6 +10840,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
     SoDynSpec spec;spec.soname=sonameIn.empty()?baseNameOf(output):sonameIn;spec.needed=needed;
     spec.data=mergedData;spec.rodata=mergedRodata;spec.bssSize=mergedBss;
     spec.rodataAlign=maxRodataAlign;
+    spec.tlsAlign=maxTlsAlign;
     // v0.23.52-dev: the merged thread-local block. .tbss starts at the first
     // block-aligned offset past the merged .tdata, which the writer recomputes
     // from these two sizes — an object's own .tbss offsets already sit past its
@@ -11026,8 +11050,11 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     // merged before it, so the merged block's .tbss base — the first
     // block-aligned offset past the whole .tdata part — is added here, once the
     // last object has been merged and that part's size is final.
-    if(!mergedTls.empty()||mergedTbss>0){const uint64_t tb=alignUp(mergedTls.size(),kTlsBlockAlign);
-        for(auto& kv:definitions)if(kv.second.kind==5)kv.second.off+=tb;}
+    // v0.23.76-dev: linkObjects resolves kind 5 as tbssVaddr + off, and
+    // tbssVaddr is already the maxTlsAlign-aligned .tbss start. Adding the
+    // block base again double-counted it: with a 16-byte block the doubled
+    // offset landed in zero padding and merely looked correct, but a
+    // 4096-aligned block made the TLS access run past the PT_LOAD.
     if(startCount==0) throw Error("no input object defines global _start");
     if(startCount>1) throw Error("multiple input objects define global _start");
     const uint64_t textVaddr=base+pageSize;
@@ -11040,7 +11067,10 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     // exists even when there is no ordinary .data/.bss — only thread-local globals.
     // v0.23.52-dev: .tbss makes that "only thread-locals" case larger: the block
     // can now be entirely zero-initialized, with no .tdata bytes at all.
-    if(!mergedData.empty()||mergedBss>0||!mergedTls.empty()||mergedTbss>0){uint64_t dataFileOff=alignUp(afterRodata,pageSize);dataVaddr=base+dataFileOff;bssVaddr=dataVaddr+mergedData.size();}
+    // v0.23.76-dev: the same declared-alignment rule writeElfBytes applies.
+    // The two must agree or a symbol's address would disagree with its section.
+    const uint64_t dataStartAlign=std::max(pageSize,std::max(maxDataAlign,std::max(maxBssAlign,maxTlsAlign)));
+    if(!mergedData.empty()||mergedBss>0||!mergedTls.empty()||mergedTbss>0){uint64_t dataFileOff=alignUp(afterRodata,dataStartAlign);dataVaddr=base+dataFileOff;bssVaddr=dataVaddr+mergedData.size();}
     // v0.23.52-dev: the block sits between .data and .bss. Keeping .bss after
     // the whole TLS block means the data PT_LOAD's file size stops at .tdata,
     // so a large .bss occupies memory only instead of padding the file.
@@ -11050,7 +11080,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     // has no loader to zero it: the kernel does, as the part of the PT_LOAD that
     // lies past p_filesz — which is exactly what the memsz arithmetic below asks
     // for.
-    const uint64_t tbssVaddr=alignUp(tlsVaddr+mergedTls.size(),kTlsBlockAlign);
+    const uint64_t tbssVaddr=alignUp(tlsVaddr+mergedTls.size(),maxTlsAlign);
     const uint64_t tlsMemEnd=mergedTbss>0?tbssVaddr+mergedTbss:tlsVaddr+mergedTls.size();
     if(hasTls)bssVaddr=alignUp(tlsMemEnd,maxBssAlign<4?4:maxBssAlign);
     std::map<std::string,uint64_t> symbolVaddr;std::map<std::string,int> symbolKind;
