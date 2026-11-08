@@ -88,7 +88,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.73-dev"
+#define ASTER_VERSION_STRING "0.23.74-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -960,6 +960,12 @@ static bool caseValueFits(Ty t,int64_t folded){
         case Ty::U16: return folded>=0&&folded<=65535;
         case Ty::U32: return folded>=0&&(uint64_t)folded<=0xFFFFFFFFu;
         case Ty::I32: return folded>=INT32_MIN&&folded<=INT32_MAX;
+        // v0.23.74-dev (F-05): an enum is an i32 underneath, exactly as an
+        // enum slot is — initializerFits applies the same predicate. The old
+        // `default: return true` let `case 4294967296` on an enum subject be
+        // accepted, truncated to 0 at the comparison and matched against Red,
+        // even though `let c: Color = 4294967296;` itself was refused.
+        case Ty::Enum: return enumValueFits(folded);
         // v0.23.48-dev: u64 holds every folded value's bit pattern exactly
         // (-1 is 2^64-1, never a truncation); i64 holds everything.
         case Ty::U64: return true;
@@ -2354,7 +2360,17 @@ class Parser {
         if(cur().k==TK::Ident&&(t[p+1].k==TK::Eq||isCompoundAssign(t[p+1].k)))return assignStatement();
         throw Error("expected let, assignment, return, if, while, for, break, continue, or switch at "+std::to_string(cur().line)+":"+std::to_string(cur().col));
     }
-    int64_t foldConst(const Expr& e){
+    // v0.23.74-dev (F-03): `u64Target` says the slot being initialised is a
+    // u64. A u64 keeps every bit pattern (see initializerFits), and the same
+    // expression evaluated at run time wraps in 64 bits — but this folder
+    // applied i64 *signed* overflow checks, so
+    // `let g: u64 = 9223372036854775807 + 1;` was refused while the bare
+    // literal 9223372036854775808 and the runtime `a + b` both compiled. With
+    // u64Target the arithmetic folds on uint64_t and wraps, exactly as the
+    // emitted ADD/SUB/MUL do. Every other slot keeps its historical i64
+    // overflow errors (operator-checks.sh and the bootstrap twin pin them), so
+    // no previously-compiling program changes a byte.
+    int64_t foldConst(const Expr& e,bool u64Target=false){
         RecursionGuard depthGuard(foldDepth,2048,"constant expression");
         switch(e.k){
             case Expr::Num: return (int64_t)e.n;
@@ -2364,32 +2380,36 @@ class Parser {
             // at the target's width and signedness. A non-constant operand
             // fails inside the recursive call with the message below, which is
             // the right answer for a global initializer that is not constant.
-            case Expr::Cast: return castConstValue(foldConst(*e.a),e.ty);
+            case Expr::Cast: return castConstValue(foldConst(*e.a,u64Target),e.ty);
             case Expr::Neg: {
-                const int64_t a=foldConst(*e.a);
+                const int64_t a=foldConst(*e.a,u64Target);
+                if(u64Target)return (int64_t)(0ull-(uint64_t)a);
                 if(a==INT64_MIN)throw Error(loc(e.line,e.col,"negation overflows i64 in global variable initializer"));
                 return -a;
             }
             case Expr::Add: {
-                int64_t a=foldConst(*e.a),b=foldConst(*e.b),r=0;
+                int64_t a=foldConst(*e.a,u64Target),b=foldConst(*e.b,u64Target),r=0;
+                if(u64Target)return (int64_t)((uint64_t)a+(uint64_t)b);
                 if(__builtin_add_overflow(a,b,&r))
                     throw Error(loc(e.line,e.col,"addition overflows i64 in global variable initializer"));
                 return r;
             }
             case Expr::Sub: {
-                int64_t a=foldConst(*e.a),b=foldConst(*e.b),r=0;
+                int64_t a=foldConst(*e.a,u64Target),b=foldConst(*e.b,u64Target),r=0;
+                if(u64Target)return (int64_t)((uint64_t)a-(uint64_t)b);
                 if(__builtin_sub_overflow(a,b,&r))
                     throw Error(loc(e.line,e.col,"subtraction overflows i64 in global variable initializer"));
                 return r;
             }
             case Expr::Mul: {
-                int64_t a=foldConst(*e.a),b=foldConst(*e.b),r=0;
+                int64_t a=foldConst(*e.a,u64Target),b=foldConst(*e.b,u64Target),r=0;
+                if(u64Target)return (int64_t)((uint64_t)a*(uint64_t)b);
                 if(__builtin_mul_overflow(a,b,&r))
                     throw Error(loc(e.line,e.col,"multiplication overflows i64 in global variable initializer"));
                 return r;
             }
             case Expr::Div: {
-                int64_t a=foldConst(*e.a),b=foldConst(*e.b);
+                int64_t a=foldConst(*e.a,u64Target),b=foldConst(*e.b,u64Target);
                 if(b==0)throw Error(loc(e.line,e.col,"division by zero in global variable initializer"));
                 if(a==INT64_MIN&&b==-1)
                     throw Error(loc(e.line,e.col,"division overflows i64 in global variable initializer"));
@@ -2398,7 +2418,7 @@ class Parser {
             // v0.23.17-dev (round 1): the new operators fold too, so
             // `let g: i32 = 1 << 4;` and a `~` mask are constants like any other.
             case Expr::Mod: {
-                int64_t a=foldConst(*e.a),b=foldConst(*e.b);
+                int64_t a=foldConst(*e.a,u64Target),b=foldConst(*e.b,u64Target);
                 if(b==0)throw Error(loc(e.line,e.col,"division by zero in global variable initializer"));
                 // INT64_MIN % -1 is the other signed-overflow corner: the
                 // mathematical result is 0, but the C++ operation is UB.
@@ -2409,20 +2429,23 @@ class Parser {
             // shift whose result leaves i64 has nowhere to put its bits. Both
             // are compile errors here — the same rule constantInteger() applies
             // in every other constant position, so a shift cannot silently mean
-            // two different things depending on where it is written.
+            // two different things depending on where it is written. A u64
+            // target is the exception: its 64 bits hold the shifted value, so
+            // the left shift wraps like the emitted one instead of erroring.
             case Expr::Shl: case Expr::Shr: {
-                int64_t a=foldConst(*e.a),b=foldConst(*e.b);
+                int64_t a=foldConst(*e.a,u64Target),b=foldConst(*e.b,u64Target);
                 if(b<0||b>63)throw Error(loc(e.line,e.col,"shift count "+std::to_string(b)+" is out of range (0..63) in global variable initializer"));
                 if(e.k==Expr::Shr)return a>>b;
+                if(u64Target)return (int64_t)((uint64_t)a<<b);
                 int64_t r=0;
                 if(__builtin_mul_overflow(a,static_cast<int64_t>(1)<<b,&r))
                     throw Error(loc(e.line,e.col,"left shift overflows i64 in global variable initializer"));
                 return r;
             }
-            case Expr::BitAnd: return foldConst(*e.a)&foldConst(*e.b);
-            case Expr::BitOr:  return foldConst(*e.a)|foldConst(*e.b);
-            case Expr::BitXor: return foldConst(*e.a)^foldConst(*e.b);
-            case Expr::BitNot: return ~foldConst(*e.a);
+            case Expr::BitAnd: return foldConst(*e.a,u64Target)&foldConst(*e.b,u64Target);
+            case Expr::BitOr:  return foldConst(*e.a,u64Target)|foldConst(*e.b,u64Target);
+            case Expr::BitXor: return foldConst(*e.a,u64Target)^foldConst(*e.b,u64Target);
+            case Expr::BitNot: return ~foldConst(*e.a,u64Target);
             default: throw Error(loc(e.line,e.col,"global variable initializer must be a constant expression"));
         }
     }
@@ -2503,13 +2526,40 @@ class Parser {
         }
         return raw;
     }
+    // v0.23.74-dev (F-04): struct, enum and type alias share ONE tag
+    // namespace. Before this round only typeAliasDeclaration looked across it,
+    // so whether a collision was refused depended on declaration order:
+    // `type P = i32; struct P { ... }` compiled and silently shadowed the
+    // alias (P then resolved to the struct and the alias could no longer be
+    // spelled), while the same two declarations in reverse were refused. One
+    // check, called by all three declaration entry points. The historical
+    // messages are preserved so the existing guards keep pinning the same
+    // refusals.
+    void rejectTagConflict(const Token& id,const std::string& kind){
+        const bool isAlias=(kind=="type alias");
+        if(g_structIndex.count(id.s)){
+            if(isAlias)throw Error(loc(id.line,id.col,"type alias conflicts with a struct: "+id.s));
+            if(kind=="struct"||kind=="union")
+                throw Error(loc(id.line,id.col,"duplicate "+kind+" declaration: "+id.s));
+            throw Error(loc(id.line,id.col,kind+" name conflicts with a struct: "+id.s));
+        }
+        if(g_enumIndex.count(id.s)){
+            if(isAlias)throw Error(loc(id.line,id.col,"type alias conflicts with an enum: "+id.s));
+            if(kind=="enum")throw Error(loc(id.line,id.col,"duplicate enum declaration: "+id.s));
+            throw Error(loc(id.line,id.col,kind+" name conflicts with an enum: "+id.s));
+        }
+        if(g_typeAlias.count(id.s)){
+            if(isAlias)throw Error(loc(id.line,id.col,"duplicate type alias: "+id.s));
+            throw Error(loc(id.line,id.col,kind+" name conflicts with a type alias: "+id.s));
+        }
+    }
     // v0.23.70-dev: a union is the same declaration with every member placed
     // at offset 0. The bool overload is the shared parser; the no-argument
     // overload keeps the struct entry point (and its source guards) unchanged.
     void structDeclaration(bool isUnion){
         auto id=need(TK::Ident,"expected struct name");
         const std::string kind=isUnion?"union":"struct";
-        if(g_structIndex.count(id.s))throw Error(loc(id.line,id.col,"duplicate "+kind+" declaration: "+id.s));
+        rejectTagConflict(id,kind);
         for(const auto& g:globals)if(g.name==id.s)throw Error(loc(id.line,id.col,kind+" name conflicts with a global variable: "+id.s));
         for(const auto& f:functions)if(f.name==id.s)throw Error(loc(id.line,id.col,kind+" name conflicts with a function: "+id.s));
         StructDef s;s.name=id.s;s.isUnion=isUnion;
@@ -2573,7 +2623,7 @@ class Parser {
     // allowed, an out-of-i32-range literal is not.
     void enumDeclaration(){
         auto id=need(TK::Ident,"expected enum name");
-        if(g_enumIndex.count(id.s))throw Error(loc(id.line,id.col,"duplicate enum declaration: "+id.s));
+        rejectTagConflict(id,"enum");
         for(const auto& g:globals)if(g.name==id.s)throw Error(loc(id.line,id.col,"enum name conflicts with a global variable: "+id.s));
         for(const auto& f:functions)if(f.name==id.s)throw Error(loc(id.line,id.col,"enum name conflicts with a function: "+id.s));
         EnumDef def;def.name=id.s;
@@ -2626,9 +2676,7 @@ class Parser {
     // stops at the `[` with "expected ';'" rather than pretending.
     void typeAliasDeclaration(){
         auto id=need(TK::Ident,"expected type alias name");
-        if(g_structIndex.count(id.s))throw Error(loc(id.line,id.col,"type alias conflicts with a struct: "+id.s));
-        if(g_enumIndex.count(id.s))throw Error(loc(id.line,id.col,"type alias conflicts with an enum: "+id.s));
-        if(g_typeAlias.count(id.s))throw Error(loc(id.line,id.col,"duplicate type alias: "+id.s));
+        rejectTagConflict(id,"type alias");
         for(const auto& g:globals)if(g.name==id.s)throw Error(loc(id.line,id.col,"type alias conflicts with a global variable: "+id.s));
         for(const auto& f:functions)if(f.name==id.s)throw Error(loc(id.line,id.col,"type alias conflicts with a function: "+id.s));
         need(TK::Eq,"expected '=' in a type alias declaration");
@@ -2775,12 +2823,12 @@ class Parser {
                 throw Error(loc(init->line,init->col,"global initializer type mismatch: expected "+tyNameFull(ty)+", got bool"));
             if(g.isArray){
                 if(!isConstExpr(*init))throw Error("array initializer must be a constant expression: "+g.name);
-                const int64_t value=foldConst(*init);
+                const int64_t value=foldConst(*init,ty.k==Ty::U64);
                 if(!initializerFits(ty,*init,value))
                     throw Error("array initializer does not fit in "+tyNameFull(ty)+": "+g.name+" ("+std::to_string(value)+")");
                 if(tyIs64(ty))g.wideInit=(uint64_t)value;else g.init=(int32_t)(uint32_t)(uint64_t)value;
             } else if(isConstExpr(*init)){
-                const int64_t value=foldConst(*init);
+                const int64_t value=foldConst(*init,ty.k==Ty::U64);
                 if(!initializerFits(ty,*init,value))
                     throw Error("global initializer does not fit in "+tyNameFull(ty)+": "+g.name+" ("+std::to_string(value)+")");
                 if(tyIs64(ty))g.wideInit=(uint64_t)value;else g.init=(int32_t)(uint32_t)(uint64_t)value;
@@ -3081,6 +3129,39 @@ static bool constantInteger(const Expr& e,int64_t& out){
         }
         default:return false;
     }
+}
+// v0.23.74-dev (F-06): `constantInteger` answers false for two different
+// reasons — the expression is genuinely dynamic (a variable, a call), or it is
+// built entirely from constants but the arithmetic cannot be evaluated (i64
+// overflow, division by zero, an out-of-range shift count). The bounds check
+// used to treat both the same way and simply `return`, so
+// `a[9223372036854775807 + 1]` compiled and its wrapped runtime index landed
+// back on a[0]. This predicate separates them: it asks only about the AST
+// shape, never about the value.
+static bool constantShape(const Expr& e){
+    switch(e.k){
+        // A bool literal is deliberately not an integer constant here; the
+        // type system refuses it at its own sites, and that refusal must not
+        // be replaced by a bounds-check error.
+        case Expr::Num: return !e.boolLit;
+        case Expr::SizeOf: case Expr::Len: return true;
+        case Expr::Cast: case Expr::Neg: case Expr::BitNot:
+            return e.a && constantShape(*e.a);
+        case Expr::Add: case Expr::Sub: case Expr::Mul: case Expr::Div:
+        case Expr::Mod: case Expr::Shl: case Expr::Shr:
+        case Expr::BitAnd: case Expr::BitOr: case Expr::BitXor:
+            return e.a && e.b && constantShape(*e.a) && constantShape(*e.b);
+        default:return false;
+    }
+}
+// One entry for every compile-time array bounds check. A dynamic index stays
+// dynamic (the run-time check, or --bounds-check, owns it); a constant-shaped
+// index that cannot fold is now a hard error instead of an unchecked store.
+static bool foldedIndex(const Expr& index,int64_t& value){
+    if(constantInteger(index,value))return true;
+    if(constantShape(index))
+        throw Error(loc(index.line,index.col,"array index constant expression overflows or is invalid"));
+    return false;
 }
 // The value a bool array is filled with: the `true`/`false` literal, or the
 // 0/1 integer constant a bool slot has always accepted. constantInteger folds
@@ -3488,7 +3569,7 @@ struct Codegen {
     // name-taking overload looks the length up for a named array.
     void checkArrayBounds(uint32_t length,const Expr& index){
         if(!length)return;
-        int64_t value=0;if(!constantInteger(index,value))return;
+        int64_t value=0;if(!foldedIndex(index,value))return;
         if(value<0||static_cast<uint64_t>(value)>=length)
             throw Error(loc(index.line,index.col,"array index out of bounds: index "+std::to_string(value)+", length "+std::to_string(length)));
     }
@@ -7117,7 +7198,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
     }
     void checkArrayBounds(uint32_t length,const Expr& index){
         if(!length)return;
-        int64_t value=0;if(!constantInteger(index,value))return;
+        int64_t value=0;if(!foldedIndex(index,value))return;
         if(value<0||static_cast<uint64_t>(value)>=length)
             throw Error(loc(index.line,index.col,"array index out of bounds: index "+std::to_string(value)+", length "+std::to_string(length)));
     }
@@ -7186,7 +7267,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
     void checkArrayBounds(const std::string& name,const Expr& index){
         const uint32_t length=arrayLengthOf(name);
         if(!length)return;
-        int64_t value=0;if(!constantInteger(index,value))return;
+        int64_t value=0;if(!foldedIndex(index,value))return;
         if(value<0||static_cast<uint64_t>(value)>=length)
             throw Error(loc(index.line,index.col,"array index out of bounds for '"+name+"': index "+std::to_string(value)+", length "+std::to_string(length)));
     }
@@ -8057,8 +8138,20 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 return;
             }
             case Stmt::DerefAssign: {
-                if(annotateExpr(*s.idx)!=Ty::Ptr)throw Error(loc(s.line,s.col,"dereference assignment requires a ptr expression"));
-                annotateExpr(*s.expr);   // a ptr value is legal here (64-bit store)
+                const Ty inner=annotateExpr(*s.idx);
+                if(inner!=Ty::Ptr)throw Error(loc(s.line,s.col,"dereference assignment requires a ptr expression"));
+                const Ty actual=annotateExpr(*s.expr);
+                // v0.23.74-dev (F-11): a typed pointer names the element it
+                // stores, so the right-hand side is checked against that
+                // element exactly as an IndexAssign or FieldAssign store is.
+                // Codegen already derives the same element (exprType +
+                // ptrElemType) to choose the store width; Sema used to only
+                // annotate, so `*p = true` on a ptr<i64> compiled and wrote 1
+                // while `a = true` on the same i64 was refused. An untyped ptr
+                // keeps its historical 64-bit store — a ptr value is legal
+                // there — so that shape is deliberately left alone.
+                if(tyIsPtrToElem(inner))
+                    checkValue(ptrElemType(inner),*s.expr,actual,"type mismatch assigning through a pointer",false);
                 return;
             }
             case Stmt::Return: {
