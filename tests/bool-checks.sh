@@ -58,7 +58,7 @@ grep -qF 'static uint32_t cmpZero(int reg){return 0x71000000u|(uint32_t(reg)<<5)
 # every pre-existing if/while/for compiles byte-identically.
 grep -qF 'int emitCondition(const Expr& c,size_t& at){' src/aster.cpp \
     || { echo 'FAIL: emitCondition fast path missing' >&2; exit 1; }
-grep -qF 'return comparisonCond(c.k,tyIsUnsigned(ta)||tyIsUnsigned(tb))^1;' src/aster.cpp \
+grep -qF 'return comparisonCond(c.k,opIsUnsigned(ta,tb))^1;' src/aster.cpp \
     || { echo 'FAIL: emitCondition must keep the CMP + conditional-branch shape for comparisons' >&2; exit 1; }
 # v0.23.25-dev: the condition refusal message grew a third kind ("or an
 # integer") when integer truthiness arrived; the ptr/struct refusal it covers

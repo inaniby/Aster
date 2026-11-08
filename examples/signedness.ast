@@ -1,0 +1,21 @@
+// v0.23.75-dev: the promoted result type, not either operand, decides
+// signedness (AUDIT-v0.23.72-dev.md F-07). promoteInt(i64,u32) answers I64
+// because a signed 64-bit value represents every u32, so every comparison
+// below is signed and a/b uses SDIV. Before this version the same program
+// returned 0: `a < b` was emitted as LO and `a / b` as UDIV.
+fn main() -> i32 {
+    let r: i32 = 0;
+    let a: i64 = -84;
+    let b: u32 = 5;
+    let c: u16 = 84;
+    let d: i64 = -5;
+    if (a < b)  { r = r + 1; }
+    if (a <= b) { r = r + 2; }
+    if (b > a)  { r = r + 4; }
+    if (c > d)  { r = r + 8; }
+    let q: i64 = a / b;
+    if (q == -16) { r = r + 16; }
+    let m: i64 = a % b;
+    if (m == -4)  { r = r + 32; }
+    return r;
+}

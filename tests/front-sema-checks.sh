@@ -42,8 +42,8 @@ bump(){ COVER=$((COVER + 1)); }
 printf '%s\n' '[1/9] Strictly build Aster compiler'
 $CXX -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 A=$OUT/aster
-grep -qF '#define ASTER_VERSION_STRING "0.23.74-dev"' src/aster.cpp \
-    || { echo 'FAIL: the version constant is not 0.23.74-dev' >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.75-dev"' src/aster.cpp \
+    || { echo 'FAIL: the version constant is not 0.23.75-dev' >&2; exit 1; }
 bump
 
 # ---------------------------------------------------------------------------
@@ -368,8 +368,8 @@ moved=$(awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' "$PREV" "
 [ -z "$moved" ] \
     || { echo "FAIL: this round moved bytes of an older program: $moved" >&2; exit 1; }
 prev_rows=$(wc -l < "$PREV")
-[ "$prev_rows" = 384 ] \
-    || { echo "FAIL: previous baseline has $prev_rows rows, expected 384" >&2; exit 1; }
+[ "$prev_rows" = 390 ] \
+    || { echo "FAIL: previous baseline has $prev_rows rows, expected 390" >&2; exit 1; }
 printf '  %-40s %s\n' 'pre-existing rows unchanged' "$prev_rows"; bump
 
 printf '%s\n' 'PASS: all v0.23.74-dev F-04 / F-05 / F-11 frontend semantics checks'
