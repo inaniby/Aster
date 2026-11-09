@@ -172,6 +172,16 @@ multiple of its own alignment, the struct's alignment is the largest of its
 fields', and its size is the final offset rounded up to that alignment. A
 **union** uses the same table with every offset set to 0 — see §5.4.
 
+v0.23.77-dev (audit A-18): the rule is C's, but the *sizes* it is fed with are
+the ones in the table above — and `bool` is 4 bytes here, not C's 1. A `struct`
+that holds a `bool` is therefore laid out by these rules, not by C's: that is
+why `struct T { b: bool, c: char, s: u16, i: i32 }` is 12 bytes (b at 0, c at 4,
+s at 6, i at 8) while the C twin with `bool` would be 8. A C twin therefore writes `uint32_t`
+where Aster has `bool` and the two agree exactly — the rule
+tests/e2e-c-struct.sh uses when it compares a struct field by field against the
+C compiler. A struct whose fields are `u8`/`u16`/`i32`/`u64`/`char`/`ptr`/
+arrays/unions is byte-for-byte C's.
+
 There is **no** `float`/`double`. `typedef` is spelled `type Name = T ;`
 (v0.23.67-dev, §8) and `union U { … }` is a real union (v0.23.70-dev, §5.4);
 both exist. `void` exists
