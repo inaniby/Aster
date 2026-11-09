@@ -13664,6 +13664,39 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
                     const std::vector<std::pair<std::string,std::string>>& extraStrings,
                     const SigningKey& key, bool selfVerify, bool labelAsReference,
                     bool debuggable = false, uint64_t pageSize = 4096) {
+    // v0.23.76-dev (audit A-14): --abi has to describe the library the APK
+    // ships. It used to accept any ABI-shaped name, so building with
+    // `--abi x86_64` around an AArch64 shared object produced an APK that no
+    // device could install — PackageManager answers INSTALL_FAILED_NO_MATCHING_ABIS
+    // because lib/x86_64/ holds an e_machine = AArch64 file — and nothing said so
+    // at build time. The ELF header is right here, so say it here.
+    {
+        if (so.size() < 20 || so[0] != 0x7f || so[1] != 'E' || so[2] != 'L' || so[3] != 'F')
+            throw Error("build-apk: the shared object to package is not an ELF file");
+        const int cls = so[4];                                   // 1 = ELF32, 2 = ELF64
+        const unsigned mach = (unsigned)so[18] | ((unsigned)so[19] << 8);
+        struct AbiMachine { const char* abi; int cls; unsigned mach; const char* what; };
+        static const AbiMachine known[] = {
+            {"arm64-v8a",   2, 183, "AArch64"},
+            {"arm64",       2, 183, "AArch64"},
+            {"armeabi-v7a", 1,  40, "ARM"},
+            {"armeabi",     1,  40, "ARM"},
+            {"x86",         1,   3, "x86"},
+            {"x86_64",      2,  62, "x86-64"},
+            {"riscv64",     2, 243, "RISC-V"},
+            {"mips",        1,   8, "MIPS"},
+            {"mips64",      2,   8, "MIPS64"},
+        };
+        const AbiMachine* want = nullptr;
+        for (const auto& k : known) if (abi == k.abi) { want = &k; break; }
+        if (want == nullptr)
+            throw Error("build-apk: unknown --abi '" + abi +
+                        "' (known: arm64-v8a, armeabi-v7a, x86, x86_64, riscv64)");
+        if (cls != want->cls || mach != want->mach)
+            throw Error("build-apk: --abi " + abi + " expects an " + want->what +
+                        " shared object, but the input is e_machine=" + std::to_string(mach) +
+                        (cls == 2 ? " (ELF64)" : " (ELF32)"));
+    }
     // The icon is part of the package rather than an option: a launcher entry
     // with no icon falls back to the system default, which is the thing this
     // exists to fix. res/drawable-nodpi keeps the bitmap exact — Android will

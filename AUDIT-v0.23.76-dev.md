@@ -304,3 +304,50 @@ error: Identical DW_AT_stmt_list section offset occurred 1 time(s).
 
 78 个 example 全部用 `-g --bounds-check` 编译：`llvm-dwarfdump --verify` **0 失败**；
 越界下标在带调试信息时仍触发 SIGTRAP（退出码 133）。两者互不干扰。
+
+---
+
+## 12. A-14（P2，已修）：`--abi` 不与 `.so` 的 `e_machine` 校验
+
+**现象**：`build-apk --abi x86_64` 打包一个 AArch64 的 `.so` 时**完全静默成功**，产物里是
+`lib/x86_64/libX.so`，而文件头是 `e_machine = 0xB7`（AArch64）。这样的 APK 在任何设备上都装不上：
+
+```
+INSTALL_FAILED_NO_MATCHING_ABIS: Failed to extract native libraries, res=-113
+```
+
+**根因**：`validApkAbi` 只校验"名字像 ABI"（字母数字/下划线/连字符），从不看被装进去的 ELF 头；
+`build-apk` 也从不比较两者。
+
+**修复**：`buildApk` 在打包前读 `.so` 的 ELF class/`e_machine`，与 `--abi` 的映射比较
+（arm64-v8a/arm64→AArch64、armeabi-v7a/armeabi→ARM、x86、x86_64、riscv64、mips/mips64），
+不匹配就报错并且**不写出 APK**；未知 ABI 名给出可用列表。`.ast` 输入与预编译 `.so` 输入都会走同一检查。
+
+**验证**：
+
+| 命令 | 修前 | 修后 |
+| --- | --- | --- |
+| `--abi x86_64` + AArch64 `.so` | rc=0，产出装不上的 APK | rc=1：`build-apk: --abi x86_64 expects an x86-64 shared object, but the input is e_machine=183 (ELF64)`，且不产生文件 |
+| `--abi mips64` | rc=0 | rc=1（同样的检查） |
+| `--abi arm64-v8a` | OK | OK（不变） |
+
+**回归**：`tests/apk-checks.sh` 在 APK 构建层后加了一个拒绝用例（断言必须失败、报出该诊断、且不留下 APK）。
+
+## 13. APK 清单/资源语义（负结果，真机验证）
+
+以下都通过 `pm install` + `dumpsys package` 在本机（Android 16 / arm64）实测：
+
+| 项 | 结果 |
+| --- | --- |
+| `--version-code 4200 --version-name 2.3.4` | `versionCode=4200`、`versionName=2.3.4` |
+| `--min-sdk 26 --target-sdk 35` | `minSdk=26 targetSdk=35` |
+| `--debuggable` | `flags=[ DEBUGGABLE … ]` |
+| 启动入口 | `resolve-activity` → `android.app.NativeActivity` |
+| `--label` 含 `&`/`<`/引号、含中文+emoji | 安装成功，字符串在 `resources.arsc` 中以 UTF-8 原样存储 |
+| v1+v2 双签名 | PackageManager 接受，`verify-apk` 复核通过 |
+
+多语言/多密度：Aster 只产出默认 config 的 `resources.arsc`（单一 drawable-nodpi + string 表），
+这是设计边界而非缺陷。
+
+另记：`tests/apk-checks.sh` 在本机跑不了——它硬编码 `/tmp` 路径，而 Termux 没有可写的 `/tmp`
+（SELinux）。这是测试基础设施的宿主假设，属于此前记录的一类问题；A-14 的用例仍留给 Linux CI 跑。

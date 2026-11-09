@@ -112,6 +112,25 @@ echo "[3/7] build-apk $SO -> $APK"
     --label "Aster APK Test" --min-sdk 24 --target-sdk 34 \
     --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR"
 
+# v0.23.76-dev (audit A-14): --abi has to describe the library being packaged.
+# An AArch64 .so under --abi x86_64 used to build silently and then fail to
+# install on every device (INSTALL_FAILED_NO_MATCHING_ABIS), because
+# lib/x86_64/ held an e_machine = AArch64 file.
+echo "[3/7] A-14: --abi must match the shared object's e_machine"
+if "$ASTER_BIN" build-apk "$SO" -o /tmp/aster-abi-mismatch.apk \
+    --package "$PKG" --libname "$LIB" --abi x86_64 \
+    --label "Aster APK Test" --min-sdk 24 --target-sdk 34 \
+    --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR" \
+    >/tmp/aster-abi-mismatch.log 2>&1; then
+    echo "FAIL: build-apk accepted --abi x86_64 for an AArch64 shared object"; exit 1
+fi
+grep -q "expects an x86-64 shared object" /tmp/aster-abi-mismatch.log || {
+    echo "FAIL: the ABI mismatch was rejected for the wrong reason:"; cat /tmp/aster-abi-mismatch.log; exit 1; }
+if [ -e /tmp/aster-abi-mismatch.apk ]; then
+    echo "FAIL: build-apk wrote an APK it had just rejected"; exit 1
+fi
+echo "PASS: --abi is checked against the ELF header it ships"
+
 echo "[3/7] validating APK (v1 + v2)"
 python3 tests/validate_apk.py "$APK" --package "$PKG" --libname "$LIB" --abi "$ABI"
 # validate_apk.py exits 0 on ALL CHECKS PASSED, 1 on failure.

@@ -1,13 +1,13 @@
 ## v0.23.76-dev — Audit round: literal typing, constant folding, switch labels, and `-g` DWARF
 
 An audit round on top of v0.23.76-dev (see `AUDIT-v0.23.76-dev.md`). It finds and
-fixes **nine defects** — four in the constant-folding path and two in the debug
+fixes **ten defects** — four in the constant-folding path and two in the debug
 writer — corrects three documentation statements, repairs one formatting bug
 that was already breaking this project's own `-Werror` build, adds one 9-layer
 suite, and makes the suites runnable on a native AArch64 host where no
 `aarch64-linux-gnu-*` toolchain exists.
 
-### The nine defects
+### The ten defects
 
 | Id | Defect | Repair |
 | --- | --- | --- |
@@ -20,6 +20,7 @@ suite, and makes the suites runnable on a native AArch64 host where no
 | A-11 | Every operator asked `exprType` for both operands twice — once in the void check above the type switch and once in its own arm — so a left-deep chain of n operators cost 2^n type computations: `1+1+...+1` with 20 terms ran 11,010,020 of them (200 ms), 22 terms 782 ms, 30 terms never finished, and a 3000-term chain died of stack exhaustion under ASAN. | `exprType` is split into a memoised wrapper and `exprTypeUncached`, keyed by the AST node pointer; the result depends only on the node and the AST is stable for the whole codegen pass, so it is pure memoisation. 1000-term chains now compile instantly; 3000 terms give the existing clean `expression is nested too deeply (max 2048)` diagnostic. |
 | A-12 | Every object's unit carries `DW_AT_stmt_list = 0`, and the link concatenates the `.debug_line` sections while rebasing only the addresses inside them — so after a multi-object `-g` link every unit still pointed at the first unit's program. `llvm-dwarfdump --verify`: "Identical DW_AT_stmt_list section offset occurred"; a debugger read the second source file against the first file's line numbers. | `parseObject` locates the field with a small DWARF reader (CU header → abbrev table → attribute list; unrecognised forms are refused rather than merged) and `linkObjects` / `linkSharedObjects` rewrite it to that object's own line-program offset. Two objects: `0x0` / `0x71`; three: `0x0` / `0x71` / `0xd7`; verify clean in all three link shapes. |
 | A-13 | The link keeps the first input's `.debug_abbrev` and never compares the rest, so a stale object (built before an abbreviations change) was merged silently: its unit decoded through the wrong table and every following unit was garbage. | Both linkers now compare each input's table and refuse a mismatch with "rebuild every -g input with the same compiler", matching what a differing `.eh_frame` CIE already did. |
+| A-14 | `--abi` only checked that the string looked like an ABI, never the library's ELF header: `--abi x86_64` around an AArch64 `.so` built silently and produced `lib/x86_64/` holding an `e_machine = AArch64` file, which every device rejects with `INSTALL_FAILED_NO_MATCHING_ABIS`. | `buildApk` reads the shared object's class and `e_machine` and compares them against the ABI (arm64-v8a/arm64, armeabi-v7a/armeabi, x86, x86_64, riscv64, mips, mips64); a mismatch is an error and no APK is written; an unknown ABI name lists the known set. `tests/apk-checks.sh` pins the refusal. |
 
 ### Documentation corrections
 
