@@ -2515,6 +2515,41 @@ class Parser {
     // emitted ADD/SUB/MUL do. Every other slot keeps its historical i64
     // overflow errors (operator-checks.sh and the bootstrap twin pin them), so
     // no previously-compiling program changes a byte.
+    // v0.23.77-dev: the float constant folder, the integer one's twin. It
+    // answers a double for a fractional literal, a negation, a chain of
+    // + - * /, a cast to f64 of a folded integer, and nothing else — a global
+    // initializer has no run time in which to compute anything else.
+    bool constantFloat(const Expr& e,double& out){
+        RecursionGuard depthGuard(constExprDepth,2048,"constant float expression");
+        switch(e.k){
+            case Expr::Num:
+                if(!e.isFloat)return false;
+                out=e.fv;return true;
+            case Expr::Neg:{
+                double a=0;
+                if(!constantFloat(*e.a,a))return false;
+                out=-a;return true;
+            }
+            case Expr::Add: case Expr::Sub: case Expr::Mul: case Expr::Div:{
+                double a=0,b=0;
+                if(!constantFloat(*e.a,a)||!constantFloat(*e.b,b))return false;
+                if(e.k==Expr::Add)out=a+b;
+                else if(e.k==Expr::Sub)out=a-b;
+                else if(e.k==Expr::Mul)out=a*b;
+                else out=a/b;
+                return true;
+            }
+            case Expr::Cast:{
+                if(e.ty!=Ty::F64)return false;
+                double a=0;
+                if(constantFloat(*e.a,a)){out=a;return true;}
+                int64_t v=0;
+                if(constantInteger(*e.a,v)){out=static_cast<double>(v);return true;}
+                return false;
+            }
+            default: return false;
+        }
+    }
     int64_t foldConst(const Expr& e,bool u64Target=false){
         RecursionGuard depthGuard(foldDepth,2048,"constant expression");
         switch(e.k){
@@ -2849,10 +2884,30 @@ class Parser {
         auto id=need(TK::Ident,"expected global variable name");
         need(TK::Colon,"expected ':'");
         const Ty ty=needType(kTypeExpected);
-        // v0.23.77-dev: an f64 global needs the float constant folder (its 8-byte
-        // IEEE pattern written straight into .data), which is the next slice.
-        if(ty==Ty::F64)
-            throw Error(loc(id.line,id.col,"an f64 global arrives with the constant-folding slice — declare it local and initialize it in code"));
+        // v0.23.77-dev: an f64 global. Its initializer folds through the float
+        // constant folder and the eight IEEE bytes go into .data (or .bss when
+        // the pattern is all zero); an array repeats them once per element.
+        if(ty==Ty::F64){
+            Global g;g.name=id.s;g.external=external;g.ty=Ty::F64;g.align=8;g.tls=tls;g.isConst=isConst;
+            for(const auto& old:globals)if(old.name==g.name)throw Error(loc(id.line,id.col,"duplicate global variable: "+g.name));
+            if(cur().k==TK::LBracket){
+                g.dims=arrayDimList("array length",1048576,g.name);
+                if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);}
+            }
+            if(external){need(TK::Semi,"expected ';' after extern global declaration");}
+            else {
+                need(TK::Eq,"expected '=' in global variable declaration");E init=expr();need(TK::Semi,"expected ';'");
+                if(!isConstExpr(*init))
+                    throw Error(loc(init->line,init->col,"f64 global initializer must be a constant expression: "+g.name));
+                double v=0;
+                if(!constantFloat(*init,v))
+                    throw Error(loc(init->line,init->col,"f64 global initializer must be a float constant (a literal, a cast of a constant, or arithmetic on them): "+g.name));
+                uint64_t bits=0;std::memcpy(&bits,&v,sizeof bits);
+                g.wideInit=bits;
+            }
+            globals.push_back(std::move(g));
+            return;
+        }
         // v0.23.77-dev: an f64 global needs the float constant folder (its 8-byte
         // IEEE pattern written straight into .data), which is not part of this
         // slice. A local double is fully supported, so the diagnostic says so.
@@ -9159,9 +9214,10 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
             L.data.resize((size_t)(off+slot),0);
             continue;
         }
-        if(tyIs64(g.ty)?g.wideInit==0:g.init==0){L.bssSize=alignUp(L.bssSize,a);L.globals.push_back({g.name,2,L.bssSize,slot});L.bssSize+=slot;}
+        const bool wide64=tyIs64(g.ty)||g.ty==Ty::F64;
+        if(wide64?g.wideInit==0:g.init==0){L.bssSize=alignUp(L.bssSize,a);L.globals.push_back({g.name,2,L.bssSize,slot});L.bssSize+=slot;}
         else{L.data.resize((size_t)alignUp(L.data.size(),a),0);uint64_t off=L.data.size();L.globals.push_back({g.name,1,off,slot});
-            const uint64_t v=tyIs64(g.ty)?g.wideInit:(uint64_t)(uint32_t)g.init;
+            const uint64_t v=wide64?g.wideInit:(uint64_t)(uint32_t)g.init;
             const uint64_t n=g.isArray?g.count:1;
             for(uint64_t i=0;i<n;++i)for(uint64_t b=0;b<esz;++b)L.data.push_back(uint8_t(v>>(8*b)));
             L.data.resize((size_t)(off+slot),0);}
@@ -9192,7 +9248,7 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
                         for(size_t b=0;b<g.rawData.size();++b)L.tls[(size_t)at+b]=g.rawData[b];
                     }
                 } else {
-                    const uint64_t v=tyIs64(g.ty)?g.wideInit:(uint64_t)(uint32_t)g.init;
+                    const uint64_t v=(tyIs64(g.ty)||g.ty==Ty::F64)?g.wideInit:(uint64_t)(uint32_t)g.init;
                     const uint64_t n=g.isArray?g.count:1;
                     for(uint64_t i=0;i<n;++i)for(uint64_t b=0;b<esz;++b)L.tls[(size_t)(off+i*esz+b)]=uint8_t(v>>(8*b));
                 }

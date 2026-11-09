@@ -145,8 +145,12 @@ breaking this project's own `-Werror` build.
   the ninth and later doubles on the stack in the outgoing area; an f64 result
   comes back in `d0`. Mixed integer/FP calls, a function returning an f64, and
   an f64 operation that calls on both sides (up to four nested levels, parked
-  in the frame gap) are supported. Global initializers, `f32` and printing
-  remain deferred and are refused with a message naming the slice.
+  in the frame gap) are supported. Global initializers fold
+  through a float constant folder (a literal, a cast of a constant, or
+  `+ - * /` on them): `let g: f64 = 1.5;`, `let g: f64 = 0.1 + 0.2;` and
+  `let t: f64[4] = 0.5;` produce .data (or .bss for an all-zero pattern, repeated
+  once per element); a non-constant initializer is refused as it is for an
+  integer global. `f32` and printing remain deferred.
 
 ### Byte baseline
 

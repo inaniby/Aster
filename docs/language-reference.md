@@ -264,9 +264,12 @@ fn main() -> i32 {
   f64 result comes back in `d0`. Mixed integer/FP calls, a function returning an
   f64, and a float operation that calls on both sides (up to four nested, the
   left result parked in the compiler's frame gap) are supported.
-* **Still deferred:** global initializers (the float constant folder), `f32`,
-  and printing. Each is refused at compile time today with a message naming the
-  slice.
+* **Global initializers** fold through a float constant folder: `let g: f64 =
+  1.5;`, `let pi: f64 = 3.14159;` and `let t: f64[4] = 0.5;` (the pattern
+  repeated once per element, in .data or .bss when it is all zero). Only a
+  constant expression is accepted — a call is refused, as it is for an integer
+  global.
+* **Still deferred:** `f32` and printing.
 
 ### 5.1 `char` — an unsigned 8-bit integer type (v0.23.69-dev)
 

@@ -81,7 +81,11 @@ build_run s_local 'fn main() -> i32 { let x: f64 = 1.0; x = x + 2.0; x = x * 2.0
 build_run s_field 'struct P { x: f64, y: f64 } fn main() -> i32 { let p: P = P { 1.5, 2.5 }; return i32(p.x + p.y); }' 4
 build_run s_array 'fn main() -> i32 { let a: f64[2] = 0; a[0] = 1.5; a[1] = 0.5; return i32(a[0] + a[1]); }' 2
 build_run s_array2 'fn main() -> i32 { let a: f64[3] = 0; a[1] = 2.25; return i32(a[1] * 4.0); }' 9
-ok 'a local, two struct fields, an array element'
+build_run s_global 'let g: f64 = 1.5; fn main() -> i32 { return i32(g * 2.0); }' 3
+build_run s_fold 'let g: f64 = 0.1 + 0.2; fn main() -> i32 { return i32(g * 10.0); }' 3
+build_run s_garr 'let t: f64[2] = 1.5; fn main() -> i32 { return i32(t[1] * 2.0); }' 3
+build_run s_gzero 'let z: f64 = 0.0; fn main() -> i32 { return i32(z) + 5; }' 5
+ok 'a local, two struct fields, an array element, three globals'
 
 printf '%s\n' '[6/8] the FP calling convention'
 build_run a_half 'fn half(x: f64) -> f64 { return x / 2.0; } fn main() -> i32 { return i32(half(9.0)); }' 4
@@ -99,7 +103,7 @@ printf '%s\n' '[7/8] what the slice refuses'
 build_reject r_mix 'fn main() -> i32 { let x: f64 = 1.5; let n: i32 = 2; return i32(x + n); }' 'f64 arithmetic needs two f64'
 build_reject r_cmp 'fn main() -> i32 { let x: f64 = 1.5; if (x > 1) { return 2; } return 1; }' 'comparing f64 with an integer'
 build_reject r_mod 'fn main() -> i32 { let x: f64 = 1.5; let y: f64 = x % 1.0; return i32(y); }' 'not defined on f64'
-build_reject r_global 'let g: f64 = 1.5; fn main() -> i32 { return i32(g); }' 'an f64 global arrives with the constant-folding slice'
+build_reject r_gnconst 'fn f() -> f64 { return 1.5; } let g: f64 = f(); fn main() -> i32 { return i32(g); }' 'f64 global initializer must be a constant expression'
 ok 'four diagnostics, each naming the slice'
 
 printf '%s\n' '[8/8] no compiler change: the baseline reproduces'
