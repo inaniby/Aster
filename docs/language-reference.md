@@ -1309,6 +1309,81 @@ sections with the five `DT_VER*` tags. Exported symbols answer `name@@aster`
 under `readelf --version-info`, exactly as a `gcc -shared` link with a
 version script does.
 
+
+## 11b. Building a program from several files (and what is incremental)
+
+Aster has no module system and no single command that takes two `.ast` sources:
+`build-elf`/`build-pie`/`build-obj`/`build-so` each compile **one** file. When a
+program is split, it is split the way C splits it — a file that owns a definition
+compiles to an object, and the objects are linked:
+
+```sh
+aster build-obj defs.ast -o defs.o        # definitions live here
+aster build-obj main.ast -o main.o        # includes defs.ast for the declarations
+aster link-obj main.o defs.o -o demo      # link-pie for ET_DYN, link-so for a .so
+```
+
+There are two ways for `main.ast` to know `defs.ast`'s declarations, and they
+differ in what a rebuild can catch:
+
+* `include "defs.ast";` reads the declarations out of the file that holds the
+  body (§8), so the consumer's view cannot drift from the definition. Its body
+  and any global initializer stay in `defs.o`.
+* `extern fn add2(x: i32) -> i32;` declares it by hand. Nothing checks it
+  against the definition; the linker matches symbols **by name only** — not by
+  signature, not by arity, not by width.
+
+That name-only link is exactly why the incremental rule below is "rebuild a
+consumer whenever a file it includes changes", and not "rebuild only what the
+change touched". Retargeting `add2` from one `i32` to two, rebuilding only
+`defs.o` and relinking, links cleanly and **runs wrong** (the stale call passes
+one argument); the same change with the consumer rebuilt fails to compile
+(`wrong argument count calling add2: expected 2, got 1`), because the include
+re-read the declaration.
+
+### What is and is not incremental
+
+| Mechanism | Status |
+| --- | --- |
+| separate compilation into `.o`, linked afterwards | **supported** |
+| recompiling only the objects whose inputs changed | **your build tool's job** — the compiler has no mtime check, no object cache, no `-M` depfile |
+| one command over several sources | **not supported** (`build-elf a.ast b.ast` prints usage) |
+| static archives (`.a`) | **not supported** — `link-*` takes `.o` files |
+| link time signature checking | **not supported** — names only, see above |
+| linking in the same command as compiling | **not supported** — always `build-obj` then `link-*` |
+
+An object depends on **the file it compiles, every file that file includes
+(transitively), and every file it `@embed`s** — `@embed` copies the bytes at
+compile time, so editing an embedded asset needs that object rebuilt. Compiling
+is a pure function of those bytes, which is what makes a timestamp-based build
+correct without a cache: relinking is cheap (a two-object link is a few
+milliseconds), so the usual Make shape works unchanged:
+
+```make
+ASTER := aster
+OBJS  := main.o defs.o
+
+demo: $(OBJS)
+	$(ASTER) link-obj $(OBJS) -o $@
+
+main.o: main.ast defs.ast           # includes defs.ast
+	$(ASTER) build-obj main.ast -o $@
+defs.o: defs.ast
+	$(ASTER) build-obj defs.ast -o $@
+```
+
+Two rules of the linker apply to such a build and are worth stating where the
+build is described (both were silent before v0.23.77-dev, see A-21/A-22 in
+`AUDIT-v0.23.76-dev.md`): run-time global initializers run in **link order**, so
+an initializer that reads another object's initialized global needs that object
+listed first (the link is refused otherwise), and the initializer chain is
+entered from the object holding `_start`, so at least one runtime-initialized
+global must live in the object that holds `main` (the link is refused
+otherwise too).
+
+A `-g` build is per-object: each `build-obj -g` carries its own unit and line
+program, and `link-obj` merges them (§11).
+
 ## 12. The standard library (v0.23.42-dev)
 
 `stdlib/aster_std.ast` is the first slice of a library written in Aster
