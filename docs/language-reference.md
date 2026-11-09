@@ -101,7 +101,7 @@ ident ::= [A-Za-z_] [A-Za-z0-9_]*
 | Binary integer | `0b` / `0B` + ≥1 binary digit | `0b1010` (= 10). Bare `0b` → `binary literal has no digits at L:C` (v0.23.50-dev) |
 | Digit separators | `_` between two digits | `1_000_000`, `0xFF_FF`, `0b1111_1111_1111` all read with the `_` dropped — `1_000_000` *is* `1000000` (v0.23.50-dev); a `_` not flanked by two digits (`1_`, `_1`, `1_0_`) → `digit separator '_' must be between two digits at L:C` |
 | Numeric suffix | `u` / `l` / `ul` after an integer literal | pins the literal's type: `1u` → `u32`, `2l` → `i64`, `3ul` → `u64` (v0.23.50-dev); `primary()` answers `U32`/`I64`/`U64` from `LitSuffix`. A value past the suffix's ceiling (`0xFFFFFFFFu` past `u32`, `0x8000000000000000l` past `i64`) or an unsupported suffix (`ll`, `uu`) → `u32 literal out of range at L:C` / `i64 literal out of range at L:C` / `invalid numeric suffix 'll' at L:C` |
-| Integer range | ≤ `0xFFFFFFFFFFFFFFFF` | larger → `integer literal exceeds u64 range at L:C` (v0.23.48-dev; the slot's own range is checked at the declaration — §9.4) |
+| Integer range | ≤ `0xFFFFFFFFFFFFFFFF` | larger → `integer literal is too large at L:C` (v0.23.48-dev; the slot's own range is checked at the declaration — §9.4) |
 | Bool | `true`, `false` | reserved words, not integers |
 | String | `"…"` | value is a `ptr` to NUL-terminated rodata |
 | Character | `'…'` | exactly one code unit; `'a'`, `'\n'`, `'\''`, `'\a'`, `'\x41'` decode through the shared escape table (v0.23.50-dev). Empty `''` → `empty or unterminated char literal at L:C`; more than one unit `'ab'` → `char literal must hold exactly one character at L:C` |
@@ -1228,7 +1228,7 @@ global assignment and a `return`.)*
 | Multi-dimensional array | same limits, on the **total** element count — `i32[1000][1000]` is refused exactly as `i32[1000000]` is (v0.23.31-dev) | `local array length must be between 1 and 1000: a` |
 | Struct size | 1024 bytes | `struct S is too large: N bytes (limit 1024)` |
 | Global alignment | power of two, ≤ 4096 | `alignment must be a power of two` / `must not exceed 4096 bytes` |
-| Integer literal | ≤ `0xFFFF_FFFF_FFFF_FFFF` | `integer literal exceeds u64 range` (the slot's own range is checked at the declaration: `local initializer does not fit in i64: x (…)`) |
+| Integer literal | ≤ `0xFFFF_FFFF_FFFF_FFFF` | `integer literal is too large` (the slot's own range is checked at the declaration: `local initializer does not fit in i64: x (…)`) |
 | Shift count (constant) | 0 … 63 | `shift count N is out of range (0..63)` |
 | Embedded file | ≤ 16 MiB | `embedded file is too large` |
 | Struct nesting | a struct may not contain itself, directly or by value | `struct S cannot contain itself` |

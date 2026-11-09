@@ -1619,6 +1619,14 @@ class Parser {
                 else if(low=="l"){nn->suffix=Expr::LSL; if(n>0x7fffffffffffffffULL)throw Error("i64 literal out of range at "+std::to_string(tok.line)+":"+std::to_string(tok.col));}
                 else {nn->suffix=Expr::LSUL;}   // ul / lu — the full u64 range
             }
+            // v0.23.75-dev (audit F-01): an *unsuffixed* literal past 2^63-1
+            // has no signed 64-bit reading, and v0.23.48-dev accepts the whole
+            // unsigned range here. Type it u64 — what C does with a decimal
+            // constant too large for long long. Without this the literal keeps
+            // the i32 type that every downstream rule reads, so a comparison
+            // sign-interprets its top-bit-set pattern (`18446744073709551615 > 0`
+            // answered false) and `/`, `%`, `>>` ran signed on it.
+            if(suf.empty()&&n>0x7fffffffffffffffULL)nn->suffix=Expr::LSUL;
             return nn;
         }
         // v0.23.25-dev: true/false — Bool literals. They ride the Num node
@@ -3999,6 +4007,16 @@ struct Codegen {
         const Expr* p=&e; bool neg=false;
         if(p->k==Expr::Neg){ neg=true; p=p->a.get(); }
         if(!p||p->k!=Expr::Num)return false;
+        // v0.23.75-dev (audit F-06): a literal with the `u` suffix is a u32 by
+        // declaration, not a wide constant. Its value is past 2^31 by
+        // construction, so the magnitude test below would force every
+        // operation that touches it to 64 bits and defeat the 32-bit wrap the
+        // type promises: `4294967295u * 2u` came out 8589934590 instead of
+        // 4294967294, and `4294967295u * 2u == 4294967294u` answered false.
+        // The suffix is what makes the width explicit, so it wins here; an
+        // unsuffixed literal keeps the C rule (long long), and `ul` / `l`
+        // already widen through tyIs64.
+        if(p->suffix==Expr::LSU)return false;
         return neg ? (p->n>0x80000000ull) : (p->n>0x7fffffffull);
     }
     // (2) Widening an operand is the operand's own job, never the consumer's.
@@ -9442,7 +9460,13 @@ ParsedObject parseObject(const std::string& input){
         if(result.text.size()-r.offset<need)
             throw Error(input+": relocation at offset "+std::to_string(r.offset)+" needs "+
                         std::to_string(need)+" bytes of .text and only "+
-                        std::to_string(result.text.size()-r.offset)+" remain");result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}
+                        std::to_string(result.text.size()-r.offset)+" remain");
+        // v0.23.75-dev (audit F-05): this push_back was glued to the throw's
+        // line, which reads as though it were part of the `if` body — the
+        // statement after a throw never runs when the check fails, so it was
+        // always unconditional, but -Wmisleading-indentation (and the project's
+        // own -Werror gate) rejected it. Behaviour is unchanged.
+        result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}
     }
     if(result.debugLineIndex>=0){
         const Shdr& dl=sections[result.debugLineIndex];

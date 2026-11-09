@@ -708,13 +708,24 @@ is exactly the default branch.
   zero-extending accesses — `LDRB`/`STRB` for `u8` and `LDRH`/`STRH` for `u16` —
   so a load clears the high bits instead of sign-extending. Comparisons use the
   unsigned condition codes `LO`/`LS`/`HI`/`HS`, and division uses `UDIV` instead
-  of `SDIV`. Arithmetic wraps modulo the type width (e.g. `255u8 + 1` is `0`).
+  of `SDIV`. A `u32`/`u64` operation wraps at its own width (`0xFFFFFFFFu + 1u`
+  is `0`); an `u8`/`u16` operand is promoted to `i32` inside the expression, as
+  in C, and only the store back into a narrow slot truncates — so
+  `let a: u8 = 255;` then `a + 1` is `256` at `i32` width, while
+  `let b: u8 = a + 1;` leaves `b == 0`.
 - **Type assignment and rejection.** A value flows into a slot of its declared
   type; narrowing (`i32` into `u8`, `i64` into `i32`) and sign mismatch are
   compiler errors in initializers, assignments, arguments and returns. A literal
   must fit the target: `let g: u8 = 250;` is accepted, `let g: u8 = 300;` is
   rejected, and an `i64` literal that exceeds the materializable range is
-  rejected too. Wide and narrow globals (`.data`/`.bss`) and array element types
+  rejected too. One historical exception remains, because existing programs
+  depend on it: an `i32` target does **not** reject an out-of-range literal —
+  `let x: i32 = 3000000000;` stores the low 32 bits (`-1294967296`), and the
+  same silent truncation applies to `return` and to arguments, which have no
+  declaration site to check against. Narrower targets (`u8`/`u16`), `u32`,
+  `i64` and `u64` are all range-checked. An unsuffixed literal past 2^63-1 now
+  types as `u64` (v0.23.75-dev), so a `u64` slot accepts it and any signed
+  target refuses it. Wide and narrow globals (`.data`/`.bss`) and array element types
   are supported; narrow globals pad their `.data` slot up to a 4-byte boundary
   so the section stays 4-byte aligned for the linker.
 
@@ -746,7 +757,9 @@ explicit conversion. `enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Struct
 - **Literals up to `2^64-1`.** `primary()`'s guard moves from
   `0x7fffffffffffffffULL` to `0xffffffffffffffffULL`; past that there is
   nowhere for the value to go at all and the parse fails with
-  `integer literal exceeds u64 range at L:C`. The check against the *slot* —
+  `integer literal is too large at L:C` (thrown by `unsignedLiteral`; the
+  later guard in `primary()` that names the u64 range is unreachable, and is
+  kept only because a source guard pins it). The check against the *slot* —
   which is what knows whether a value above `2^63-1` was meant for `i64` or
   `u64` — moves to the declaration site, `initializerFits`:
   `let x: u64 = 18446744073709551615;` is accepted, and
