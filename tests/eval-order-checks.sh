@@ -53,8 +53,8 @@ fi
 # comment that states the order; the two width fixes are pinned by the code.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: evaluation order and width'
-grep -qF '#define ASTER_VERSION_STRING "0.23.75-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.75-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.76-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.76-dev" >&2; exit 1; }
 grep -qF 'v0.23.62-dev: a struct store parks the destination in the' src/aster.cpp \
     || { echo "FAIL: the multi-dimensional store no longer generates its value first" >&2; exit 1; }
 grep -qF 'v0.23.62-dev: the subscript is evaluated BEFORE the field' src/aster.cpp \

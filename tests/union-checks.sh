@@ -74,8 +74,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.75-dev"' src/aster.cpp \
-    || { echo 'FAIL: the version constant is not 0.23.75-dev' >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.76-dev"' src/aster.cpp \
+    || { echo 'FAIL: the version constant is not 0.23.76-dev' >&2; exit 1; }
 guard 'bool isUnion = false;' 'the StructDef union bit'
 guard 'static const char* structKindName(const StructDef& s){ return s.isUnion ? "union" : "struct"; }' 'the kind-name helper'
 guard 'void structDeclaration(bool isUnion){' 'the shared aggregate parser'
