@@ -120,6 +120,13 @@ breaking this project's own `-Werror` build.
   leaf shape, the 8 KiB rule for callers, twelve examples' exit-status equality,
   stack arguments, the CFA list, `main(argc, argv)` and a mutation that drops
   the guard.
+  Milestone 2 moves the call/syscall argument grid as well: for a function
+  without aggregate scratch it moves from the historical 4160 down to just
+  above the locals, with every instruction that embeds a grid offset adjusted
+  once the frame is known (a site that cannot be adjusted falls back to the
+  8 KiB layout). A recursive counter is now 32 bytes and depth 20000 runs,
+  where the 8 KiB layout overflows the stack; functions that need the
+  aggregate tail (struct arguments, returns or copies) keep 8 KiB.
 
 ### Byte baseline
 

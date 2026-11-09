@@ -4258,12 +4258,21 @@ struct Codegen {
     // on the store side, where staging through x16 would overwrite the value
     // about to be stored. A fitting offset takes the encoding it always did,
     // so no pre-existing output changes by a byte.
+    void noteScratch(uint32_t off,Ty t){
+        if(!recordingScratch)return;
+        if(!stackOffFits(off,t)){scratchFixable=false;return;}
+        scratchFixes.push_back({code.size(),off,scratchStride(t)});
+        const uint32_t end=off+tySize(t);
+        if(end>scratchHigh)scratchHigh=end;
+    }
     void loadStackOff(int reg,uint32_t off,Ty t){
+        if(recordingScratch)noteScratch(off,t);
         if(stackOffFits(off,t)){emit(loadStackT(reg,off,t));return;}
         if(reg==kGlobalBase){emitAddOff(17,31,off);emit(loadAtT(reg,17,0,t));return;}
         emitAddOff(kGlobalBase,31,off);emit(loadGlobalT(reg,t));
     }
     void storeStackOff(int reg,uint32_t off,Ty t){
+        if(recordingScratch)noteScratch(off,t);
         if(stackOffFits(off,t)){emit(storeStackT(reg,off,t));return;}
         if(reg==kGlobalBase){emitAddOff(17,31,off);emit(storeAtT(reg,17,0,t));return;}
         emitAddOff(kGlobalBase,31,off);emit(storeGlobalT(reg,t));
@@ -4353,6 +4362,7 @@ struct Codegen {
         const int live=nextTemp;
         spillTemps(live);
         const uint32_t scratchByte=4160u+uint32_t(callDepth)*256u;++callDepth;
+        recordingScratch=true;
         for(size_t i=0;i<args.size();++i){
             int v=gen(*args[i],tys[i]);
             storeStackOff(v,scratchByte+uint32_t(i)*8u,tys[i]);
@@ -4368,6 +4378,7 @@ struct Codegen {
         for(size_t i=0;i<args.size();++i)rs[i]=temp();
         for(size_t i=0;i<args.size();++i)
             loadStackOff(rs[i],scratchByte+uint32_t(i)*8u,tys[i]);
+        recordingScratch=false;
         for(size_t i=0;i<args.size();++i){
             // An i64 argument rides at full width exactly like a ptr does —
             // staging it through W would silently truncate a length or an
@@ -5632,6 +5643,7 @@ struct Codegen {
         const ArgLayout lay=layoutArgs(ts,nargs);
         uint32_t argOff[32]={0},copyOff[32]={0},cur=0,copyArea=0;
         for(size_t i=0;i<nargs;++i){
+            if(tyIsStruct(at(i)))usesStructScratch=true;   // aggregate argument: tail
             argOff[i]=cur;
             // A composite passed in memory normally contributes only the
             // address of the copy the caller makes. A call result has no
@@ -5641,6 +5653,7 @@ struct Codegen {
                 ?((tySize(at(i))+7u)&~uint32_t(7u)):argBytes(at(i));
         }
         if(cur>256)throw Error("the arguments of this call need more scratch space than the frame provides");
+        if(sretBytes||tyIsStruct(rt))usesStructScratch=true;   // the aggregate tail
         const uint32_t sretArea=(sretBytes+15u)&~uint32_t(15u);
         for(size_t i=0;i<nargs;++i){
             if(!structInMemory(at(i)))continue;
@@ -5663,6 +5676,7 @@ struct Codegen {
         int live=nextTemp;
         spillTemps(live);
         const int scratchByte=4160+callDepth*256;++callDepth;
+        recordingScratch=true;
         for(size_t i=0;i<nargs;++i){
             const Ty ty=at(i);const uint32_t off=uint32_t(scratchByte+argOff[i]);
             if(structInMemory(ty)){
@@ -5790,6 +5804,7 @@ struct Codegen {
             }
         }
         if(total){emit(0x910003ffu|(total<<10));spAdj=0;}
+        recordingScratch=false;
         restoreTemps(live);
         return d;
     }
@@ -6029,6 +6044,25 @@ struct Codegen {
     // copies/returns an aggregate keeps none of the compiler scratch tail.
     std::vector<size_t> frameWords;
     std::vector<size_t> incomingBaseWords;   // ADD X16, SP, #frame: caller stack arguments
+    // v0.23.77-dev (milestone 2): the call/syscall scratch grid starts at
+    // 4160 in the historical layout. When a function has no aggregate scratch
+    // (the part that lives in the tail) it can move the grid down to just above
+    // its locals, which is what lets a *calling* function have a small frame.
+    // Every instruction that embeds a grid offset is recorded here and adjusted
+    // once the new base is known; a site that had to fall back to a base
+    // register makes the whole function ineligible.
+    struct ScratchFix { size_t at; uint32_t off; int stride; };
+    std::vector<ScratchFix> scratchFixes;
+    bool recordingScratch=false;
+    bool scratchFixable=true;
+    uint32_t scratchHigh=0;      // highest absolute grid byte touched
+    static int scratchStride(Ty t){
+        if(t==Ty::U8||t==Ty::Char)return 1;
+        if(t==Ty::U16)return 2;
+        if(t==Ty::U32||t==Ty::I32||t==Ty::Bool)return 4;
+        return 8;
+    }
+
     std::vector<size_t> raWords;
     bool usesCallScratch=false;
     bool usesStructScratch=false;
@@ -6693,10 +6727,35 @@ struct Codegen {
         // the compiler scratch: frame = locals + the saved return address,
         // rounded to the 16 bytes AAPCS64 wants. Everything else keeps the
         // historical 8 KiB layout, whose scratch offsets are absolute.
-        const bool small=compact&&!usesCallScratch&&!usesStructScratch;
+        // v0.23.77-dev (milestone 2): a function with calls may shrink too, by
+        // moving the call/syscall grid from its historical 4160 down to just
+        // above the locals. Only functions that need the aggregate tail (struct
+        // copies, struct arguments, sret) keep both where they were: the tail is
+        // still addressed absolutely at 8024..8184, so the frame must reach it.
         const uint32_t localsBytes=uint32_t(nextSlot)*8u;
-        const uint32_t frameBytes=small?((localsBytes+8u+15u)&~15u):8192u;
-        const uint32_t raOff=small?frameBytes-8u:8184u;
+        const uint32_t localBase=(localsBytes+15u)&~15u;
+        bool rebase=false;
+        uint32_t frameBytes=8192u, raOff=8184u;
+        if(compact&&!usesStructScratch&&scratchHigh>4160u&&scratchFixable){
+            // Validate the whole grid before touching a byte: every recorded
+            // immediate must stay inside its own scaled range once moved.
+            bool ok=true;
+            for(const auto& fx:scratchFixes){
+                const uint32_t no=fx.off+localBase-4160u;
+                if(no/uint32_t(fx.stride)>4095u){ok=false;break;}
+            }
+            if(ok){
+                const uint32_t end=localBase+(scratchHigh-4160u);
+                frameBytes=(end+8u+15u)&~15u;
+                raOff=frameBytes-8u;
+                rebase=(frameBytes<8192u);
+            }
+        } else if(compact&&!usesCallScratch&&!usesStructScratch){
+            frameBytes=(localsBytes+8u+15u)&~15u;
+            raOff=frameBytes-8u;
+        }
+        if(frameBytes>8192u)frameBytes=8192u;
+        if(frameBytes==8192u)raOff=8184u;
         frameBytesUsed=frameBytes;
         frameWordsUsed=compact?2u:1u;
         auto framePair=[&](uint32_t size,bool sub)->std::pair<uint32_t,uint32_t>{
@@ -6719,6 +6778,12 @@ struct Codegen {
         // already right; a compact frame needs the smaller immediate.
         if(compact&&frameBytes!=8192u)
             for(size_t at:incomingBaseWords)code[at]=0x910003f0u|(frameBytes<<10);
+        if(rebase){
+            for(const auto& fx:scratchFixes){
+                const uint32_t no=fx.off+localBase-4160u;
+                code[fx.at]=(code[fx.at]&~(0xFFFu<<10))|((no/uint32_t(fx.stride))<<10);
+            }
+        }
         if(compact){
             const auto sp1=framePair(frameBytes,false);
             for(size_t at:epilogueAdds){code[at]=sp1.first;code[at+1]=sp1.second;}
