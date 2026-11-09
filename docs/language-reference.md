@@ -64,6 +64,7 @@ fails for every one of them).
 | `switch` | multi-way branch over a compile-time integer (Pascal semantics) | v0.23.49-dev |
 | `case` | a `switch` arm value (followed by `:`) | v0.23.49-dev |
 | `default` | the `switch` arm taken when no `case` matches | v0.23.49-dev |
+| `do` | `do { … } while (cond);` — body first, then the test | v0.23.77-dev |
 
 **Not reserved** (ordinary identifiers, checked by name after `@`): `embed`,
 `embed_len`, `align`. `let embed: i32 = 1;` and `let align: i32 = 2;` both
@@ -82,9 +83,9 @@ The type names are likewise ordinary identifiers, which is what lets
 identifier everywhere except at the **start of a top-level declaration**, where
 `tls let name: type …;` declares a thread-local global (§8). `let tls: i32 = 1;`
 compiles — a variable named `tls` is fine; only the declaration prefix is
-special. The reserved-word count is therefore **32** (the `type` and `const`
+special. The reserved-word count is therefore **33** (the `type` and `const`
 keywords joined it in v0.23.67-dev, `void` in v0.23.68-dev, `char` in
-v0.23.69-dev, and `union` in v0.23.70-dev).
+v0.23.69-dev, `union` in v0.23.70-dev, and `do` in v0.23.77-dev).
 
 ### Identifiers
 
@@ -977,13 +978,27 @@ name      ::= ident | 'main'
   (`global struct field 'S.p' cannot be initialized by a constant`).
 - Duplicate names → `duplicate global variable: g`.
 
+### `do` … `while` (v0.23.77-dev)
+
+```
+do { body } while (cond);
+```
+
+The body runs **once**, then `cond` decides whether it runs again — the shape
+the other loops cannot express (`while` tests first). `continue` jumps to the
+condition, not to the body, and `break` leaves the loop, exactly as in the
+other loops; the trailing `;` after the condition is required. A `do` loop may
+be labeled like `while`/`for` (`outer: do { … } while (c);`), and a `break` or
+`continue` naming it resolves to that loop.
+
 ### Thread-local storage (`tls let`) (v0.23.51-dev; shared objects since v0.23.52-dev)
 
 - `tls` is a **context keyword**: it is only special at the start of a
   top-level declaration, so it stays a usable identifier everywhere else
   (`let tls: i32 = 5;` is an ordinary local). The reserved-word count is
-  32 (the `type` and `const` keywords joined it in v0.23.67-dev, `void`
-  in v0.23.68-dev, `char` in v0.23.69-dev and `union` in v0.23.70-dev).
+  33 (the `type` and `const` keywords joined it in v0.23.67-dev, `void`
+  in v0.23.68-dev, `char` in v0.23.69-dev, `union` in v0.23.70-dev and
+  `do` in v0.23.77-dev).
 - Same shapes as a plain global — scalars and arrays, the same types, the
   same constant-initializer rules, the same length bounds. `tls extern let
   name: type;` declares one defined elsewhere, exactly like `extern let` —
@@ -1037,8 +1052,16 @@ name      ::= ident | 'main'
 - At most **32 parameters** and at most **32 call arguments**.
 - No nested functions. No default or variadic parameters.
 - Body may not be empty.
-- `main` must return `i32` and take **no** parameters
-  (`main must return i32`, `main must not have parameters`).
+- `main` must return `i32`. It takes **no** parameters, or the entry form
+  `fn main(argc: i32, argv: ptr) -> i32` (v0.23.77-dev), or the same with a
+  third `envp: ptr`. Those three arrive in `x0`/`x1`/`x2` — the kernel enters a
+  static image with `argc` at `[sp]` and `argv` at `[sp+8]`, and the entry
+  prologue reads them there before the first statement, so `_start` is still
+  the function itself. Anything else is refused with
+  `main must take no parameters, or (argc: i32, argv: ptr[, envp: ptr])`.
+  `argv` is a plain `ptr`, not a `ptr<ptr<u8>>` (nested `ptr<…>` is not a type),
+  so `argv[i]` is not the i-th argument string; read one with
+  `ptr(load_i64(argv + i * 8))`, which is the address `argv[i]` holds.
 - A function may call itself. A call to an undeclared name →
   `call to undeclared function: nope`.
 - Every path must return; falling off the end is an error.

@@ -131,10 +131,10 @@ import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 32, ('reserved-word count moved', len(entries), entries)
+assert len(entries) == 33, ('reserved-word count moved', len(entries), entries)
 assert 'type' in entries and 'const' in entries, 'type/const are not reserved words'
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 32 reserved words, type and const among them, tls still a context keyword')
+print('PASS: 33 reserved words, type and const among them, tls still a context keyword')
 PY
 guard_count=$((guard_count + 1))
 printf '  %-30s %s\n' "guards passed" "$guard_count"
@@ -626,13 +626,20 @@ rows=$(wc -l < "$OUT/hashes.filtered.txt")
 printf '  %-30s %s\n' "baseline rows reproduced" "$rows"
 # The previous release's frozen baseline — derived, never a hardcoded path
 # (the CI protocol check forbids literal versioned baseline paths).
+#
+# v0.23.77-dev: the shared objects are excluded from this claim on purpose.
+# Audit finding A-16 stopped declaring a VERNEED for libc.so.6 that the object
+# did not depend on, which changes the bytes of every build-so product — a real,
+# documented fix rather than drift. Every ET_EXEC and ET_REL product (the
+# build-elf and build-obj --pic rows) must still be byte-identical, and that is
+# what this claim now asserts.
 _cur_v=$(aster_baseline_version)
 _prev_v=$(ls tests/baseline/ | grep -v "^v${_cur_v}\$" | sort -V | tail -1)
 if [ -n "$_prev_v" ]; then
     PREV="tests/baseline/${_prev_v}/example-hashes.txt"
     if [ -f "$PREV" ]; then
         moved=$(awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' \
-                     "$PREV" "$OUT/hashes.filtered.txt")
+                     "$PREV" "$OUT/hashes.filtered.txt" | grep -v '\.build-so$')
         prev_rows=$(wc -l < "$PREV")
         if [ -n "$moved" ]; then
             echo 'FAIL: this round moved bytes of a program written before it:' >&2

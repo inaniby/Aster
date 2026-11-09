@@ -236,7 +236,8 @@ enum class TK { End, Ident, Number, String,
     PlusPlus, MinusMinus,
     Dot, Amp,            // v0.23.5-dev (P3.3): '.' field access, '&' address-of
     CharType,            // v0.23.69-dev: the `char` type keyword (distinct from the `Char` literal token)
-    Union };             // v0.23.70-dev: Union names a `union U { ... }` declaration
+    Union,               // v0.23.70-dev: Union names a `union U { ... }` declaration
+    Do };                // v0.23.77-dev: `do { ... } while (cond);` — the loop body first
 struct Token { TK k; std::string s; unsigned line, col; };
 class Lexer {
     const std::string& s; size_t p=0; unsigned line=1, col=1;
@@ -314,6 +315,7 @@ public:
                 // baseline holds by construction.
                 else if(x=="true")k=TK::True; else if(x=="false")k=TK::False; else if(x=="char")k=TK::CharType;   // v0.23.69-dev
                 else if(x=="union")k=TK::Union;   // v0.23.70-dev: a union declaration shares the struct tag namespace
+                else if(x=="do")k=TK::Do;             // v0.23.77-dev: the do-while loop keyword
                 v.push_back({k,x,l,c}); continue;
             }
             if(std::isdigit((unsigned char)ch)) {
@@ -1043,7 +1045,7 @@ static Ty constExprType(const Expr& e){
     }
 }
 struct Stmt {
-    enum Kind { Let, Assign, FieldAssign, IndexAssign, DerefAssign, Return, If, While, For, Break, Continue, Switch, Expr } k; std::string name; unsigned line=0, col=0;   // P4.1: source location of this statement's leading token
+    enum Kind { Let, Assign, FieldAssign, IndexAssign, DerefAssign, Return, If, While, For, Break, Continue, Switch, Expr, DoWhile } k; std::string name; unsigned line=0, col=0;   // P4.1: source location of this statement's leading token
     E expr; E idx;
     Ty ty=Ty::I32;          // declared value type (v0.23.2-dev); isPtr/isBool mirror it
     bool isPtr=false; bool isBool=false;
@@ -2318,6 +2320,19 @@ class Parser {
     Stmt whileStatement(){
         Stmt s(Stmt::While);need(TK::LParen,"expected '(' after while");s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;need(TK::RParen,"expected ')' after condition");s.thenBody=block();return s;
     }
+    // v0.23.77-dev: `do body while (cond);` — the body runs once, then the
+    // condition decides whether it runs again. The trailing `;` is required,
+    // as in C, because the statement ends with the condition.
+    Stmt doWhileStatement(){
+        Stmt s(Stmt::DoWhile);
+        s.thenBody=block();
+        need(TK::While,"expected 'while' after a do body");
+        need(TK::LParen,"expected '(' after while");
+        s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;
+        need(TK::RParen,"expected ')' after condition");
+        need(TK::Semi,"expected ';' after do-while condition");
+        return s;
+    }
     Stmt forStatement(){
         // for (init; cond; step) body  ==  { init; while (cond) { body; step; } }
         // with continue landing on the step (standard for semantics). The
@@ -2394,11 +2409,12 @@ class Parser {
         // a colon, so the lookahead cannot steal a different form.
         if(cur().k==TK::Ident&&t[p+1].k==TK::Colon){
             const Token& lt=cur();
-            if(!(t[p+2].k==TK::While||t[p+2].k==TK::For))
-                throw Error(loc(lt.line,lt.col,"only a while or for loop may be labeled: "+cur().s));
+            if(!(t[p+2].k==TK::While||t[p+2].k==TK::For||t[p+2].k==TK::Do))
+                throw Error(loc(lt.line,lt.col,"only a while, for or do loop may be labeled: "+cur().s));
             std::string lab=cur().s;
             p+=2;                                  // skip the label and its ':'; cur() is now the loop keyword
             if(cur().k==TK::While){++p;Stmt s=whileStatement();s.label=lab;return s;}
+            if(cur().k==TK::Do){++p;Stmt s=doWhileStatement();s.label=lab;return s;}
             ++p;Stmt s=forStatement();s.label=lab;return s;
         }
         // v0.23.17-dev: `i++;` / `++i;` / `i--;` / `--i;` as statements. The
@@ -2407,6 +2423,7 @@ class Parser {
         // Aster expression stay free of side effects (see compoundValue above).
         if(cur().k==TK::PlusPlus||cur().k==TK::MinusMinus)return incDecStatement();
         if(eat(TK::While))return whileStatement();
+        if(eat(TK::Do))return doWhileStatement();   // v0.23.77-dev
         if(eat(TK::For))return forStatement();
         // v0.23.49-dev: switch joins the control-flow group. The bodies are
         // collected by caseBody() above — no braces of their own.
@@ -3168,7 +3185,17 @@ public:
         }
         functions.push_back(std::move(f));
         }
-        if(requireMain)for(const auto& f:functions)if(f.name=="main"&&!f.external&&!f.params.empty())throw Error("main must not have parameters");
+        if(requireMain)for(const auto& f:functions)if(f.name=="main"&&!f.external&&!f.params.empty()){
+            // v0.23.77-dev: the entry may take the kernel's arguments. They
+            // arrive in x0/x1/x2 — exactly where a first, second and third
+            // parameter are read — so `_start` is still the function itself and
+            // no trampoline is needed. argc is i32; argv and envp are ptr.
+            const size_t n=f.params.size();
+            bool ok=(n==2||n==3)&&f.paramTypes.size()==n&&
+                    f.paramTypes[0]==Ty::I32&&f.paramTypes[1]==Ty::Ptr&&
+                    (n==2||f.paramTypes[2]==Ty::Ptr);
+            if(!ok)throw Error("main must take no parameters, or (argc: i32, argv: ptr[, envp: ptr])");
+        }
         for(const auto& g:globals)for(const auto& f:functions)if(g.name==f.name)throw Error("global variable conflicts with function: "+g.name);
     }
 };
@@ -6414,6 +6441,21 @@ struct Codegen {
             } else if(s.k==Stmt::Continue){
                 if(s.label.empty()&&loops.empty()) throw Error("continue used outside a loop");
                 loops[loopIndexFor(s)].continues.push_back(code.size()); emit(0);
+            } else if(s.k==Stmt::DoWhile){
+                // v0.23.77-dev: the body runs once, then the condition decides.
+                // `continue` jumps to the condition, not to the body, and
+                // `break` to the end — the same targets the other loops have.
+                size_t bodyStart=code.size();
+                loops.push_back({bodyStart,{},{},s.label});
+                block(s.thenBody,true);
+                size_t condAt=code.size();
+                for(size_t at:loops.back().continues)patchBranch(at,condAt);
+                size_t toEnd;const int cond=emitCondition(*s.expr,toEnd);
+                size_t back=code.size();emit(branch((int)back,(int)bodyStart));
+                size_t loopEnd=code.size();
+                patchCond(toEnd,cond,(int)loopEnd);
+                for(size_t at:loops.back().breaks)patchBranch(at,loopEnd);
+                loops.pop_back();
             } else if(s.k==Stmt::While){
                 size_t loopStart=code.size();size_t toEnd;const int cond=emitCondition(*s.expr,toEnd);
                 loops.push_back({loopStart,{},{},s.label});block(s.thenBody,true);size_t back=code.size();emit(branch((int)back,(int)loopStart));size_t loopEnd=code.size();patchCond(toEnd,cond,(int)loopEnd);for(size_t at:loops.back().breaks)patchBranch(at,loopEnd);for(size_t at:loops.back().continues)patchBranch(at,loopStart);loops.pop_back();
@@ -6542,6 +6584,24 @@ struct Codegen {
             emit(0x91000000u|(17u<<5)|17u);                   // ADD  X17, X17, #lo12:__aster_tls_block
             relocations.push_back({uint64_t(add)*4,"__aster_tls_block",kRelAddLo});
             emit(0xd51bd051u);                                // MSR TPIDR_EL0, X17
+        }
+        if(isMain&&!f.params.empty()){
+            // v0.23.77-dev: the kernel enters a static image with argc at
+            // [sp] and argv at [sp+8]; x0/x1 are unspecified — they are only
+            // set when a dynamic loader hands over to a program. The frame is
+            // already allocated (8192 bytes, the documented contract), so the
+            // initial stack pointer is sp + 8192 and the three arguments are
+            // read from there into x0/x1/x2, which is exactly where the
+            // parameter loop below expects a first, second and third one.
+            // SP is addressable only by ADD (immediate), whose imm12 tops out
+            // at 4095, so 8192 is built from 4095 + 4095 + 2.
+            emit(0x913FFFF0u);            // ADD  X16, SP, #4095
+            emit(0x913FFE10u);            // ADD  X16, X16, #4095
+            emit(0x91000A10u);            // ADD  X16, X16, #2     ; X16 = initial SP
+            emit(0xF9400200u);            // LDR  X0, [X16]        ; argc
+            emit(0x91002201u);            // ADD  X1, X16, #8      ; argv
+            emit(0x8B000C22u);            // ADD  X2, X1, X0, LSL #3
+            emit(0x91002042u);            // ADD  X2, X2, #8       ; envp = argv + 8*(argc+1)
         }
         if(!isMain) emit(0xf90003feu|(uint32_t(1023)<<10)); // STR X30, [SP, #8184]: preserve return address
         // A struct larger than 16 bytes is returned through the buffer the
@@ -8391,6 +8451,10 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             case Stmt::While:
                 annotateExpr(*s.expr);checkCondition(*s.expr);
                 ++loopDepth;loopNames.push_back(s.label);checkBlock(s.thenBody,true);loopNames.pop_back();--loopDepth;
+                return;
+            case Stmt::DoWhile:
+                ++loopDepth;loopNames.push_back(s.label);checkBlock(s.thenBody,true);loopNames.pop_back();--loopDepth;
+                annotateExpr(*s.expr);checkCondition(*s.expr);
                 return;
             case Stmt::For:
                 scopes.emplace_back();

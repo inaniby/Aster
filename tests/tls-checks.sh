@@ -148,9 +148,9 @@ import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 32, ("reserved-word count moved", len(entries), entries)
+assert len(entries) == 33, ("reserved-word count moved", len(entries), entries)
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 32 reserved words, tls absent (context keyword)')
+print('PASS: 33 reserved words, tls absent (context keyword)')
 PY
 
 # ---------------------------------------------------------------- 4. static structure

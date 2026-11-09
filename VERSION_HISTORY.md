@@ -74,6 +74,26 @@ breaking this project's own `-Werror` build.
   sources, entry source, tests, signing configuration and free space. It exits 1
   on any failure, and `--strict` turns warnings into failures too.
 
+* **`do { … } while (cond);`** — the test-last loop. The body runs once, then
+  the condition decides; `continue` jumps to the condition (not to the body),
+  `break` leaves the loop, and the statement may be labeled like `while`/`for`.
+  `do` becomes the 33rd reserved word; the token generator was regenerated
+  (83 → 84 kinds) and its `--check` gate stays green.
+* **`main(argc: i32, argv: ptr[, envp: ptr])`** — the entry may take the
+  kernel's arguments. The AArch64 static-image contract puts `argc` at `[sp]`
+  and `argv` at `[sp+8]` (x0/x1 are unspecified at process entry; they are set
+  only when a dynamic loader hands over), so the entry prologue reads the three
+  values from the initial stack — the frame is a documented 8 KiB, so the
+  initial SP is `sp + 8192` — before storing them like any other parameters.
+  `argv` is a plain `ptr` (nested `ptr<…>` is not a type), so an argument
+  string is `ptr(load_i64(argv + i * 8))`. Anything else is refused with
+  "main must take no parameters, or (argc: i32, argv: ptr[, envp: ptr])".
+  No existing program moved a byte: the v0.23.77-dev snapshot reproduces
+  393/393 rows. `tests/lang-completion-checks.sh` (nine layers) covers the loop
+  semantics, labeled continue, the refusals, both entry forms with real
+  arguments, the generator's agreement, and a mutation that points `continue`
+  at the body — which the suite must catch.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
