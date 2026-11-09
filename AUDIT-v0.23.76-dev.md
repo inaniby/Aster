@@ -420,3 +420,20 @@ dlopen(libb.so) → callval=8（exit 0）
 | --- | --- | --- |
 | `--needed libA.so --needed libA.so` | NEEDED=2（libA 两遍） | NEEDED=1 |
 | `--needed libA.so --needed libB.so --needed libA.so` | NEEDED=3 | NEEDED=2（顺序保留） |
+
+## 16. A-16 的字节影响与基线再记录
+
+A-16 去掉了不属于该对象的 `DT_VERNEED`/`DT_VERNEEDNUM`，并折叠重复 `DT_NEEDED`。
+这必然改变 `.so` 产物的字节（`.dynamic` 条目数与字符串表都会动）：
+
+| 产物类型 | 行数 | 是否变化 |
+| --- | --- | --- |
+| `.build-so`（共享对象） | 126 | **全部变化** |
+| `.build-elf`（ET_EXEC） | 132 | 无变化 |
+| `.build-obj_--pic`（ET_REL） | 132 | 无变化 |
+| 合计 | 390（+3 个被过滤的例子） | 393 行中 126 行变化 |
+
+因此 `tests/baseline/v0.23.76-dev/example-hashes.txt` 的 126 行 `.build-so` 被**有意再记录**：
+旧行是带错误 VERNEED 的字节，新行是修复后的字节。ET_EXEC / ET_REL 的 267 行保持逐字节一致，
+这正是修复的边界——只有共享对象携带那个标签。再记录后 `literals-checks`、`switch-checks`、
+`u64-literal-compare-checks` 的字节一致性层重新恢复意义。
