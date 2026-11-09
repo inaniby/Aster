@@ -1,6 +1,7 @@
 #!/bin/sh
 # v0.22.35-dev: failed indirect DT_NEEDED loads must not disturb an already-live valid chain.
 set -eu
+. tests/lib/tmpdir.sh
 . tests/host-toolchain-probe.sh
 CXX=${CXX:-g++}
 HOSTCC=${HOSTCC:-cc}

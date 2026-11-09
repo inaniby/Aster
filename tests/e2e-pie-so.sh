@@ -7,6 +7,7 @@
 # HOSTCC compiles the two target-architecture test hosts (pie-loader.c, so-host.c).
 # RUNNER is an optional command prefix used to execute the generated AArch64 programs.
 set -eu
+. tests/lib/tmpdir.sh
 . tests/host-toolchain-probe.sh
 CXX=${CXX:-g++}
 HOSTCC=${HOSTCC:-cc}

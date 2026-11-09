@@ -1,4 +1,5 @@
 # tests/host-toolchain-probe.sh — sourced by every e2e test at the very top.
+. tests/lib/tmpdir.sh
 #
 # The e2e tests link Aster's AArch64 output into target-architecture test hosts
 # compiled by $HOSTCC and run them (natively on AArch64, or under qemu-user
@@ -19,7 +20,7 @@ if ! command -v "$HOSTCC" >/dev/null 2>&1; then
     echo "SKIP: $0 needs \$HOSTCC=$HOSTCC on PATH" >&2
     exit 0
 fi
-probe=$(mktemp 2>/dev/null || echo /tmp/aster-hostprobe.$$)
+probe=$(mktemp 2>/dev/null || echo $TMPD/aster-hostprobe.$$)
 if echo 'int main(){return 0;}' | "$HOSTCC" -x c - -o "$probe" 2>/dev/null \
    && head -c 20 "$probe" 2>/dev/null | od -An -tx1 -v | tr -d ' \n' | grep -q 'b700$'; then
     rm -f "$probe"

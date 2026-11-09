@@ -21,17 +21,18 @@
 #
 # Override points (env vars): ASTER_BIN, SO, APK, PKG, LIB, ABI, KEY_DIR
 set -eu
+. tests/lib/tmpdir.sh
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-ASTER_BIN="${ASTER_BIN:-/tmp/aster-apk-test}"
-SO="${SO:-/tmp/aster-apk-test.so}"
-APK="${APK:-/tmp/aster-apk-test.apk}"
+ASTER_BIN="${ASTER_BIN:-$TMPD/aster-apk-test}"
+SO="${SO:-$TMPD/aster-apk-test.so}"
+APK="${APK:-$TMPD/aster-apk-test.apk}"
 PKG="${PKG:-com.aster.apktest}"
 LIB="${LIB:-apktest}"
 ABI="${ABI:-arm64-v8a}"
-KEY_DIR="${KEY_DIR:-/tmp/aster-apk-keys}"
+KEY_DIR="${KEY_DIR:-$TMPD/aster-apk-keys}"
 
 echo "[1/7] compiling aster (strict: -Wall -Wextra -Werror)"
 ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Werror -o "$ASTER_BIN" src/aster.cpp
@@ -117,16 +118,16 @@ echo "[3/7] build-apk $SO -> $APK"
 # install on every device (INSTALL_FAILED_NO_MATCHING_ABIS), because
 # lib/x86_64/ held an e_machine = AArch64 file.
 echo "[3/7] A-14: --abi must match the shared object's e_machine"
-if "$ASTER_BIN" build-apk "$SO" -o /tmp/aster-abi-mismatch.apk \
+if "$ASTER_BIN" build-apk "$SO" -o $TMPD/aster-abi-mismatch.apk \
     --package "$PKG" --libname "$LIB" --abi x86_64 \
     --label "Aster APK Test" --min-sdk 24 --target-sdk 34 \
     --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR" \
-    >/tmp/aster-abi-mismatch.log 2>&1; then
+    >$TMPD/aster-abi-mismatch.log 2>&1; then
     echo "FAIL: build-apk accepted --abi x86_64 for an AArch64 shared object"; exit 1
 fi
-grep -q "expects an x86-64 shared object" /tmp/aster-abi-mismatch.log || {
-    echo "FAIL: the ABI mismatch was rejected for the wrong reason:"; cat /tmp/aster-abi-mismatch.log; exit 1; }
-if [ -e /tmp/aster-abi-mismatch.apk ]; then
+grep -q "expects an x86-64 shared object" $TMPD/aster-abi-mismatch.log || {
+    echo "FAIL: the ABI mismatch was rejected for the wrong reason:"; cat $TMPD/aster-abi-mismatch.log; exit 1; }
+if [ -e $TMPD/aster-abi-mismatch.apk ]; then
     echo "FAIL: build-apk wrote an APK it had just rejected"; exit 1
 fi
 echo "PASS: --abi is checked against the ELF header it ships"
@@ -138,17 +139,17 @@ python3 tests/validate_apk.py "$APK" --package "$PKG" --libname "$LIB" --abi "$A
 # --- native_activity example: external NDK imports + full manifest semantics ---
 # This exercises the auto-emitted DT_NEEDED (liblog.so via __android_log_print) and
 # verifies the binary AXML attributes encode real string values, not pool index 0.
-echo "[3/7] build-so examples/native_activity.ast -> /tmp/aster-native.so"
-"$ASTER_BIN" build-so examples/native_activity.ast -o /tmp/aster-native.so
+echo "[3/7] build-so examples/native_activity.ast -> $TMPD/aster-native.so"
+"$ASTER_BIN" build-so examples/native_activity.ast -o $TMPD/aster-native.so
 
-echo "[3/7] build-apk /tmp/aster-native.so -> /tmp/aster-native.apk"
-"$ASTER_BIN" build-apk /tmp/aster-native.so -o /tmp/aster-native.apk \
+echo "[3/7] build-apk $TMPD/aster-native.so -> $TMPD/aster-native.apk"
+"$ASTER_BIN" build-apk $TMPD/aster-native.so -o $TMPD/aster-native.apk \
     --package com.aster.nativeapp --libname nativeapp --abi "$ABI" \
     --label "Aster Native" --min-sdk 24 --target-sdk 34 \
     --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR"
 
 echo "[3/7] validating native APK (DT_NEEDED auto-emit + manifest semantics)"
-python3 tests/validate_apk.py /tmp/aster-native.apk \
+python3 tests/validate_apk.py $TMPD/aster-native.apk \
     --package com.aster.nativeapp --libname nativeapp --abi "$ABI"
 
 # --- native_render example: software rendering via ANativeWindow + FuncAddr callback ---
@@ -157,17 +158,17 @@ python3 tests/validate_apk.py /tmp/aster-native.apk \
 # global-array addressing, and auto DT_NEEDED for libandroid (ANativeWindow_*). Unlike the
 # log-only example this draws a visible gradient frame, so the app can be verified by eye
 # on a device without adb logcat.
-echo "[3/7] build-so examples/native_render.ast -> /tmp/aster-render.so"
-"$ASTER_BIN" build-so examples/native_render.ast -o /tmp/aster-render.so
+echo "[3/7] build-so examples/native_render.ast -> $TMPD/aster-render.so"
+"$ASTER_BIN" build-so examples/native_render.ast -o $TMPD/aster-render.so
 
-echo "[3/7] build-apk /tmp/aster-render.so -> /tmp/aster-render.apk"
-"$ASTER_BIN" build-apk /tmp/aster-render.so -o /tmp/aster-render.apk \
+echo "[3/7] build-apk $TMPD/aster-render.so -> $TMPD/aster-render.apk"
+"$ASTER_BIN" build-apk $TMPD/aster-render.so -o $TMPD/aster-render.apk \
     --package com.aster.renderapp --libname renderapp --abi "$ABI" \
     --label "Aster Render" --min-sdk 24 --target-sdk 34 \
     --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR"
 
 echo "[3/7] validating render APK (FuncAddr callback + libandroid DT_NEEDED + manifest)"
-python3 tests/validate_apk.py /tmp/aster-render.apk \
+python3 tests/validate_apk.py $TMPD/aster-render.apk \
     --package com.aster.renderapp --libname renderapp --abi "$ABI"
 
 # --- one-step path: build-apk accepts .ast directly (v0.22.47-dev) ---
@@ -175,24 +176,25 @@ python3 tests/validate_apk.py /tmp/aster-render.apk \
 # installable APK" case no longer needs a manual build-so first. The .so is
 # still built with the identical pipeline (kept here via --emit-so) and must
 # validate byte-for-byte like the two-step build.
-echo "[3/7] build-apk examples/so_math.ast -> /tmp/aster-direct.apk (no separate build-so)"
-"$ASTER_BIN" build-apk examples/so_math.ast -o /tmp/aster-direct.apk \
+echo "[3/7] build-apk examples/so_math.ast -> $TMPD/aster-direct.apk (no separate build-so)"
+"$ASTER_BIN" build-apk examples/so_math.ast -o $TMPD/aster-direct.apk \
     --package "$PKG" --libname "$LIB" --abi "$ABI" \
     --label "Aster APK Test" --min-sdk 24 --target-sdk 34 \
     --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR" \
-    --emit-so /tmp/aster-direct.so
+    --emit-so $TMPD/aster-direct.so
 
 echo "[3/7] validating one-step APK + emitted .so"
-python3 tests/validate_apk.py /tmp/aster-direct.apk --package "$PKG" --libname "$LIB" --abi "$ABI"
+python3 tests/validate_apk.py $TMPD/aster-direct.apk --package "$PKG" --libname "$LIB" --abi "$ABI"
 
 echo "[3/7] one-step APK must package the same code as the two-step build"
 # The one-step path compiles with DT_SONAME lib<libname>.so (matching the path the
 # .so is packaged at), so the reference is the two-step build with the same soname.
-"$ASTER_BIN" build-so examples/so_math.ast -o /tmp/aster-ref.so --soname "lib$LIB.so"
+"$ASTER_BIN" build-so examples/so_math.ast -o $TMPD/aster-ref.so --soname "lib$LIB.so"
 python3 - <<'PY'
+import os
 import zipfile
-a = zipfile.ZipFile('/tmp/aster-direct.apk').read('lib/arm64-v8a/libapktest.so')
-b = open('/tmp/aster-ref.so', 'rb').read()
+a = zipfile.ZipFile(os.environ["TMPD"]+"/aster-direct.apk").read('lib/arm64-v8a/libapktest.so')
+b = open(os.environ["TMPD"]+"/aster-ref.so", 'rb').read()
 assert a == b, 'one-step .so differs from the two-step build with the same DT_SONAME'
 print('PASS: one-step .so is byte-identical to the two-step build with the same DT_SONAME')
 PY
@@ -208,8 +210,9 @@ echo "[4/7] v2 mutation: flip a byte no v1 digest covers"
 # entry payload, so every CRC-32 and every MANIFEST/SF digest still passes. Only
 # the v2 chunked content digest can see this edit.
 python3 - <<'PY'
+import os
 import struct
-raw = open('/tmp/aster-apk-test.apk', 'rb').read()
+raw = open(os.environ["TMPD"]+"/aster-apk-test.apk", 'rb').read()
 MAG = b"APK Sig Block 42"
 i = raw.find(MAG)
 sb_start = i + 16 - (struct.unpack_from('<Q', raw, i - 8)[0] + 8)
@@ -226,20 +229,21 @@ assert gaps, 'expected alignment padding between two entries'
 off = gaps[0][0]
 m = bytearray(raw)
 m[off] ^= 0xFF
-open('/tmp/aster-v2-padding.apk', 'wb').write(bytes(m))
+open(os.environ["TMPD"]+"/aster-v2-padding.apk", 'wb').write(bytes(m))
 print('   flipped alignment-padding byte at offset %d' % off)
 PY
-if python3 tests/validate_apk.py /tmp/aster-v2-padding.apk > /tmp/aster-v2-padding.log 2>&1; then
+if python3 tests/validate_apk.py $TMPD/aster-v2-padding.apk > $TMPD/aster-v2-padding.log 2>&1; then
     echo "FAIL: padding-byte tampering was accepted (v2 digest is not being checked)"; exit 1
 fi
-grep -q "v2 CHUNKED_SHA256 content digest mismatch" /tmp/aster-v2-padding.log || {
-    echo "FAIL: padding-byte tampering was rejected, but not by the v2 digest:"; cat /tmp/aster-v2-padding.log; exit 1; }
+grep -q "v2 CHUNKED_SHA256 content digest mismatch" $TMPD/aster-v2-padding.log || {
+    echo "FAIL: padding-byte tampering was rejected, but not by the v2 digest:"; cat $TMPD/aster-v2-padding.log; exit 1; }
 echo "PASS: padding-byte tampering rejected by the v2 content digest (v1 cannot see it)"
 
 echo "[4/7] v2 mutation: strip the Signing Block (downgrade to v1)"
 python3 - <<'PY'
+import os
 import struct
-raw = open('/tmp/aster-apk-test.apk', 'rb').read()
+raw = open(os.environ["TMPD"]+"/aster-apk-test.apk", 'rb').read()
 MAG = b"APK Sig Block 42"
 i = raw.find(MAG)
 sb_end = i + 16
@@ -251,17 +255,18 @@ off = eocd - (sb_end - sb_start)
 # an attacker would also repoint the EOCD at the Central Directory so the ZIP
 # still opens; do that, so this really is the classic downgrade attack
 out[off + 16:off + 20] = struct.pack('<I', sb_start)
-open('/tmp/aster-v2-stripped.apk', 'wb').write(bytes(out))
+open(os.environ["TMPD"]+"/aster-v2-stripped.apk", 'wb').write(bytes(out))
 PY
-if python3 tests/validate_apk.py /tmp/aster-v2-stripped.apk > /tmp/aster-v2-stripped.log 2>&1; then
+if python3 tests/validate_apk.py $TMPD/aster-v2-stripped.apk > $TMPD/aster-v2-stripped.log 2>&1; then
     echo "FAIL: an APK with the v2 block stripped was accepted"; exit 1
 fi
 echo "PASS: v2-stripped APK rejected (anti-stripping attribute makes the downgrade visible)"
 
 echo "[4/7] v2 mutation: corrupt the v2 signature bytes"
 python3 - <<'PY'
+import os
 import struct
-raw = open('/tmp/aster-apk-test.apk', 'rb').read()
+raw = open(os.environ["TMPD"]+"/aster-apk-test.apk", 'rb').read()
 MAG = b"APK Sig Block 42"
 i = raw.find(MAG)
 sb_end = i + 16
@@ -275,14 +280,14 @@ sig_off = el_off + 12
 out = bytearray(raw)
 for k in range(sig_off, sig_off + 8):
     out[k] ^= 0xAA
-open('/tmp/aster-v2-badsig.apk', 'wb').write(bytes(out))
+open(os.environ["TMPD"]+"/aster-v2-badsig.apk", 'wb').write(bytes(out))
 print('   corrupted 8 bytes of the 0x0103 signature at offset %d' % sig_off)
 PY
-if python3 tests/validate_apk.py /tmp/aster-v2-badsig.apk > /tmp/aster-v2-badsig.log 2>&1; then
+if python3 tests/validate_apk.py $TMPD/aster-v2-badsig.apk > $TMPD/aster-v2-badsig.log 2>&1; then
     echo "FAIL: an APK with a corrupted v2 signature was accepted"; exit 1
 fi
-grep -q "v2 signature over signed-data did not verify" /tmp/aster-v2-badsig.log || {
-    echo "FAIL: corrupted signature rejected for the wrong reason:"; cat /tmp/aster-v2-badsig.log; exit 1; }
+grep -q "v2 signature over signed-data did not verify" $TMPD/aster-v2-badsig.log || {
+    echo "FAIL: corrupted signature rejected for the wrong reason:"; cat $TMPD/aster-v2-badsig.log; exit 1; }
 echo "PASS: corrupted v2 signature rejected by the RSASSA-PKCS1-v1_5 verify"
 
 # ---------------------------------------------------------------------------
@@ -291,42 +296,43 @@ echo "PASS: corrupted v2 signature rejected by the RSASSA-PKCS1-v1_5 verify"
 # the attribute is never really required.
 # ---------------------------------------------------------------------------
 echo "[5/7] compiler mutation: build aster without X-Android-APK-Signed"
-rm -rf /tmp/aster-apk-mut && mkdir -p /tmp/aster-apk-mut
-cp src/aster.cpp /tmp/aster-apk-mut/
+rm -rf $TMPD/aster-apk-mut && mkdir -p $TMPD/aster-apk-mut
+cp src/aster.cpp $TMPD/aster-apk-mut/
 python3 - <<'PY'
-p = '/tmp/aster-apk-mut/aster.cpp'
+import os
+p = os.environ["TMPD"]+"/aster-apk-mut/aster.cpp"
 s = open(p).read()
 old = '    sf += "X-Android-APK-Signed: 2\\r\\n";\n'
 assert old in s, 'anti-stripping attribute anchor not found'
 open(p, 'w').write(s.replace(old, ''))
 PY
-c++ -std=c++17 -O2 -Wall -Wextra -Werror -o /tmp/aster-apk-mut-bin /tmp/aster-apk-mut/aster.cpp
-/tmp/aster-apk-mut-bin build-so examples/so_math.ast -o /tmp/aster-apk-mut.so > /dev/null
-rm -f /tmp/aster-apk-mut.apk
+c++ -std=c++17 -O2 -Wall -Wextra -Werror -o $TMPD/aster-apk-mut-bin $TMPD/aster-apk-mut/aster.cpp
+$TMPD/aster-apk-mut-bin build-so examples/so_math.ast -o $TMPD/aster-apk-mut.so > /dev/null
+rm -f $TMPD/aster-apk-mut.apk
 # Since v0.23.4 build-apk verifies the APK in memory before writing it, so the
 # mutated compiler has to reject its own output without producing a file at all.
-if /tmp/aster-apk-mut-bin build-apk /tmp/aster-apk-mut.so -o /tmp/aster-apk-mut.apk \
+if $TMPD/aster-apk-mut-bin build-apk $TMPD/aster-apk-mut.so -o $TMPD/aster-apk-mut.apk \
     --package "$PKG" --libname "$LIB" --abi "$ABI" \
     --label "Aster APK Test" --min-sdk 24 --target-sdk 34 \
-    --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR" > /dev/null 2>/tmp/aster-apk-mut.err; then
+    --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR" > /dev/null 2>$TMPD/aster-apk-mut.err; then
     echo "FAIL: the mutated compiler accepted its own APK (self-verification has no teeth)"; exit 1
 fi
-grep -q "X-Android-APK-Signed" /tmp/aster-apk-mut.err || {
-    echo "FAIL: mutated build rejected for the wrong reason:"; cat /tmp/aster-apk-mut.err; exit 1; }
-if [ -e /tmp/aster-apk-mut.apk ]; then
+grep -q "X-Android-APK-Signed" $TMPD/aster-apk-mut.err || {
+    echo "FAIL: mutated build rejected for the wrong reason:"; cat $TMPD/aster-apk-mut.err; exit 1; }
+if [ -e $TMPD/aster-apk-mut.apk ]; then
     echo "FAIL: build-apk wrote an APK it had just rejected"; exit 1
 fi
 echo "PASS: build-apk refuses to write an APK that fails its own signature check"
 # ...and the independent validator agrees, once the self-check is bypassed.
-/tmp/aster-apk-mut-bin build-apk /tmp/aster-apk-mut.so -o /tmp/aster-apk-mut.apk \
+$TMPD/aster-apk-mut-bin build-apk $TMPD/aster-apk-mut.so -o $TMPD/aster-apk-mut.apk \
     --package "$PKG" --libname "$LIB" --abi "$ABI" \
     --label "Aster APK Test" --min-sdk 24 --target-sdk 34 \
     --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR" --no-verify > /dev/null
-if python3 tests/validate_apk.py /tmp/aster-apk-mut.apk > /tmp/aster-apk-mut.log 2>&1; then
+if python3 tests/validate_apk.py $TMPD/aster-apk-mut.apk > $TMPD/aster-apk-mut.log 2>&1; then
     echo "FAIL: an APK without the anti-stripping attribute was accepted"; exit 1
 fi
-grep -q "X-Android-APK-Signed" /tmp/aster-apk-mut.log || {
-    echo "FAIL: mutated APK rejected for the wrong reason:"; cat /tmp/aster-apk-mut.log; exit 1; }
+grep -q "X-Android-APK-Signed" $TMPD/aster-apk-mut.log || {
+    echo "FAIL: mutated APK rejected for the wrong reason:"; cat $TMPD/aster-apk-mut.log; exit 1; }
 echo "PASS: missing anti-stripping attribute rejected (the [6g] guard has teeth)"
 
 # ---------------------------------------------------------------------------
@@ -335,15 +341,15 @@ echo "PASS: missing anti-stripping attribute rejected (the [6g] guard has teeth)
 # variants (0x0101/0x0102) the whole APK stays bit-for-bit reproducible.
 # ---------------------------------------------------------------------------
 echo "[6/7] reproducibility: two builds of the same input must be byte-identical"
-"$ASTER_BIN" build-apk "$SO" -o /tmp/aster-repro1.apk \
+"$ASTER_BIN" build-apk "$SO" -o $TMPD/aster-repro1.apk \
     --package "$PKG" --libname "$LIB" --abi "$ABI" \
     --label "Aster APK Test" --min-sdk 24 --target-sdk 34 \
     --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR" > /dev/null
-"$ASTER_BIN" build-apk "$SO" -o /tmp/aster-repro2.apk \
+"$ASTER_BIN" build-apk "$SO" -o $TMPD/aster-repro2.apk \
     --package "$PKG" --libname "$LIB" --abi "$ABI" \
     --label "Aster APK Test" --min-sdk 24 --target-sdk 34 \
     --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR" > /dev/null
-cmp /tmp/aster-repro1.apk /tmp/aster-repro2.apk
+cmp $TMPD/aster-repro1.apk $TMPD/aster-repro2.apk
 echo "PASS: build-apk is deterministic (PKCS#1 v1.5, not PSS)"
 
 # ---------------------------------------------------------------------------
@@ -352,9 +358,10 @@ echo "PASS: build-apk is deterministic (PKCS#1 v1.5, not PSS)"
 # ---------------------------------------------------------------------------
 echo "[7/7] the packaged .so is byte-identical to build-so's output"
 python3 - <<'PY'
+import os
 import zipfile
-a = zipfile.ZipFile('/tmp/aster-apk-test.apk').read('lib/arm64-v8a/libapktest.so')
-b = open('/tmp/aster-apk-test.so', 'rb').read()
+a = zipfile.ZipFile(os.environ["TMPD"]+"/aster-apk-test.apk").read('lib/arm64-v8a/libapktest.so')
+b = open(os.environ["TMPD"]+"/aster-apk-test.so", 'rb').read()
 assert a == b, 'the .so inside the APK differs from build-so output'
 print('PASS: packaged .so == build-so output (%d bytes)' % len(b))
 PY

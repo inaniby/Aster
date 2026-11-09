@@ -1,6 +1,7 @@
 #!/bin/sh
 # Verify data-section (.data/.bss), global-variable and cross-object support.
 set -eu
+. tests/lib/tmpdir.sh
 [ -x ./aster ] || { echo "build ./aster first" >&2; exit 2; }
 
 ./aster build-obj examples/global_rw.ast -o tmp-g-rw.o

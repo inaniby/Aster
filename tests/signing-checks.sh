@@ -19,12 +19,13 @@
 # writes is produced by its own code, so an implementation that agrees with
 # itself proves nothing. It is never used to *produce* anything Aster ships.
 set -eu
+. tests/lib/tmpdir.sh
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-ASTER_BIN="${ASTER_BIN:-/tmp/aster-signing-test}"
-WORK="${WORK:-/tmp/aster-signing}"
+ASTER_BIN="${ASTER_BIN:-$TMPD/aster-signing-test}"
+WORK="${WORK:-$TMPD/aster-signing}"
 SO="$WORK/libsign.so"
 
 rm -rf "$WORK" && mkdir -p "$WORK/proj-a" "$WORK/proj-b" "$WORK/release"
@@ -111,10 +112,11 @@ openssl req -x509 -newkey rsa:2048 -keyout "$WORK/release/rel.key.pem" \
 "$ASTER_BIN" verify-apk "$WORK/rel.apk" > /dev/null
 # the APK must carry the developer's certificate, not Aster's own
 python3 - <<'PY'
+import os
 import subprocess, sys, zipfile
-z = zipfile.ZipFile('/tmp/aster-signing/rel.apk')
-open('/tmp/aster-signing/rel.p7', 'wb').write(z.read('META-INF/CERT.RSA'))
-out = subprocess.run(['openssl', 'pkcs7', '-in', '/tmp/aster-signing/rel.p7', '-inform', 'DER',
+z = zipfile.ZipFile(os.environ["TMPD"]+"/aster-signing/rel.apk")
+open(os.environ["TMPD"]+"/aster-signing/rel.p7", 'wb').write(z.read('META-INF/CERT.RSA'))
+out = subprocess.run(['openssl', 'pkcs7', '-in', os.environ["TMPD"]+"/aster-signing/rel.p7", '-inform', 'DER',
                       '-print_certs', '-noout'], capture_output=True, text=True).stdout
 if 'Someone Elses Release Key' not in out:
     print('FAIL: the APK does not carry the release certificate: %r' % out); sys.exit(1)
@@ -158,13 +160,14 @@ echo "[9/10] aster verify-apk accepts good APKs and rejects tampered ones"
 # flip a byte deep inside the Signing Block: every entry, CRC and v1 digest is
 # untouched, so only the v2 checks can see this
 python3 - <<'PY'
+import os
 import struct
-raw = bytearray(open('/tmp/aster-signing/rel.apk', 'rb').read())
+raw = bytearray(open(os.environ["TMPD"]+"/aster-signing/rel.apk", 'rb').read())
 i = raw.rfind(b'APK Sig Block 42')
 blk = struct.unpack_from('<Q', raw, i - 8)[0]
 sb_start = i + 16 - (blk + 8)
 raw[sb_start + blk - 40] ^= 0xFF
-open('/tmp/aster-signing/tampered.apk', 'wb').write(bytes(raw))
+open(os.environ["TMPD"]+"/aster-signing/tampered.apk", 'wb').write(bytes(raw))
 PY
 if "$ASTER_BIN" verify-apk "$WORK/tampered.apk" > "$WORK/tampered.log" 2>&1; then
     echo "FAIL: verify-apk accepted a tampered APK"; exit 1
@@ -180,6 +183,7 @@ echo "[9b/10] validate_apk.py verifies the v1 signature in-process, and rejects 
 # the ones that keep the in-process path honest: it must accept the real thing
 # and reject both ways of breaking it.
 python3 - "$WORK/b1.apk" "$WORK/rel.apk" <<'PY'
+import os
 import sys, zipfile, importlib.util
 spec = importlib.util.spec_from_file_location('validate_apk', 'tests/validate_apk.py')
 v = importlib.util.module_from_spec(spec)

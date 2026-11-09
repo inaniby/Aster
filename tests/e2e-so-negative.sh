@@ -2,6 +2,7 @@
 # v0.22.22-dev runtime negative tests using the real platform dynamic loader.
 # Native AArch64/Termux, or cross-run with HOSTCC and RUNNER as in e2e-so-import.sh.
 set -eu
+. tests/lib/tmpdir.sh
 . tests/host-toolchain-probe.sh
 CXX=${CXX:-g++}
 HOSTCC=${HOSTCC:-cc}

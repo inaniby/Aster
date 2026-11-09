@@ -13,6 +13,7 @@
 #   CXX=aarch64-linux-gnu-g++ HOSTCC=aarch64-linux-gnu-gcc \
 #       RUNNER="qemu-aarch64-static -L /usr/aarch64-linux-gnu" sh tests/run-on-device.sh
 set -eu
+. tests/lib/tmpdir.sh
 CXX=${CXX:-}
 if [ -z "$CXX" ]; then
   if command -v g++ >/dev/null 2>&1; then CXX=g++; elif command -v clang++ >/dev/null 2>&1; then CXX=clang++; else echo "FAIL: no C++ compiler found; set CXX" >&2; exit 2; fi

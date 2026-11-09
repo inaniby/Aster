@@ -7,6 +7,7 @@
 # so both are exercised here with child shells and a fake compiler.
 
 set -u
+. tests/lib/tmpdir.sh
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 . "$HERE/lib/verdict.sh"

@@ -14,6 +14,7 @@
 #   * a further .so can import from a link-so output;
 #   * the v0.17.0 single-source shared object (DT_HASH + R_AARCH64_RELATIVE) still loads and runs.
 set -eu
+. tests/lib/tmpdir.sh
 . tests/host-toolchain-probe.sh
 CXX=${CXX:-g++}
 HOSTCC=${HOSTCC:-cc}

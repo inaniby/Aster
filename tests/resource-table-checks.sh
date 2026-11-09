@@ -32,18 +32,19 @@
 #   4. negative cases for --string
 #   5. compiler mutations, each caught for a different reason, plus androguard
 set -eu
+. tests/lib/tmpdir.sh
 cd "$(dirname "$0")/.."
 OUT=${OUT:-tmp-restable-checks}
 mkdir -p "$OUT"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 
 ASTER=${ASTER:-$OUT/aster}
 SO=${SO:-$OUT/restable.so}
-APK=${APK:-/tmp/aster-restable-test.apk}
+APK=${APK:-$TMPD/aster-restable-test.apk}
 PKG=${PKG:-com.aster.restest}
 LIB=${LIB:-restest}
 LABEL=${LABEL:-Aster Resource Test}
 ABI=${ABI:-arm64-v8a}
-KEY_DIR=${KEY_DIR:-/tmp/aster-restable-keys}
+KEY_DIR=${KEY_DIR:-$TMPD/aster-restable-keys}
 
 mkdir -p "$KEY_DIR"
 printf '%s\n' '[1/6] Strictly build Aster compiler'

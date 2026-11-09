@@ -23,17 +23,18 @@
 #
 # No Android toolchain is involved: no aapt, no d8, no apksigner, no NDK.
 set -eu
+. tests/lib/tmpdir.sh
 cd "$(dirname "$0")/.."
 OUT=${OUT:-tmp-icon-checks}
 mkdir -p "$OUT"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 
 ASTER=${ASTER:-$OUT/aster}
 SO=${SO:-$OUT/icon.so}
-APK=${APK:-/tmp/aster-icon-test.apk}
+APK=${APK:-$TMPD/aster-icon-test.apk}
 PKG=${PKG:-com.aster.icontest}
 LIB=${LIB:-icontest}
 ABI=${ABI:-arm64-v8a}
-KEY_DIR=${KEY_DIR:-/tmp/aster-icon-keys}
+KEY_DIR=${KEY_DIR:-$TMPD/aster-icon-keys}
 
 mkdir -p "$KEY_DIR"
 printf '%s\n' '[1/6] Strictly build Aster compiler'

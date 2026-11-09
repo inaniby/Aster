@@ -1,6 +1,7 @@
 #!/bin/sh
 # v0.22.28-dev: validate DT_NEEDED dependency lifetime using the real loader.
 set -eu
+. tests/lib/tmpdir.sh
 . tests/host-toolchain-probe.sh
 CXX=${CXX:-g++}
 HOSTCC=${HOSTCC:-cc}

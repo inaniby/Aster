@@ -1,6 +1,7 @@
 #!/bin/sh
 # v0.21.0: runtime RELRO permission test; run on AArch64 Android/Linux or via qemu-user.
 set -eu
+. tests/lib/tmpdir.sh
 . tests/host-toolchain-probe.sh
 CXX=${CXX:-g++}
 HOSTCC=${HOSTCC:-cc}

@@ -1,6 +1,7 @@
 #!/bin/sh
 # v0.22.29-dev: client -> middle -> base DT_NEEDED chain and multi-client lifetime.
 set -eu
+. tests/lib/tmpdir.sh
 . tests/host-toolchain-probe.sh
 CXX=${CXX:-g++}
 HOSTCC=${HOSTCC:-cc}

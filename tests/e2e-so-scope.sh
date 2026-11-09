@@ -1,6 +1,7 @@
 #!/bin/sh
 # Target-device tests for DSO symbol scopes and close/reopen lifecycle.
 set -eu
+. tests/lib/tmpdir.sh
 . tests/host-toolchain-probe.sh
 CXX=${CXX:-g++}; HOSTCC=${HOSTCC:-cc}; RUNNER=${RUNNER:-tests/run-aarch64.sh}
 $CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o aster

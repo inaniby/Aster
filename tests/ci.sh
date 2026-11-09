@@ -40,6 +40,26 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# v0.23.76-dev (audit): Termux on Android has no writable /tmp — SELinux denies
+# it — so every suite that wanted scratch space failed before it started. Point
+# TMPDIR at $HOME/tmp there (tests/lib/tmpdir.sh turns it into $TMPD) and leave
+# a Linux host alone: its /tmp is what the suites have always used.
+case "${TMPDIR:-}" in
+    "") ;;
+    *) : ;;
+esac
+if [ -z "${TMPDIR:-}" ]; then
+    if [ -n "${PREFIX:-}" ] && [ -d "${PREFIX:-}/bin" ] && [ -d /data/data/com.termux ]; then
+        mkdir -p "$HOME/tmp" 2>/dev/null && TMPDIR="$HOME/tmp"
+    elif [ -d /data/data/com.termux ] && [ -n "${HOME:-}" ]; then
+        mkdir -p "$HOME/tmp" 2>/dev/null && TMPDIR="$HOME/tmp"
+    fi
+fi
+if [ -n "${TMPDIR:-}" ]; then
+    mkdir -p "$TMPDIR" 2>/dev/null || true
+    export TMPDIR
+fi
+
 REAL_CXX=${CXX:-g++}
 if [ -n "${HOSTCC:-}" ]; then
     :
@@ -379,8 +399,13 @@ run_suite_serial() {
         printf '127\n' >"$OUT/$s.rc"
         return 0
     fi
+    # v0.23.76-dev (audit): TMPD comes from TMPDIR (tests/lib/tmpdir.sh), so a
+    # shared TMPDIR such as Termux's $HOME/tmp would let two suites collide on
+    # fixed scratch names. Each suite gets its own subdirectory.
+    scratch="${TMPDIR:-/tmp}/suite-$s"
+    mkdir -p "$scratch" 2>/dev/null || scratch="${TMPDIR:-/tmp}"
     HOSTCC="$HOSTCC" RUNNER="$RUNNER" CXX="$CXX" ASTER_BIN="$ASTER_BIN" \
-        ASTER_SOURCE_HASH="$ASTER_SOURCE_HASH" sh "$path" >"$log" 2>&1
+        ASTER_SOURCE_HASH="$ASTER_SOURCE_HASH" TMPDIR="$scratch" sh "$path" >"$log" 2>&1
     printf '%s\n' "$?" >"$OUT/$s.rc"
     return 0
 }
@@ -454,7 +479,9 @@ if [ "$JOBS" -gt 1 ]; then
     serial_suites=""
     serial_count=0
     for s in $SUITES; do
-        if grep -q '/tmp/' "$SUITE_DIR/$s" 2>/dev/null; then
+        # v0.23.76-dev (audit): suites spell scratch paths $TMPD (TMPDIR), so
+        # only a suite that still hard-codes /tmp needs to run alone.
+        if grep -q '/tmp/' "$SUITE_DIR/$s" 2>/dev/null && grep -qv 'TMPD' "$SUITE_DIR/$s" 2>/dev/null; then
             serial_suites="$serial_suites $s"
             serial_count=$((serial_count+1))
         else

@@ -7,6 +7,7 @@
 #
 # On an AArch64 host use RUNNER= (the default). HOSTCC compiles the target-architecture test hosts.
 set -eu
+. tests/lib/tmpdir.sh
 . tests/host-toolchain-probe.sh
 . tests/lib/tools.sh
 HOSTCC=${HOSTCC:-cc}

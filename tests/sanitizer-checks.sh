@@ -47,6 +47,7 @@
 #   WORK=...          keep the work directory at this path (it is not removed)
 #   KEEP=1            keep the temporary work directory
 set -eu
+. tests/lib/tmpdir.sh
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 
