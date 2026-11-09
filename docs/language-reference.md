@@ -1044,6 +1044,21 @@ name      ::= ident | 'main'
 - Every path must return; falling off the end is an error.
 - `extern fn` declares an imported symbol — this is how libc is reached:
   `extern fn strlen(s: ptr) -> i32;`.
+- v0.23.77-dev (audit A-19): an `extern fn` may be **called**, but its
+  **address** cannot be taken — `let p: ptr = fa;` with `extern fn fa` is
+  refused with "cannot take the address of extern function 'fa': its location is
+  another object's business". An `extern let`'s address *is* allowed
+  (`let p: ptr = &ga;`), because a global's address can be filled in at startup
+  when the link knows where the object landed; a function used as a value is
+  bound where it is written, so the object that owns it has to be the one
+  naming it. Build the table in the defining object, or pass the function
+  through an `extern` *variable* that the owning object initializes.
+- v0.23.77-dev (audit A-20): every function reserves a **fixed 8 KiB frame**
+  (`sub sp, sp, #0x2000`, return address at `sp+0x1ff8`), whatever its locals
+  really need, and `.eh_frame` records exactly that (`DW_CFA_def_cfa_offset:
+  +8192`). Recursion is therefore bounded by the thread's stack, not by the
+  compiler: roughly 1000 nested calls on an 8 MiB main-thread stack. There is no
+  tail-call elimination and no per-function frame shrinking.
 
 ### `struct`
 
