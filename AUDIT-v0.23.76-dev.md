@@ -239,3 +239,42 @@ switch(e.k){
 但被 2048 的递归深度守卫封顶（最坏约 160 ms），不构成可用性问题。
 
 扫描脚本：`~/DSH/complexity_probe.py`、`complexity_probe2.py`、`complexity_probe3.py`。
+
+---
+
+## 9. A-12（P1，已修）：多目标 `-g` 链接后所有编译单元指向同一条行表
+
+**现象**：两个 `-g` 目标文件链接后，`llvm-dwarfdump --verify` 报
+
+```
+error: Identical DW_AT_stmt_list section offset occurred 1 time(s).
+```
+
+两个 CU 的 `DW_AT_stmt_list` 都是 `0x00000000`，而合并后的 `.debug_line` 里明明有两条行表程序
+（`debug_line[0x00000000]`、`debug_line[0x00000071]`）。调试器会把第二个源文件的代码按第一个源文件的
+行号解释。
+
+**机理**：每个目标对象的 CU 里 `stmt_list` 都是 0（指向自己行表的开头）；链接器把 `.debug_line`
+与 `.debug_info` 顺序拼接，并修正了 `.debug_line` 里的地址（`debugLineFixups`）与 `.debug_info`
+里的 `low_pc`（`debugInfoPatches`），却唯独没有把第二个单元（以及之后每个单元）的 `stmt_list`
+加上它在合并行表里的偏移。
+
+**修复**：`parseObject` 在读到 `.debug_info`/`.debug_abbrev` 后，用一个小 DWARF 阅读器定位该单元的
+`DW_AT_stmt_list` 字段（走 CU 头 → abbrev 表 → 属性表，只接受写者会产出的形式，其它形式直接拒绝，
+绝不把修不了的表合并进去），把偏移存进 `ParsedObject`；`linkObjects` 与 `linkSharedObjects`
+在拼接时把该字段改写成"本对象行表在合并段里的起点"。
+
+**验证**：
+
+| 场景 | 修前 | 修后 |
+| --- | --- | --- |
+| `link-pie` 两个 `-g` 对象 | 两个 CU 都是 `0x0`，verify 报错 | `0x0` / `0x71`，**No errors** |
+| `link-so` 两个 `-g` PIC 对象 | 同上 | `0x0` / `0x6f`，**No errors** |
+| `link-pie` 三个 `-g` 对象 | 同上 | `0x0` / `0x71` / `0xd7`，**No errors** |
+| 单对象链接、非 `-g` 链接 | 正常 | 字节不变 |
+
+**回归**：`tests/debuginfo-decode.py --units` 增加两列（本单元的 `DW_AT_stmt_list` 与
+`.debug_line` 大小），`tests/debug-info-checks.sh` 在 `link-obj` 与 `link-so` 之后断言：
+第一个单元为 0、两单元互不相同、第二个落在 `.debug_line` 范围内。
+另外把 `tests/symbol-versioning-checks.sh` 的 `dlopen` 见证层在 bionic 宿主上改为跳过
+（它要求 `--needed libc.so.6`，Android 的加载器没有这个名字）——与之前 e2e 层的处理一致。

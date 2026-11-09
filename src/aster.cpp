@@ -9444,6 +9444,73 @@ std::string symbolName(const std::vector<uint8_t>& file,const Shdr& strtab,uint3
 }
 struct ParsedSymbol { std::string name; uint64_t value=0,size=0; uint8_t info=0; uint16_t shndx=0; };
 struct ParsedReloc { uint64_t offset=0; std::string symbol; uint32_t type=0; int64_t addend=0; };
+// v0.23.76-dev (audit A-12): where a unit's DW_AT_stmt_list value sits.
+//
+// Every object carries one CU whose stmt_list is 0 — the line program starts
+// at the beginning of its own .debug_line. The link concatenates those line
+// sections (and the units), so a unit's offset has to become the offset of its
+// own line blob in the merged section; without that patch every unit pointed at
+// the first one's line table, and llvm-dwarfdump --verify reported
+// "Identical DW_AT_stmt_list section offset".
+//
+// The offset is found by walking the unit header, the abbreviation table and
+// the unit DIE's attribute list. Only the forms the writer emits are accepted;
+// anything else answers false and the caller refuses the input rather than
+// merging a table it cannot fix up.
+static bool dwarfCuStmtListOffset(const std::vector<uint8_t>& info,const std::vector<uint8_t>& abbrev,uint64_t& out){
+    auto uleb=[&](const std::vector<uint8_t>& b,size_t& q,uint64_t& v)->bool{
+        v=0;unsigned shift=0;
+        while(q<b.size()){const uint8_t c=b[q++];v|=(uint64_t)(c&0x7fu)<<shift;if(!(c&0x80u))return true;shift+=7u;if(shift>63u)return false;}
+        return false;
+    };
+    if(info.size()<12||abbrev.empty())return false;
+    const uint16_t ver=(uint16_t)(info[4]|(info[5]<<8));
+    const uint32_t abOff=(uint32_t)info[6]|((uint32_t)info[7]<<8)|((uint32_t)info[8]<<16)|((uint32_t)info[9]<<24);
+    if(ver!=4||abOff!=0)return false;          // the writer emits one v4 unit per object
+    const uint8_t addrSize=info[10];
+    size_t p=11;uint64_t code=0;
+    if(!uleb(info,p,code)||code==0)return false;
+    size_t q=0;
+    while(q<abbrev.size()){
+        uint64_t c=0,tag=0;
+        if(!uleb(abbrev,q,c)||!uleb(abbrev,q,tag))return false;
+        if(c==0&&tag==0)break;                 // end of the table
+        if(q>=abbrev.size())return false;
+        ++q;                                    // has_children
+        std::vector<std::pair<uint64_t,uint64_t>> attrs;
+        for(;;){
+            uint64_t a=0,f=0;
+            if(!uleb(abbrev,q,a)||!uleb(abbrev,q,f))return false;
+            if(a==0&&f==0)break;
+            attrs.push_back({a,f});
+        }
+        if(c!=code)continue;
+        for(const auto& af:attrs){
+            size_t size=0;
+            switch(af.second){
+                case 0x08:                  // DW_FORM_string
+                    while(p<info.size()&&info[p]!=0)++p;
+                    if(p>=info.size())return false;
+                    ++p;break;
+                case 0x01: size=addrSize;break;   // DW_FORM_addr
+                case 0x0b: size=1;break;          // DW_FORM_data1
+                case 0x05: size=2;break;          // DW_FORM_data2
+                case 0x06: size=4;break;          // DW_FORM_data4
+                case 0x07: size=8;break;          // DW_FORM_data8
+                case 0x17: size=4;break;          // DW_FORM_sec_offset (32-bit DWARF)
+                case 0x13: size=4;break;          // DW_FORM_ref4
+                case 0x18:{uint64_t n=0;if(!uleb(info,p,n))return false;size=(size_t)n;break;}
+                default: return false;
+            }
+            if(af.first==0x10){out=p;return true;}   // DW_AT_stmt_list
+            p+=size;
+            if(p>info.size())return false;
+        }
+        return false;
+    }
+    return false;
+}
+
 struct ParsedObject {
     std::vector<uint8_t> text; std::vector<uint8_t> data; std::vector<uint8_t> rodata; uint64_t bssSize=0;
     // v0.23.51-dev: the thread-local block, carried as a .tdata section (SHF_TLS)
@@ -9457,6 +9524,10 @@ struct ParsedObject {
     // -g: the object's DWARF line program and the offsets in it that hold an
     // address, which the linker rewrites to the final text virtual address.
     std::vector<uint8_t> debugLine; std::vector<uint64_t> debugLinePatches;
+    // v0.23.76-dev (audit A-12): where this object's DW_AT_stmt_list value
+    // sits inside its .debug_info, so the link can point it at the merged
+    // .debug_line offset instead of at the first unit's program.
+    bool hasDebugStmtList=false; uint64_t debugStmtListOff=0;
     // v0.23.32-dev: the object's .debug_info, the abbreviation table it is read
     // against, and the addresses in it — each one naming the symbol it means,
     // because unlike a line table an address here is not always in .text.
@@ -9645,6 +9716,13 @@ ParsedObject parseObject(const std::string& input){
         if(ab.type!=1||(ab.flags&0x2u))throw Error(input+": unsupported .debug_abbrev section attributes");
         checkedEnd(ab.offset,ab.size,file.size(),".debug_abbrev data");
         result.debugAbbrev.assign(file.begin()+ab.offset,file.begin()+ab.offset+ab.size);
+    }
+    if(result.debugInfoIndex>=0){
+        if(result.debugAbbrevIndex<0)throw Error(input+": .debug_info without a .debug_abbrev section");
+        uint64_t slOff=0;
+        if(!dwarfCuStmtListOffset(result.debugInfo,result.debugAbbrev,slOff))
+            throw Error(input+": unsupported .debug_info unit (DW_AT_stmt_list not found)");
+        result.hasDebugStmtList=true;result.debugStmtListOff=slOff;
     }
     if(result.relaDebugInfoIndex>=0){
         if(result.debugInfoIndex<0)throw Error(input+": .rela.debug_info without a .debug_info section");
@@ -10949,6 +11027,12 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
             for(const auto& p:obj.debugInfoPatches)
                 debugInfoFixups.push_back({diBase+p.offset,p.symbol,p.symbol==".text"?(int64_t)textBase:p.addend});
             if(mergedDebugAbbrev.empty())mergedDebugAbbrev=obj.debugAbbrev;
+            // v0.23.76-dev (audit A-12): the unit's stmt_list becomes the offset
+            // of this object's own line program in the merged .debug_line.
+            if(obj.hasDebugStmtList){
+                const uint64_t lineOff=obj.debugLine.empty()?0:mergedDebugLine.size()-obj.debugLine.size();
+                for(int k=0;k<4;++k)mergedDebugInfo[diBase+obj.debugStmtListOff+(size_t)k]=(uint8_t)(lineOff>>(8*k));
+            }
         }
         if(!obj.ehFrameFdes.empty()){
             // Every FDE is rebuilt against one CIE at the start of the merged
@@ -11158,6 +11242,12 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
             for(const auto& p:obj.debugInfoPatches)
                 debugInfoFixups.push_back({diBase+p.offset,p.symbol,p.symbol==".text"?(int64_t)textBase:p.addend});
             if(mergedDebugAbbrev.empty())mergedDebugAbbrev=obj.debugAbbrev;
+            // v0.23.76-dev (audit A-12): this unit's line program starts where
+            // its own .debug_line blob was appended, not at the section start.
+            if(obj.hasDebugStmtList){
+                const uint64_t lineOff=obj.debugLine.empty()?0:mergedDebugLine.size()-obj.debugLine.size();
+                for(int k=0;k<4;++k)mergedDebugInfo[diBase+obj.debugStmtListOff+(size_t)k]=(uint8_t)(lineOff>>(8*k));
+            }
         }
         if(!obj.ehFrameFdes.empty()){
             // See the shared-object link: one merged section can carry only

@@ -49,6 +49,7 @@
 # hashes recomputed independently, and a mutation that proves the suite fails.
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 OUT=${OUT:-tmp-symbol-versioning-checks}
 mkdir -p "$OUT"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 RUNNER=${RUNNER:-tests/run-aarch64.sh}
@@ -342,7 +343,13 @@ if [ "$can_run" = yes ] && command -v "$HOSTCC" >/dev/null 2>&1 \
    && head -c 20 "$OUT/probe" | od -An -tx1 -v | tr -d ' \n' | grep -q 'b700$'; then
     host_ok=yes
 fi
-if [ "$host_ok" = yes ]; then
+if [ "$host_ok" = yes ] && ! aster_can_dlopen_glibc_so; then
+    # v0.23.76-dev (audit A-12): the GNU path below asks link-so for
+    # --needed libc.so.6, and Android's bionic loader has no such soname, so the
+    # witness cannot run here (the symbol tables are still checked by the
+    # readers above). Linux hosts take the branch below.
+    printf '  %-40s %s\n' 'dlopen witnesses' 'skipped (host loader has no glibc sonames)'
+elif [ "$host_ok" = yes ]; then
     # SysV path: legacy_math.so (no imports) — its exports live at version
     # "aster"; current() reads the initialised accumulator (7).
     "$HOSTCC" -O1 -o "$OUT/so-init-host" tests/so-init-host.c -ldl

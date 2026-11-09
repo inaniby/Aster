@@ -384,6 +384,17 @@ eqaddr "$mstart" "$(section_addr "$OUT/linked.elf" .text)" "the first unit does 
 $DECODE --functions "$OUT/linked.elf" | sort > "$OUT/lfuncs.txt"
 grep -q '^add2 ' "$OUT/lfuncs.txt" || fail "the linked output has no subprogram for add2"
 grep -q '^main ' "$OUT/lfuncs.txt" || fail "the linked output has no subprogram for main"
+# v0.23.76-dev (audit A-12): the link concatenates .debug_line, so each unit's
+# DW_AT_stmt_list has to name its own program. Before the fix both units said 0,
+# which llvm-dwarfdump --verify reports as "Identical DW_AT_stmt_list ...".
+mstmt=$(awk '/^main\.ast/{print $4}' "$OUT/lunits.txt")
+dstmt=$(awk '/^defs\.ast/{print $4}' "$OUT/lunits.txt")
+lsize=$(awk '/^main\.ast/{print $5}' "$OUT/lunits.txt")
+[ -n "$mstmt" ] && [ -n "$dstmt" ] && [ -n "$lsize" ] || fail "a unit reports no stmt_list"
+[ $((mstmt)) -eq 0 ] || fail "the first unit's line program should start at 0, it says $mstmt"
+[ "$mstmt" != "$dstmt" ] || fail "both linked units point at the same line program (A-12)"
+[ $((dstmt)) -lt $((lsize)) ] || fail "the second unit's stmt_list $dstmt is past .debug_line ($lsize bytes)"
+[ $((dstmt)) -gt 0 ] || fail "the second unit's line program starts inside the first"
 
 # A shared object linked out of PIC objects keeps one unit per object too, each
 # raised to where that object's text landed in the merged image.
@@ -415,6 +426,12 @@ p2=$(awk '/^pb\.ast/{print $2}' "$OUT/sunits.txt")
 [ -n "$p1" ] && [ -n "$p2" ] || fail "a unit is missing from the linked shared object"
 eqaddr "$p1" "$(section_addr "$OUT/libp.so" .text)" "the first PIC unit does not start at .text"
 [ $((p2)) -ge $((p1 + s1)) ] || fail "the second PIC unit starts at $p2, inside the first ($p1 + $s1)"
+# v0.23.76-dev (audit A-12): and each PIC unit names its own line program.
+pm=$(awk '/^pa\.ast/{print $4}' "$OUT/sunits.txt")
+pd=$(awk '/^pb\.ast/{print $4}' "$OUT/sunits.txt")
+pl=$(awk '/^pa\.ast/{print $5}' "$OUT/sunits.txt")
+[ "$pm" != "$pd" ] || fail "both linked PIC units point at the same line program (A-12)"
+[ $((pd)) -lt $((pl)) ] || fail "the second PIC unit's stmt_list $pd is past .debug_line ($pl bytes)"
 
 # Both shared-object paths — with a soname (gnu-hash) and without — keep the
 # unit, and a PIE keeps it too.

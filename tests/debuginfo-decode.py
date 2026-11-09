@@ -367,11 +367,20 @@ def main(argv):
         return v[1] if v else default
 
     if mode == "--units":
+        # v0.23.76-dev (audit A-12): columns 4 and 5 are the unit's
+        # DW_AT_stmt_list and the size of .debug_line. The link concatenates
+        # line tables, so after a multi-object link each unit's stmt_list must
+        # be its own program's offset — the two extra columns make that
+        # checkable without a third-party reader.
+        line = find_section(args[0], ".debug_line")
+        linesize = 0 if line is None else len(line)
         for u in units:
             cu = u.roots[0] if u.roots else None
             if cu is None:
                 continue
-            print("%s 0x%x 0x%x" % (num(cu, 0x03, "?"), num(cu, 0x11), num(cu, 0x12)))
+            print("%s 0x%x 0x%x 0x%x 0x%x"
+                  % (num(cu, 0x03, "?"), num(cu, 0x11), num(cu, 0x12),
+                     num(cu, 0x10), linesize))
         return
     if mode == "--functions":
         for u in units:

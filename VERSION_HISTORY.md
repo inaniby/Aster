@@ -1,13 +1,13 @@
 ## v0.23.76-dev — Audit round: literal typing, constant folding, switch labels, and `-g` DWARF
 
 An audit round on top of v0.23.76-dev (see `AUDIT-v0.23.76-dev.md`). It finds and
-fixes **seven defects** — four in the constant-folding path and two in the debug
+fixes **eight defects** — four in the constant-folding path and two in the debug
 writer — corrects three documentation statements, repairs one formatting bug
 that was already breaking this project's own `-Werror` build, adds one 9-layer
 suite, and makes the suites runnable on a native AArch64 host where no
 `aarch64-linux-gnu-*` toolchain exists.
 
-### The seven defects
+### The eight defects
 
 | Id | Defect | Repair |
 | --- | --- | --- |
@@ -18,6 +18,7 @@ suite, and makes the suites runnable on a native AArch64 host where no
 | A-09 | `DW_AT_stmt_list` used `DW_FORM_data4` in a DWARF v4 unit. The attribute names a section offset, which is `DW_FORM_sec_offset` in DWARF4/5, and `llvm-dwarfdump --verify` rejects the data4 spelling outright: `DIE has invalid DW_AT_stmt_list encoding`. | Form `0x17`; the value stays the 4-byte offset a 32-bit DWARF section uses. |
 | A-10 | A type's DIE could be emitted *inside* another DIE's attribute stream: `typeRef()` appends to the same buffer and was called in the argument list of `dbgPut32`, so a type the warm-up pass had not cached (a pointer to an array, say) landed between the DIE's attributes and the unit parsed as garbage. `fn f(a: i32[4])` produced `DW_AT_type = 0x5404` in a 0xd9-byte unit. | All four sites resolve their references before the DIE header is written: subroutine_type return type and parameters, globals, subprogram return-type fallback and variables. |
 | A-11 | Every operator asked `exprType` for both operands twice — once in the void check above the type switch and once in its own arm — so a left-deep chain of n operators cost 2^n type computations: `1+1+...+1` with 20 terms ran 11,010,020 of them (200 ms), 22 terms 782 ms, 30 terms never finished, and a 3000-term chain died of stack exhaustion under ASAN. | `exprType` is split into a memoised wrapper and `exprTypeUncached`, keyed by the AST node pointer; the result depends only on the node and the AST is stable for the whole codegen pass, so it is pure memoisation. 1000-term chains now compile instantly; 3000 terms give the existing clean `expression is nested too deeply (max 2048)` diagnostic. |
+| A-12 | Every object's unit carries `DW_AT_stmt_list = 0`, and the link concatenates the `.debug_line` sections while rebasing only the addresses inside them — so after a multi-object `-g` link every unit still pointed at the first unit's program. `llvm-dwarfdump --verify`: "Identical DW_AT_stmt_list section offset occurred"; a debugger read the second source file against the first file's line numbers. | `parseObject` locates the field with a small DWARF reader (CU header → abbrev table → attribute list; unrecognised forms are refused rather than merged) and `linkObjects` / `linkSharedObjects` rewrite it to that object's own line-program offset. Two objects: `0x0` / `0x71`; three: `0x0` / `0x71` / `0xd7`; verify clean in all three link shapes. |
 
 ### Documentation corrections
 
