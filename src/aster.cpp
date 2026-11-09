@@ -8831,11 +8831,18 @@ static const std::vector<uint8_t>& debugAbbrevTable(){
             kUpper=0x2f,kMemberLoc=0x38,kDeclLine=0x3b,kExternal=0x3f,kFrameBase=0x40,
             kDeclFile=0x3a;
         // Forms
+        // v0.23.76-dev (audit A-09): DW_AT_stmt_list is a section offset, and
+        // in a DWARF4 unit (the version this writer emits) that is
+        // DW_FORM_sec_offset (0x17) — not DW_FORM_data4. LLVM's verifier
+        // rejects the data4 spelling outright ("DIE has invalid
+        // DW_AT_stmt_list encoding"), which is what lldb reports before it
+        // will read the line table. The value is still the 4-byte offset a
+        // 32-bit DWARF section uses; only the form changes.
         const uint16_t fAddr=0x01,fData1=0x0b,fData2=0x05,fData4=0x06,fData8=0x07,
-            fStr=0x08,fRef4=0x13,fExpr=0x18,fFlagPresent=0x19;
+            fStr=0x08,fRef4=0x13,fExpr=0x18,fFlagPresent=0x19,fSecOffset=0x17;
         const A defs[]={
             {kAbbrCu,0x11,1,{{kProducer,fStr},{kLang,fData2},{kName,fStr},{kCompDir,fStr},
-                             {kLowPc,fAddr},{kHighPc,fData8},{kStmt,fData4}}},
+                             {kLowPc,fAddr},{kHighPc,fData8},{kStmt,fSecOffset}}},
             {kAbbrBaseType,0x24,0,{{kName,fStr},{kByteSize,fData1},{kEncoding,fData1}}},
             {kAbbrPointer,0x0f,0,{{kByteSize,fData1},{kType,fRef4}}},
             {kAbbrArray,0x01,1,{{kType,fRef4}}},
@@ -9013,12 +9020,25 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         auto it=byName.find(f.name);if(it==byName.end())continue;
         const Function& src=*it->second;
         const uint32_t off=w.dieOffset();
+        // v0.23.76-dev (audit A-10): a type reference must be emitted *before*
+        // the DIE that names it. typeRef() appends the type's DIE to the same
+        // buffer, so calling it inside the argument list of dbgPut32 put that
+        // DIE between the current DIE's attributes — the unit then parsed as
+        // garbage (a parameter of array type produced a DW_AT_type that pointed
+        // outside the unit, and llvm-dwarfdump --verify rejected the whole CU).
+        // The warm-up pass above caches most types, but a type no earlier
+        // reference asked for (ptr to an array, say) is emitted right here.
+        const uint32_t retRef=w.typeRef(src.retType,{});
+        std::vector<uint32_t> paramRefs;
+        paramRefs.reserve(src.params.size());
+        for(size_t i=0;i<src.params.size();++i)
+            paramRefs.push_back(w.typeRef(src.paramTypes[i],src.paramDims[i]));
         dbgUleb(w.info,kAbbrSubroutineType);
-        dbgPut32(w.info,w.typeRef(src.retType,{}));
+        dbgPut32(w.info,retRef);
         for(size_t i=0;i<src.params.size();++i){
             dbgUleb(w.info,kAbbrFormalParam);
             w.name(src.params[i]);
-            dbgPut32(w.info,w.typeRef(src.paramTypes[i],src.paramDims[i]));
+            dbgPut32(w.info,paramRefs[i]);
         }
         dbgUleb(w.info,0);                                  // end of subroutine_type's children
         subprogType[f.name]=off;
@@ -9028,9 +9048,12 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         if(g.external||g.isString||g.fromEmbed)continue;
         if(!gdef.count(g.name))continue;                   // laid out in this object
         const std::vector<uint32_t> dims=g.dims.empty()?(g.isArray?std::vector<uint32_t>{g.count}:std::vector<uint32_t>{}):g.dims;
+        // v0.23.76-dev (audit A-10): the type's DIE is emitted first, outside
+        // the attribute stream (see the subroutine_type note above).
+        const uint32_t globalRef=w.typeRef(g.ty,dims);
         dbgUleb(w.info,kAbbrGlobalVar);
         w.name(g.name);
-        dbgPut32(w.info,w.typeRef(g.ty,dims));
+        dbgPut32(w.info,globalRef);
         // v0.23.51-dev: a thread-local global is laid out in .tdata under its
         // __aster_tls_<name> symbol (the bare name carries no definition), so the
         // debugger's DW_OP_addr must name that symbol to land on its slot.
@@ -9048,14 +9071,21 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         w.patches.push_back({(uint64_t)w.info.size()-8,f.name,0});
         dbgPut64(w.info,size);                             // DW_AT_high_pc: a length
         w.expr(DwarfDieWriter::frameBaseOps());
-        dbgPut32(w.info,subprogType.count(f.name)?subprogType.at(f.name):w.typeRef(src.retType,{}));
+        // v0.23.76-dev (audit A-10): the fallback return type and every
+        // variable's type are resolved before the subprogram's DIE begins.
+        const uint32_t selfRef=subprogType.count(f.name)?subprogType.at(f.name):w.typeRef(src.retType,{});
+        std::vector<uint32_t> varRefs;
+        varRefs.reserve(f.debugVars.size());
+        for(const DebugVar& v:f.debugVars)varRefs.push_back(w.typeRef(v.ty,v.dims));
+        dbgPut32(w.info,selfRef);
         w.info.push_back(1);                                // DW_AT_decl_file: index 1
         dbgPut32(w.info,(uint32_t)src.line);
-        for(const DebugVar& v:f.debugVars){
+        for(size_t vi=0;vi<f.debugVars.size();++vi){
+            const DebugVar& v=f.debugVars[vi];
             const bool param=v.isParam;
             dbgUleb(w.info,param?kAbbrParam:kAbbrLocalVar);
             w.name(v.name);
-            dbgPut32(w.info,w.typeRef(v.ty,v.dims));
+            dbgPut32(w.info,varRefs[vi]);
             w.expr(DwarfDieWriter::fbregOps(v.slot));
             dbgPut32(w.info,(uint32_t)v.line);
         }

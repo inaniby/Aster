@@ -314,9 +314,21 @@ printf '  %-34s %s\n' 'PT_GNU_EH_FRAME + PT_LOAD' '3 products'
 
 # --- 7. two independent readers agree --------------------------------------------
 printf '%s\n' '[7/9] independent readers'
+# v0.23.76-dev (audit): `readelf --debug-dump=frames` is a GNU option; LLVM's
+# readelf (the only readelf on a Termux host) rejects it. Compare with either
+# spelling of GNU readelf when there is one, otherwise say so and skip.
+FRAMES_READELF=
+for r in aarch64-linux-gnu-readelf readelf; do
+    if command -v "$r" >/dev/null 2>&1 && "$r" --version 2>/dev/null | head -1 | grep -q 'GNU'; then
+        FRAMES_READELF=$r; break
+    fi
+done
+if [ -z "$FRAMES_READELF" ]; then
+    printf '  %-34s %s\n' 'readelf agrees on pc ranges' 'skipped (no GNU readelf)'
+else
 for pair in "dbg.elf exec" "dbg.pie pie" "dbg.so so"; do
     set -- $pair
-    readelf --debug-dump=frames "$OUT/$1" \
+    "$FRAMES_READELF" --debug-dump=frames "$OUT/$1" \
         | sed -n 's/.*pc=0*\([0-9a-f]*\)\.\.0*\([0-9a-f]*\).*/\1 \2/p' \
         | while read -r a b; do printf '0x%x 0x%x\n' "$(( 0x$a ))" "$(( 0x$b ))"; done \
         | sort > "$OUT/readelf.$2"
@@ -325,6 +337,7 @@ for pair in "dbg.elf exec" "dbg.pie pie" "dbg.so so"; do
         || fail "$2: readelf describes different functions than this decoder"
 done
 printf '  %-34s %s\n' 'readelf agrees on pc ranges' '3 products'
+fi
 if command -v llvm-dwarfdump >/dev/null 2>&1; then
     llvm-dwarfdump --eh-frame "$OUT/dbg.elf" > "$OUT/llvm.txt" 2>&1
     grep -q 'Return address column: 30' "$OUT/llvm.txt" \

@@ -127,7 +127,10 @@ ATTRS = {
     0x49: "type",
 }
 # Forms that carry a fixed number of bytes; anything else is handled below.
-FIXED = {0x01: 8, 0x05: 2, 0x06: 4, 0x07: 8, 0x0b: 1, 0x0d: 2, 0x0e: 4, 0x0f: 8}
+# v0.23.76-dev (audit A-09): DW_AT_stmt_list is a section offset, and in a
+# DWARF4 unit that is DW_FORM_sec_offset (0x17) — 4 bytes in a 32-bit DWARF
+# section, exactly the width DW_FORM_data4 used to occupy here.
+FIXED = {0x01: 8, 0x05: 2, 0x06: 4, 0x07: 8, 0x0b: 1, 0x0d: 2, 0x0e: 4, 0x0f: 8, 0x17: 4}
 LANGUAGES = {0x01: "DW_LANG_C89", 0x02: "DW_LANG_C", 0x0c: "DW_LANG_C99"}
 
 
