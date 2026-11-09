@@ -91,6 +91,13 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // element whose size is not a power of two through MADD instead of a shift.
 #define ASTER_VERSION_STRING "0.23.77-dev"
 
+// v0.23.77-dev: the content hash the build cache and `aster deps` are keyed on.
+// Declared at file scope because both the parser (inside the anonymous
+// namespace) and main() use it.
+std::string sha256Hex(const uint8_t* p,size_t n);
+std::string sha256Hex(const std::string& s);
+std::string sha256Hex(const std::vector<uint8_t>& v);
+
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
 struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
@@ -1218,6 +1225,12 @@ static int64_t castConstValue(int64_t v,Ty to){
         default:      return v;   // i64, u64 and ptr keep every bit
     }
 }
+// v0.23.77-dev: what a build read. `include` and `@embed` record the resolved
+// path and a content hash here, so `aster deps` can print a make rule and
+// `aster build` can tell that nothing going into an object changed. Content,
+// not mtime: a fresh checkout or a `cp -p` keeps the bytes and still rebuilds.
+std::map<std::string,std::string> g_buildDeps;
+
 class Parser {
     std::vector<Token> t; size_t p=0;
     bool requireMain=true;
@@ -1493,6 +1506,7 @@ class Parser {
         std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         if (bytes.size() != (size_t)st.st_size)
             throw Error("short read of embedded file \"" + full + "\"");
+        g_buildDeps[full]=sha256Hex(bytes);   // v0.23.77-dev: a build dependency
         // A map, not a vector: inserting a second blob must not move the first
         // one out from under a reference already handed to the caller.
         const std::vector<uint8_t>& data = embedBlobs.emplace(full, std::move(bytes)).first->second;
@@ -2986,6 +3000,7 @@ public:
         std::ifstream f(full,std::ios::binary);
         if(!f)throw Error(loc(at.line,at.col,"cannot open included file \""+full+"\""));
         const std::string text((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>());
+        g_buildDeps[full]=sha256Hex(text);   // v0.23.77-dev: a build dependency
         // Parsed into its own parser so that what it declares is a separate,
         // inspectable list — and so its own `include` lines resolve against *its*
         // directory, not this file's.
@@ -11539,6 +11554,9 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "Usage: aster build-elf|build-pie [-g] <source.ast|input.o> [more...] -o <output>\n"
     "       aster build-obj [--pic] [-g] <source.ast> -o <output.o>\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
+"       aster new <dir>                       scaffold aster.proj + src/\n"
+"       aster build [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache]\n"
+"       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs"
     "       aster link-obj|link-pie <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
     "       aster keygen [--dir DIR] [--bits 2048] [--force]\n"
@@ -14110,6 +14128,44 @@ static bool parseCliUInt(const char* s, uint64_t max, uint64_t& out) {
     return true;
 }
 
+
+// ---------------------------------------------------------------- project build
+// v0.23.77-dev: sha256Hex, the project file and the incremental cache.
+std::string sha256Hex(const uint8_t* p,size_t n){
+    static const char* hex="0123456789abcdef";
+    SHA256 md; md.upd(p,n); std::vector<uint8_t> d=md.fin();
+    std::string s; s.reserve(d.size()*2);
+    for(uint8_t b:d){s.push_back(hex[b>>4]);s.push_back(hex[b&15]);}
+    return s;
+}
+std::string sha256Hex(const std::string& s){return sha256Hex((const uint8_t*)s.data(),s.size());}
+std::string sha256Hex(const std::vector<uint8_t>& v){return sha256Hex(v.data(),v.size());}
+static std::string trimWs(const std::string& s){
+    size_t a=0,b=s.size();
+    while(a<b&&(s[a]==' '||s[a]=='\t'||s[a]=='\r'))++a;
+    while(b>a&&(s[b-1]==' '||s[b-1]=='\t'||s[b-1]=='\r'))--b;
+    return s.substr(a,b-a);
+}
+// mkdir -p, returning false when the directory still is not there.
+static bool makeDirs(const std::string& path){
+    if(dirExists(path))return true;
+    std::string cur;
+    for(size_t i=0;i<path.size();++i){
+        cur.push_back(path[i]);
+        if(path[i]=='/'&&cur.size()>1&&!dirExists(cur))::mkdir(cur.c_str(),0777);
+    }
+    if(!cur.empty()&&!dirExists(cur))::mkdir(cur.c_str(),0777);
+    return dirExists(path);
+}
+// aster.proj: one source path per line, in link order; '#' comments the rest.
+static std::vector<std::string> readProjectFile(const std::string& path){
+    const std::string txt=readFile(path);
+    std::vector<std::string> out; std::string cur;
+    auto flush=[&]{std::string l=trimWs(cur);cur.clear();if(!l.empty()&&l[0]!='#')out.push_back(l);};
+    for(char ch:txt){if(ch=='\n')flush();else cur.push_back(ch);}
+    flush();
+    return out;
+}
 int main(int argc,char**argv){
     const std::string cmd=argc>1?argv[1]:"";
     std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false;
@@ -14166,6 +14222,186 @@ int main(int argc,char**argv){
         return haveOutput;
     };
     try{
+        // v0.23.77-dev: a project is a directory holding aster.proj. `new`
+        // scaffolds one, `build` compiles it with a content-keyed object cache
+        // beside the output, and `deps` prints the make rules the same
+        // information gives an external build tool.
+        if(cmd=="new"){
+            std::string dir;
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                if(!a.empty()&&a[0]=='-'){std::cerr<<"aster new: unknown option "<<a<<"\n";return 2;}
+                if(!dir.empty()){std::cerr<<"aster new: usage: aster new <dir>\n";return 2;}
+                dir=a;
+            }
+            if(dir.empty()){std::cerr<<"aster new: usage: aster new <dir>\n";return 2;}
+            if(fileExists(dir)){std::cerr<<"aster new: "<<dir<<" is a file\n";return 1;}
+            if(fileExists(dir+"/aster.proj")){std::cerr<<"aster new: "<<dir<<" already holds a project\n";return 1;}
+            if(!makeDirs(dir+"/src")){std::cerr<<"aster new: cannot create "<<dir<<"/src\n";return 1;}
+            const std::string name=baseNameOf(dir);
+            writeFileAtomic(dir+"/aster.proj",
+                "# aster.proj — one source per line, in link order.\n"
+                "# Initializers run in this order, and the object holding main must\n"
+                "# hold at least one run-time initialized global (see A-21/A-22).\n"
+                "src/main.ast\n"
+                "src/util.ast\n");
+            writeFileAtomic(dir+"/src/main.ast",
+                "// `aster build` compiles the sources in aster.proj and links them\n"
+                "// into build/" + name + ".\n"
+                "include \"util.ast\";\n\n"
+                "fn main() -> i32 {\n"
+                "    return add(40, 2) - 42;\n"
+                "}\n");
+            writeFileAtomic(dir+"/src/util.ast",
+                "fn add(a: i32, b: i32) -> i32 {\n"
+                "    return a + b;\n"
+                "}\n");
+            writeFileAtomic(dir+"/.gitignore","build/\n");
+            std::cout<<"Aster v"<<kVersion<<": created project "<<dir
+                     <<" (aster.proj, src/main.ast, src/util.ast)\n"
+                     <<"  cd "<<dir<<" && aster build\n";
+            return 0;
+        }
+        if(cmd=="deps"){
+            std::string obj; std::vector<std::string> srcs;
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                if(a=="-o"){if(i+1>=argc){std::cerr<<"aster deps: -o needs a path\n";return 2;}obj=argv[++i];}
+                else if(!a.empty()&&a[0]=='-'){std::cerr<<"aster deps: unknown option "<<a<<"\n";return 2;}
+                else srcs.push_back(a);
+            }
+            if(srcs.empty()){
+                std::cerr<<"aster deps: usage: aster deps <source.ast> [...] [-o <object.o>]\n";
+                return 2;
+            }
+            for(const auto& sp:srcs){
+                g_buildDeps.clear();
+                const std::string src=readFile(sp);
+                setSourceCache(sp,src);
+                Parser p(src,false,dirNameOf(sp));p.parse();
+                std::string target=obj;
+                if(target.empty()){
+                    target=baseNameOf(sp);
+                    if(target.size()>4&&target.compare(target.size()-4,4,".ast")==0)target=target.substr(0,target.size()-4);
+                    target+=".o";
+                }
+                std::cout<<target<<": "<<sp;
+                for(const auto& kv:g_buildDeps)std::cout<<" "<<kv.first;
+                std::cout<<"\n";
+            }
+            return 0;
+        }
+        if(cmd=="build"){
+            std::string out; bool dbg=false,bc2=false,noCache=false; uint64_t ps=4096;
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                if(a=="-o"){if(i+1>=argc){std::cerr<<"aster build: -o needs a path\n";return 2;}out=argv[++i];}
+                else if(a=="-g"||a=="--debug-line")dbg=true;
+                else if(a=="--bounds-check")bc2=true;
+                else if(a=="--no-cache")noCache=true;
+                else if(a=="--page-size"){
+                    if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
+                        std::cerr<<"aster build: --page-size must be 4096 or 16384\n";return 2;
+                    }
+                }
+                else {std::cerr<<"aster build: unknown option "<<a<<"\n";return 2;}
+            }
+            if(ps!=4096&&ps!=16384){std::cerr<<"aster build: --page-size must be 4096 or 16384\n";return 2;}
+            if(!fileExists("aster.proj")){
+                std::cerr<<"aster build: no aster.proj in this directory (create one with `aster new NAME`)\n";
+                return 2;
+            }
+            const std::vector<std::string> srcs=readProjectFile("aster.proj");
+            if(srcs.empty()){std::cerr<<"aster build: aster.proj lists no sources\n";return 2;}
+            char cwdbuf[4096];
+            const std::string cwd=getcwd(cwdbuf,sizeof cwdbuf)?cwdbuf:".";
+            if(out.empty()){
+                std::string name=baseNameOf(cwd);
+                if(name.empty()||name=="."||name=="..")name="app";
+                out="build/"+name;
+            }
+            const std::string outDir=dirNameOf(out);
+            if(!outDir.empty()&&!makeDirs(outDir)){std::cerr<<"aster build: cannot create "<<outDir<<"\n";return 1;}
+            const std::string cacheDir="build/.cache";
+            if(!makeDirs(cacheDir)){std::cerr<<"aster build: cannot create "<<cacheDir<<"\n";return 1;}
+            const std::string flags=std::string(dbg?"g":"-")+std::string(bc2?"b":"-")+"|"+std::to_string(ps);
+            std::vector<std::string> objs; int compiled=0,reused=0;
+            for(const auto& sp:srcs){
+                if(!fileExists(sp)){std::cerr<<"aster build: missing source "<<sp<<"\n";return 1;}
+                const std::string src=readFile(sp);
+                const std::string srcHash=sha256Hex(src);
+                const std::string key=sha256Hex(std::string(kVersion)+"|"+flags+"|"+sp);
+                const std::string objPath=cacheDir+"/"+key+".o";
+                const std::string metaPath=cacheDir+"/"+key+".meta";
+                bool reuse=false;
+                if(!noCache&&fileExists(objPath)&&fileExists(metaPath)){
+                    const std::string meta=readFile(metaPath);
+                    bool ok=true,sawSrc=false;
+                    std::string cur; std::vector<std::string> lines;
+                    for(char ch:meta){if(ch=='\n'){lines.push_back(cur);cur.clear();}else cur.push_back(ch);}
+                    if(!cur.empty())lines.push_back(cur);
+                    for(const auto& ln:lines){
+                        const std::string l=trimWs(ln);
+                        if(l.rfind("version ",0)==0){if(l.substr(8)!=kVersion)ok=false;}
+                        else if(l.rfind("flags ",0)==0){if(trimWs(l.substr(6))!=flags)ok=false;}
+                        else if(l.rfind("src ",0)==0){
+                            const std::string rest=l.substr(4);
+                            const size_t cut=rest.find(' ');
+                            if(cut==std::string::npos){ok=false;continue;}
+                            const std::string q=rest.substr(0,cut),h=rest.substr(cut+1);
+                            if(q!=sp||h!=srcHash)ok=false; else sawSrc=true;
+                        }
+                        else if(l.rfind("dep ",0)==0){
+                            const std::string rest=l.substr(4);
+                            const size_t cut=rest.find(' ');
+                            if(cut==std::string::npos){ok=false;continue;}
+                            const std::string h=rest.substr(0,cut),q=rest.substr(cut+1);
+                            if(!fileExists(q)||sha256Hex(readFile(q))!=h)ok=false;
+                        }
+                    }
+                    if(ok&&sawSrc)reuse=true;
+                }
+                if(!reuse){
+                    g_buildDeps.clear();
+                    setSourceCache(sp,src);
+                    Parser p(src,true,dirNameOf(sp));p.parse();
+                    auto funcs=compileProgram(p.functions,p.globals,false,true,bc2,dbg);
+                    auto mkDL=[&]()->DebugLineBlob{
+                        if(!dbg)return DebugLineBlob{};
+                        ObjectLayout L=layoutObject(funcs,p.globals);
+                        const size_t sl=sp.find_last_of('/');
+                        return encodeDebugLine(L.lineRows,L.ins.size()*4,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
+                    };
+                    auto mkDI=[&]()->DebugInfoBlob{
+                        if(!dbg)return DebugInfoBlob{};
+                        ObjectLayout L=layoutObject(funcs,p.globals);
+                        const size_t sl=sp.find_last_of('/');
+                        return encodeDebugInfo(L,funcs,p.functions,p.globals,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
+                    };
+                    auto mkEH=[&]()->EhFrameBlob{
+                        if(!dbg)return EhFrameBlob{};
+                        ObjectLayout L=layoutObject(funcs,p.globals);
+                        return encodeEhFrame(L,funcs);
+                    };
+                    const std::string tmp=cacheDir+"/tmp-"+key+".o";
+                    writeObject(tmp,funcs,p.globals,false,mkDL(),mkDI(),mkEH());
+                    writeFileAtomic(objPath,readFile(tmp));
+                    std::remove(tmp.c_str());
+                    std::string meta="version "+std::string(kVersion)+"\nflags "+flags+"\nsrc "+sp+" "+srcHash+"\n";
+                    for(const auto& kv:g_buildDeps)meta+="dep "+kv.second+" "+kv.first+"\n";
+                    writeFileAtomic(metaPath,meta);
+                    g_buildDeps.clear();
+                    ++compiled;
+                } else ++reused;
+                objs.push_back(objPath);
+            }
+            linkObjects(objs,out,0x400000,2,ps);
+            std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n";
+            return 0;
+        }
         if(cmd=="build-apk"){
             std::string inSo, package, libname, abi="arm64-v8a", label="AsterApp", verName="1.0", emitSo, soSoname;
             std::string signMode="debug", keystore, cert, keystoreDir;

@@ -1280,6 +1280,9 @@ aster link-so   [--soname NAME] [--needed LIB] <input.o> … -o <output.so>
 aster build-apk <input.so|input.ast> -o <app.apk> --package PKG [options]
 aster keygen [--dir DIR] [--bits 2048] [--force]
 aster verify-apk <app.apk>
+aster new <dir>
+aster build [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache]
+aster deps <source.ast> [...] [-o OBJ]
 ```
 
 | Flag | Effect |
@@ -1326,6 +1329,65 @@ sections with the five `DT_VER*` tags. Exported symbols answer `name@@aster`
 under `readelf --version-info`, exactly as a `gcc -shared` link with a
 version script does.
 
+
+## 11c. Projects: `aster new`, `aster build`, `aster deps` (v0.23.77-dev)
+
+A project is a directory with an `aster.proj` in it. One command scaffolds one
+and one command builds it:
+
+```sh
+aster new hello          # hello/aster.proj, src/main.ast, src/util.ast, .gitignore
+cd hello && aster build  # build/hello
+```
+
+`aster.proj` is the link order and nothing else — one source path per line,
+relative to the project root, `#` starting a comment:
+
+```
+# aster.proj
+src/main.ast
+src/util.ast
+```
+
+The order matters for the same reason it does on the command line: run-time
+global initializers run in it, and the object holding `main` has to hold at
+least one of them (§11b). `aster build` accepts `-g`, `--bounds-check`,
+`--page-size`, `-o` (default `build/<directory name>`) and `--no-cache`.
+
+### The object cache
+
+`aster build` keeps a content-keyed cache in `build/.cache/`: each source gets
+one `<key>.o` and one `<key>.meta`, where the key hashes the compiler version,
+the flags, and the source path. The meta records the source's content hash and
+one line per input the compilation actually read — every `include` file and
+every `@embed` asset, each with its own content hash. A rebuild reuses an object
+only when the version, the flags, the source hash and **every** recorded input
+hash still match; otherwise that source alone is recompiled. Deleted or edited
+assets, a different `-g`, or a different page size all miss the cache, and
+`--no-cache` bypasses it.
+
+Content, not mtime: a fresh `git checkout`, a `cp -p`, or an editor that
+rewrites identical bytes does not trigger a rebuild, and touching a file without
+changing it does not either. The link always runs (it is milliseconds) and the
+executable is deterministic, so a build that compiled nothing reproduces the
+same bytes.
+
+The cache is per project directory. It is safe to delete: the next build simply
+compiles everything again.
+
+### `aster deps`
+
+For a build tool that wants to drive the compilation itself, `aster deps` prints
+the inputs of a translation unit as a make rule:
+
+```sh
+$ aster deps src/main.ast -o build/main.o
+build/main.o: src/main.ast /home/me/hello/src/util.ast /home/me/hello/src/asset.bin
+```
+
+Include it from a Makefile (`-include $(OBJS:.o=.d)`) and the rebuild rule that
+§11b describes maintains itself. The command parses the file — that is how
+`include` and `@embed` are discovered — but emits no object.
 
 ## 11b. Building a program from several files (and what is incremental)
 

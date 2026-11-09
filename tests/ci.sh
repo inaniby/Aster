@@ -285,6 +285,7 @@ printf 'CACHE     : compiler builds through %s\n' "$CXX"
 # 3. Suites
 # ---------------------------------------------------------------------------
 DEFAULT_SUITES="
+project-checks.sh
 apk-checks.sh array-bounds-checks.sh bool-checks.sh comment-checks.sh
 condition-checks.sh
 null-ptr-checks.sh
