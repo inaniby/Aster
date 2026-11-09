@@ -11536,9 +11536,9 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
 }
 }
 const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
-    "Usage: aster build-elf|build-pie [-g] <source.ast> -o <output>\n"
+    "Usage: aster build-elf|build-pie [-g] <source.ast|input.o> [more...] -o <output>\n"
     "       aster build-obj [--pic] [-g] <source.ast> -o <output.o>\n"
-    "       aster build-so  [--soname NAME] [--needed LIB] <source.ast> -o <output.so>\n"
+    "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
     "       aster link-obj|link-pie <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
     "       aster keygen [--dir DIR] [--bits 2048] [--force]\n"
@@ -14323,40 +14323,107 @@ int main(int argc,char**argv){
             return 0;
         }
         if(cmd!="build-elf"&&cmd!="build-pie"&&cmd!="build-obj"&&cmd!="build-so"){std::cerr<<kUsage;return 2;}
-        if(!parseArgs(2)||sources.size()!=1){std::cerr<<kUsage;return 2;}
+        if(!parseArgs(2)||sources.empty()){std::cerr<<kUsage;return 2;}
+        // v0.23.77-dev: build-elf / build-pie / build-so take one or more
+        // sources (and prebuilt .o files); build-obj still compiles exactly one,
+        // because one command cannot write two outputs without inventing a
+        // naming rule.
+        if(cmd=="build-obj"&&sources.size()!=1){
+            std::cerr<<"Aster: build-obj compiles one source file; for several files use build-elf, build-pie or build-so, or run build-obj once per file\n";
+            return 2;
+        }
         if(pic&&cmd!="build-obj"){std::cerr<<kUsage;return 2;}
         if((!soname.empty()||!needed.empty())&&cmd!="build-so"){std::cerr<<kUsage;return 2;}
-        auto src=readFile(sources[0]);
-        setSourceCache(sources[0], src);
-        if(cmd=="build-so") return buildSoFromSource(src,output,soname,needed,boundsCheck,debugLine,sources[0],pageSize);
-        Parser p(src,true,dirNameOf(sources[0]));p.parse();auto funcs=compileProgram(p.functions,p.globals,pic,true,boundsCheck,debugLine);
-        // -g: one DWARF line program for this translation unit, from the rows
-        // codegen collected. Its addresses stay relative to the object's own
-        // .text until the object is linked (or stand as-is for build-obj).
-        auto makeDebugLine=[&]()->DebugLineBlob{
-            if(!debugLine)return DebugLineBlob{};
-            ObjectLayout L=layoutObject(funcs,p.globals);
-            const std::string& sp=sources[0];const size_t sl=sp.find_last_of('/');
-            return encodeDebugLine(L.lineRows,L.ins.size()*4,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
-        };
-        // v0.23.32-dev: and the unit's names and types — the same source file,
-        // the same one unit per object, and the same placeholder addresses.
-        auto makeDebugInfo=[&]()->DebugInfoBlob{
-            if(!debugLine)return DebugInfoBlob{};
-            ObjectLayout L=layoutObject(funcs,p.globals);
-            const std::string& sp=sources[0];const size_t sl=sp.find_last_of('/');
-            return encodeDebugInfo(L,funcs,p.functions,p.globals,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
-        };
-        // v0.23.33-dev: and the frame's shape — one CIE and one FDE per
-        // function, whose addresses are placeholders for exactly the same
-        // reason: only the linker knows where this unit's text will land.
-        auto makeEhFrame=[&]()->EhFrameBlob{
-            if(!debugLine)return EhFrameBlob{};
-            ObjectLayout L=layoutObject(funcs,p.globals);
-            return encodeEhFrame(L,funcs);
-        };
-        if(cmd=="build-obj"){writeObject(output,funcs,p.globals,pic,makeDebugLine(),makeDebugInfo(),makeEhFrame());size_t n=0;for(const auto&f:funcs)n+=f.code.size();size_t g=0;for(const auto&x:p.globals)if(!x.external)++g;std::cout<<"Aster v"<<kVersion<<": emitted AArch64 ELF64 ET_REL object"<<" ("<<n<<" instructions, "<<funcs.size()<<" functions, "<<g<<" globals"<<(pic?", PIC":"")<<(debugLine?", with .debug_line":"")<<"): "<<output<<"\n";}
-        else {std::string temp=output+".aster-tmp.o";writeObject(temp,funcs,p.globals,false,makeDebugLine(),makeDebugInfo(),makeEhFrame());try{if(cmd=="build-pie")linkObjects({temp},output,0,3,pageSize);else linkObjects({temp},output,0x400000,2,pageSize);}catch(...){std::remove(temp.c_str());throw;}std::remove(temp.c_str());}
+        if(cmd=="build-obj"){
+            // exactly one source, exactly one object — the historical path
+            const std::string& sp=sources[0];
+            const std::string src=readFile(sp);
+            setSourceCache(sp,src);
+            Parser p(src,true,dirNameOf(sp));p.parse();
+            auto funcs=compileProgram(p.functions,p.globals,pic,true,boundsCheck,debugLine);
+            auto makeDebugLine=[&]()->DebugLineBlob{
+                if(!debugLine)return DebugLineBlob{};
+                ObjectLayout L=layoutObject(funcs,p.globals);
+                const size_t sl=sp.find_last_of('/');
+                return encodeDebugLine(L.lineRows,L.ins.size()*4,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
+            };
+            auto makeDebugInfo=[&]()->DebugInfoBlob{
+                if(!debugLine)return DebugInfoBlob{};
+                ObjectLayout L=layoutObject(funcs,p.globals);
+                const size_t sl=sp.find_last_of('/');
+                return encodeDebugInfo(L,funcs,p.functions,p.globals,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
+            };
+            auto makeEhFrame=[&]()->EhFrameBlob{
+                if(!debugLine)return EhFrameBlob{};
+                ObjectLayout L=layoutObject(funcs,p.globals);
+                return encodeEhFrame(L,funcs);
+            };
+            writeObject(output,funcs,p.globals,pic,makeDebugLine(),makeDebugInfo(),makeEhFrame());
+            size_t n=0;for(const auto&f:funcs)n+=f.code.size();size_t g=0;for(const auto&x:p.globals)if(!x.external)++g;
+            std::cout<<"Aster v"<<kVersion<<": emitted AArch64 ELF64 ET_REL object"<<" ("<<n<<" instructions, "<<funcs.size()<<" functions, "<<g<<" globals"<<(pic?", PIC":"")<<(debugLine?", with .debug_line":"")<<"): "<<output<<"\n";
+            return 0;
+        }
+        // v0.23.77-dev: one command may compile several sources and link them,
+        // and may mix sources with prebuilt objects. Every non-.o argument is
+        // compiled to a private temporary object; the linker receives the inputs
+        // in argument order, which is also the order run-time global initializers
+        // run in (see A-21/A-22 in AUDIT-v0.23.76-dev.md).
+        if(cmd=="build-so"&&sources.size()==1&&
+           !(sources[0].size()>2&&sources[0].compare(sources[0].size()-2,2,".o")==0)){
+            // one source straight to .so keeps the historical byte-identical path
+            auto src=readFile(sources[0]);
+            setSourceCache(sources[0], src);
+            return buildSoFromSource(src,output,soname,needed,boundsCheck,debugLine,sources[0],pageSize);
+        }
+        {
+            const bool multi = sources.size()>1;
+            std::vector<std::string> linkerInputs,temps;
+            auto removeTemps=[&](){for(const auto& t:temps)std::remove(t.c_str());};
+            try{
+                for(size_t si=0;si<sources.size();++si){
+                    const std::string sp=sources[si];
+                    if(sp.size()>2&&sp.compare(sp.size()-2,2,".o")==0){linkerInputs.push_back(sp);continue;}
+                    const std::string src=readFile(sp);
+                    setSourceCache(sp,src);
+                    const bool soObject = cmd=="build-so";
+                    Parser p(src,true,dirNameOf(sp));p.parse();
+                    if(soObject)
+                        for(const auto& g:p.globals)
+                            if(g.tls&&g.external)
+                                throw Error("an external thread-local (`extern tls let`) is not supported in a shared object: global '"+g.name+"'");
+                    auto funcs=compileProgram(p.functions,p.globals,soObject,true,boundsCheck,debugLine);
+                    auto makeDebugLine=[&]()->DebugLineBlob{
+                        if(!debugLine)return DebugLineBlob{};
+                        ObjectLayout L=layoutObject(funcs,p.globals);
+                        const size_t sl=sp.find_last_of('/');
+                        return encodeDebugLine(L.lineRows,L.ins.size()*4,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
+                    };
+                    auto makeDebugInfo=[&]()->DebugInfoBlob{
+                        if(!debugLine)return DebugInfoBlob{};
+                        ObjectLayout L=layoutObject(funcs,p.globals);
+                        const size_t sl=sp.find_last_of('/');
+                        return encodeDebugInfo(L,funcs,p.functions,p.globals,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
+                    };
+                    auto makeEhFrame=[&]()->EhFrameBlob{
+                        if(!debugLine)return EhFrameBlob{};
+                        ObjectLayout L=layoutObject(funcs,p.globals);
+                        return encodeEhFrame(L,funcs);
+                    };
+                    std::string temp = multi ? output+".aster-tmp"+std::to_string(si)+".o" : output+".aster-tmp.o";
+                    writeObject(temp,funcs,p.globals,soObject,makeDebugLine(),makeDebugInfo(),makeEhFrame());
+                    if(multi){
+                        size_t n=0;for(const auto&f:funcs)n+=f.code.size();size_t g=0;for(const auto&x:p.globals)if(!x.external)++g;
+                        std::cout<<"Aster v"<<kVersion<<": emitted AArch64 ELF64 ET_REL object ("<<n<<" instructions, "<<funcs.size()<<" functions, "<<g<<" globals"<<(soObject?", PIC":"")<<(debugLine?", with .debug_line":"")<<"): "<<temp<<" (from "<<sp<<")\n";
+                    }
+                    temps.push_back(temp);
+                    linkerInputs.push_back(temp);
+                }
+                if(cmd=="build-so")linkSharedObjects(linkerInputs,output,soname,needed,pageSize);
+                else if(cmd=="build-pie")linkObjects(linkerInputs,output,0,3,pageSize);
+                else linkObjects(linkerInputs,output,0x400000,2,pageSize);
+                removeTemps();
+            }catch(...){removeTemps();throw;}
+        }
         return 0;
     }catch(const std::exception&e){reportError(e.what());return 1;}
 }

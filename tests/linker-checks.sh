@@ -184,6 +184,50 @@ fi
 grep -qF 'it defines _start' "$TMPD/init-nostart.log" \
     || { echo 'FAIL: the unreachable initializer was refused without its message:' >&2; cat "$TMPD/init-nostart.log" >&2; exit 1; }
 rm -f "$TMPD/init-a.o" "$TMPD/init-b.o" "$TMPD/init-m.o" "$TMPD/init-ok" "$TMPD/init-bad" "$TMPD/init-nostart"
+# v0.23.77-dev: one command may compile several sources (and mix in prebuilt
+# objects). The link order is the argument order, and a source is compiled to a
+# temporary object next to the output and removed again.
+cat > "$TMPD/ms-defs.ast" <<'AST'
+fn add2(x: i32) -> i32 { return x + 1; }
+let total: i32 = 5;
+AST
+cat > "$TMPD/ms-main.ast" <<'AST'
+include "ms-defs.ast";
+fn main() -> i32 { return add2(total); }
+AST
+./aster build-elf "$TMPD/ms-main.ast" "$TMPD/ms-defs.ast" -o "$TMPD/ms.elf" >/dev/null
+set +e
+"$TMPD/ms.elf"
+ms_rc=$?
+set -e
+[ "$ms_rc" = 6 ] || { echo "FAIL: build-elf with two sources exited $ms_rc, expected 6" >&2; exit 1; }
+./aster build-pie "$TMPD/ms-main.ast" "$TMPD/ms-defs.ast" -o "$TMPD/ms.pie" >/dev/null
+set +e
+"$TMPD/ms.pie"
+ms_rc=$?
+set -e
+[ "$ms_rc" = 6 ] || { echo "FAIL: build-pie with two sources exited $ms_rc, expected 6" >&2; exit 1; }
+./aster build-obj "$TMPD/ms-defs.ast" -o "$TMPD/ms-defs.o" >/dev/null
+./aster build-elf "$TMPD/ms-main.ast" "$TMPD/ms-defs.o" -o "$TMPD/ms-mixed.elf" >/dev/null
+set +e
+"$TMPD/ms-mixed.elf"
+ms_rc=$?
+set -e
+[ "$ms_rc" = 6 ] || { echo "FAIL: build-elf with a source and a prebuilt object exited $ms_rc, expected 6" >&2; exit 1; }
+./aster build-so "$TMPD/ms-main.ast" "$TMPD/ms-defs.ast" --soname libms.so -o "$TMPD/ms.so" >/dev/null
+readelf -d "$TMPD/ms.so" 2>/dev/null | grep -q 'libms.so' \
+    || { echo 'FAIL: build-so with two sources lost its SONAME' >&2; exit 1; }
+[ "$(readelf --dyn-syms "$TMPD/ms.so" 2>/dev/null | grep -c 'FUNC    GLOBAL')" -ge 2 ] \
+    || { echo 'FAIL: build-so with two sources exported fewer than two functions' >&2; exit 1; }
+if ./aster build-obj "$TMPD/ms-main.ast" "$TMPD/ms-defs.ast" -o "$TMPD/nope.o" 2>"$TMPD/ms-obj.log"; then
+    echo 'FAIL: build-obj accepted two sources' >&2; exit 1
+fi
+grep -qF 'build-obj compiles one source file' "$TMPD/ms-obj.log" \
+    || { echo 'FAIL: build-obj refused two sources without its message:' >&2; cat "$TMPD/ms-obj.log" >&2; exit 1; }
+ls "$TMPD"/ms.elf.aster-tmp* "$TMPD"/ms.so.aster-tmp* 2>/dev/null | grep -q . \
+    && { echo 'FAIL: a temporary object was left behind' >&2; exit 1; }
+rm -f "$TMPD/ms-defs.o" "$TMPD/ms.elf" "$TMPD/ms.pie" "$TMPD/ms-mixed.elf" "$TMPD/ms.so"
+echo 'PASS: one command compiles several sources (elf, pie, .so, mixed with .o)'
 echo 'PASS: initializer order (both refusals) and the well-ordered chain'
 echo 'PASS: function call and relocation linker checks'
 echo 'PASS: all minimal linker checks'

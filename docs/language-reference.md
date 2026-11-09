@@ -1272,9 +1272,9 @@ unchecked at run time.
 ## 11. Compiler command line
 
 ```
-aster build-elf|build-pie [-g] <source.ast> -o <output>
+aster build-elf|build-pie [-g] <source.ast|input.o> [more…] -o <output>
 aster build-obj [--pic] [-g] <source.ast> -o <output.o>
-aster build-so  [--soname NAME] [--needed LIB] <source.ast> -o <output.so>
+aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more…] -o <output.so>
 aster link-obj|link-pie <input.o> … -o <output>
 aster link-so   [--soname NAME] [--needed LIB] <input.o> … -o <output.so>
 aster build-apk <input.so|input.ast> -o <app.apk> --package PKG [options]
@@ -1295,6 +1295,23 @@ aster verify-apk <app.apk>
 | `--page-size N` | load-segment page size for `build-elf` / `build-pie` / `build-obj` / `build-so` / `link-*` **and** the embedded-`.so` ZIP offset for `build-apk`. It sets every `PT_LOAD` `p_align` (and the segment base/file offsets) to **N**; for `build-apk` it additionally aligns the embedded shared object inside the APK ZIP to **N**. Default **4096**; only `4096` and `16384` are accepted (`aster: --page-size must be 4096 or 16384`). **16384 is required for Android 15+ devices that use a 16 KB page** — the app is rejected at install when `targetSdk >= 35` unless *both* the ELF segments and the in-ZIP `.so` offset are page-aligned. v0.23.54-dev (ELF segments) / v0.23.55-dev (build-apk ZIP offset) |
 
 
+Since v0.23.77-dev the three link-producing commands (`build-elf`,
+`build-pie`, `build-so`) take **one or more inputs**, so a multi-file program no
+longer needs a separate `build-obj` step per file:
+
+```sh
+aster build-elf main.ast defs.ast -o demo     # compile both, then link
+aster build-elf main.ast defs.o -o demo       # …or mix sources with objects
+aster build-so  a.ast b.ast --soname libx.so -o libx.so
+```
+
+Each non-`.o` argument is compiled to a private temporary object next to the
+output (`<output>.aster-tmp<N>.o`) and removed afterwards; `.o` arguments are
+linked as they are. The inputs reach the linker **in argument order**, which is
+also the order run-time global initializers run in (§8's A-21/A-22 rules), so
+list a dependency before the object that reads it. `build-obj` still compiles
+exactly one file — it cannot write two outputs without a naming rule.
+
 Output is always AArch64 ELF64: `build-elf` an `ET_EXEC` at 0x400000,
 `build-pie` a static `ET_DYN` PIE with no interpreter, `build-obj` an
 `ET_REL` object, `build-so` an `ET_DYN` shared object with SysV `DT_HASH` and
@@ -1312,10 +1329,12 @@ version script does.
 
 ## 11b. Building a program from several files (and what is incremental)
 
-Aster has no module system and no single command that takes two `.ast` sources:
-`build-elf`/`build-pie`/`build-obj`/`build-so` each compile **one** file. When a
-program is split, it is split the way C splits it — a file that owns a definition
-compiles to an object, and the objects are linked:
+Aster has no module system, but since v0.23.77-dev the three link-producing
+commands compile several files in one invocation (`build-elf main.ast defs.ast
+-o demo`); `build-obj` still compiles exactly **one** file, because one command
+cannot write two outputs without a naming rule. The explicit shape — a file that
+owns a definition compiles to an object, and the objects are linked — is what the
+shortcut does under the hood, and what an incremental build tool should drive:
 
 ```sh
 aster build-obj defs.ast -o defs.o        # definitions live here
@@ -1347,7 +1366,7 @@ re-read the declaration.
 | --- | --- |
 | separate compilation into `.o`, linked afterwards | **supported** |
 | recompiling only the objects whose inputs changed | **your build tool's job** — the compiler has no mtime check, no object cache, no `-M` depfile |
-| one command over several sources | **not supported** (`build-elf a.ast b.ast` prints usage) |
+| one command over several sources | **supported** for `build-elf` / `build-pie` / `build-so` since v0.23.77-dev (each source becomes a temporary object, then they link); **not** for `build-obj` |
 | static archives (`.a`) | **not supported** — `link-*` takes `.o` files |
 | link time signature checking | **not supported** — names only, see above |
 | linking in the same command as compiling | **not supported** — always `build-obj` then `link-*` |
