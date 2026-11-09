@@ -21,6 +21,7 @@ version owns its own frozen snapshot under `tests/baseline/v0.23.77-dev/`.
 | A-14 | `build-apk --abi` never looked at the library's `e_machine`, producing APKs no device would install. | The ABI is checked against the ELF header; a mismatch writes nothing. |
 | A-15 | Diagnostics inside an included file named the including file and dropped the source-line echo. | The include parser hands the reporter the file it is really about. |
 | A-16 | Every shared object declared a `VERNEED` for `libc.so.6` it did not depend on; bionic refuses to load such a library, and a repeated `--needed` duplicated `DT_NEEDED`. | `DT_VERNEED` is registered only when `libc.so.6` is a real dependency; `--needed` collapses duplicates. |
+| A-17 | Each input's `.tdata` was aligned to its own boundary when the TLS block was merged, but `.tbss` was simply concatenated: linking a 4-byte thread-local before an 8-byte one put the `u64` at TPREL offset 4 — readable with LDR, a fault for LDAXR/STLXR, and not the alignment the ABI promises. The bug was invisible in the other link order. | Both linkers advance the merged `.tbss` to each input's own alignment before placing its symbols, exactly as `.tdata` already did. Both orders now give 8-aligned offsets, and `tls-checks.sh` pins the rule for both orders. |
 
 A-02, A-04 and A-07 were documentation corrections, A-03 was retracted after
 re-checking both CLI paths, and A-05 is the formatting fix that had been
@@ -54,13 +55,13 @@ touches shared objects.
 ## v0.23.76-dev — Audit round: literal typing, constant folding, switch labels, and `-g` DWARF
 
 An audit round on top of v0.23.76-dev (see `AUDIT-v0.23.76-dev.md`). It finds and
-fixes **twelve defects** — four in the constant-folding path and two in the debug
+fixes **thirteen defects** — four in the constant-folding path and two in the debug
 writer — corrects three documentation statements, repairs one formatting bug
 that was already breaking this project's own `-Werror` build, adds one 9-layer
 suite, and makes the suites runnable on a native AArch64 host where no
 `aarch64-linux-gnu-*` toolchain exists.
 
-### The twelve defects
+### The thirteen defects
 
 | Id | Defect | Repair |
 | --- | --- | --- |
@@ -76,6 +77,7 @@ suite, and makes the suites runnable on a native AArch64 host where no
 | A-14 | `--abi` only checked that the string looked like an ABI, never the library's ELF header: `--abi x86_64` around an AArch64 `.so` built silently and produced `lib/x86_64/` holding an `e_machine = AArch64` file, which every device rejects with `INSTALL_FAILED_NO_MATCHING_ABIS`. | `buildApk` reads the shared object's class and `e_machine` and compares them against the ABI (arm64-v8a/arm64, armeabi-v7a/armeabi, x86, x86_64, riscv64, mips, mips64); a mismatch is an error and no APK is written; an unknown ABI name lists the known set. `tests/apk-checks.sh` pins the refusal. |
 | A-15 | A diagnostic raised inside an included file named the *including* file and dropped the source-line echo, because the reporter reads one global file/line cache that the include sub-parse had already restored by unwinding. `include "bad2.ast"` at line 5 reported `m5.ast:5:36` with no caret. | The include parser stashes that file and its lines in a pending-diagnostic global as the exception passes through (innermost include wins) and `reportError()` prefers it, so the message names the real file and echoes its line. |
 | A-16 | Every shared object declared `.gnu.version_r` entry `File: libc.so.6 / GLIBC_2.17`, even when no symbol used that index and libc was not among its `DT_NEEDED` entries. Loaders check VERNEED against the dependency list before mapping: bionic refuses the library (`cannot find "libc.so.6" from verneed[0] in DT_NEEDED list`), which is why cross-.so chains could not be dlopen'ed on Android. A repeated `--needed` also produced duplicate `DT_NEEDED` entries. | Both writers register `DT_VERNEED`/`DT_VERNEEDNUM` only when `libc.so.6` is one of the actual dependencies (the section stays where it was, so no offset moves), and `--needed` collapses duplicates keeping first-mention order. A `--needed liba.so` chain now dlopens on Android (`callval=8`), and the e2e dlopen layers no longer need their Android skip. |
+| A-17 | Each input's `.tdata` was aligned to its own boundary when the TLS block was merged, but `.tbss` was simply concatenated: linking a 4-byte thread-local before an 8-byte one put the `u64` at TPREL offset 4 — readable with LDR, a fault for LDAXR/STLXR, and not the alignment the ABI promises. The bug was invisible in the other link order. | Both linkers advance the merged `.tbss` to each input's own alignment before placing its symbols, exactly as `.tdata` already did. Both orders now give 8-aligned offsets, and `tls-checks.sh` pins the rule for both orders. |
 
 ### Documentation corrections
 

@@ -437,3 +437,40 @@ A-16 去掉了不属于该对象的 `DT_VERNEED`/`DT_VERNEEDNUM`，并折叠重�
 旧行是带错误 VERNEED 的字节，新行是修复后的字节。ET_EXEC / ET_REL 的 267 行保持逐字节一致，
 这正是修复的边界——只有共享对象携带那个标签。再记录后 `literals-checks`、`switch-checks`、
 `u64-literal-compare-checks` 的字节一致性层重新恢复意义。
+
+---
+
+## 17. A-17（P1，已修）：`.tbss` 合并丢失每个输入的对齐
+
+**现象**：两个 PIC 目标，一个只有 4 字节的线程变量、另一个只有 8 字节的 `u64` 线程变量，
+以「4 字节在前」的顺序 `link-so` 后，`u64` 落在 **TPREL offset 4**：
+
+```
+link-so y.o x.o      →  R_AARCH64_TLS_TPREL64  addend 4   （u64，8 字节变量在 4 字节边界）
+link-so x.o y.o      →  addend 0 / 8                       （顺序一换就"碰巧正确"）
+```
+
+`offset % 8 == 4` 的线程变量：`LDR` 能读，但 `LDAXR/STLXR` 会因未对齐而 fault，
+且 C 的 `_Thread_local u64` 本来保证自然对齐。三个对象依次合并时同样出现（`0,16,32,36`）。
+
+**机理**：链接器对 `.tdata` 有每输入对齐（`while(obj.tdataAlign>1&&mergedTls.size()%obj.tdataAlign)`），
+对 `.tbss` 却只是 `mergedTbss += obj.tbssSize;` —— `obj.tbssAlign` 只被并入整块的最大对齐
+（`maxTlsAlign`），从未用于**每个输入块自身的起点**。于是 8 字节变量能否对齐，取决于链接顺序。
+
+**修复**：两个链接器（`linkObjects`、`linkSharedObjects`）在放置该输入符号之前，把
+`mergedTbss` 前进到 `obj.tbssAlign` 的边界：
+
+```cpp
+while(obj.tbssAlign>1&&mergedTbss%obj.tbssAlign)++mergedTbss;
+```
+
+**验证**：
+
+| 场景 | 修前 | 修后 |
+| --- | --- | --- |
+| `link-so y.o x.o`（i32 先，u64 后） | addend 4 | **16**（8 对齐） |
+| `link-so x.o y.o` | addend 0/8 | 0/16 |
+| 三对象 `a b c`（i32,i32,tbss+u64） | 0,16,32,**36** | 0,16,32,**48** |
+
+回归用例进 `tests/tls-checks.sh`（8b/9 层）：两种链接顺序都必须让每个 `TLS_TPREL64` 偏移 8 对齐。
+单对象链接的布局不变（`mergedTbss` 初始为 0），所以 v0.23.77 的冻结基线不动。

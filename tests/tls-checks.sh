@@ -463,6 +463,36 @@ else
 fi
 
 # ---------------------------------------------------------------- 9. the suite can still fail
+# v0.23.77-dev (audit A-17): a thread-local's offset is where the merge put it,
+# so each input's .tbss block must start on a boundary its own alignment asks
+# for. Linking a 4-byte thread-local *before* an 8-byte one used to place the u64
+# at offset 4 — legal for LDR, a fault for LDAXR/STLXR, and not the alignment
+# the ABI promises. Both orders are checked, because only one of them can hide
+# the bug.
+printf '%s\n' '[8b/9] TLS merge keeps each input aligned, in both link orders'
+cat > "$OUT/al_i32.ast" <<'AST'
+tls let small: i32 = 0;
+fn fs() -> i32 { small = small + 2; return small; }
+AST
+cat > "$OUT/al_u64.ast" <<'AST'
+tls let big: u64 = 0;
+fn fb() -> i32 { big = big + 1; return i32(big & 255); }
+AST
+"$A" build-obj --pic "$OUT/al_i32.ast" -o "$OUT/al_i32.o" >/dev/null
+"$A" build-obj --pic "$OUT/al_u64.ast" -o "$OUT/al_u64.o" >/dev/null
+for pair in "al_i32.o al_u64.o" "al_u64.o al_i32.o"; do
+    set -- $pair
+    "$A" link-so --soname libal.so "$OUT/$1" "$OUT/$2" -o "$OUT/al.so" >/dev/null
+    offs=$(readelf -r "$OUT/al.so" | grep -i tprel | sed 's/.*TLS_TPREL64 *//' | tr '\n' ' ')
+    [ -n "$offs" ] || fail "the $pair merge carries no TLS_TPREL64 relocation"
+    for o in $offs; do
+        # readelf prints those addends in hex ("10" is 16); compare in decimal.
+        dec=$((0x$o))
+        [ $((dec % 8)) -eq 0 ] || fail "the $pair merge left a thread-local at offset $dec, not 8-aligned"
+    done
+done
+printf '  %-40s %s\n' 'both link orders: every TLS_TPREL64 offset 8-aligned' 'ok'
+
 printf '%s\n' '[9/9] The suite can still fail (two mutations)'
 # (a) Halve the local-exec offset fill: layer 8 must notice (wrong value ->
 # wrong exit code), and so must the static structural layers.

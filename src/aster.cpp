@@ -11034,6 +11034,13 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         // does — the alignment padding has to be part of this object's base
         // before any symbol is offset against it.
         while(obj.tdataAlign>1&&mergedTls.size()%obj.tdataAlign)mergedTls.push_back(0);
+        // v0.23.77-dev (audit A-17): a thread-local's offset is its place in the
+        // merged TLS block, so each input's .tbss has to start on a boundary its
+        // own alignment asks for — exactly what .tdata above does. Without this
+        // a 4-byte object followed by an 8-byte one put the u64 at offset 4:
+        // legal for LDR, a fault for LDAXR/STLXR, and not the alignment the ABI
+        // promises a `tls let x: u64`. The section base alone was aligned.
+        while(obj.tbssAlign>1&&mergedTbss%obj.tbssAlign)++mergedTbss;
         const uint64_t tlsBase=mergedTls.size();
         const uint64_t textBase=mergedText.size(),dataBase=mergedData.size(),bssBase=mergedBss,rodataBase=mergedRodata.size();
         // v0.23.52-dev: `__aster_tls_block` is the marker a static image reads
@@ -11248,6 +11255,13 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         // so a second object whose block needed stricter alignment than the
         // first placed every one of its thread-locals too low.
         while(obj.tdataAlign>1&&mergedTls.size()%obj.tdataAlign)mergedTls.push_back(0);
+        // v0.23.77-dev (audit A-17): a thread-local's offset is its place in the
+        // merged TLS block, so each input's .tbss has to start on a boundary its
+        // own alignment asks for — exactly what .tdata above does. Without this
+        // a 4-byte object followed by an 8-byte one put the u64 at offset 4:
+        // legal for LDR, a fault for LDAXR/STLXR, and not the alignment the ABI
+        // promises a `tls let x: u64`. The section base alone was aligned.
+        while(obj.tbssAlign>1&&mergedTbss%obj.tbssAlign)++mergedTbss;
         const uint64_t tlsBase=mergedTls.size();
         uint64_t textBase=mergedText.size(),dataBase=mergedData.size(),bssBase=mergedBss,rodataBase=mergedRodata.size();
         for(const auto& s:obj.symbols){if((s.info>>4)!=1||s.name.empty()||s.shndx==0)continue;Def def{};
