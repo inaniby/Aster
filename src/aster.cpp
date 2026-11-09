@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sys/wait.h>          // waitpid/WIFEXITED for `aster run`
 #include <cstring>
 #include <ctime>
 #include <fstream>
@@ -11554,8 +11555,9 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "Usage: aster build-elf|build-pie [-g] <source.ast|input.o> [more...] -o <output>\n"
     "       aster build-obj [--pic] [-g] <source.ast> -o <output.o>\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
-"       aster new <dir>                       scaffold aster.proj + src/\n"
-"       aster build [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache]\n"
+"       aster new [--apk] <dir>              scaffold a program or APK project\n"
+"       aster add <source.ast>              append a source to aster.proj\n"
+"       aster build|run [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache] [-- args]\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs"
     "       aster link-obj|link-pie <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
@@ -14157,14 +14159,45 @@ static bool makeDirs(const std::string& path){
     if(!cur.empty()&&!dirExists(cur))::mkdir(cur.c_str(),0777);
     return dirExists(path);
 }
-// aster.proj: one source path per line, in link order; '#' comments the rest.
-static std::vector<std::string> readProjectFile(const std::string& path){
+struct ProjectSpec {
+    std::string kind="exe";          // exe | apk
+    std::string name, package, abi="arm64-v8a", label;
+    int minSdk=21, targetSdk=30;
+    uint64_t pageSize=0;             // 0 = use the command line / default
+    std::vector<std::string> sources;
+};
+// v0.23.77-dev: aster.proj is line-oriented. `kind`, `package`, `name`, `abi`,
+// `label`, `min-sdk`, `target-sdk` and `page-size` are settings; every other
+// non-comment line is a source path, in link order.
+static ProjectSpec parseProjectFile(const std::string& path){
     const std::string txt=readFile(path);
-    std::vector<std::string> out; std::string cur;
-    auto flush=[&]{std::string l=trimWs(cur);cur.clear();if(!l.empty()&&l[0]!='#')out.push_back(l);};
-    for(char ch:txt){if(ch=='\n')flush();else cur.push_back(ch);}
-    flush();
-    return out;
+    ProjectSpec spec; std::string cur;
+    auto handle=[&](const std::string& raw){
+        const std::string l=trimWs(raw);
+        if(l.empty()||l[0]=='#')return;
+        const size_t sp=l.find_first_of(" \t");
+        const std::string k=sp==std::string::npos?l:l.substr(0,sp);
+        const std::string v=sp==std::string::npos?std::string():trimWs(l.substr(sp+1));
+        if(k=="kind"){
+            if(v!="exe"&&v!="apk")throw Error(path+": kind must be exe or apk (got \""+v+"\")");
+            spec.kind=v;
+        } else if(k=="package") spec.package=v;
+        else if(k=="name") spec.name=v;
+        else if(k=="abi") spec.abi=v;
+        else if(k=="label") spec.label=v;
+        else if(k=="min-sdk"||k=="target-sdk"){
+            char* end=nullptr; long n=std::strtol(v.c_str(),&end,10);
+            if(!end||*end||n<0||n>1000)throw Error(path+": "+k+" must be a small decimal integer (got \""+v+"\")");
+            if(k=="min-sdk")spec.minSdk=(int)n; else spec.targetSdk=(int)n;
+        } else if(k=="page-size"){
+            char* end=nullptr; unsigned long n=std::strtoul(v.c_str(),&end,10);
+            if(!end||*end||(n!=4096&&n!=16384))throw Error(path+": page-size must be 4096 or 16384 (got \""+v+"\")");
+            spec.pageSize=(uint64_t)n;
+        } else spec.sources.push_back(l);
+    };
+    for(char ch:txt){if(ch=='\n'){handle(cur);cur.clear();}else cur.push_back(ch);}
+    handle(cur);
+    return spec;
 }
 int main(int argc,char**argv){
     const std::string cmd=argc>1?argv[1]:"";
@@ -14223,44 +14256,89 @@ int main(int argc,char**argv){
     };
     try{
         // v0.23.77-dev: a project is a directory holding aster.proj. `new`
-        // scaffolds one, `build` compiles it with a content-keyed object cache
-        // beside the output, and `deps` prints the make rules the same
-        // information gives an external build tool.
+        // scaffolds one (optionally an APK project), `add` appends a source,
+        // `build` compiles it with a content-keyed object cache into an
+        // executable or a signed APK, `run` runs the executable, and `deps`
+        // prints the make rules the same information gives a build tool.
         if(cmd=="new"){
-            std::string dir;
+            bool apk=false; std::string dir;
             for(int i=2;i<argc;++i){
                 const std::string a=argv[i];
                 if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                if(a=="--apk"){apk=true;continue;}
                 if(!a.empty()&&a[0]=='-'){std::cerr<<"aster new: unknown option "<<a<<"\n";return 2;}
-                if(!dir.empty()){std::cerr<<"aster new: usage: aster new <dir>\n";return 2;}
+                if(!dir.empty()){std::cerr<<"aster new: usage: aster new [--apk] <dir>\n";return 2;}
                 dir=a;
             }
-            if(dir.empty()){std::cerr<<"aster new: usage: aster new <dir>\n";return 2;}
+            if(dir.empty()){std::cerr<<"aster new: usage: aster new [--apk] <dir>\n";return 2;}
             if(fileExists(dir)){std::cerr<<"aster new: "<<dir<<" is a file\n";return 1;}
             if(fileExists(dir+"/aster.proj")){std::cerr<<"aster new: "<<dir<<" already holds a project\n";return 1;}
             if(!makeDirs(dir+"/src")){std::cerr<<"aster new: cannot create "<<dir<<"/src\n";return 1;}
             const std::string name=baseNameOf(dir);
-            writeFileAtomic(dir+"/aster.proj",
-                "# aster.proj — one source per line, in link order.\n"
-                "# Initializers run in this order, and the object holding main must\n"
-                "# hold at least one run-time initialized global (see A-21/A-22).\n"
-                "src/main.ast\n"
-                "src/util.ast\n");
-            writeFileAtomic(dir+"/src/main.ast",
-                "// `aster build` compiles the sources in aster.proj and links them\n"
-                "// into build/" + name + ".\n"
-                "include \"util.ast\";\n\n"
-                "fn main() -> i32 {\n"
-                "    return add(40, 2) - 42;\n"
-                "}\n");
-            writeFileAtomic(dir+"/src/util.ast",
-                "fn add(a: i32, b: i32) -> i32 {\n"
-                "    return a + b;\n"
-                "}\n");
+            if(apk){
+                writeFileAtomic(dir+"/aster.proj",
+                    "# aster.proj — an APK project.\n"
+                    "# kind apk compiles the sources into one shared object and wraps it\n"
+                    "# in a signed NativeActivity APK; `aster build` writes build/<name>.apk.\n"
+                    "kind apk\n"
+                    "package com.example." + name + "\n"
+                    "label " + name + "\n"
+                    "src/main.ast\n");
+                writeFileAtomic(dir+"/src/main.ast",
+                    "// The shared object inside the APK. `aster build` compiles these\n"
+                    "// sources for Android (PIC), links them, and signs the result.\n"
+                    "fn aster_main() -> i32 {\n"
+                    "    return 0;\n"
+                    "}\n");
+            } else {
+                writeFileAtomic(dir+"/aster.proj",
+                    "# aster.proj — one source per line, in link order.\n"
+                    "# Initializers run in this order, and the object holding main must\n"
+                    "# hold at least one run-time initialized global (see A-21/A-22).\n"
+                    "src/main.ast\n"
+                    "src/util.ast\n");
+                writeFileAtomic(dir+"/src/main.ast",
+                    "// `aster build` compiles the sources in aster.proj and links them\n"
+                    "// into build/" + name + ".\n"
+                    "include \"util.ast\";\n\n"
+                    "fn main() -> i32 {\n"
+                    "    return add(40, 2) - 42;\n"
+                    "}\n");
+                writeFileAtomic(dir+"/src/util.ast",
+                    "fn add(a: i32, b: i32) -> i32 {\n"
+                    "    return a + b;\n"
+                    "}\n");
+            }
             writeFileAtomic(dir+"/.gitignore","build/\n");
-            std::cout<<"Aster v"<<kVersion<<": created project "<<dir
-                     <<" (aster.proj, src/main.ast, src/util.ast)\n"
-                     <<"  cd "<<dir<<" && aster build\n";
+            std::cout<<"Aster v"<<kVersion<<": created "<<(apk?"APK ":"")<<"project "<<dir
+                     <<(apk?" (aster.proj, src/main.ast)":" (aster.proj, src/main.ast, src/util.ast)")<<"\n"
+                     <<"  cd "<<dir<<" && aster build";
+            if(apk)std::cout<<"   # build/"<<name<<".apk";
+            std::cout<<"\n";
+            return 0;
+        }
+        if(cmd=="add"){
+            std::string src, proj="aster.proj";
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                if(a=="-f"||a=="--file"){if(i+1>=argc){std::cerr<<"aster add: --file needs a path\n";return 2;}proj=argv[++i];}
+                else if(!a.empty()&&a[0]=='-'){std::cerr<<"aster add: unknown option "<<a<<"\n";return 2;}
+                else if(src.empty())src=a;
+                else {std::cerr<<"aster add: usage: aster add <source.ast>\n";return 2;}
+            }
+            if(src.empty()){std::cerr<<"aster add: usage: aster add <source.ast>\n";return 2;}
+            if(!fileExists(proj)){std::cerr<<"aster add: no "<<proj<<" here (create one with `aster new NAME`)\n";return 2;}
+            if(!fileExists(src)){std::cerr<<"aster add: no such source: "<<src<<"\n";return 1;}
+            const ProjectSpec spec=parseProjectFile(proj);
+            for(const auto& s:spec.sources)
+                if(s==src){std::cout<<"aster add: "<<src<<" is already in "<<proj<<"\n";return 0;}
+            std::string text=readFile(proj);
+            if(!text.empty()&&text.back()!='\n')text.push_back('\n');
+            text+=src+"\n";
+            writeFileAtomic(proj,text);
+            std::cout<<"Aster v"<<kVersion<<": added "<<src<<" to "<<proj<<" ("
+                     <<(spec.sources.size()+1)<<" sources)\n";
             return 0;
         }
         if(cmd=="deps"){
@@ -14271,6 +14349,13 @@ int main(int argc,char**argv){
                 if(a=="-o"){if(i+1>=argc){std::cerr<<"aster deps: -o needs a path\n";return 2;}obj=argv[++i];}
                 else if(!a.empty()&&a[0]=='-'){std::cerr<<"aster deps: unknown option "<<a<<"\n";return 2;}
                 else srcs.push_back(a);
+            }
+            // With no sources, `deps` reads aster.proj and names every object the
+            // project build would produce — the make -include form.
+            if(srcs.empty()&&fileExists("aster.proj")){
+                const ProjectSpec spec=parseProjectFile("aster.proj");
+                for(const auto& s:spec.sources)srcs.push_back(s);
+                if(srcs.empty()){std::cerr<<"aster deps: aster.proj lists no sources\n";return 2;}
             }
             if(srcs.empty()){
                 std::cerr<<"aster deps: usage: aster deps <source.ast> [...] [-o <object.o>]\n";
@@ -14283,7 +14368,7 @@ int main(int argc,char**argv){
                 Parser p(src,false,dirNameOf(sp));p.parse();
                 std::string target=obj;
                 if(target.empty()){
-                    target=baseNameOf(sp);
+                    target="build/"+baseNameOf(sp);
                     if(target.size()>4&&target.compare(target.size()-4,4,".ast")==0)target=target.substr(0,target.size()-4);
                     target+=".o";
                 }
@@ -14293,44 +14378,59 @@ int main(int argc,char**argv){
             }
             return 0;
         }
-        if(cmd=="build"){
-            std::string out; bool dbg=false,bc2=false,noCache=false; uint64_t ps=4096;
+        if(cmd=="build"||cmd=="run"){
+            const bool isRun=cmd=="run";
+            std::string out; bool dbg=false,bc2=false,noCache=false,afterDash=false;
+            uint64_t ps=4096; std::vector<std::string> runArgs;
             for(int i=2;i<argc;++i){
                 const std::string a=argv[i];
+                if(isRun&&afterDash){runArgs.push_back(a);continue;}
+                if(a=="--"){afterDash=true;continue;}
                 if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
-                if(a=="-o"){if(i+1>=argc){std::cerr<<"aster build: -o needs a path\n";return 2;}out=argv[++i];}
+                if(a=="-o"){if(i+1>=argc){std::cerr<<"aster "<<cmd<<": -o needs a path\n";return 2;}out=argv[++i];}
                 else if(a=="-g"||a=="--debug-line")dbg=true;
                 else if(a=="--bounds-check")bc2=true;
                 else if(a=="--no-cache")noCache=true;
                 else if(a=="--page-size"){
                     if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
-                        std::cerr<<"aster build: --page-size must be 4096 or 16384\n";return 2;
+                        std::cerr<<"aster "<<cmd<<": --page-size must be 4096 or 16384\n";return 2;
                     }
                 }
-                else {std::cerr<<"aster build: unknown option "<<a<<"\n";return 2;}
+                else {std::cerr<<"aster "<<cmd<<": unknown option "<<a<<"\n";return 2;}
             }
-            if(ps!=4096&&ps!=16384){std::cerr<<"aster build: --page-size must be 4096 or 16384\n";return 2;}
+            if(ps!=4096&&ps!=16384){std::cerr<<"aster "<<cmd<<": --page-size must be 4096 or 16384\n";return 2;}
             if(!fileExists("aster.proj")){
-                std::cerr<<"aster build: no aster.proj in this directory (create one with `aster new NAME`)\n";
+                std::cerr<<"aster "<<cmd<<": no aster.proj in this directory (create one with `aster new NAME`)\n";
                 return 2;
             }
-            const std::vector<std::string> srcs=readProjectFile("aster.proj");
-            if(srcs.empty()){std::cerr<<"aster build: aster.proj lists no sources\n";return 2;}
+            ProjectSpec spec=parseProjectFile("aster.proj");
+            if(spec.sources.empty()){std::cerr<<"aster "<<cmd<<": aster.proj lists no sources\n";return 2;}
             char cwdbuf[4096];
             const std::string cwd=getcwd(cwdbuf,sizeof cwdbuf)?cwdbuf:".";
-            if(out.empty()){
-                std::string name=baseNameOf(cwd);
-                if(name.empty()||name=="."||name=="..")name="app";
-                out="build/"+name;
+            std::string name=spec.name;
+            if(name.empty())name=baseNameOf(cwd);
+            if(name.empty()||name=="."||name=="..")name="app";
+            const bool isApk=spec.kind=="apk";
+            if(isApk&&spec.package.empty()){
+                std::cerr<<"aster "<<cmd<<": an apk project needs `package <android.package>` in aster.proj\n";
+                return 2;
             }
+            if(isRun&&isApk){
+                std::cerr<<"aster run: this is an apk project — `aster build` writes build/"<<name
+                         <<".apk; `aster run` runs an executable project\n";
+                return 2;
+            }
+            if(spec.pageSize!=0){ if(spec.pageSize!=4096&&spec.pageSize!=16384){std::cerr<<"aster "<<cmd<<": page-size in aster.proj must be 4096 or 16384\n";return 2;} }
+            const uint64_t filePage = ps;
+            if(out.empty())out = isApk ? ("build/"+name+".apk") : ("build/"+name);
             const std::string outDir=dirNameOf(out);
-            if(!outDir.empty()&&!makeDirs(outDir)){std::cerr<<"aster build: cannot create "<<outDir<<"\n";return 1;}
+            if(!outDir.empty()&&!makeDirs(outDir)){std::cerr<<"aster "<<cmd<<": cannot create "<<outDir<<"\n";return 1;}
             const std::string cacheDir="build/.cache";
-            if(!makeDirs(cacheDir)){std::cerr<<"aster build: cannot create "<<cacheDir<<"\n";return 1;}
-            const std::string flags=std::string(dbg?"g":"-")+std::string(bc2?"b":"-")+"|"+std::to_string(ps);
+            if(!makeDirs(cacheDir)){std::cerr<<"aster "<<cmd<<": cannot create "<<cacheDir<<"\n";return 1;}
+            const std::string flags=std::string(dbg?"g":"-")+std::string(bc2?"b":"-")+(isApk?"p":"-")+"|"+std::to_string(filePage);
             std::vector<std::string> objs; int compiled=0,reused=0;
-            for(const auto& sp:srcs){
-                if(!fileExists(sp)){std::cerr<<"aster build: missing source "<<sp<<"\n";return 1;}
+            for(const auto& sp:spec.sources){
+                if(!fileExists(sp)){std::cerr<<"aster "<<cmd<<": missing source "<<sp<<"\n";return 1;}
                 const std::string src=readFile(sp);
                 const std::string srcHash=sha256Hex(src);
                 const std::string key=sha256Hex(std::string(kVersion)+"|"+flags+"|"+sp);
@@ -14368,7 +14468,7 @@ int main(int argc,char**argv){
                     g_buildDeps.clear();
                     setSourceCache(sp,src);
                     Parser p(src,true,dirNameOf(sp));p.parse();
-                    auto funcs=compileProgram(p.functions,p.globals,false,true,bc2,dbg);
+                    auto funcs=compileProgram(p.functions,p.globals,isApk,true,bc2,dbg);
                     auto mkDL=[&]()->DebugLineBlob{
                         if(!dbg)return DebugLineBlob{};
                         ObjectLayout L=layoutObject(funcs,p.globals);
@@ -14387,7 +14487,7 @@ int main(int argc,char**argv){
                         return encodeEhFrame(L,funcs);
                     };
                     const std::string tmp=cacheDir+"/tmp-"+key+".o";
-                    writeObject(tmp,funcs,p.globals,false,mkDL(),mkDI(),mkEH());
+                    writeObject(tmp,funcs,p.globals,isApk,mkDL(),mkDI(),mkEH());
                     writeFileAtomic(objPath,readFile(tmp));
                     std::remove(tmp.c_str());
                     std::string meta="version "+std::string(kVersion)+"\nflags "+flags+"\nsrc "+sp+" "+srcHash+"\n";
@@ -14398,8 +14498,38 @@ int main(int argc,char**argv){
                 } else ++reused;
                 objs.push_back(objPath);
             }
-            linkObjects(objs,out,0x400000,2,ps);
+            if(isApk){
+                const std::string soPath=cacheDir+"/"+name+".so";
+                linkSharedObjects(objs,soPath,"lib"+name+".so",{},filePage);
+                std::string err;
+                if(!validateApkInputs(spec.package,spec.abi,name,err)){
+                    std::cerr<<"aster build: "<<err<<"\n";return 2;
+                }
+                const SigningKey key=debugKeyFor(projectKeyDir(""), 2048);
+                const std::string soText=readFile(soPath);
+                std::vector<uint8_t> so(soText.begin(),soText.end());
+                const std::string label=spec.label.empty()?name:spec.label;
+                int r=buildApk(out,spec.package,name,spec.abi,so,spec.minSdk,spec.targetSdk,label,
+                               1,"1.0",{},key,true,false,false,filePage);
+                if(r!=0)return r;
+                std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n";
+                return 0;
+            }
+            linkObjects(objs,out,0x400000,2,filePage);
             std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n";
+            if(isRun){
+                std::vector<char*> av; av.push_back(const_cast<char*>(out.c_str()));
+                for(auto& a:runArgs)av.push_back(const_cast<char*>(a.c_str()));
+                av.push_back(nullptr);
+                pid_t pid=::fork();
+                if(pid==0){::execv(out.c_str(),av.data());std::perror("aster run");::_exit(127);}
+                int st=0;
+                if(pid<0){std::cerr<<"aster run: cannot fork\n";return 1;}
+                if(::waitpid(pid,&st,0)<0){std::cerr<<"aster run: waitpid failed\n";return 1;}
+                if(WIFEXITED(st))return WEXITSTATUS(st);
+                if(WIFSIGNALED(st))return 128+WTERMSIG(st);
+                return 1;
+            }
             return 0;
         }
         if(cmd=="build-apk"){

@@ -42,15 +42,19 @@ breaking this project's own `-Werror` build.
   unchanged: the v0.23.77-dev snapshot reproduces 393/393 rows, and
   `tests/linker-checks.sh` pins the new shape (elf, pie, `.so`, mixed with a
   prebuilt object, the `build-obj` refusal, and no leftover temporaries).
-* **Projects** — `aster new <dir>` scaffolds `aster.proj` plus `src/`, and
-  `aster build` compiles the listed sources and links them into
-  `build/<directory>` with an object cache under `build/.cache/`. Cache entries
+* **Projects** — `aster new [--apk] <dir>` scaffolds `aster.proj` plus `src/`;
+  `aster add` appends a source; `aster build` compiles the listed sources into
+  `build/<directory>` (a program) or `build/<directory>.apk` (a signed
+  NativeActivity APK, when the project says `kind apk` with a `package`), with an
+  object cache under `build/.cache/`; and `aster run` builds and executes a
+  program, forwarding `-- args` and returning its exit code. Cache entries
   are keyed by compiler version, flags and source path, and validated against
   the content hash of the source plus every input the compilation read (each
   `include` file and each `@embed` asset). Content, not mtime: a fresh checkout
   or a rewritten-identical file does not rebuild; an edited asset does, and only
   the object that embeds it. `--no-cache` bypasses the cache, and `aster deps`
-  prints the same inputs as a make rule for external build tools. The existing
+  prints the same inputs as make rules for external build tools — naming every
+  source of the project when given none. The existing
   writers are untouched — the v0.23.77-dev snapshot still reproduces 393/393
   rows — and `tests/project-checks.sh` covers scaffolding, reuse, both kinds of
   invalidation, `deps`, `--no-cache`, the error paths and a mutation that proves

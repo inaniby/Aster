@@ -1280,9 +1280,10 @@ aster link-so   [--soname NAME] [--needed LIB] <input.o> … -o <output.so>
 aster build-apk <input.so|input.ast> -o <app.apk> --package PKG [options]
 aster keygen [--dir DIR] [--bits 2048] [--force]
 aster verify-apk <app.apk>
-aster new <dir>
-aster build [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache]
-aster deps <source.ast> [...] [-o OBJ]
+aster new [--apk] <dir>
+aster add <source.ast>
+aster build|run [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache] [-- args…]
+aster deps [<source.ast> ...] [-o OBJ]
 ```
 
 | Flag | Effect |
@@ -1330,64 +1331,83 @@ under `readelf --version-info`, exactly as a `gcc -shared` link with a
 version script does.
 
 
-## 11c. Projects: `aster new`, `aster build`, `aster deps` (v0.23.77-dev)
+## 11c. Projects: `aster new`, `add`, `build`, `run`, `deps` (v0.23.77-dev)
 
-A project is a directory with an `aster.proj` in it. One command scaffolds one
-and one command builds it:
+A project is a directory with an `aster.proj` in it. A program project and an
+APK project differ by one line:
 
 ```sh
-aster new hello          # hello/aster.proj, src/main.ast, src/util.ast, .gitignore
+aster new hello          # program: aster.proj, src/main.ast, src/util.ast
 cd hello && aster build  # build/hello
+aster run                # build, then execute; the program's exit code is ours
+
+aster new --apk myapp    # APK: kind apk, package com.example.myapp, src/main.ast
+cd myapp && aster build  # build/myapp.apk (signed, NativeActivity)
 ```
 
-`aster.proj` is the link order and nothing else — one source path per line,
-relative to the project root, `#` starting a comment:
+### `aster.proj`
 
-```
-# aster.proj
-src/main.ast
-src/util.ast
-```
+Line-oriented: settings are `key value`, every other non-comment line is a
+source path, in link order.
 
-The order matters for the same reason it does on the command line: run-time
-global initializers run in it, and the object holding `main` has to hold at
-least one of them (§11b). `aster build` accepts `-g`, `--bounds-check`,
-`--page-size`, `-o` (default `build/<directory name>`) and `--no-cache`.
+| Line | Meaning |
+| --- | --- |
+| `kind exe` | build an executable (the default) |
+| `kind apk` | compile the sources into one PIC shared object, then wrap and sign it as a NativeActivity APK |
+| `package com.example.app` | the APK package name (required for `kind apk`) |
+| `name <name>` | output base name; default is the directory's name |
+| `label <text>` | the launcher label (default: `name`) |
+| `abi <abi>` | `arm64-v8a` by default (checked against the shared object, A-14) |
+| `min-sdk N` / `target-sdk N` | manifest values, defaults 21 / 30 |
+| `page-size 4096\|16384` | load-segment page size; 16384 for Android 15+ 16 KB pages |
+| *anything else* | a source path, relative to the project root |
+
+A program project is `build/<name>`; an APK project is `build/<name>.apk`,
+signed with the project's debug key (`.aster/` in the project root, created on
+first build) unless `build-apk` options are used directly.
+
+`aster add <source.ast>` appends a source to `aster.proj` (once: a second add of
+the same path is a no-op). `aster run` builds and executes the program, forwards
+everything after `--` to it, and returns the program's exit code; on an APK
+project it says so and builds nothing.
 
 ### The object cache
 
 `aster build` keeps a content-keyed cache in `build/.cache/`: each source gets
 one `<key>.o` and one `<key>.meta`, where the key hashes the compiler version,
-the flags, and the source path. The meta records the source's content hash and
-one line per input the compilation actually read — every `include` file and
-every `@embed` asset, each with its own content hash. A rebuild reuses an object
-only when the version, the flags, the source hash and **every** recorded input
-hash still match; otherwise that source alone is recompiled. Deleted or edited
-assets, a different `-g`, or a different page size all miss the cache, and
-`--no-cache` bypasses it.
+the flags (including whether the object is PIC, i.e. an APK project), and the
+source path. The meta records the source's content hash and one line per input
+the compilation actually read — every `include` file and every `@embed` asset,
+each with its own content hash. A rebuild reuses an object only when the
+version, the flags, the source hash and **every** recorded input hash still
+match; otherwise that source alone is recompiled. Deleted or edited assets, a
+different `-g`, a different page size or switching project kind all miss the
+cache, and `--no-cache` bypasses it.
 
 Content, not mtime: a fresh `git checkout`, a `cp -p`, or an editor that
-rewrites identical bytes does not trigger a rebuild, and touching a file without
-changing it does not either. The link always runs (it is milliseconds) and the
-executable is deterministic, so a build that compiled nothing reproduces the
-same bytes.
+rewrites identical bytes does not rebuild, and touching a file without changing
+it does not either. The link always runs (milliseconds) and the executable is
+deterministic, so a build that compiled nothing reproduces the same bytes.
 
-The cache is per project directory. It is safe to delete: the next build simply
-compiles everything again.
+The cache is per project directory and safe to delete: the next build compiles
+everything again.
 
 ### `aster deps`
 
-For a build tool that wants to drive the compilation itself, `aster deps` prints
-the inputs of a translation unit as a make rule:
+For a build tool that drives the compilation itself, `aster deps` prints the
+inputs of a translation unit as make rules. Given sources it names them; with no
+arguments inside a project it names every source `aster.proj` lists, with the
+`build/<stem>.o` targets the project build uses:
 
 ```sh
-$ aster deps src/main.ast -o build/main.o
-build/main.o: src/main.ast /home/me/hello/src/util.ast /home/me/hello/src/asset.bin
+$ aster deps
+build/main.o: src/main.ast /home/me/hello/src/util.ast
+build/util.o: src/util.ast
 ```
 
-Include it from a Makefile (`-include $(OBJS:.o=.d)`) and the rebuild rule that
-§11b describes maintains itself. The command parses the file — that is how
-`include` and `@embed` are discovered — but emits no object.
+`-include $(OBJS:.o=.d)` from a Makefile then maintains the rebuild rule §11b
+describes. The command parses each file — that is how `include` and `@embed`
+are discovered — but emits no object.
 
 ## 11b. Building a program from several files (and what is incremental)
 
