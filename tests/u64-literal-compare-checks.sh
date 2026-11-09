@@ -138,6 +138,7 @@ check 'u32 global initializer folds too' 26 'let g: u32 = 4294967295u + 1u;
 fn main() -> i32 { if (g == 0) { return 26; } return 0; }'
 check 'a u64 consumer keeps the fold and the run equal' 27 'let g: u64 = 0u - 1u;
 fn main() -> i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
+check 'u32 switch case folds at its own type' 28 'fn main() -> i32 { let x: u32 = 4294967295u; switch (x) { case 0u - 1u: return 28; default: return 0; } }'
 else
     printf '%s\n' '  SKIP: the behavioural matrix needs qemu to run'
 fi
@@ -232,6 +233,13 @@ printf '%s\n' '[7/9] Mutation layer'
 if [ "$have_qemu" = no ]; then
     printf '  SKIP: the mutation layer needs qemu to observe a changed answer\n'
 else
+must_not_compile() {   # must_not_compile <name> <source>: the mutant refuses it
+    name=$1
+    printf '%s\n' "$2" > "$OUT/m.ast"
+    if "$OUT/mut.aster" build-elf "$OUT/m.ast" -o "$OUT/m.a64" >"$OUT/m.err" 2>&1; then
+        echo "FAIL: mutant $name accepted a program the real compiler takes" >&2; exit 1
+    fi
+}
 must_differ() {   # must_differ <name> <good-exit> <source>
     name=$1; good=$2
     printf '%s\n' "$3" > "$OUT/m.ast"
@@ -271,12 +279,16 @@ mutate 'm4: the fold ignores the consumer width' \
     's|t==Ty::U32&&!tyIs64(slot)|t==Ty::U32|' \
     must_differ 'a u64 consumer keeps the fold and the run equal' 27 'let g: u64 = 0u - 1u;
 fn main() -> i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
+# m5: a switch case value is folded in i64 again, so a u32 label is refused.
+mutate 'm5: case labels ignore their own type' \
+    's|v=foldAtExprType(constExprType(c),subj,v);||' \
+    must_not_compile 'u32 switch case folds at its own type' 'fn main() -> i32 { let x: u32 = 4294967295u; switch (x) { case 0u - 1u: return 28; default: return 0; } }'
 # m3: the oversized literal is typed i64 instead of u64 — the value cannot fit,
 # so the unsigned reading is lost and `> 0` flips.
 mutate 'm3: oversized literals typed i64' \
     's|nn->suffix=Expr::LSUL;|nn->suffix=Expr::LSL;|g' \
     must_differ 'ul suffix agrees with the bare form' 11 'fn main() -> i32 { if (18446744073709551615ul > 0) { return 11; } return 0; }'
-printf '%s\n' 'PASS: four mutated compilers each lose exactly one rule, and the checks notice'
+printf '%s\n' 'PASS: five mutated compilers each lose exactly one rule, and the checks notice'
 fi
 
 # ---------------------------------------------------------------------------

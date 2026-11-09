@@ -8361,6 +8361,15 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     int64_t v=0;
                     if(!constantInteger(c,v))
                         throw Error(loc(c.line,c.col,"case value must be a compile-time constant"));
+                    // v0.23.76-dev (audit A-08): a case label is a constant
+                    // expression, so its value is read at the type it names
+                    // before the width check. `case 0u - 1u` on a u32 subject is
+                    // 4294967295 — the emitted comparison already runs at the
+                    // subject's width and matches it — but the i64 fold said -1
+                    // and the case was refused as not fitting. A bare literal
+                    // keeps the i64 reading, so an out-of-range label such as
+                    // `case 4294967296` is still refused.
+                    v=foldAtExprType(constExprType(c),subj,v);
                     if(!caseValueFits(subj,v))
                         throw Error(loc(c.line,c.col,"case value does not fit the switch subject type"));
                     if(!seen.insert(v).second)
