@@ -22,6 +22,8 @@ version owns its own frozen snapshot under `tests/baseline/v0.23.77-dev/`.
 | A-15 | Diagnostics inside an included file named the including file and dropped the source-line echo. | The include parser hands the reporter the file it is really about. |
 | A-16 | Every shared object declared a `VERNEED` for `libc.so.6` it did not depend on; bionic refuses to load such a library, and a repeated `--needed` duplicated `DT_NEEDED`. | `DT_VERNEED` is registered only when `libc.so.6` is a real dependency; `--needed` collapses duplicates. |
 | A-17 | Each input's `.tdata` was aligned to its own boundary when the TLS block was merged, but `.tbss` was simply concatenated: linking a 4-byte thread-local before an 8-byte one put the `u64` at TPREL offset 4 — readable with LDR, a fault for LDAXR/STLXR, and not the alignment the ABI promises. The bug was invisible in the other link order. | Both linkers advance the merged `.tbss` to each input's own alignment before placing its symbols, exactly as `.tdata` already did. Both orders now give 8-aligned offsets, and `tls-checks.sh` pins the rule for both orders. |
+| A-21 | Run-time global initializers are chained in link order, so an initializer that reads a global another object initializes sees the linker's zero when that object comes later — silently. `link-obj B.o A.o` returned a null-derived value where `A.o B.o` returned the right one. | Both linkers check the initializer's own code range for references to symbols another init-bearing input defines, and refuse the inverted order with both file names and the symbol. Reading another object's global from `main` is unaffected. |
+| A-22 | The initializer chain is entered by the `bl __aster_init` in the *entry object's* main prologue, so an object whose initializer lives elsewhere never ran: its runtime-initialized globals stayed zero, silently. | The link is refused with "it defines _start, but the run-time global initializers live in …; put one there, or build a single object that holds both". A trampoline before `_start` would collide with the TLS setup the prologue performs and move every executable's byte, so the link says what is wrong instead of shipping zeros. |
 
 A-02, A-04 and A-07 were documentation corrections, A-03 was retracted after
 re-checking both CLI paths, and A-05 is the formatting fix that had been
@@ -55,13 +57,13 @@ touches shared objects.
 ## v0.23.76-dev — Audit round: literal typing, constant folding, switch labels, and `-g` DWARF
 
 An audit round on top of v0.23.76-dev (see `AUDIT-v0.23.76-dev.md`). It finds and
-fixes **thirteen defects** — four in the constant-folding path and two in the debug
+fixes **fifteen defects** — four in the constant-folding path and two in the debug
 writer — corrects three documentation statements, repairs one formatting bug
 that was already breaking this project's own `-Werror` build, adds one 9-layer
 suite, and makes the suites runnable on a native AArch64 host where no
 `aarch64-linux-gnu-*` toolchain exists.
 
-### The thirteen defects
+### The fifteen defects
 
 | Id | Defect | Repair |
 | --- | --- | --- |
@@ -78,6 +80,8 @@ suite, and makes the suites runnable on a native AArch64 host where no
 | A-15 | A diagnostic raised inside an included file named the *including* file and dropped the source-line echo, because the reporter reads one global file/line cache that the include sub-parse had already restored by unwinding. `include "bad2.ast"` at line 5 reported `m5.ast:5:36` with no caret. | The include parser stashes that file and its lines in a pending-diagnostic global as the exception passes through (innermost include wins) and `reportError()` prefers it, so the message names the real file and echoes its line. |
 | A-16 | Every shared object declared `.gnu.version_r` entry `File: libc.so.6 / GLIBC_2.17`, even when no symbol used that index and libc was not among its `DT_NEEDED` entries. Loaders check VERNEED against the dependency list before mapping: bionic refuses the library (`cannot find "libc.so.6" from verneed[0] in DT_NEEDED list`), which is why cross-.so chains could not be dlopen'ed on Android. A repeated `--needed` also produced duplicate `DT_NEEDED` entries. | Both writers register `DT_VERNEED`/`DT_VERNEEDNUM` only when `libc.so.6` is one of the actual dependencies (the section stays where it was, so no offset moves), and `--needed` collapses duplicates keeping first-mention order. A `--needed liba.so` chain now dlopens on Android (`callval=8`), and the e2e dlopen layers no longer need their Android skip. |
 | A-17 | Each input's `.tdata` was aligned to its own boundary when the TLS block was merged, but `.tbss` was simply concatenated: linking a 4-byte thread-local before an 8-byte one put the `u64` at TPREL offset 4 — readable with LDR, a fault for LDAXR/STLXR, and not the alignment the ABI promises. The bug was invisible in the other link order. | Both linkers advance the merged `.tbss` to each input's own alignment before placing its symbols, exactly as `.tdata` already did. Both orders now give 8-aligned offsets, and `tls-checks.sh` pins the rule for both orders. |
+| A-21 | Run-time global initializers are chained in link order, so an initializer that reads a global another object initializes sees the linker's zero when that object comes later — silently. `link-obj B.o A.o` returned a null-derived value where `A.o B.o` returned the right one. | Both linkers check the initializer's own code range for references to symbols another init-bearing input defines, and refuse the inverted order with both file names and the symbol. Reading another object's global from `main` is unaffected. |
+| A-22 | The initializer chain is entered by the `bl __aster_init` in the *entry object's* main prologue, so an object whose initializer lives elsewhere never ran: its runtime-initialized globals stayed zero, silently. | The link is refused with "it defines _start, but the run-time global initializers live in …; put one there, or build a single object that holds both". A trampoline before `_start` would collide with the TLS setup the prologue performs and move every executable's byte, so the link says what is wrong instead of shipping zeros. |
 
 ### Documentation corrections
 

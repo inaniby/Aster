@@ -1,6 +1,7 @@
 #!/bin/sh
 # Verify ET_REL parsing/linking, output equivalence, and malformed-input rejection.
 set -eu
+. tests/lib/tmpdir.sh
 [ -x ./aster ] || { echo "build ./aster first" >&2; exit 2; }
 names='hello arithmetic negative_division if_less if_greater_equal if_equal if_not_equal_false if_less_equal if_greater_false assignment while_count nested_while scope_shadow nested_if many_locals long_expression if_return while_break while_continue nested_loop_break'
 for name in $names; do
@@ -143,5 +144,46 @@ fi
 grep -F "undefined function symbol 'helper'" tmp-undefined-error >/dev/null
 rm -f tmp-arguments.o tmp-nested_calls.o tmp-recursion.o tmp-eight_args.o tmp-linked-arguments tmp-linked-nested_calls tmp-linked-recursion tmp-linked-eight_args tmp-direct-arguments tmp-direct-nested_calls tmp-direct-recursion tmp-direct-eight_args tmp-modular-main.o tmp-modular-helper.o tmp-modular-args tmp-undefined-linked tmp-undefined-error
  echo 'PASS: function arguments, nested calls, recursion, and cross-object parameter calls checked'
+# v0.23.77-dev (audit A-21/A-22): run-time global initializers run in link
+# order and are entered from the object that holds _start. Both rules used to
+# fail silently: an inverted dependency read a zero, and an initializer in a
+# non-_start object never ran at all (the globals stayed zero). The link is now
+# refused in both cases, with the object names in the message.
+cat > "$TMPD/init-a.ast" <<'AST'
+fn fz() -> i32 { return 1; }
+let ga: i32 = 22;
+let pa: ptr = &ga;
+AST
+cat > "$TMPD/init-b.ast" <<'AST'
+extern let ga: i32;
+extern let pa: ptr;
+let pb: ptr = pa;
+fn main() -> i32 { if (pb == 0) { return 9; } return *pb; }
+AST
+cat > "$TMPD/init-m.ast" <<'AST'
+extern let pa: ptr;
+fn main() -> i32 { if (pa == 0) { return 7; } return *pa; }
+AST
+./aster build-obj "$TMPD/init-a.ast" -o "$TMPD/init-a.o"
+./aster build-obj "$TMPD/init-b.ast" -o "$TMPD/init-b.o"
+./aster build-obj "$TMPD/init-m.ast" -o "$TMPD/init-m.o"
+./aster link-obj "$TMPD/init-a.o" "$TMPD/init-b.o" -o "$TMPD/init-ok"
+set +e
+"$TMPD/init-ok"
+init_rc=$?
+set -e
+[ "$init_rc" = 22 ] || { echo "FAIL: the well-ordered initializer chain exited $init_rc, expected 22" >&2; exit 1; }
+if ./aster link-obj "$TMPD/init-b.o" "$TMPD/init-a.o" -o "$TMPD/init-bad" 2>"$TMPD/init-bad.log"; then
+    echo 'FAIL: an initializer reading a global another object initializes linked backwards' >&2; exit 1
+fi
+grep -qF 'must be listed before' "$TMPD/init-bad.log" \
+    || { echo 'FAIL: the inverted initializer dependency was refused without its message:' >&2; cat "$TMPD/init-bad.log" >&2; exit 1; }
+if ./aster link-obj "$TMPD/init-m.o" "$TMPD/init-a.o" -o "$TMPD/init-nostart" 2>"$TMPD/init-nostart.log"; then
+    echo 'FAIL: an initializer in a non-_start object linked and silently never ran' >&2; exit 1
+fi
+grep -qF 'it defines _start' "$TMPD/init-nostart.log" \
+    || { echo 'FAIL: the unreachable initializer was refused without its message:' >&2; cat "$TMPD/init-nostart.log" >&2; exit 1; }
+rm -f "$TMPD/init-a.o" "$TMPD/init-b.o" "$TMPD/init-m.o" "$TMPD/init-ok" "$TMPD/init-bad" "$TMPD/init-nostart"
+echo 'PASS: initializer order (both refusals) and the well-ordered chain'
 echo 'PASS: function call and relocation linker checks'
 echo 'PASS: all minimal linker checks'

@@ -474,3 +474,65 @@ while(obj.tbssAlign>1&&mergedTbss%obj.tbssAlign)++mergedTbss;
 
 回归用例进 `tests/tls-checks.sh`（8b/9 层）：两种链接顺序都必须让每个 `TLS_TPREL64` 偏移 8 对齐。
 单对象链接的布局不变（`mergedTbss` 初始为 0），所以 v0.23.77 的冻结基线不动。
+
+---
+
+## 18. A-21（P1，已修）：跨对象全局初始化器的顺序依赖是静默的
+
+**现象**（`link-obj`）：
+
+```c
+// A.ast
+let ga: i32 = 22;
+let pa: ptr = &ga;          // 运行时初始化（&ga 不是常量）
+// B.ast
+extern let pa: ptr;
+let pb: ptr = pa;           // 运行时初始化，读取 A 的对象
+```
+
+| 链接顺序 | 修前 | 修后 |
+| --- | --- | --- |
+| `link-obj A.o B.o` | 运行返回 22 ✓ | 22 ✓ |
+| `link-obj B.o A.o` | **运行返回 9**（pb 读到 0，静默） | **链接被拒** |
+
+**机理**：运行时初始化器按**输入顺序**串成一条链（`__aster_init_next`），
+文件末尾的注释也写着 "Chain ... in input order"。当 B 的初始化器读取 A 初始化过的全局时，
+顺序成了语义的一部分，而没有任何检查——错误顺序下读到的是链接器填的 0。
+
+**修复**：链接器在串链之前检查"某个输入的初始化器读取了另一个**也有运行时初始化器**的输入所定义的符号，
+且该输入排在后面"，则报错：
+
+```
+aster: error: B.o: its run-time global initializer reads 'pa', which A.o sets in its own
+initializer; initializers run in link order, so A.o must be listed before B.o
+```
+
+只检查**初始化器本身**的代码区间（`__aster_init` 符号的 value..value+size 内的重定位），
+所以"main 里读别的对象"不会误报（已用 `C1.o A.o` 验证：能链接并正确运行）。
+
+## 19. A-22（P1，已修）：初始化器所在对象不含 `_start` 时，初始化链根本不会进入
+
+**现象**：`main` 所在对象没有运行时初始化器、而**另一个**对象有时：
+
+```c
+// C1.ast: extern let pa; fn main() { return *pa; }        （无运行时初始化器）
+// A.ast : let ga=22; let pa=&ga;                          （有）
+link-obj C1.o A.o  →  修前返回 7（pa 仍为 0）——初始化器从未运行，静默
+```
+
+**机理**：初始化链的入口是 `main` 所在对象 `_start` 里的 `bl __aster_init`，
+而这条指令只在**该对象自己**有运行时初始化器时才生成（`needInit && f.name=="main"`）。
+初始化器在别的对象里 → 无人调用链首 → 所有运行时初始化全局保持 0。
+
+**修复（fail-closed）**：链接器在 `_start` 所在对象没有初始化器、但别的输入有时拒绝：
+
+```
+aster: error: C1.o: it defines _start, but the run-time global initializers live in A.o;
+initializers are entered from the object that holds _start — put one there, or build a
+single object that holds both
+```
+
+（真正的修法——让链接器在入口前插一段 trampoline——会与 `_start` 内的 TLS 建立顺序冲突，
+且改变全部 ET_EXEC/PIE 产物的字节；在审计轮里选择"拒绝并说清楚"，把选择权留给使用者。）
+
+**回归**：`tests/linker-checks.sh` 新增一段：正确顺序运行得 22；两种错误顺序都被拒绝且报出对应句子。

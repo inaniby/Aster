@@ -10991,6 +10991,32 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
 // Link one or more ET_REL *PIC* objects (produced by `build-obj --pic`) into one shared object.
 // Symbols still undefined after the merge become cross-.so imports: functions through a PLT stub
 // and JUMP_SLOT relocation, objects through a GOT slot and GLOB_DAT relocation.
+// v0.23.77-dev (audit A-21): run-time global initializers run in *link order*,
+// and every object chains its own initializer into one list, so an initializer
+// that reads a global another object initializes is a trap when that object
+// comes later: the read sees the zero the linker placed and the program carries
+// a null (or a zero) to the end. Refuse the inverted dependency instead —
+// "initializers run in link order" stays the rule, but breaking it is loud.
+static void checkInitOrder(const std::vector<std::string>& inputs,
+                           const std::map<std::string,size_t>& ownerOf,
+                           const std::map<size_t,std::set<std::string>>& initRefs,
+                           const std::map<size_t,std::string>& initNameByInput){
+    for(const auto& kv:initNameByInput){
+        const size_t i=kv.first;
+        auto refs=initRefs.find(i);
+        if(refs==initRefs.end())continue;
+        for(const auto& sym:refs->second){
+            auto owner=ownerOf.find(sym);
+            if(owner==ownerOf.end()||owner->second==i)continue;
+            const size_t j=owner->second;
+            if(!initNameByInput.count(j))continue;
+            if(j>i)
+                throw Error(inputs[i]+": its run-time global initializer reads '"+sym+
+                            "', which "+inputs[j]+" sets in its own initializer; initializers run in "
+                            "link order, so "+inputs[j]+" must be listed before "+inputs[i]);
+        }
+    }
+}
 void linkSharedObjects(const std::vector<std::string>& inputs,const std::string& output,
                        const std::string& sonameIn,const std::vector<std::string>& needed,
                        // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
@@ -11002,6 +11028,10 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
     std::map<std::string,Def> definitions;
     std::vector<LinkPending> pending;
     std::map<size_t,std::string> initNameByInput;
+    // v0.23.77-dev (audit A-21): symbol -> input that defines it, and the
+    // symbols each input's run-time initializer touches.
+    std::map<std::string,size_t> ownerOf;
+    std::map<size_t,std::set<std::string>> initRefs;
     // -g: one line program per input object, concatenated and raised to each
     // object's text address exactly as linkObjects does.
     std::vector<uint8_t> mergedDebugLine;
@@ -11026,6 +11056,16 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         return name;
     };
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
+        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty())ownerOf.emplace(s.name,i);
+        {
+            uint64_t initLo=0,initHi=0;bool haveInit=false;
+            for(const auto& s:obj.symbols)if(s.name==kInitSymbol&&s.shndx!=0){initLo=s.value;initHi=s.value+s.size;haveInit=true;}
+            if(haveInit)for(const auto& r:obj.relocs)if(r.offset>=initLo&&r.offset<initHi){
+                std::string sym=r.symbol;
+                if(sym.compare(0,12,"__aster_gat_")==0)sym=sym.substr(12);
+                initRefs[i].insert(sym);
+            }
+        }
         while(obj.dataAlign>1&&mergedData.size()%obj.dataAlign)mergedData.push_back(0);
         while(obj.bssAlign>1&&mergedBss%obj.bssAlign)++mergedBss;
         while(obj.rodataAlign>1&&mergedRodata.size()%obj.rodataAlign)mergedRodata.push_back(0);
@@ -11128,6 +11168,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         for(auto& kv:definitions)if(kv.second.kind==5)kv.second.off+=tb;}
     // Chain per-object run-time global initializers in input order (same rule as link-obj).
     uint64_t initEndOff=0;bool hasInitEnd=false;std::string firstInit;
+    checkInitOrder(inputs,ownerOf,initRefs,initNameByInput);   // v0.23.77-dev (audit A-21)
     if(!initNameByInput.empty()){
         std::vector<size_t> initOrder;for(const auto& kv:initNameByInput)initOrder.push_back(kv.first);
         firstInit=initNameByInput[initOrder.front()];
@@ -11240,11 +11281,25 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     std::vector<EhEntry> ehEntries;
     struct Def{uint64_t off;uint32_t kind;uint64_t size;}; // 0 = .text, 1 = .data, 2 = .bss, 3 = .rodata, 4 = .tls
     std::map<std::string,Def> definitions;
-    std::vector<LinkPending> pending;uint64_t entryOffset=0;size_t startCount=0;uint64_t maxAlign=4;
+    std::vector<LinkPending> pending;uint64_t entryOffset=0;size_t startCount=0;size_t entryInput=0;uint64_t maxAlign=4;
     uint64_t maxDataAlign=4,maxBssAlign=4;
     uint64_t maxRodataAlign=1;
     std::map<size_t,std::string> initNameByInput;
+    // v0.23.77-dev (audit A-21): symbol -> input that defines it, and the
+    // symbols each input's run-time initializer touches.
+    std::map<std::string,size_t> ownerOf;
+    std::map<size_t,std::set<std::string>> initRefs;
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
+        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty())ownerOf.emplace(s.name,i);
+        {
+            uint64_t initLo=0,initHi=0;bool haveInit=false;
+            for(const auto& s:obj.symbols)if(s.name==kInitSymbol&&s.shndx!=0){initLo=s.value;initHi=s.value+s.size;haveInit=true;}
+            if(haveInit)for(const auto& r:obj.relocs)if(r.offset>=initLo&&r.offset<initHi){
+                std::string sym=r.symbol;
+                if(sym.compare(0,12,"__aster_gat_")==0)sym=sym.substr(12);
+                initRefs[i].insert(sym);
+            }
+        }
         while(obj.dataAlign>1&&mergedData.size()%obj.dataAlign)mergedData.push_back(0);
         while(obj.bssAlign>1&&mergedBss%obj.bssAlign)++mergedBss;
         while(obj.rodataAlign>1&&mergedRodata.size()%obj.rodataAlign)mergedRodata.push_back(0);
@@ -11290,7 +11345,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
                 // The entry point is an address in the merged .text image, so
                 // a same-named object in .data/.bss must not be counted as one.
                 if(def.kind!=0)throw Error(input+": _start must be a function defined in .text");
-                ++startCount;entryOffset=textBase+s.value;
+                ++startCount;entryOffset=textBase+s.value;entryInput=i;
             }
         }
         for(const auto& r:obj.relocs)pending.push_back({textBase+r.offset,r.symbol,r.addend,r.type,i});
@@ -11352,6 +11407,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     }
     // Chain per-object global initializers in input order; the last one returns to a synthesized RET.
     uint64_t initEndOff=0;bool hasInitEnd=false;
+    checkInitOrder(inputs,ownerOf,initRefs,initNameByInput);   // v0.23.77-dev (audit A-21)
     if(!initNameByInput.empty()){
         std::vector<size_t> initOrder;for(const auto& kv:initNameByInput)initOrder.push_back(kv.first);
         for(size_t oi=0;oi<initOrder.size();++oi){const std::string next=(oi+1<initOrder.size())?initNameByInput[initOrder[oi+1]]:std::string("__aster_init_end");
@@ -11370,6 +11426,16 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     // 4096-aligned block made the TLS access run past the PT_LOAD.
     if(startCount==0) throw Error("no input object defines global _start");
     if(startCount>1) throw Error("multiple input objects define global _start");
+    // v0.23.77-dev (audit A-22): the run-time initializer chain is entered from
+    // the object that holds _start — its main prologue calls __aster_init. When
+    // the initializers live in another object the chain was never entered, so
+    // every global that needed one stayed zero and the program carried the zeros
+    // to the end without a word. Refuse the link instead.
+    if(!initNameByInput.empty()&&!initNameByInput.count(entryInput))
+        throw Error(inputs[entryInput]+": it defines _start, but the run-time global initializers live in "+
+                    inputs[initNameByInput.begin()->first]+
+                    "; initializers are entered from the object that holds _start — put one there, or build "
+                    "a single object that holds both");
     const uint64_t textVaddr=base+pageSize;
     const bool hasRodata=!mergedRodata.empty();
     const uint64_t rodataFileOff=hasRodata?alignUp(pageSize+mergedText.size(),pageSize):0;
