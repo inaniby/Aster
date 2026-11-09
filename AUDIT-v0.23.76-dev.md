@@ -169,3 +169,43 @@ done
 ```
 
 ASAN 复核：`clang++ -std=c++17 -O1 -g -fsanitize=address -o build/aster-asan src/aster.cpp`。
+
+---
+
+## 7. A-11（新，P1）：长表达式链导致指数级编译时间
+
+**现象**（本机实测，`build/aster` 优化构建）：
+
+| 表达式 | 编译耗时 |
+| --- | --- |
+| `return (1+1+…+1) & 255`（10 项） | 21 ms |
+| 同上（20 项） | 200 ms |
+| 同上（22 项） | 782 ms |
+| 同上（30 项） | 逾 60 s 未完成 |
+| 同上（3000 项） | ASAN 构建栈耗尽崩溃 |
+
+变量链同样中招（`a+a+…+a` 20 项 416 ms），说明与常量折叠无关，是**类型计算**的问题。
+
+**定位**：给 `exprType` 加计数器后，20 项表达式触发了 **11,010,020 次** `exprType(Num)` 调用
+（≈ 2^23）。根因在 `Codegen::exprType` 的“void 操作数”前置检查：
+
+```cpp
+if(isVoidUsingOp(e.k)){
+    if(e.a&&exprType(*e.a)==Ty::Void) throw ...;   // 第一次递归
+    if(e.b&&exprType(*e.b)==Ty::Void) throw ...;
+}
+switch(e.k){
+    case Expr::Add: { const Ty a=exprType(*e.a),b=exprType(*e.b); ... }  // 第二次递归
+```
+
+每个节点都把两个操作数各算两遍，于是 T(n)=2·T(n−1)，指数爆炸。仓库自带的
+`examples/long_expression.ast` 只有 20 项——正好是“还能忍”的边界，因此此前无人察觉。
+
+**修复**：把 `exprType` 拆成带记忆化的包装 + 纯实现 `exprTypeUncached`，
+以 AST 节点指针为键缓存结果（AST 在 codegen 阶段稳定，纯记忆化不改任何决策）。
+修复后 20/30/50/100/1000 项分别为瞬时、瞬时……全部通过；3000 项给出干净诊断
+`expression is nested too deeply (max 2048)`（递归实现本身的既有上限，不是崩溃）。
+
+**回归**：`tests/u64-literal-compare-checks.sh` 新增第 29 个行为用例（200 项链必须编译并运行）、
+两条源码守卫（`exprTypeUncached` 与 `exprTypeCache.find(&e)` 必须存在）、以及变异体 m6
+（删掉缓存查找后，该用例必须在 20 s 内超时被抓到）。字节基线仍零漂移。

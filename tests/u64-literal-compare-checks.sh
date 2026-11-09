@@ -83,6 +83,13 @@ grep -qF 'result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}' 
 if grep -qF 'remain");result.relocs' src/aster.cpp; then
     echo 'FAIL: the push_back is glued to the throw line again — -Werror rejects it (F-05)' >&2; exit 1
 fi
+# v0.23.76-dev (audit A-11): exprType is memoised, so the cache and the pure
+# implementation both exist. Removing either brings back exponential type
+# computation (a 20-term chain already ran 11M type computations).
+[ "$(grep -c 'Ty exprTypeUncached(const Expr& e) const {' src/aster.cpp)" -eq 1 ] \
+    || { echo 'FAIL: exprType lost its uncached implementation (A-11)' >&2; exit 1; }
+[ "$(grep -c 'exprTypeCache.find(&e)' src/aster.cpp)" -eq 1 ] \
+    || { echo 'FAIL: exprType is not memoised any more (A-11)' >&2; exit 1; }
 grep -qF 'throw Error(std::string(what)+" is too large at ' src/aster.cpp \
     || { echo 'FAIL: unsignedLiteral no longer names the overflow it reports (F-07)' >&2; exit 1; }
 printf '%s\n' 'PASS: the typing, suffix and formatting rules are pinned'
@@ -138,6 +145,9 @@ check 'u32 global initializer folds too' 26 'let g: u32 = 4294967295u + 1u;
 fn main() -> i32 { if (g == 0) { return 26; } return 0; }'
 check 'a u64 consumer keeps the fold and the run equal' 27 'let g: u64 = 0u - 1u;
 fn main() -> i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
+# --- A-11: a long operator chain must not cost exponential type computation ---
+long=$(awk 'BEGIN{s="1"; for(i=1;i<200;i++)s=s"+1"; printf "fn main() -> i32 { let a: i32 = %s; if (a == 200) { return 29; } return 0; }\n", s}')
+check '200-term chain compiles and runs'       29 "$long"
 check 'u32 switch case folds at its own type' 28 'fn main() -> i32 { let x: u32 = 4294967295u; switch (x) { case 0u - 1u: return 28; default: return 0; } }'
 else
     printf '%s\n' '  SKIP: the behavioural matrix needs qemu to run'
@@ -240,6 +250,15 @@ must_not_compile() {   # must_not_compile <name> <source>: the mutant refuses it
         echo "FAIL: mutant $name accepted a program the real compiler takes" >&2; exit 1
     fi
 }
+must_not_time_out() {   # must_not_time_out <name> <source>: the mutant is too slow
+    name=$1
+    printf '%s\n' "$2" > "$OUT/m.ast"
+    if ! timeout 20 "$OUT/mut.aster" build-elf "$OUT/m.ast" -o "$OUT/m.a64" >"$OUT/m.err" 2>&1; then
+        if [ $? -eq 124 ]; then
+            echo "FAIL: mutant $name still takes exponential time on $name" >&2; exit 1
+        fi
+    fi
+}
 must_differ() {   # must_differ <name> <good-exit> <source>
     name=$1; good=$2
     printf '%s\n' "$3" > "$OUT/m.ast"
@@ -279,6 +298,10 @@ mutate 'm4: the fold ignores the consumer width' \
     's|t==Ty::U32&&!tyIs64(slot)|t==Ty::U32|' \
     must_differ 'a u64 consumer keeps the fold and the run equal' 27 'let g: u64 = 0u - 1u;
 fn main() -> i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
+# m6: the memo lookup is removed, so a 200-term chain goes back to 2^n work.
+mutate 'm6: the type cache is bypassed' \
+    's|if(it!=exprTypeCache.end())return it->second;||' \
+    must_not_time_out '200-term chain compiles and runs' "$long"
 # m5: a switch case value is folded in i64 again, so a u32 label is refused.
 mutate 'm5: case labels ignore their own type' \
     's|v=foldAtExprType(constExprType(c),subj,v);||' \
@@ -288,7 +311,7 @@ mutate 'm5: case labels ignore their own type' \
 mutate 'm3: oversized literals typed i64' \
     's|nn->suffix=Expr::LSUL;|nn->suffix=Expr::LSL;|g' \
     must_differ 'ul suffix agrees with the bare form' 11 'fn main() -> i32 { if (18446744073709551615ul > 0) { return 11; } return 0; }'
-printf '%s\n' 'PASS: five mutated compilers each lose exactly one rule, and the checks notice'
+printf '%s\n' 'PASS: six mutated compilers each lose exactly one rule, and the checks notice'
 fi
 
 # ---------------------------------------------------------------------------

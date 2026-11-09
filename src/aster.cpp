@@ -22,6 +22,7 @@
 #include <functional>            // AXML builder uses std::function
 #include <cassert>              // Typed IR guard (P3.1 follow-up)
 
+
 // The directory a path lives in, or "" when it has none. A relative path
 // written inside a source file — @embed's, or `include`'s — resolves against
 // the directory of the file that wrote it, which is C's rule for #include.
@@ -3446,6 +3447,15 @@ struct Codegen {
     std::string initSymbol;
     int callDepth=0;
     mutable unsigned typeDepth=0;
+    // v0.23.76-dev (audit A-11): memoised operand types. Every operator asks
+    // exprType for both operands twice — once in the void check above the type
+    // switch and once inside its own arm — so a left-deep chain of n operators
+    // cost 2^n type computations: `1+1+...+1` with 20 terms ran 11,010,020 of
+    // them (200 ms), 30 terms never finished, and a 3000-term chain died of
+    // stack exhaustion under ASAN. The answer depends only on the node, and AST
+    // nodes are stable for the whole codegen pass, so the second visit reads it
+    // from here. Pure memoisation: no decision changes.
+    mutable std::map<const Expr*,Ty> exprTypeCache;
     unsigned genDepth=0;
     // --bounds-check: emit a run-time range test before every dynamic index
     // into a fixed-size array. Off by default, so an ordinary build emits the
@@ -3762,6 +3772,13 @@ struct Codegen {
         }
     }
     Ty exprType(const Expr& e) const {
+        const auto it=exprTypeCache.find(&e);
+        if(it!=exprTypeCache.end())return it->second;
+        const Ty t=exprTypeUncached(e);
+        exprTypeCache[&e]=t;
+        return t;
+    }
+    Ty exprTypeUncached(const Expr& e) const {
         RecursionGuard depthGuard(typeDepth,2048,"expression type");
         // v0.23.68-dev: refuse to use a void result as a value. The recursive
         // exprType calls resolve each operand type (a void call resolves to

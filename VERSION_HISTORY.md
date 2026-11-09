@@ -1,13 +1,13 @@
 ## v0.23.76-dev — Audit round: literal typing, constant folding, switch labels, and `-g` DWARF
 
 An audit round on top of v0.23.76-dev (see `AUDIT-v0.23.76-dev.md`). It finds and
-fixes **six defects** — four in the constant-folding path and two in the debug
+fixes **seven defects** — four in the constant-folding path and two in the debug
 writer — corrects three documentation statements, repairs one formatting bug
 that was already breaking this project's own `-Werror` build, adds one 9-layer
 suite, and makes the suites runnable on a native AArch64 host where no
 `aarch64-linux-gnu-*` toolchain exists.
 
-### The six defects
+### The seven defects
 
 | Id | Defect | Repair |
 | --- | --- | --- |
@@ -17,6 +17,7 @@ suite, and makes the suites runnable on a native AArch64 host where no
 | A-08 | A `switch` case label was folded with `constantInteger` and then checked against the subject width, so a u32 label written as an expression was refused: `case 0u - 1u` on a u32 subject. The emitted comparison already ran at the subject's width and matched. | The label goes through the same `foldAtExprType(constExprType(c), subj, v)`. A bare literal keeps the i64 reading, so `case 4294967296` is still refused. |
 | A-09 | `DW_AT_stmt_list` used `DW_FORM_data4` in a DWARF v4 unit. The attribute names a section offset, which is `DW_FORM_sec_offset` in DWARF4/5, and `llvm-dwarfdump --verify` rejects the data4 spelling outright: `DIE has invalid DW_AT_stmt_list encoding`. | Form `0x17`; the value stays the 4-byte offset a 32-bit DWARF section uses. |
 | A-10 | A type's DIE could be emitted *inside* another DIE's attribute stream: `typeRef()` appends to the same buffer and was called in the argument list of `dbgPut32`, so a type the warm-up pass had not cached (a pointer to an array, say) landed between the DIE's attributes and the unit parsed as garbage. `fn f(a: i32[4])` produced `DW_AT_type = 0x5404` in a 0xd9-byte unit. | All four sites resolve their references before the DIE header is written: subroutine_type return type and parameters, globals, subprogram return-type fallback and variables. |
+| A-11 | Every operator asked `exprType` for both operands twice — once in the void check above the type switch and once in its own arm — so a left-deep chain of n operators cost 2^n type computations: `1+1+...+1` with 20 terms ran 11,010,020 of them (200 ms), 22 terms 782 ms, 30 terms never finished, and a 3000-term chain died of stack exhaustion under ASAN. | `exprType` is split into a memoised wrapper and `exprTypeUncached`, keyed by the AST node pointer; the result depends only on the node and the AST is stable for the whole codegen pass, so it is pure memoisation. 1000-term chains now compile instantly; 3000 terms give the existing clean `expression is nested too deeply (max 2048)` diagnostic. |
 
 ### Documentation corrections
 

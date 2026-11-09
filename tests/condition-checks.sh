@@ -68,8 +68,12 @@ grep -qF 'if(cur().k==TK::True||cur().k==TK::False){' src/aster.cpp \
 # first, and only then does the suffix decide the width — in both copies.
 [ "$(grep -cF 'if(e.boolLit) return Ty::Bool;' src/aster.cpp)" -eq 2 ] \
     || { echo 'FAIL: both exprType copies must type a bool literal as bool' >&2; exit 1; }
-[ "$(grep -cF 'case Expr::LSU:  return Ty::U32;' src/aster.cpp)" -eq 2 ] \
-    || { echo 'FAIL: both exprType copies must answer a suffixed literal from its suffix' >&2; exit 1; }
+# v0.23.76-dev (audit A-06b/A-11): three sites answer a literal's type from its
+# suffix now — Sema's typeOf, codegen's exprType (the uncached half of a memoised
+# wrapper) and constExprType, which the parser-side constant fold needs. The pin
+# is about the rule, so it counts every site that implements it.
+[ "$(grep -cF 'case Expr::LSU:  return Ty::U32;' src/aster.cpp)" -eq 3 ] \
+    || { echo 'FAIL: every site that types a literal from its suffix must agree (Sema, codegen, constExprType)' >&2; exit 1; }
 # The fold chokepoint: a bool literal is not an integer constant. (v0.23.28-dev:
 # every bool-literal path now carries its own type check, so this is defence in
 # depth rather than the only door — it stays pinned here, and m4 targets the
