@@ -128,6 +128,19 @@ breaking this project's own `-Werror` build.
   where the 8 KiB layout overflows the stack; functions that need the
   aggregate tail (struct arguments, returns or copies) keep 8 KiB.
 
+* **`f64`, the first slice** — an IEEE-754 double with fractional literals
+  (`1.5`), `+ - * /`, unary `-`, the six relations (as a branch and as a bool),
+  conversions `f64(x)`/`i32(x)`/`i64(x)` that truncate toward zero, and storage
+  in locals, struct fields and array elements through the FP register bank
+  (`LDR D`/`STR D`). There is no implicit conversion: an f64 and an integer
+  never mix without a cast, and `%`, the shifts and the bitwise operators answer
+  a diagnostic. Parameters, returns, global initializers and `f32` are refused
+  with a message that names the ABI slice, so nothing is marshalled wrongly
+  while the `d0`-`d15` calling convention is still to come.
+  `tests/float-checks.sh` (seven layers) pins the arithmetic, the relations,
+  the conversions, the storage and six refusals; the snapshot still reproduces
+  393/393 rows, because no shipped program uses a double.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

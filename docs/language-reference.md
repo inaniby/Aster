@@ -160,6 +160,7 @@ leading `&` and the bitwise level only sees one in operator position.
 | `ptr<S>` | 8 | 8 | address of an `S`; gives `.field` its offsets |
 | `fn(P1,..,Pn) -> R` | 8 | 8 | function pointer carrying a signature (v0.23.37-dev); stored as a `ptr`. Since v0.23.38-dev it is also legal as a **struct field** type and as a function's **return** type |
 | `u8` | 1 | 1 | zero-extended on load, truncated on store |
+| `f64` | 8 | 8 | an IEEE-754 double (v0.23.77-dev); lives in the FP register bank (checked in the first slice by `LDR D`/`STR D`), spelled like a struct name rather than a reserved word |
 | `char` | 1 | 1 | unsigned 8-bit; **identical width/ABI to `u8`**, so byte-for-byte ABI-compatible with C `unsigned char` (v0.23.69-dev). Distinct from the `'a'` character *literal*, which still folds to `i32` |
 | `u16` | 2 | 2 | same |
 | `bool` | 4 | 4 | holds 0 or 1 |
@@ -233,6 +234,32 @@ operator check with `a void value cannot be used in an expression`. The whole
 point is C-ABI interop: an Aster `void` function takes its argument in `W0` and
 returns nothing, exactly as C does, so a C `main` can link one with no shim on
 either side.
+
+### 5.0 `f64` — an IEEE-754 double, first slice (v0.23.77-dev)
+
+```aster
+fn main() -> i32 {
+    let x: f64 = 1.5;            // a fractional literal is a double
+    let y: f64 = x * 2.0;        // + - * /, FNEG for unary minus
+    let b: bool = y > 2.0;       // six relations: FCMP + CSET
+    return i32(y);               // truncation toward zero
+}
+```
+
+* **No implicit conversion.** An `f64` and an integer never mix in one
+  operation or comparison; cast with `f64(n)` or `i32(x)` (the widening is the
+  program's decision).
+* **Conversions truncate toward zero**, as C's cast does: `i32(2.9)` is 2,
+  `i32(-2.9)` is -2. `i32`/`i64` convert from and to a double; a second
+  narrowing behaves as it always has.
+* **Storage is eight bytes** in a local slot, a struct field or an array
+  element, read and written through the FP bank, which is why an f64 slot is not
+  interchangeable with an i64 one in the register file.
+* **Not defined:** `%`, the shifts and the bitwise operators answer a
+  diagnostic naming the operator.
+* **Deferred to the ABI slice:** parameters and returns (the `d0`-`d15` bank
+  under AAPCS64), global initializers (the float constant folder), `f32` and
+  printing. Each is refused at compile time today.
 
 ### 5.1 `char` — an unsigned 8-bit integer type (v0.23.69-dev)
 

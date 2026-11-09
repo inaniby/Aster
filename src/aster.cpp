@@ -342,6 +342,14 @@ public:
                     if(isHex){ if(std::isxdigit((unsigned char)q)){ x+=take(); continue; } break; }
                     if(isBin){ if(q=='0'||q=='1'){ x+=take(); continue; } break; }
                     if(std::isdigit((unsigned char)q)){ x+=take(); continue; }
+                    // v0.23.77-dev: a fractional part, `1.5`. The dot is taken
+                    // only when a digit follows it, so `a.0`-shaped mistakes stay
+                    // member-access errors, and hex/binary literals never grow one.
+                    if(!isHex&&!isBin&&q=='.'&&std::isdigit((unsigned char)peek(1))){
+                        x+=take();
+                        while(std::isdigit((unsigned char)peek())) x+=take();
+                        break;
+                    }
                     break;
                 }
                 // v0.23.50-dev: optional numeric suffix — u / l / ul / lu
@@ -511,7 +519,11 @@ public:
 // The Kind keeps the spelling `Ty::I32`, so every site that asks "is this a
 // pointer?" or "how wide is it?" reads exactly as it did before.
 struct Ty {
-    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };
+    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void,
+                // v0.23.77-dev: the floating-point family. f64 is an eight-byte
+                // IEEE-754 double; it lives in the FP register bank, never in the
+                // integer bank, so every width rule names it explicitly.
+                F64 };
     Kind k = I32;
     int sid = -1;                      // struct-table index; see above
     // v0.23.34-dev: a pointer may carry the *element* it strides over, so
@@ -653,6 +665,7 @@ static const TypeAlias* typeAliasOf(const std::string& name){
 static uint32_t tySize(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).size;
     if (t.k == Ty::Void) return 0u;   // v0.23.68-dev: a void has no storage
+    if (t.k == Ty::F64) return 8u;    // v0.23.77-dev: an IEEE-754 double
     if (t.k == Ty::Char) return 1u;   // v0.23.69-dev: unsigned 8-bit
     return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
@@ -661,6 +674,7 @@ static uint32_t tySize(Ty t) {
 static uint32_t tyAlign(Ty t) {
     if (t.k == Ty::Struct) return structOf(t.sid).align;
     if (t.k == Ty::Void) return 1u;   // v0.23.68-dev: never used as storage
+    if (t.k == Ty::F64) return 8u;
     if (t.k == Ty::Char) return 1u;   // v0.23.69-dev: unsigned 8-bit
     return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
@@ -737,6 +751,7 @@ static const char* tyName(Ty t) {
         case Ty::Bool: return "bool";
         case Ty::Void: return "void";   // v0.23.68-dev
         case Ty::Char: return "char";   // v0.23.69-dev
+        case Ty::F64: return "f64";     // v0.23.77-dev
         case Ty::Struct: break;
         // v0.23.61-dev: an enum prints by its declared name, like a struct.
         case Ty::Enum: break;
@@ -900,6 +915,10 @@ struct Expr {
     // exactly like an i32 literal downstream (the nominal type is the enum
     // *name*, not the constant), but the flag lets diagnostics name it.
     bool enumConst=false;
+    // v0.23.77-dev: a fractional literal. `fv` is the value as a double and the
+    // literal types as f64; the integer machinery (e.n, suffixes, folding)
+    // never sees it.
+    bool isFloat=false; double fv=0;
     unsigned line=0, col=0;   // P4.1: source location of the token that introduces this node
     explicit Expr(Kind kind):k(kind){} Expr(Kind kind,uint64_t value):k(kind),n(value){}
 };
@@ -1322,6 +1341,9 @@ class Parser {
             // identifier that is not a known struct is left alone: the caller
             // reports "expected a type" naming every spelling it accepts.
             case TK::Ident: {
+                // v0.23.77-dev: `f64` is a built-in type name, spelled like a
+                // struct name but answering before the struct table.
+                if(cur().s=="f64"){out=Ty::F64;++p;return true;}
                 auto it=g_structIndex.find(cur().s);
                 if(it!=g_structIndex.end()){out=Ty::ofStruct(it->second);++p;return true;}
                 // v0.23.61-dev: an enum name is a type spelling too.
@@ -1572,6 +1594,17 @@ class Parser {
         // struct is spellable — bool <-> integer, integer <-> ptr, ptr<S> <->
         // ptr<U>. (Which *combinations* are legal is decided in Sema's typeOf;
         // the parser only assembles the node and its target type here.)
+        if(cur().k==TK::Ident&&cur().s=="f64"){
+            // v0.23.77-dev: `f64(x)` — the same function-shaped cast the integer
+            // keywords use, recognized from the built-in type name.
+            const Token kw=t[p++];
+            need(TK::LParen,"expected '(' after f64");
+            E inner=expr();
+            need(TK::RParen,"expected ')' after the f64 operand");
+            E x(new Expr(Expr::Cast));
+            x->ty=Ty::F64; x->a=std::move(inner); x->line=kw.line; x->col=kw.col;
+            return x;
+        }
         if(cur().k==TK::I32||cur().k==TK::I64||cur().k==TK::U8||cur().k==TK::U16||cur().k==TK::U32||cur().k==TK::U64||cur().k==TK::CharType||cur().k==TK::Bool||cur().k==TK::Ptr){
             const Token kw=t[p++];
             // Parse the target type first — for `ptr` this may consume a
@@ -1679,6 +1712,16 @@ class Parser {
         // value in s (exactly one code unit); the parser materialises it as an
         // i32 Num, exactly as an unsuffixed integer literal is.
         if(cur().k==TK::Char){auto tok=t[p++];E nn(new Expr(Expr::Num,(uint64_t)(unsigned char)tok.s[0]));nn->line=tok.line;nn->col=tok.col;return nn;}
+        if(cur().k==TK::Number&&cur().s.find('.')!=std::string::npos){auto tok=t[p++];
+            // v0.23.77-dev: a fractional literal. The value is read with strtod so
+            // the decimal digits are rounded to the nearest double exactly once,
+            // and the node carries the bits; an out-of-range literal is infinite,
+            // which a program can see and the suites pin.
+            E nn(new Expr(Expr::Num)); nn->isFloat=true;
+            nn->fv=std::strtod(tok.s.c_str(),nullptr);
+            nn->line=tok.line; nn->col=tok.col;
+            return nn;
+        }
         if(cur().k==TK::Number){auto tok=t[p++];
             // v0.23.50-dev: peel the optional suffix (u/l/ul/lu) off the token
             // text so the value parse and the type pin agree. The lexer already
@@ -2806,6 +2849,11 @@ class Parser {
         auto id=need(TK::Ident,"expected global variable name");
         need(TK::Colon,"expected ':'");
         const Ty ty=needType(kTypeExpected);
+        // v0.23.77-dev: an f64 global needs the float constant folder (its 8-byte
+        // IEEE pattern written straight into .data), which is not part of this
+        // slice. A local double is fully supported, so the diagnostic says so.
+        if(ty==Ty::F64)
+            throw Error(loc(id.line,id.col,"an f64 global arrives with the ABI slice — declare it local and initialize it in code"));
         // v0.23.37-dev: a fn-pointer global keeps its signature beside the ptr
         // storage type. Capture it up front; the scalar branch below (a
         // fn-pointer is a ptr scalar) seeds its Global from here.
@@ -3222,7 +3270,7 @@ static bool constantInteger(const Expr& e,int64_t& out){
         // to 0/1 here would let `let x: i32 = true;` and `a[true]` through the
         // constant paths, which is exactly the interchangeability the type
         // system forbids; the bool-specific readers test boolLit directly.
-        case Expr::Num: if(e.boolLit)return false; out=static_cast<int64_t>(e.n); return true;
+        case Expr::Num: if(e.boolLit||e.isFloat)return false; out=static_cast<int64_t>(e.n); return true;
         case Expr::SizeOf: case Expr::Len: out=static_cast<int64_t>(e.n); return true;   // v0.23.35-dev
         // v0.23.48-dev: a cast of a foldable operand folds too, narrowed the
         // same way gen(Cast) narrows at run time.
@@ -3670,12 +3718,16 @@ struct Codegen {
     // One entry point per access, chosen by the declared type of the slot or
     // global: every new width is handled here and nowhere else.
     static uint32_t loadVarT(int reg,int slot,Ty t){
+        // v0.23.77-dev: an f64 slot is read into the FP bank — the integer bank's
+        // LDR X would read a register the float never wrote.
+        if(t==Ty::F64)return 0xfd4003e0u|(uint32_t(slot*8)<<10)|uint32_t(reg);   // LDR Dt, [SP, #slot*8]
         if(tyIs64(t))return loadVar64(reg,slot);
         if(t==Ty::U8||t==Ty::Char)return loadVar8(reg,slot);
         if(t==Ty::U16)return loadVar16(reg,slot);
         return loadVar32(reg,slot);
     }
     static uint32_t storeVarT(int reg,int slot,Ty t){
+        if(t==Ty::F64)return 0xfd0003e0u|(uint32_t(slot*8)<<10)|uint32_t(reg);   // STR Dt, [SP, #slot*8]
         if(tyIs64(t))return storeVar64(reg,slot);
         if(t==Ty::U8||t==Ty::Char)return storeVar8(reg,slot);
         if(t==Ty::U16)return storeVar16(reg,slot);
@@ -3870,6 +3922,7 @@ struct Codegen {
         switch(e.k){
             case Expr::Num:
                 if(e.boolLit) return Ty::Bool;
+                if(e.isFloat) return Ty::F64;   // v0.23.77-dev: a fractional literal
                 // v0.23.50-dev: a suffixed literal answers the type its suffix
                 // names; an unsuffixed one stays context-driven (i32) as before.
                 switch(e.suffix){
@@ -4194,12 +4247,14 @@ struct Codegen {
     }
     // Load/store between a register and the global whose address sits in x16.
     static uint32_t loadGlobalT(int reg,Ty t){
+        if(t==Ty::F64) return 0xfd400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);              // LDR Dt, [X16]
         if(t==Ty::U8||t==Ty::Char) return 0x39400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDRB Wt, [X16]
         if(t==Ty::U16)return 0x79400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDRH Wt, [X16]
         if(tyIs64(t)) return 0xf9400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDR  Xt, [X16]
         return loadGlobal(reg);
     }
     static uint32_t storeGlobalT(int reg,Ty t){
+        if(t==Ty::F64) return 0xfd000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);              // STR Dt, [X16]
         if(t==Ty::U8||t==Ty::Char) return 0x39000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STRB Wt, [X16]
         if(t==Ty::U16)return 0x79000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STRH Wt, [X16]
         if(tyIs64(t)) return 0xf9000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STR  Xt, [X16]
@@ -4208,12 +4263,14 @@ struct Codegen {
     // Same choice for an arbitrary byte offset from SP (argument scratch slots
     // and array elements), where the offset is not on the slot grid.
     static uint32_t loadStackT(int reg,uint32_t off,Ty t){
+        if(t==Ty::F64)return 0xfd4003e0u|((off/8)<<10)|uint32_t(reg);   // LDR Dt, [SP, #off]
         if(tyIs64(t))return 0xf94003e0u|((off/8)<<10)|uint32_t(reg);
         if(t==Ty::U8||t==Ty::Char) return 0x394003e0u|(off<<10)|uint32_t(reg);
         if(t==Ty::U16)return 0x794003e0u|((off/2)<<10)|uint32_t(reg);
         return 0xb94003e0u|((off/4)<<10)|uint32_t(reg);
     }
     static uint32_t storeStackT(int reg,uint32_t off,Ty t){
+        if(t==Ty::F64)return 0xfd0003e0u|((off/8)<<10)|uint32_t(reg);   // STR Dt, [SP, #off]
         if(tyIs64(t))return 0xf90003e0u|((off/8)<<10)|uint32_t(reg);
         if(t==Ty::U8||t==Ty::Char) return 0x390003e0u|(off<<10)|uint32_t(reg);
         if(t==Ty::U16)return 0x790003e0u|((off/2)<<10)|uint32_t(reg);
@@ -4246,6 +4303,7 @@ struct Codegen {
     static bool stackOffFits(uint32_t off,Ty t){
         if(t==Ty::U8||t==Ty::Char) return off<=4095u;                     // unscaled 12 bits
         if(t==Ty::U16)return off<=8190u&&(off&1u)==0u;       // imm12 << 1
+        if(t==Ty::F64)return off<=32760u&&(off&7u)==0u;      // imm12 << 3, same as a qword
         if(tyIs64(t)) return off<=32760u&&(off&7u)==0u;      // imm12 << 3
         return off<=16380u&&(off&3u)==0u;                    // imm12 << 2
     }
@@ -4440,7 +4498,19 @@ struct Codegen {
             // rodata object — without the NUL the literal owns.
             case Expr::Embed:{emitGlobalAddress(e.name);int d=temp();emit(0xaa1003e0u|uint32_t(d));return d;}
             case Expr::Num:{
-                int d=temp();uint64_t n=e.n;
+                int d=temp();
+                // v0.23.77-dev: a fractional literal. The double's bit pattern is
+                // materialized into the integer register (MOVZ/MOVK, full width)
+                // and moved into the FP bank, which is where every f64 consumer
+                // reads it.
+                if(e.isFloat){
+                    uint64_t bits=0;
+                    std::memcpy(&bits,&e.fv,sizeof bits);
+                    emitMov64(d,bits);
+                    emit(0x9e670000u|(uint32_t(d)<<5)|uint32_t(d));   // FMOV Dd, Xd
+                    return d;
+                }
+                uint64_t n=e.n;
                 // A literal in an i64 context is materialized at full width:
                 // the 32-bit MOVZ/MOVK pair would sign-extend through the
                 // constant folder's int64 view and turn 3000000000 negative.
@@ -4887,6 +4957,11 @@ struct Codegen {
                 return d;
             }
             case Expr::Neg:{
+                if(exprType(*e.a)==Ty::F64){
+                    int a=gen(*e.a,Ty::F64);
+                    emit(0x1e614000u|(uint32_t(a)<<5)|uint32_t(a));   // FNEG Dd, Dn
+                    return a;
+                }
                 if(exprIsPtr(*e.a))throw Error("pointer arithmetic is not supported yet");
                 int a=gen(*e.a,want);
                 // SUB Wd, WZR, Wa / SUB Xd, XZR, Xa — the 64-bit form when the
@@ -4987,6 +5062,26 @@ struct Codegen {
             // that, not the raw nonzero pattern.
             case Expr::Cast:{
                 const Ty from=exprType(*e.a);
+                // v0.23.77-dev: the float conversions. int -> f64 is SCVTF (the
+                // integer's signedness picks the X or W source), f64 -> int is
+                // FCVTZS (truncation toward zero, as C's cast does), and f64 -> f64
+                // emits nothing.
+                if(e.ty==Ty::F64){
+                    if(from==Ty::F64)return gen(*e.a,Ty::F64);
+                    if(!tyIsInteger(from)&&from!=Ty::Bool)
+                        throw Error("cannot cast "+tyNameFull(from)+" to f64");
+                    int a=gen(*e.a,from);
+                    emit((tyIs64(from)?0x9e620000u:0x1e620000u)|(uint32_t(a)<<5)|uint32_t(a)); // SCVTF Dd, Xn/Wn
+                    return a;
+                }
+                if(from==Ty::F64){
+                    if(!tyIsInteger(e.ty))throw Error("an f64 casts only to an integer or to f64");
+                    int a=gen(*e.a,Ty::F64);
+                    emit((tyIs64(e.ty)?0x9e780000u:0x1e780000u)|(uint32_t(a)<<5)|uint32_t(a)); // FCVTZS Xd/Wd, Dn
+                    if(e.ty==Ty::U8||e.ty==Ty::Char)      emit(0x53001c00u|(uint32_t(a)<<5)|uint32_t(a));
+                    else if(e.ty==Ty::U16)                emit(0x53003c00u|(uint32_t(a)<<5)|uint32_t(a));
+                    return a;
+                }
                 int a=gen(*e.a,e.ty);
                 // integer -> bool : (x != 0) ? 1 : 0. `a` holds the integer;
                 // CMP+SETF (CSET W, ne) writes 1 when it is nonzero, 0 otherwise
@@ -5097,6 +5192,20 @@ struct Codegen {
                 }
                 if(ap||bp)throw Error("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr");
                 const Ty ta=exprType(*e.a),tb=exprType(*e.b);
+                // v0.23.77-dev: f64 arithmetic on the FP bank. The destination
+                // aliases the left operand so the temporary is released once, the
+                // same shape the integer path uses.
+                if(ta==Ty::F64||tb==Ty::F64){
+                    if(!(ta==Ty::F64&&tb==Ty::F64))
+                        throw Error("f64 arithmetic needs two f64 operands");
+                    int fa=gen(*e.a,Ty::F64),fb=gen(*e.b,Ty::F64);
+                    const uint32_t fop=e.k==Expr::Add?0x1e602800u:
+                                        e.k==Expr::Sub?0x1e603800u:
+                                        e.k==Expr::Mul?0x1e600800u:0x1e601800u;
+                    emit(fop|(uint32_t(fb)<<16)|(uint32_t(fa)<<5)|uint32_t(fa));
+                    releaseTemp(fb);
+                    return fa;
+                }
                 const bool wide=wideOp(want,ta,tb,*e.a,*e.b);
                 const Ty opWant=wide?Ty::I64:want;
                 int a=gen(*e.a,opWant),b=gen(*e.b,opWant);
@@ -5213,12 +5322,14 @@ struct Codegen {
     // One value of type `t` at [Xbase + off], where any of the four widths
     // may apply and off is a byte offset inside a struct.
     static uint32_t loadAtT(int reg,int base,uint32_t off,Ty t){
+        if(t==Ty::F64)return 0xfd400000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);   // LDR Dt
         if(tyIs64(t))return 0xf9400000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         if(t==Ty::U8||t==Ty::Char) return 0x39400000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         if(t==Ty::U16)return 0x79400000u|((off/2)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         return 0xb9400000u|((off/4)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
     }
     static uint32_t storeAtT(int reg,int base,uint32_t off,Ty t){
+        if(t==Ty::F64)return 0xfd000000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);   // STR Dt
         if(tyIs64(t))return 0xf9000000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         if(t==Ty::U8||t==Ty::Char) return 0x39000000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         if(t==Ty::U16)return 0x79000000u|((off/2)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
@@ -5913,6 +6024,19 @@ struct Codegen {
                 if(exprIsPtr(*e.a)||exprIsPtr(*e.b))throw Error("only == and != are defined for a ptr");
             }
             const Ty ta=exprType(*e.a),tb=exprType(*e.b);
+            // v0.23.77-dev: f64 comparisons are FCMP + CSET. FCMP sets NZCV the
+            // way CMP does for ordered relations (LT/LE/GT/GE) and for equality;
+            // the same comparisonCond answers both.
+            if(ta==Ty::F64||tb==Ty::F64){
+                if(!(ta==Ty::F64&&tb==Ty::F64))
+                    throw Error("comparing f64 with an integer needs an explicit cast");
+                int fa=gen(*e.a,Ty::F64),fb=gen(*e.b,Ty::F64);
+                emit(0x1e612000u|(uint32_t(fb)<<16)|(uint32_t(fa)<<5)); // FCMP Dn, Dm
+                releaseTemp(fb);releaseTemp(fa);
+                int d=temp();
+                emit(csetBool(d,comparisonCond(e.k,false)));              // CSET Wd, <cond>
+                return d;
+            }
             // A comparison runs at 64 bits when either side is i64 or when a
             // constant side does not fit in 32 bits: C types such a constant
             // as long, so `n == 4294967297` must compare at full width even
@@ -6006,6 +6130,17 @@ struct Codegen {
                 if(exprIsPtr(*c.a)||exprIsPtr(*c.b))throw Error("only == and != are defined for a ptr");
             }
             const Ty ta=exprType(*c.a),tb=exprType(*c.b);
+            // v0.23.77-dev: an f64 comparison branches on FCMP's NZCV, the same
+            // condition the value form materializes with CSET.
+            if(ta==Ty::F64||tb==Ty::F64){
+                if(!(ta==Ty::F64&&tb==Ty::F64))
+                    throw Error("comparing f64 with an integer needs an explicit cast");
+                int fa=gen(*c.a,Ty::F64),fb=gen(*c.b,Ty::F64);
+                emit(0x1e612000u|(uint32_t(fb)<<16)|(uint32_t(fa)<<5)); // FCMP Dn, Dm
+                releaseTemp(fb);releaseTemp(fa);
+                at=code.size();emit(0);
+                return comparisonCond(c.k,false)^1;
+            }
             // Same width rule as genBool above: a constant side that does not
             // fit in 32 bits makes the comparison 64-bit, and the operand is
             // generated at that width so the exemption below holds.
@@ -6622,6 +6757,15 @@ struct Codegen {
             slot+=width;
         }
         nextSlot=slot;
+        // v0.23.77-dev: f64 parameters and returns are the ABI slice's business
+        // — the s0-s15/d0-d15 bank, mixed with the integer bank under AAPCS64.
+        // Until that lands, a float in a signature is refused here rather than
+        // quietly marshalled as an integer.
+        for(Ty pt:f.paramTypes)
+            if(pt==Ty::F64)
+                throw Error("f64 parameters arrive with the ABI slice: pass f64 by value once it lands");
+        if(f.retType==Ty::F64)
+            throw Error("an f64 return arrives with the ABI slice");
         const bool haveMainArgs=isMain&&!f.params.empty();
         if(compact){
             if(haveMainArgs)emit(0x910003f0u);   // ADD X16, SP, #0 — the initial SP, before the frame moves
@@ -7651,6 +7795,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
         switch(e.k){
             case Expr::Num:
                 if(e.boolLit) return Ty::Bool;
+                if(e.isFloat) return Ty::F64;   // v0.23.77-dev: a fractional literal
                 // v0.23.50-dev: a suffixed literal answers the type its suffix
                 // names; an unsuffixed one stays context-driven (i32) as before.
                 switch(e.suffix){
@@ -7689,6 +7834,13 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     throw Error(loc(e.line,e.col,"cannot cast "+tyNameFull(from)+" to struct '"+structOf(e.ty.sid).name+"'"));
                 const bool fromInt=tyIsInteger(from), fromBool=from==Ty::Bool;
                 const bool toInt=tyIsInteger(e.ty), toPtr=e.ty.k==Ty::Ptr, toBool=e.ty==Ty::Bool;
+                // v0.23.77-dev: f64 converts to and from every integer (the C
+                // conversions truncate toward zero and round to nearest), and
+                // to itself; it is not an address and not a truthiness.
+                if(e.ty==Ty::F64)return (fromInt||from==Ty::F64)?Ty::F64:
+                    throw Error(loc(e.line,e.col,"cannot cast "+tyNameFull(from)+" to f64"));
+                if(from==Ty::F64)return (toInt||e.ty==Ty::F64)?e.ty:
+                    throw Error(loc(e.line,e.col,"an f64 casts only to an integer or to f64"));
                 // Every integer source converts to integer, bool or ptr. A ptr
                 // source converts to integer or ptr (not bool). A bool source
                 // converts only to integer (never to ptr, and bool->bool is the
@@ -7879,12 +8031,21 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 return Ty::I32;
             }
             case Expr::Neg:
+                if(typeOf(*e.a)==Ty::F64)return Ty::F64;   // v0.23.77-dev: FNEG
                 if(typeOf(*e.a)==Ty::Ptr)throw Error(loc(e.line,e.col,"pointer arithmetic is not supported yet"));
                 rejectStruct(typeOf(*e.a),"-");
                 rejectBool(typeOf(*e.a),"-");
                 return Ty::I32;
             case Expr::Add: {
                 const Ty a=typeOf(*e.a),b=typeOf(*e.b);
+                // v0.23.77-dev: f64 arithmetic is its own family — no mixing with
+                // an integer without an explicit cast, and no pointer arithmetic
+                // on a float (the checks below name it).
+                if(a==Ty::F64||b==Ty::F64){
+                    if(!(a==Ty::F64&&b==Ty::F64))
+                        throw Error(loc(e.line,e.col,"f64 arithmetic needs two f64 operands — cast the integer with f64(...)"));
+                    return Ty::F64;
+                }
                 if(a==Ty::Ptr&&b==Ty::Ptr)throw Error(loc(e.line,e.col,"invalid pointer arithmetic: ptr + ptr is not supported"));
                 if(a==Ty::Ptr||b==Ty::Ptr)return Ty::Ptr;                // ptr +/- i32 stays ptr
                 rejectStruct(a,"+");rejectStruct(b,"+");
@@ -7893,6 +8054,11 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             }
             case Expr::Sub: {
                 const Ty a=typeOf(*e.a),b=typeOf(*e.b);
+                if(a==Ty::F64||b==Ty::F64){
+                    if(!(a==Ty::F64&&b==Ty::F64))
+                        throw Error(loc(e.line,e.col,"f64 arithmetic needs two f64 operands — cast the integer with f64(...)"));
+                    return Ty::F64;
+                }
                 if(a==Ty::Ptr&&b==Ty::Ptr){
                     // v0.23.57-dev: pointer difference — element count between
                     // two pointers, both striding over the same element type.
@@ -7909,7 +8075,13 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             }
             case Expr::Mul: case Expr::Div: {
                 const char* op=e.k==Expr::Mul?"*":"/";
-                rejectBool(typeOf(*e.a),op);rejectBool(typeOf(*e.b),op);
+                const Ty a=typeOf(*e.a),b=typeOf(*e.b);
+                if(a==Ty::F64||b==Ty::F64){
+                    if(!(a==Ty::F64&&b==Ty::F64))
+                        throw Error(loc(e.line,e.col,"f64 arithmetic needs two f64 operands — cast the integer with f64(...)"));
+                    return Ty::F64;
+                }
+                rejectBool(a,op);rejectBool(b,op);
                 return Ty::I32;
             }
             // v0.23.17-dev (round 1): `%`, the shifts, the bitwise operators
@@ -7920,6 +8092,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             // a conditional takes the type its two arms agree on.
             case Expr::Mod: {
                 const Ty a=typeOf(*e.a),b=typeOf(*e.b);
+                if(a==Ty::F64||b==Ty::F64)throw Error(loc(e.line,e.col,"'%' is not defined on f64"));
                 rejectPtr(a,"%");rejectPtr(b,"%");rejectStruct(a,"%");rejectStruct(b,"%");
                 rejectBool(a,"%");rejectBool(b,"%");
                 return Ty::I32;
@@ -7927,6 +8100,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             case Expr::Shl: case Expr::Shr: {
                 const char* op=e.k==Expr::Shl?"<<":">>";
                 const Ty a=typeOf(*e.a),b=typeOf(*e.b);
+                if(a==Ty::F64||b==Ty::F64)throw Error(loc(e.line,e.col,std::string("'")+op+"' is not defined on f64"));
                 rejectPtr(a,op);rejectStruct(a,op);
                 rejectBool(a,op);rejectBool(b,op);
                 return a;
@@ -7934,6 +8108,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             case Expr::BitAnd: case Expr::BitOr: case Expr::BitXor: {
                 const char* op=e.k==Expr::BitAnd?"&":e.k==Expr::BitOr?"|":"^";
                 const Ty a=typeOf(*e.a),b=typeOf(*e.b);
+                if(a==Ty::F64||b==Ty::F64)throw Error(loc(e.line,e.col,std::string("'")+op+"' is not defined on f64"));
                 rejectPtr(a,op);rejectPtr(b,op);rejectStruct(a,op);rejectStruct(b,op);
                 rejectBool(a,op);rejectBool(b,op);
                 return Ty::I32;
@@ -7954,6 +8129,12 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             }
             case Expr::Eq: case Expr::Ne: case Expr::Lt: case Expr::Le: case Expr::Gt: case Expr::Ge: {
                 const Ty a=typeOf(*e.a),b=typeOf(*e.b);
+                // v0.23.77-dev: IEEE-754 ordering and equality, two f64s.
+                if(a==Ty::F64||b==Ty::F64){
+                    if(!(a==Ty::F64&&b==Ty::F64))
+                        throw Error(loc(e.line,e.col,"comparing f64 with an integer needs an explicit cast"));
+                    return Ty::Bool;
+                }
                 // v0.23.26-dev: a ptr answers == and != — against another ptr,
                 // or against the null constant. Ordering two addresses answers
                 // a question Aster has no business answering here (which of two
