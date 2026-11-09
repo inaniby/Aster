@@ -106,6 +106,21 @@ breaking this project's own `-Werror` build.
   library object still imports nothing and that a mutant with memmove's
   backward path removed is caught.
 
+* **`--compact-frames`** — the frame is sized per function: with the flag, a
+  function that neither calls nor copies or returns an aggregate allocates only
+  its locals plus the saved return address (16-byte aligned), so a leaf accessor
+  drops from 8192 bytes to as little as 16; everything else keeps the historical
+  8 KiB layout, whose call-argument scratch (4160…8000) and compiler tail
+  (8024…8184) still live there. The frame move becomes a two-instruction
+  SUB/ADD pair (imm12 tops out at 4095), the saved `x30` moves to `frame-8`,
+  the incoming stack-argument base is patched to the frame, and `-g`'s FDEs
+  report each function's own `DW_CFA_def_cfa_offset` (advancing two
+  instructions). The default is off, so the snapshot reproduces 393/393 rows;
+  `tests/frame-size-checks.sh` (nine layers) pins the default shape, the compact
+  leaf shape, the 8 KiB rule for callers, twelve examples' exit-status equality,
+  stack arguments, the CFA list, `main(argc, argv)` and a mutation that drops
+  the guard.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

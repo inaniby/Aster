@@ -1085,6 +1085,9 @@ be labeled like `while`/`for` (`outer: do { … } while (c);`), and a `break` or
 
 ### `struct`
 
+  `--compact-frames` (same release) sizes a leaf function's frame to its locals
+  plus the saved return address instead, keeping the 8 KiB layout for anything
+  that calls or handles aggregates.
 - At least one field; no self-containment
   (`struct S cannot contain itself`); no duplicate field names.
 - **A field may be an array** (since v0.23.29-dev; multi-dimensional since
@@ -1316,6 +1319,7 @@ aster deps [<source.ast> ...] [-o OBJ]
 | `-o PATH` | output file |
 | `--pic` | position-independent object (only with `build-obj`, for `link-so`) |
 | `--bounds-check` | lower every dynamic array index — into a global, a local, or an array parameter — into `CMP` + `B.LO` over `BRK #1`, so an out-of-range access raises SIGTRAP. **Off by default**; constant indexes are proved at compile time either way |
+| `--compact-frames` | size each function's frame to its own locals instead of the historical 8 KiB (v0.23.77-dev). A function that neither calls nor copies/returns an aggregate allocates `locals + saved return address` rounded to 16 bytes — a leaf accessor drops from 8192 to as little as 16, and recursion through *leaf* calls goes that much deeper. A function with calls keeps the 8 KiB layout, because the call-argument scratch (4160…8000) and the compiler tail (8024…8184) live in it. The default is off, so every existing product is byte-identical; with the flag `-g`'s FDEs report each function's own frame (`DW_CFA_def_cfa_offset`), and `main(argc, argv)` reads the initial stack through a captured register rather than a constant |
 | `-g`, `--debug-line` | emit `.debug_line` (v0.23.12-dev), `.debug_info` (v0.23.32-dev) **and `.eh_frame`** (v0.23.33-dev) — the line program and a compilation unit per object (a `DW_TAG_subprogram` per function, a `DW_TAG_variable` per global, local and parameter), plus a call-frame table: a CIE identical to `aarch64-linux-gnu-gcc`'s and one FDE per function (`CFA = SP + 8192` one instruction in; `r30` at `CFA − 8` for every returning body, not the entry), carried by `R_AARCH64_PREL32` in an object and raised through `link-obj`/`link-so`. **Off by default**; no section moves a byte of `.text`. Since v0.23.51-dev each subprogram's `DW_AT_type` names a `DW_TAG_subroutine_type` — its return type and parameter types, so a debugger reads `p foo` as the whole signature — and each DIE carries a `DW_AT_decl_file` (index 1, the one entry the line table emits) |
 | `--soname NAME` | `DT_SONAME` for `build-so` / `link-so` |
 | `--needed LIB` | add a `DT_NEEDED` entry |

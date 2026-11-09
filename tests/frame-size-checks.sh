@@ -1,0 +1,146 @@
+#!/bin/sh
+# tests/frame-size-checks.sh — v0.23.77-dev: `--compact-frames`.
+#
+# The default build keeps the historical 8 KiB frame byte for byte; the flag
+# sizes a function's frame to its own locals (plus the saved return address)
+# when the function neither calls nor copies or returns an aggregate. Those
+# functions are exactly the ones whose frame holds nothing but their variables.
+#
+# Layers:
+#   [1] strict build of the compiler
+#   [2] default: one SUB #8192, X30 at 8184 (the historical shape, pinned)
+#   [3] compact: a leaf function shrinks; frame 16-aligned; X30 at frame-8
+#   [4] compact: a calling function keeps 8192 (its call scratch still lives there)
+#   [5] compact: every example still runs with the same exit code as the default
+#   [6] compact: stack arguments still arrive (the shipped stack_arg_abi witness)
+#   [7] compact: -g's FDE reports the function's own frame
+#   [8] compact: main(argc, argv) still reads the initial stack
+#   [9] mutation: dropping the call/aggregate guard must break the examples
+set -eu
+cd "$(dirname "$0")/.."
+. tests/lib/tmpdir.sh
+CXX=${CXX:-c++}
+ASTER="$TMPD/frame-aster"
+OUT="$TMPD/frame-work"
+rm -rf "$OUT"; mkdir -p "$OUT"
+fail(){ echo "FAIL: $*" >&2; exit 1; }
+prologue(){ # <elf> <symbol> -> the leading SUB SP instructions (one, or a pair)
+    llvm-objdump -d --no-show-raw-insn "$1" 2>/dev/null \
+        | awk -v sym="<$2>:" '
+            $2==sym {f=1; next}
+            f {
+                if ($2=="sub") {print; next}
+                exit
+            }'
+}
+frame_of(){ # <elf> <symbol> -> SUM of the SUB immediates in bytes
+    prologue "$1" "$2" | awk '
+        /#0x2, lsl #12/ { s += 8192; next }
+        /#0x1, lsl #12/ { s += 4096; next }
+        /lsr|lsl/ { next }
+        /#0x[0-9a-f]+/ { v=$0; sub(/.*#0x/,"",v); sub(/[^0-9a-f].*/,"",v); s += strtonum("0x" v) }
+        END { print s }'
+}
+ra_off(){ # <elf> <symbol> -> the offset X30 is saved at, or empty
+    llvm-objdump -d --no-show-raw-insn "$1" 2>/dev/null \
+        | awk -v sym="<$2>:" '$2==sym{f=1;next} f&&/str[ \t]+x30/{ v=$0; sub(/.*#0x/,"",v); sub(/[^0-9a-f].*/,"",v); print strtonum("0x" v); exit }'
+}
+
+printf '%s\n' '[1/9] Strictly build Aster compiler'
+$CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -o "$ASTER" src/aster.cpp
+printf '  %-40s %s\n' 'compiler built' 'ok'
+
+cat > "$OUT/leaf.ast" <<'AST'
+fn leaf(a: i32) -> i32 { let x: i32 = a + 1; return x; }
+fn caller(a: i32) -> i32 { return leaf(a) + 1; }
+fn main() -> i32 { return caller(40); }
+AST
+cat > "$OUT/rec.ast" <<'AST'
+fn f(n: i32) -> i32 { if (n == 0) { return 0; } return 1 + f(n - 1); }
+fn main() -> i32 { return f(100); }
+AST
+cat > "$OUT/args.ast" <<'AST'
+fn main(argc: i32, argv: ptr) -> i32 { return argc; }
+AST
+
+printf '%s\n' '[2/9] default: the historical frame is untouched'
+"$ASTER" build-elf "$OUT/leaf.ast" -o "$OUT/def.elf" >/dev/null 2>&1 || fail 'the default build failed'
+[ "$(frame_of "$OUT/def.elf" leaf)" = 8192 ] || fail "the default leaf frame is $(frame_of "$OUT/def.elf" leaf), expected 8192"
+[ "$(ra_off "$OUT/def.elf" leaf)" = 8184 ] || fail "the default RA slot is $(ra_off "$OUT/def.elf" leaf), expected 8184"
+chmod +x "$OUT/def.elf"
+set +e; "$OUT/def.elf"; defrc=$?; set -e
+[ "$defrc" = 42 ] || fail 'the default program returned the wrong value'
+printf '  %-40s %s\n' 'SUB #8192, X30 at 8184, exit 42' 'ok'
+
+printf '%s\n' '[3/9] compact: a leaf function shrinks'
+"$ASTER" build-elf --compact-frames "$OUT/leaf.ast" -o "$OUT/cmp.elf" >/dev/null 2>&1 || fail 'the compact build failed'
+lf=$(frame_of "$OUT/cmp.elf" leaf)
+[ "$lf" -lt 8192 ] || fail "the compact leaf frame is still $lf"
+[ $(( lf % 16 )) = 0 ] || fail "the compact leaf frame ($lf) is not 16-byte aligned"
+[ "$(ra_off "$OUT/cmp.elf" leaf)" = $(( lf - 8 )) ] || fail "X30 is not at frame-8 ($(ra_off "$OUT/cmp.elf" leaf) vs $(( lf - 8 )))"
+chmod +x "$OUT/cmp.elf"
+set +e; "$OUT/cmp.elf"; cmprc=$?; set -e
+[ "$cmprc" = 42 ] || fail 'the compact program returned the wrong value'
+printf '  %-40s %s\n' "leaf frame ${lf} bytes, 16-aligned, X30 at frame-8" 'ok'
+
+printf '%s\n' '[4/9] compact: a calling function keeps the 8 KiB scratch'
+pf=$(frame_of "$OUT/cmp.elf" caller)
+[ "$pf" = 8192 ] || fail "the calling function's frame is $pf, expected the 8 KiB scratch layout"
+printf '  %-40s %s\n' 'caller keeps 8192' 'ok'
+
+printf '%s\n' '[5/9] compact: the examples agree with the default build'
+n=0; bad=0
+for f in examples/arithmetic.ast examples/condition.ast examples/loops.ast examples/structs.ast \
+         examples/arrays.ast examples/pointers.ast examples/switch.ast examples/unions.ast \
+         examples/narrow_args.ast examples/stack_arg_abi.ast examples/tls_demo.ast examples/globals.ast; do
+    [ -f "$f" ] || continue
+    b=$(basename "$f" .ast)
+    "$ASTER" build-elf "$f" -o "$OUT/d-$b" >/dev/null 2>&1 || continue
+    "$ASTER" build-elf --compact-frames "$f" -o "$OUT/c-$b" >/dev/null 2>&1 || fail "the compact build of $b failed"
+    chmod +x "$OUT/d-$b" "$OUT/c-$b"
+    set +e
+    "$OUT/d-$b" >/dev/null 2>&1; a=$?
+    "$OUT/c-$b" >/dev/null 2>&1; b2=$?
+    set -e
+    n=$((n+1))
+    [ "$a" = "$b2" ] || { bad=$((bad+1)); echo "  $b: default=$a compact=$b2" >&2; }
+done
+[ "$bad" = 0 ] || fail "$bad example(s) changed exit status under --compact-frames"
+printf '  %-40s %s\n' "$n examples: identical exit status" 'ok'
+
+printf '%s\n' '[6/9] compact: stack arguments still arrive'
+"$ASTER" build-elf --compact-frames examples/stack_arg_abi.ast -o "$OUT/sa" >/dev/null 2>&1 || fail 'stack_arg_abi did not build'
+chmod +x "$OUT/sa"; set +e; "$OUT/sa"; rc=$?; set -e
+[ "$rc" = 15 ] || fail "stack_arg_abi returned $rc under --compact-frames, expected 15"
+printf '  %-40s %s\n' 'nine-argument and aggregate-on-stack calls' 'ok'
+
+printf '%s\n' '[7/9] compact: -g reports the function frame'
+"$ASTER" build-elf -g --compact-frames "$OUT/leaf.ast" -o "$OUT/dbg.elf" >/dev/null 2>&1 || fail 'the -g compact build failed'
+# Every function's FDE must report that function's own frame: compare the
+# sorted list of CFA offsets with the sorted list of prologue frame sizes.
+want=""
+for sym in $(llvm-readelf -sW "$OUT/dbg.elf" | awk '$4=="FUNC" && $7!="UND" && $8!="main" {print $8}'; echo main); do
+    want="$want $(frame_of "$OUT/dbg.elf" "$sym")"
+done
+got=$(llvm-dwarfdump --eh-frame "$OUT/dbg.elf" 2>/dev/null | grep -o 'def_cfa_offset: +[0-9]*' | tr -dc '0-9\n' | sort -n | tr '\n' ' ')
+want=$(printf '%s\n' $want | sort -n | tr '\n' ' ')
+[ "$got" = "$want" ] || fail "the FDEs report [$got] but the prologues allocate [$want]"
+printf '  %-40s %s\n' "FDE CFA list == prologue frame list ([$got])" 'ok'
+
+printf '%s\n' '[8/9] compact: main(argc, argv) still reads the initial stack'
+"$ASTER" build-elf --compact-frames "$OUT/args.ast" -o "$OUT/args.elf" >/dev/null 2>&1 || fail 'the compact args build failed'
+chmod +x "$OUT/args.elf"; set +e; "$OUT/args.elf" x y; rc=$?; set -e
+[ "$rc" = 3 ] || fail "the compact entry saw argc=$rc, expected 3"
+printf '  %-40s %s\n' 'argc = 3 with two arguments' 'ok'
+
+printf '%s\n' '[9/9] mutation: the call/aggregate guard is load-bearing'
+sed 's|const bool small=compact&&!usesCallScratch&&!usesStructScratch;|const bool small=compact;|' src/aster.cpp > "$OUT/mutant.cpp"
+grep -q 'const bool small=compact;' "$OUT/mutant.cpp" || fail 'the guard mutation stopped applying'
+$CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant no longer compiles'
+"$OUT/mutant" build-elf --compact-frames examples/stack_arg_abi.ast -o "$OUT/mut" >/dev/null 2>&1 || fail 'the mutant refused to build'
+chmod +x "$OUT/mut"
+set +e; "$OUT/mut"; mrc=$?; set -e
+[ "$mrc" != 15 ] || fail 'the mutant still returned 15 — the guard is not load-bearing'
+printf '  %-40s %s\n' "mutant diverges (exit $mrc, expected not 15)" 'ok'
+
+echo 'PASS: frame sizing (default pinned, compact leaf, stack args, CFI, mutation)'

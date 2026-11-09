@@ -3558,7 +3558,7 @@ struct Codegen {
             const std::map<std::string,uint32_t>& arrayLengthMap,
             const std::map<std::string,std::vector<uint32_t>>& arrayDimsMap,
             const std::set<std::string>& tlsGlobalNames,
-            bool sharedObject,bool injectInitCall,std::string initSym,bool runtimeBoundsCheck=false,bool debugLine=false)
+            bool sharedObject,bool injectInitCall,std::string initSym,bool runtimeBoundsCheck=false,bool debugLine=false,bool compactFrames=false)
         :functionName(std::move(name)),isMain(functionName=="main"&&!sharedObject),functionArities(arities),globals(globalNames),
          externGlobals(externalGlobals),externFunctions(externalFunctions),arrayGlobals(arrayNames),boolGlobals(boolGlobalNames),
          pointerFunctions(pointerFunctionNames),
@@ -3566,7 +3566,7 @@ struct Codegen {
          functionParamPointers(paramPointerMap),functionParamBools(paramBoolMap),arrayLengths(arrayLengthMap),
          globalArrayDims(arrayDimsMap),tlsGlobals(tlsGlobalNames),hasTls(!tlsGlobalNames.empty()),
          shared(sharedObject),
-         injectInit(injectInitCall),initSymbol(std::move(initSym)),boundsCheck(runtimeBoundsCheck),emitLineInfo(debugLine) {}
+         injectInit(injectInitCall),initSymbol(std::move(initSym)),boundsCheck(runtimeBoundsCheck),emitLineInfo(debugLine),compact(compactFrames) {}
     std::vector<std::map<std::string,int>> scopes;
     std::map<int,bool> pointerSlots;
     std::map<int,bool> boolSlots;              // frame slots holding a bool (stored as a 4-byte i32 0/1)
@@ -5658,6 +5658,7 @@ struct Codegen {
         const uint32_t stackBase=0,copyBase=stackBytes,sretBase=stackBytes+copyArea;
         // Eight-byte argument slots keep pointer and i64 values intact and match AAPCS64
         // stack slots. Limit nesting so all scratch slots remain inside the fixed 8 KiB frame.
+        usesCallScratch=true;
         if(callDepth>=14)throw Error("nested function-call arguments exceed compiler limit (14 for pointer ABI)");
         int live=nextTemp;
         spillTemps(live);
@@ -5796,6 +5797,7 @@ struct Codegen {
     // aggregate literal writes field by field; anything else is a copy from
     // wherever the value already lives.
     void emitStructStore(const Expr& e){
+        usesStructScratch=true;
         const Ty t=exprType(e);
         const uint32_t size=tySize(t);
         if(e.k==Expr::StructLit){
@@ -6021,6 +6023,18 @@ struct Codegen {
     void patchCond(size_t at,int cond,size_t target){code[at]=branchCond(cond,(int)at,(int)target);}
     void patchBranch(size_t at,size_t target){code[at]=branch((int)at,(int)target);}
     std::vector<size_t> epilogueAdds;
+    // v0.23.77-dev: the frame is sized per function. Two words carry the SUB SP
+    // pair (4096 and above needs two immediate adds), the RA store and its loads
+    // are patched when the size is known, and a function that neither calls nor
+    // copies/returns an aggregate keeps none of the compiler scratch tail.
+    std::vector<size_t> frameWords;
+    std::vector<size_t> incomingBaseWords;   // ADD X16, SP, #frame: caller stack arguments
+    std::vector<size_t> raWords;
+    bool usesCallScratch=false;
+    bool usesStructScratch=false;
+    uint32_t frameBytesUsed=8192;
+    uint8_t frameWordsUsed=1;
+    bool compact=false;   // v0.23.77-dev: --compact-frames
     void ret(const Expr& e){
         // A local array's storage lives in the frame: returning its address
         // hands the caller a dangling pointer, so reject it at compile time.
@@ -6038,6 +6052,7 @@ struct Codegen {
             if(!(actual==retTy))
                 throw Error("return type mismatch in function "+functionName+": expected "+
                             tyNameFull(retTy)+", got "+tyNameFull(actual));
+            usesStructScratch=true;
             if(structInMemory(retTy)){
                 // Larger than 16 bytes: the caller handed its buffer over in
                 // X8, which the prologue saved, so the value goes straight
@@ -6076,8 +6091,11 @@ struct Codegen {
     // sequence is the same either way — only whether X0 holds a value differs.
     void retVoid(){
         if(isMain){emit(0xd2800000u|(93u<<5)|8u);emit(0xd4000001u);}
-        else {emit(0xf94003feu|(uint32_t(1023)<<10)); // LDR X30, [SP, #8184]
-            epilogueAdds.push_back(code.size());emit(0);emit(0xd65f03c0u);}
+        else {if(compact){raWords.push_back(code.size());emit(0xf94003feu); // LDR X30, [SP, #off]: patched
+        } else emit(0xf94003feu|(uint32_t(1023)<<10));                     // LDR X30, [SP, #8184]
+            epilogueAdds.push_back(code.size());
+            if(compact){emit(0);emit(0);}else emit(0);
+            emit(0xd65f03c0u);}
     }
     bool definitelyReturns(const std::vector<Stmt>& ss) const {
         for(const auto& s:ss){
@@ -6570,7 +6588,15 @@ struct Codegen {
             slot+=width;
         }
         nextSlot=slot;
-        emit(0); // fixed 8 KiB frame: locals, caller-save spills, and nested call argument scratch
+        const bool haveMainArgs=isMain&&!f.params.empty();
+        if(compact){
+            if(haveMainArgs)emit(0x910003f0u);   // ADD X16, SP, #0 — the initial SP, before the frame moves
+            frameWords.clear();
+            frameWords.push_back(code.size());emit(0);frameWords.push_back(code.size());emit(0);   // SUB SP pair
+        } else {
+            frameWords.clear();
+            frameWords.push_back(code.size());emit(0);   // the historical single SUB SP, #8192
+        }
         // v0.23.51-dev: point TPIDR_EL0 at this image's thread-local block before
         // any TLS access. The block's base is a link-time constant resolved by
         // ADRP/ADD against __aster_tls_block, materialized into X17 so the MSR
@@ -6595,19 +6621,27 @@ struct Codegen {
             // parameter loop below expects a first, second and third one.
             // SP is addressable only by ADD (immediate), whose imm12 tops out
             // at 4095, so 8192 is built from 4095 + 4095 + 2.
-            emit(0x913FFFF0u);            // ADD  X16, SP, #4095
-            emit(0x913FFE10u);            // ADD  X16, X16, #4095
-            emit(0x91000A10u);            // ADD  X16, X16, #2     ; X16 = initial SP
+            if(compact){
+                // X16 holds the initial SP: the prologue captured it before the
+                // frame moved the stack pointer.
+            } else {
+                emit(0x913FFFF0u);            // ADD  X16, SP, #4095
+                emit(0x913FFE10u);            // ADD  X16, X16, #4095
+                emit(0x91000A10u);            // ADD  X16, X16, #2     ; X16 = initial SP
+            }
             emit(0xF9400200u);            // LDR  X0, [X16]        ; argc
             emit(0x91002201u);            // ADD  X1, X16, #8      ; argv
             emit(0x8B000C22u);            // ADD  X2, X1, X0, LSL #3
             emit(0x91002042u);            // ADD  X2, X2, #8       ; envp = argv + 8*(argc+1)
         }
-        if(!isMain) emit(0xf90003feu|(uint32_t(1023)<<10)); // STR X30, [SP, #8184]: preserve return address
+        if(!isMain){
+            if(compact){raWords.push_back(code.size());emit(0xf90003feu);} // STR X30, [SP, #off]: patched
+            else emit(0xf90003feu|(uint32_t(1023)<<10));                   // STR X30, [SP, #8184]
+        }
         // A struct larger than 16 bytes is returned through the buffer the
         // caller handed over in X8. Every return writes through it, and X8 is
         // a scratch register a nested call is free to take, so it is saved.
-        if(!isMain&&structInMemory(f.retType))storeStackOff(8,kSretSlot,Ty::I64);
+        if(!isMain&&structInMemory(f.retType)){usesStructScratch=true;storeStackOff(8,kSretSlot,Ty::I64);}
         for(size_t i=0;i<f.params.size();++i){
             const Ty pt=f.paramTypes[i];
             const int pslot=scopes.back()[f.params[i]];
@@ -6624,11 +6658,11 @@ struct Codegen {
                     emit(movX(kGlobalBase,lay.reg[i]));         // X16: the caller's copy
                     emitStructCopy(17,kGlobalBase,tySize(pt));
                 } else if(structInMemory(pt)){
-                    emit(0x91400bf0u);                          // ADD X16, SP, #8192
+                    incomingBaseWords.push_back(code.size());emit(0x91400bf0u); // ADD X16, SP, #8192 (patched)
                     emit(loadIncomingArgT(lay.stackOff[i],Ty::I64));
                     emitStructCopy(17,kGlobalBase,tySize(pt));
                 } else {
-                    emit(0x91400bf0u);                          // ADD X16, SP, #8192
+                    incomingBaseWords.push_back(code.size());emit(0x91400bf0u); // ADD X16, SP, #8192 (patched)
                     emit(addImm(kGlobalBase,kGlobalBase,lay.stackOff[i]));
                     emitStructCopy(17,kGlobalBase,argBytes(pt));
                 }
@@ -6636,7 +6670,7 @@ struct Codegen {
             }
             if(lay.reg[i]>=0)emit(storeVarT(lay.reg[i],pslot,pt));
             else {
-                emit(0x91400bf0u); // ADD X16, SP, #8192: address incoming caller stack area
+                incomingBaseWords.push_back(code.size());emit(0x91400bf0u); // ADD X16, SP, #8192 (patched)
                 const uint32_t incomingOffset=lay.stackOff[i];
                 if(incomingOffset>16380)throw Error("incoming argument offset exceeds load range");
                 emit(loadIncomingArgT(incomingOffset,pt));
@@ -6654,8 +6688,43 @@ struct Codegen {
         if(f.retType==Ty::Void&&!definitelyReturns(f.body))retVoid();
         if(nextTemp!=0)throw Error("internal compiler error: temporary register leak");
         if(nextSlot>kMaxLocals)throw Error("too many local declarations (limit 500, including parameters)");
-        code[0]=0xd1400bffu; // SUB SP, SP, #8192
-        for(size_t at:epilogueAdds)code[at]=0x91400bffu; // ADD SP, SP, #8192
+        // v0.23.77-dev: the frame this function actually needs. Without a call
+        // and without an aggregate copy or aggregate return it keeps none of
+        // the compiler scratch: frame = locals + the saved return address,
+        // rounded to the 16 bytes AAPCS64 wants. Everything else keeps the
+        // historical 8 KiB layout, whose scratch offsets are absolute.
+        const bool small=compact&&!usesCallScratch&&!usesStructScratch;
+        const uint32_t localsBytes=uint32_t(nextSlot)*8u;
+        const uint32_t frameBytes=small?((localsBytes+8u+15u)&~15u):8192u;
+        const uint32_t raOff=small?frameBytes-8u:8184u;
+        frameBytesUsed=frameBytes;
+        frameWordsUsed=compact?2u:1u;
+        auto framePair=[&](uint32_t size,bool sub)->std::pair<uint32_t,uint32_t>{
+            const uint32_t base=sub?0xd10003ffu:0x910003ffu;   // SUB/ADD SP, SP, #imm12
+            const uint32_t wide=sub?0xd14007ffu:0x914007ffu;   // SUB/ADD SP, SP, #0x1, LSL #12 (4096)
+            if(size<=4095u)return {base|(size<<10),0xd503201f};// NOP second
+            const uint32_t rest=size-4096u;
+            return {wide,rest==4096u?wide:(base|(rest<<10))};
+        };
+        if(compact){
+            const auto sp0=framePair(frameBytes,true);
+            code[frameWords[0]]=sp0.first;code[frameWords[1]]=sp0.second;
+        } else {
+            code[frameWords[0]]=0xd1400bffu;        // SUB SP, SP, #8192
+        }
+        auto patchImm12=[&](size_t at,uint32_t off){code[at]=(code[at]&~(0xFFFu<<10))|((off/8u)<<10);};
+        for(size_t at:raWords)patchImm12(at,raOff);
+        // The caller's stack arguments sit at the frame's far end: SP + the frame
+        // this function just allocated. The default layout's single ADD #8192 is
+        // already right; a compact frame needs the smaller immediate.
+        if(compact&&frameBytes!=8192u)
+            for(size_t at:incomingBaseWords)code[at]=0x910003f0u|(frameBytes<<10);
+        if(compact){
+            const auto sp1=framePair(frameBytes,false);
+            for(size_t at:epilogueAdds){code[at]=sp1.first;code[at+1]=sp1.second;}
+        } else {
+            for(size_t at:epilogueAdds)code[at]=0x91400bffu;   // ADD SP, SP, #8192
+        }
         return code;
     }
 
@@ -6929,6 +6998,8 @@ struct Rela { uint64_t offset,info; int64_t addend; };
 #pragma pack(pop)
 // debugVars (v0.23.32-dev): the function's parameters and locals, for .debug_info.
 struct CompiledFunction { std::string name; std::vector<uint32_t> code; std::vector<Codegen::Reloc> relocs; std::vector<Codegen::LineRow> lineRows; std::vector<DebugVar> debugVars;
+    uint32_t frameBytes=8192;   // v0.23.77-dev: this function's own frame, for -g's CFI
+    uint8_t frameWords=1;       // 1 = the historical single SUB/ADD, 2 = the compact pair
     // v0.23.33-dev: this body's prologue stored X30 at the top of its frame, so
     // an .eh_frame FDE may say where the return address lives. main does not
     // (it exits instead of returning), and neither does a body generated for a
@@ -8549,7 +8620,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
     }
 };
 
-std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functions,std::vector<Global>& globals,bool sharedObject=false,bool chainTail=true,bool boundsCheck=false,bool debugLine=false){
+std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functions,std::vector<Global>& globals,bool sharedObject=false,bool chainTail=true,bool boundsCheck=false,bool debugLine=false,bool compactFrames=false){
     std::map<std::string,size_t> arities;for(const auto& f:functions)arities[f.name]=f.params.size();
     std::set<std::string> globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions;
     std::set<std::string> boolGlobals,boolReturnFunctions;
@@ -8612,9 +8683,9 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
     std::vector<CompiledFunction> out;out.reserve(order.size()+1);
     for(const Function* f:order){
         sema.check(*f);
-        Codegen cg(f->name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,tlsGlobalNames,sharedObject,needInit&&f->name=="main",kInitSymbol,boundsCheck,debugLine);
+        Codegen cg(f->name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,tlsGlobalNames,sharedObject,needInit&&f->name=="main",kInitSymbol,boundsCheck,debugLine,compactFrames);
         cg.globalTypes=globalTypeMap;cg.argTypes=argTypeMap;cg.returnTypes=returnTypeMap;cg.globalFuncSig=globalFuncSigMap;
-        CompiledFunction cf;cf.name=f->name;cf.code=cg.run(*f);cf.relocs=std::move(cg.relocations);cf.lineRows=std::move(cg.lineRows);cf.debugVars=std::move(cg.debugVars);
+        CompiledFunction cf;cf.name=f->name;cf.code=cg.run(*f);cf.relocs=std::move(cg.relocations);cf.lineRows=std::move(cg.lineRows);cf.debugVars=std::move(cg.debugVars);cf.frameBytes=cg.frameBytesUsed;cf.frameWords=cg.frameWordsUsed;
         cf.preservesRa=!cg.isMain;out.push_back(std::move(cf));}
     if(needInit){
         // Synthetic initializer: assignments in source declaration order, followed by a chained
@@ -8635,9 +8706,9 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
         else r.expr=E(new Expr(Expr::Num,0));
         init.body.push_back(std::move(r));
         sema.check(init);   // the synthetic initializer is type-checked too
-        Codegen cg(init.name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,tlsGlobalNames,sharedObject,false,kInitSymbol,boundsCheck,debugLine);
+        Codegen cg(init.name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,tlsGlobalNames,sharedObject,false,kInitSymbol,boundsCheck,debugLine,compactFrames);
         cg.globalTypes=globalTypeMap;cg.argTypes=argTypeMap;cg.returnTypes=returnTypeMap;cg.globalFuncSig=globalFuncSigMap;
-        CompiledFunction cf;cf.name=init.name;cf.code=cg.run(init);cf.relocs=std::move(cg.relocations);cf.lineRows=std::move(cg.lineRows);cf.debugVars=std::move(cg.debugVars);
+        CompiledFunction cf;cf.name=init.name;cf.code=cg.run(init);cf.relocs=std::move(cg.relocations);cf.lineRows=std::move(cg.lineRows);cf.debugVars=std::move(cg.debugVars);cf.frameBytes=cg.frameBytesUsed;cf.frameWords=cg.frameWordsUsed;
         cf.preservesRa=!cg.isMain;
         out.push_back(std::move(cf));
     }
@@ -8646,6 +8717,11 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
 struct ObjectLayout {
     std::vector<uint32_t> ins;
     std::map<std::string,std::pair<uint64_t,uint64_t>> functions; // name -> (text offset, size)
+    // v0.23.77-dev: each function's own frame size, what its FDE's
+    // DW_CFA_def_cfa_offset reports. 8192 for the functions that keep the
+    // historical scratch tail.
+    std::map<std::string,uint32_t> frameBytes;
+    std::map<std::string,uint8_t> frameWords;   // 1 or 2 instructions for SUB/ADD
     std::vector<uint8_t> data;
     std::vector<uint8_t> rodata;
     // v0.23.71-dev: the alignment declared for this object's .rodata, the
@@ -8697,6 +8773,8 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
     // the `if (g.tls)` branch below for why the placement is not in source order.
     std::vector<const Global*> tlsInit,tlsZero;
     for(const auto& f:funcs){uint64_t off=L.ins.size()*4;L.functions[f.name]={off,uint64_t(f.code.size())*4};
+        L.frameBytes[f.name]=f.frameBytes;   // v0.23.77-dev
+        L.frameWords[f.name]=f.frameWords;   // v0.23.77-dev
         // A row whose instruction index is past the end of the function would
         // point into the next one, so it is dropped rather than mis-attributed.
         for(const auto& r:f.lineRows)if(r.ins<f.code.size())L.lineRows.push_back({off+uint64_t(r.ins)*4u,r.line});
@@ -9299,8 +9377,10 @@ static EhFrameBlob encodeEhFrame(const ObjectLayout& L,const std::vector<Compile
         ehPut32(body,0);                             // initial_location: pcrel sdata4, patched
         ehPut32(body,(uint32_t)size);                // address_range
         body.push_back(0x00);                        // the augmentation byte a "z" reader consumes
-        body.push_back(0x41);                        // DW_CFA_advance_loc 1: the SUB has run
-        body.push_back(0x0e);ehUleb(body,8192);      // DW_CFA_def_cfa_offset: CFA = SP + 8192
+        const bool twoWord=L.frameWords.count(f.name)&&L.frameWords.at(f.name)==2u;
+        body.push_back(twoWord?0x42:0x41);           // DW_CFA_advance_loc {2|1}: the frame move has run
+        const uint64_t frame=L.frameBytes.count(f.name)?L.frameBytes.at(f.name):8192u;
+        body.push_back(0x0e);ehUleb(body,frame);     // DW_CFA_def_cfa_offset: CFA = SP + this function's frame
         if(f.preservesRa){
             body.push_back(0x41);                    // ... and the STR X30 has run
             body.push_back(0x9e);ehUleb(body,1);     // DW_CFA_offset: r30 at CFA - 8
@@ -14088,7 +14168,8 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
                              bool debugLine=false, const std::string& sourcePath="",
                              // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
                              // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
-                             uint64_t pageSize=4096){
+                             uint64_t pageSize=4096,
+                             bool compactFrames=false){
     Parser p(src,false,dirNameOf(sourcePath));p.parse();
     // v0.23.52-dev: `tls let` is a first-class global in a shared object too —
     // each thread that dlopen's the module gets its own copy out of PT_TLS, and
@@ -14096,7 +14177,7 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
     // call. `extern tls let` still has no meaning here: there is no way to name
     // another module's thread-local through .dynsym, so it stays rejected above.
     for(const auto& g:p.globals)if(g.tls&&g.external)throw Error("an external thread-local (`extern tls let`) is not supported in a shared object: global '"+g.name+"'");
-    auto funcs=compileProgram(p.functions,p.globals,true,false,boundsCheck,debugLine);
+    auto funcs=compileProgram(p.functions,p.globals,true,false,boundsCheck,debugLine,compactFrames);
     if(funcs.empty())throw Error("shared object must define at least one function");
     ObjectLayout L=layoutObject(funcs,p.globals);
     std::vector<uint8_t> text=instructionBytes(L.ins);
@@ -14382,7 +14463,7 @@ static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,b
 
 int main(int argc,char**argv){
     const std::string cmd=argc>1?argv[1]:"";
-    std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false;
+    std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false,compactFrames=false;
     // v0.23.54-dev: load-segment page size. 4096 is the default (and the historical
     // value); 16384 is required so an app with targetSdk >= 35 loads on Android 15+
     // 16 KB-page devices. Only these two are accepted.
@@ -14404,6 +14485,7 @@ int main(int argc,char**argv){
             else if(a=="--pic")pic=true;
             else if(a=="--bounds-check")boundsCheck=true;
             else if(a=="-g"||a=="--debug-line")debugLine=true;
+            else if(a=="--compact-frames")compactFrames=true;
             else if(a=="--soname"){if(i+1>=argc)return false;soname=argv[++i];haveSoname=true;}
             else if(a=="--needed"){if(i+1>=argc)return false;needed.emplace_back(argv[++i]);}
             else if(a.rfind("--soname=",0)==0){soname=a.substr(9);haveSoname=true;}
@@ -15168,7 +15250,7 @@ int main(int argc,char**argv){
             const std::string src=readFile(sp);
             setSourceCache(sp,src);
             Parser p(src,true,dirNameOf(sp));p.parse();
-            auto funcs=compileProgram(p.functions,p.globals,pic,true,boundsCheck,debugLine);
+            auto funcs=compileProgram(p.functions,p.globals,pic,true,boundsCheck,debugLine,compactFrames);
             auto makeDebugLine=[&]()->DebugLineBlob{
                 if(!debugLine)return DebugLineBlob{};
                 ObjectLayout L=layoutObject(funcs,p.globals);
@@ -15201,7 +15283,7 @@ int main(int argc,char**argv){
             // one source straight to .so keeps the historical byte-identical path
             auto src=readFile(sources[0]);
             setSourceCache(sources[0], src);
-            return buildSoFromSource(src,output,soname,needed,boundsCheck,debugLine,sources[0],pageSize);
+            return buildSoFromSource(src,output,soname,needed,boundsCheck,debugLine,sources[0],pageSize,compactFrames);
         }
         {
             const bool multi = sources.size()>1;
@@ -15219,7 +15301,7 @@ int main(int argc,char**argv){
                         for(const auto& g:p.globals)
                             if(g.tls&&g.external)
                                 throw Error("an external thread-local (`extern tls let`) is not supported in a shared object: global '"+g.name+"'");
-                    auto funcs=compileProgram(p.functions,p.globals,soObject,true,boundsCheck,debugLine);
+                    auto funcs=compileProgram(p.functions,p.globals,soObject,true,boundsCheck,debugLine,compactFrames);
                     auto makeDebugLine=[&]()->DebugLineBlob{
                         if(!debugLine)return DebugLineBlob{};
                         ObjectLayout L=layoutObject(funcs,p.globals);

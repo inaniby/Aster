@@ -285,6 +285,7 @@ printf 'CACHE     : compiler builds through %s\n' "$CXX"
 # 3. Suites
 # ---------------------------------------------------------------------------
 DEFAULT_SUITES="
+frame-size-checks.sh
 stdlib2-checks.sh
 lang-completion-checks.sh
 project-checks.sh
