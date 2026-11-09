@@ -973,6 +973,53 @@ static bool caseValueFits(Ty t,int64_t folded){
         default:      return true;
     }
 }
+// v0.23.76-dev (audit A-06b): the value a folded constant really has, read at
+// the type the expression itself names. constantInteger() and foldConst() fold
+// in i64, so a u32 expression's wrap never happens there: `4294967295u + 1u`
+// folds to 4294967296 and a u32 slot then refused it ("local initializer does
+// not fit in u32"), while the 32-bit ADD the compiler emits stores 0. Both
+// operands are u32, so the wrap is the language's own rule (an unsigned-width
+// operation wraps modulo its width) and the fit check must see the value the
+// program will store. i32 and i64 keep their historical i64 folding — the
+// overflow errors are pinned by operator-checks.sh — and u64 wraps through
+// foldConst()'s u64Target. A u32 cast already folds by castConstValue(), which
+// is why `u32(4294967295u + 1u)` was the workaround before this helper.
+static int64_t foldAtExprType(Ty t,Ty slot,int64_t v){
+    // The wrap applies only when the consumer is not 64-bit: the emitted
+    // operation takes the consumer's width (wideOp's rule 3), so
+    // `let q: u64 = 0u - 1u;` subtracts at 64 bits and holds 2^64-1. Wrapping
+    // there would fold a different value than the program computes.
+    return (t==Ty::U32&&!tyIs64(slot))?(int64_t)(uint32_t)v:v;
+}
+// The promotion rule is defined with the type helpers further down; the parser
+// needs it early, for the constant-expression type below.
+static Ty promoteInt(Ty a,Ty b);
+// v0.23.76-dev (audit A-06b): the type a *constant* expression has, computed
+// before Sema exists. Global initializers are folded inside the parser, where
+// exprType() is not available, and the shapes a constant can take are few, so
+// the same answer is derived here. Only the u32 answer is consumed today (by
+// the global fold's wrap), and an unrecognised shape answers i32 — the same
+// default exprType gives a literal.
+static Ty constExprType(const Expr& e){
+    switch(e.k){
+        case Expr::Num:
+            if(e.boolLit)return Ty::Bool;
+            switch(e.suffix){
+                case Expr::LSU:  return Ty::U32;
+                case Expr::LSL:  return Ty::I64;
+                case Expr::LSUL: return Ty::U64;
+                default:         return Ty::I32;
+            }
+        case Expr::SizeOf: case Expr::Len: return Ty::I32;
+        case Expr::Cast: return e.ty;
+        case Expr::Neg: case Expr::BitNot: return constExprType(*e.a);
+        case Expr::Add: case Expr::Sub: case Expr::Mul: case Expr::Div: case Expr::Mod:
+        case Expr::BitAnd: case Expr::BitOr: case Expr::BitXor:
+            return promoteInt(constExprType(*e.a),constExprType(*e.b));
+        case Expr::Shl: case Expr::Shr: return constExprType(*e.a);
+        default: return Ty::I32;
+    }
+}
 struct Stmt {
     enum Kind { Let, Assign, FieldAssign, IndexAssign, DerefAssign, Return, If, While, For, Break, Continue, Switch, Expr } k; std::string name; unsigned line=0, col=0;   // P4.1: source location of this statement's leading token
     E expr; E idx;
@@ -1619,7 +1666,7 @@ class Parser {
                 else if(low=="l"){nn->suffix=Expr::LSL; if(n>0x7fffffffffffffffULL)throw Error("i64 literal out of range at "+std::to_string(tok.line)+":"+std::to_string(tok.col));}
                 else {nn->suffix=Expr::LSUL;}   // ul / lu — the full u64 range
             }
-            // v0.23.75-dev (audit F-01): an *unsuffixed* literal past 2^63-1
+            // v0.23.75-dev (audit A-01): an *unsuffixed* literal past 2^63-1
             // has no signed 64-bit reading, and v0.23.48-dev accepts the whole
             // unsigned range here. Type it u64 — what C does with a decimal
             // constant too large for long long. Without this the literal keeps
@@ -2832,12 +2879,14 @@ class Parser {
                 throw Error(loc(init->line,init->col,"global initializer type mismatch: expected "+tyNameFull(ty)+", got bool"));
             if(g.isArray){
                 if(!isConstExpr(*init))throw Error("array initializer must be a constant expression: "+g.name);
-                const int64_t value=foldConst(*init,ty.k==Ty::U64);
+                int64_t value=foldConst(*init,ty.k==Ty::U64);
+                value=foldAtExprType(constExprType(*init),ty,value);   // v0.23.76-dev (audit A-06b)
                 if(!initializerFits(ty,*init,value))
                     throw Error("array initializer does not fit in "+tyNameFull(ty)+": "+g.name+" ("+std::to_string(value)+")");
                 if(tyIs64(ty))g.wideInit=(uint64_t)value;else g.init=(int32_t)(uint32_t)(uint64_t)value;
             } else if(isConstExpr(*init)){
-                const int64_t value=foldConst(*init,ty.k==Ty::U64);
+                int64_t value=foldConst(*init,ty.k==Ty::U64);
+                value=foldAtExprType(constExprType(*init),ty,value);   // v0.23.76-dev (audit A-06b)
                 if(!initializerFits(ty,*init,value))
                     throw Error("global initializer does not fit in "+tyNameFull(ty)+": "+g.name+" ("+std::to_string(value)+")");
                 if(tyIs64(ty))g.wideInit=(uint64_t)value;else g.init=(int32_t)(uint32_t)(uint64_t)value;
@@ -4007,7 +4056,7 @@ struct Codegen {
         const Expr* p=&e; bool neg=false;
         if(p->k==Expr::Neg){ neg=true; p=p->a.get(); }
         if(!p||p->k!=Expr::Num)return false;
-        // v0.23.75-dev (audit F-06): a literal with the `u` suffix is a u32 by
+        // v0.23.75-dev (audit A-06): a literal with the `u` suffix is a u32 by
         // declaration, not a wide constant. Its value is past 2^31 by
         // construction, so the magnitude test below would force every
         // operation that touches it to 64 bits and defeat the 32-bit wrap the
@@ -6049,6 +6098,7 @@ struct Codegen {
                         // masking below still truncates the value to the element
                         // width — that is the ordinary store path, and it now
                         // only ever sees a constant that fits.)
+                        value=foldAtExprType(constExprType(*s.expr),elem,value);   // v0.23.76-dev (audit A-06b)
                         if(!initializerFits(elem,*s.expr,value))
                             throw Error("local array initializer does not fit in "+tyNameFull(elem)+": "+s.name+" ("+std::to_string(value)+")");
                     }
@@ -6106,8 +6156,11 @@ struct Codegen {
                         if(actualBool)throw Error("type mismatch initializing '"+s.name+"': expected i32, got bool");
                         // v0.23.27-dev: sema's range check, mirrored.
                         int64_t cv=0;
-                        if(constantInteger(*s.expr,cv)&&!initializerFits(s.ty,*s.expr,cv))
-                            throw Error("local initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(cv)+")");
+                        if(constantInteger(*s.expr,cv)){
+                            cv=foldAtExprType(constExprType(*s.expr),s.ty,cv);   // v0.23.76-dev (audit A-06b)
+                            if(!initializerFits(s.ty,*s.expr,cv))
+                                throw Error("local initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(cv)+")");
+                        }
                     }
                     int slot=nextSlot++;
                     // A bool-initialized slot is materialized as 0/1 (genBool); a
@@ -7919,6 +7972,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         int64_t v=0;
                         if(!constantInteger(*s.expr,v))
                             throw Error(loc(s.line,s.col,"array initializer must be a constant expression: "+s.name));
+                        v=foldAtExprType(constExprType(*s.expr),s.ty,v);   // v0.23.76-dev (audit A-06b)
                         // v0.23.27-dev: the check a global array initializer has
                         // always had. A local array used to accept any constant
                         // and store its low bytes, so `let a: u8[4] = 300;` filled
@@ -7995,8 +8049,13 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         // that does not fit the type it is written for is now
                         // an error in both places.
                         int64_t v=0;
-                        if(constantInteger(*s.expr,v)&&!initializerFits(s.ty,*s.expr,v))
-                            throw Error(loc(s.line,s.col,"local initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(v)+")"));
+                        if(constantInteger(*s.expr,v)){
+                            // v0.23.76-dev (audit A-06b): check the value the
+                            // program stores, not the i64 fold.
+                            v=foldAtExprType(constExprType(*s.expr),s.ty,v);
+                            if(!initializerFits(s.ty,*s.expr,v))
+                                throw Error(loc(s.line,s.col,"local initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(v)+")"));
+                        }
                         // v0.23.63-dev: the same rule, at a let. An i64 in a
                         // u8 slot used to be accepted and truncated, while an
                         // argument in the same slot was refused — the two
@@ -8048,8 +8107,11 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         // rule Let and global initialization already apply
                         // (v0.23.61-dev).
                         int64_t v=0;
-                        if(constantInteger(*s.expr,v)&&!initializerFits(b->ty,*s.expr,v))
-                            throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(b->ty)+": "+s.name+" ("+std::to_string(v)+")"));
+                        if(constantInteger(*s.expr,v)){
+                            v=foldAtExprType(constExprType(*s.expr),b->ty,v);   // v0.23.76-dev (audit A-06b)
+                            if(!initializerFits(b->ty,*s.expr,v))
+                                throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(b->ty)+": "+s.name+" ("+std::to_string(v)+")"));
+                        }
                         // v0.23.63-dev: and at a plain assignment, for the same
                         // reason: a store is a store wherever it is written.
                         if(!semaTypeIsPlaceholder(*s.expr)&&!tyAssignable(b->ty,actual,*s.expr))
@@ -8082,8 +8144,11 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
                     } else {
                         int64_t v=0;
-                        if(constantInteger(*s.expr,v)&&!initializerFits(want,*s.expr,v))
-                            throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(want)+": "+s.name+" ("+std::to_string(v)+")"));
+                        if(constantInteger(*s.expr,v)){
+                            v=foldAtExprType(constExprType(*s.expr),want,v);   // v0.23.76-dev (audit A-06b)
+                            if(!initializerFits(want,*s.expr,v))
+                                throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(want)+": "+s.name+" ("+std::to_string(v)+")"));
+                        }
                         // v0.23.63-dev: and at a global assignment — the
                         // fourth of the four places a value lands in a slot.
                         if(!semaTypeIsPlaceholder(*s.expr)&&!tyAssignable(want,actual,*s.expr))
@@ -9475,7 +9540,7 @@ ParsedObject parseObject(const std::string& input){
             throw Error(input+": relocation at offset "+std::to_string(r.offset)+" needs "+
                         std::to_string(need)+" bytes of .text and only "+
                         std::to_string(result.text.size()-r.offset)+" remain");
-        // v0.23.75-dev (audit F-05): this push_back was glued to the throw's
+        // v0.23.75-dev (audit A-05): this push_back was glued to the throw's
         // line, which reads as though it were part of the `if` body — the
         // statement after a throw never runs when the check fails, so it was
         // always unconditional, but -Wmisleading-indentation (and the project's

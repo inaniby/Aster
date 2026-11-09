@@ -712,7 +712,9 @@ is exactly the default branch.
   is `0`); an `u8`/`u16` operand is promoted to `i32` inside the expression, as
   in C, and only the store back into a narrow slot truncates — so
   `let a: u8 = 255;` then `a + 1` is `256` at `i32` width, while
-  `let b: u8 = a + 1;` leaves `b == 0`.
+  `let b: u8 = a + 1;` leaves `b == 0`. A constant initializer folds at the
+  type its expression names, so `let q: u32 = 4294967295u + 1u;` is accepted
+  and stores 0 (v0.23.76-dev) instead of being refused as 4294967296.
 - **Type assignment and rejection.** A value flows into a slot of its declared
   type; narrowing (`i32` into `u8`, `i64` into `i32`) and sign mismatch are
   compiler errors in initializers, assignments, arguments and returns. A literal

@@ -1,5 +1,5 @@
 #!/bin/sh
-# v0.23.75-dev checks for the WIDE-LITERAL COMPARISON round (audit F-01, F-06,
+# v0.23.75-dev checks for the WIDE-LITERAL COMPARISON round (audit A-01, F-06,
 # F-07; F-05 rides along because it is what let CI start at all).
 #
 # Three defects, one shape: a literal's *type* was decided by a rule that did
@@ -76,8 +76,8 @@ grep -qF 'if(suf.empty()&&n>0x7fffffffffffffffULL)nn->suffix=Expr::LSUL;' src/as
     || { echo 'FAIL: primary() no longer types an unsuffixed literal past 2^63-1 as u64 (F-01)' >&2; exit 1; }
 grep -qF 'if(p->suffix==Expr::LSU)return false;' src/aster.cpp \
     || { echo 'FAIL: constExceedsI32 no longer lets the `u` suffix win (F-06)' >&2; exit 1; }
-[ "$(grep -c 'case Expr::LSUL: return Ty::U64;' src/aster.cpp)" -eq 2 ] \
-    || { echo 'FAIL: the two exprType(Num) switches no longer both answer U64 for LSUL' >&2; exit 1; }
+[ "$(grep -c 'case Expr::LSUL: return Ty::U64;' src/aster.cpp)" -eq 3 ] \
+    || { echo 'FAIL: exprType(Num) (both copies) and constExprType no longer all answer U64 for LSUL' >&2; exit 1; }
 grep -qF 'result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}' src/aster.cpp \
     || { echo 'FAIL: the relocation push_back is missing (F-05)' >&2; exit 1; }
 if grep -qF 'remain");result.relocs' src/aster.cpp; then
@@ -131,6 +131,13 @@ check 'u32 variable vs u32 literal'     21 'fn main() -> i32 { let x: u32 = 4294
 check 'i64 context still widens a u32 literal' 22 'fn main() -> i32 { let q: i64 = 4294967295u + 1; if (q == 4294967296) { return 22; } return 0; }'
 check 'u8 store wraps, expression does not' 23 'fn main() -> i32 { let a: u8 = 255; if (a + 1 == 256) { let b: u8 = a + 1; if (b == 0) { return 23; } } return 0; }'
 check 'u32 cast is the folding escape hatch' 24 'fn main() -> i32 { let q: u32 = u32(4294967295u + 1u); if (q == 0) { return 24; } return 0; }'
+# --- F-06b: a constant initializer folds at the type it names, so the same
+# expression is accepted without the cast now that the fold wraps ---
+check 'u32 initializer folds with the wrap' 25 'fn main() -> i32 { let q: u32 = 4294967295u + 1u; if (q == 0) { return 25; } return 0; }'
+check 'u32 global initializer folds too' 26 'let g: u32 = 4294967295u + 1u;
+fn main() -> i32 { if (g == 0) { return 26; } return 0; }'
+check 'a u64 consumer keeps the fold and the run equal' 27 'let g: u64 = 0u - 1u;
+fn main() -> i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
 else
     printf '%s\n' '  SKIP: the behavioural matrix needs qemu to run'
 fi
@@ -258,12 +265,18 @@ mutate 'm1: oversized literals stay i32-typed' \
 mutate 'm2: the u suffix no longer wins' \
     's|if(p->suffix==Expr::LSU)return false;||' \
     must_differ 'u32 multiply wraps' 17 'fn main() -> i32 { if (4294967295u * 2u == 4294967294u) { return 17; } return 0; }'
+# m4: the fold wraps at the expression's width even when the consumer is
+# 64-bit, so the global and the running local disagree.
+mutate 'm4: the fold ignores the consumer width' \
+    's|t==Ty::U32&&!tyIs64(slot)|t==Ty::U32|' \
+    must_differ 'a u64 consumer keeps the fold and the run equal' 27 'let g: u64 = 0u - 1u;
+fn main() -> i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
 # m3: the oversized literal is typed i64 instead of u64 — the value cannot fit,
 # so the unsigned reading is lost and `> 0` flips.
 mutate 'm3: oversized literals typed i64' \
     's|nn->suffix=Expr::LSUL;|nn->suffix=Expr::LSL;|g' \
     must_differ 'ul suffix agrees with the bare form' 11 'fn main() -> i32 { if (18446744073709551615ul > 0) { return 11; } return 0; }'
-printf '%s\n' 'PASS: three mutated compilers each lose exactly one rule, and the checks notice'
+printf '%s\n' 'PASS: four mutated compilers each lose exactly one rule, and the checks notice'
 fi
 
 # ---------------------------------------------------------------------------
