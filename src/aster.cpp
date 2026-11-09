@@ -6,6 +6,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <sys/wait.h>          // waitpid/WIFEXITED for `aster run`
+#include <sys/utsname.h>        // `aster doctor`: host description
+#include <sys/statvfs.h>        // `aster doctor`: free space
+#include <dirent.h>             // `aster doctor`: cache entries
 #include <cstring>
 #include <ctime>
 #include <fstream>
@@ -11559,6 +11562,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
 "       aster build|run [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache] [-- args]\n"
 "       aster test  [-g] [--bounds-check] [--page-size N] [--no-cache] [filter]\n"
+"       aster doctor [--strict]             check the host and the project it is run in\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs"
     "       aster link-obj|link-pie <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
@@ -14160,6 +14164,27 @@ static bool makeDirs(const std::string& path){
     if(!cur.empty()&&!dirExists(cur))::mkdir(cur.c_str(),0777);
     return dirExists(path);
 }
+// v0.23.77-dev: is a program on PATH? `aster doctor` asks this about the
+// optional tools (cc, python3, openssl, readelf, objdump, llvm-dwarfdump) and
+// about qemu-aarch64 when the host cannot run AArch64 itself.
+static bool haveProgram(const std::string& name){
+    const char* path=std::getenv("PATH");
+    if(!path)return false;
+    const std::string p=path;
+    size_t start=0;
+    for(;;){
+        const size_t end=p.find(':',start);
+        const std::string dir=(end==std::string::npos)?p.substr(start):p.substr(start,end-start);
+        if(!dir.empty()){
+            const std::string full=dir+"/"+name;
+            struct stat st{};
+            if(::stat(full.c_str(),&st)==0&&S_ISREG(st.st_mode)&&(st.st_mode&0111))return true;
+        }
+        if(end==std::string::npos)break;
+        start=end+1;
+    }
+    return false;
+}
 struct ProjectSpec {
     std::string kind="exe";          // exe | apk
     std::string name, package, abi="arm64-v8a", label;
@@ -14561,6 +14586,179 @@ int main(int argc,char**argv){
             std::cout<<"Aster v"<<kVersion<<": "<<ran<<" test"<<(ran==1?"":"s")<<", "<<failed
                      <<" failed ("<<compiled<<" compiled, "<<reused<<" reused)\n";
             return failed==0?0:1;
+        }
+        if(cmd=="doctor"){
+            bool strict=false;
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                if(a=="--strict"){strict=true;continue;}
+                std::cerr<<"aster doctor: unknown option "<<a<<"\n";return 2;
+            }
+            int okCount=0,warnCount=0,failCount=0;
+            auto say=[&](const char* raw,const std::string& msg){
+                const std::string level=trimWs(raw);
+                std::cout<<"["<<(level=="ok"?"ok  ":level)<<"] "<<msg<<"\n";
+                if(level=="ok")++okCount;
+                else if(level=="warn")++warnCount;
+                else ++failCount;
+            };
+            std::cout<<"Aster doctor v"<<kVersion<<"\n";
+            // --- the compiler itself
+            {
+                uint16_t probe=1;
+                const bool little=*(const uint8_t*)&probe==1;
+                say(" ok ",std::string("compiler: ")+kVersion+", "+
+                    (sizeof(void*)==8?"64-bit":"32-bit")+", "+(little?"little-endian":"big-endian"));
+            }
+            // --- the host
+            std::string machine;
+            {
+                struct utsname u{};
+                if(::uname(&u)==0){
+                    machine=u.machine;
+                    say(" ok ",std::string("host: ")+u.sysname+" "+u.release+" "+u.machine);
+                } else say("warn","host: uname failed");
+            }
+            // --- page size, and the Android story it implies
+            {
+                const long ps=::sysconf(_SC_PAGESIZE);
+                if(ps==16384)say(" ok ",std::string("page size 16384 — pass --page-size 16384 for Android 15+ devices"));
+                else if(ps==4096)say(" ok ",std::string("page size 4096 — the default --page-size matches this host"));
+                else say("warn","page size "+std::to_string(ps)+" — neither 4096 nor 16384; --page-size accepts only those two");
+            }
+            const bool android=fileExists("/system/build.prop")||std::getenv("ANDROID_ROOT")!=nullptr;
+            if(android){
+                say("ok  ","android runtime detected");
+                if(haveProgram("pm"))say("ok  ","pm found — `pm install` can install a built APK");
+                else say("warn","pm not on PATH — an APK must be installed another way");
+            }
+            // --- can this host run an AArch64 output?
+            {
+                const bool native=(machine=="aarch64"||machine=="arm64");
+                if(native)say("ok  ","outputs are AArch64 and this host is "+machine+" — run them directly");
+                else if(haveProgram("qemu-aarch64"))say("ok  ","outputs are AArch64; qemu-aarch64 will run them");
+                else say("warn","outputs are AArch64 but this host is "+machine+" and qemu-aarch64 is missing");
+            }
+            // --- scratch space
+            {
+                std::string tmp=std::getenv("TMPDIR")?std::getenv("TMPDIR"):"/tmp";
+                const std::string probe=tmp+"/.aster-doctor-probe";
+                std::ofstream t(probe,std::ios::binary);
+                if(t){t<<"x";t.close();std::remove(probe.c_str());
+                    say("ok  ","writable scratch: "+tmp);}
+                else {
+                    say("fail","scratch directory is not writable: "+tmp+" (set TMPDIR)");
+                }
+            }
+            // --- the optional tools the suites and C interop use
+            struct Tool{const char* name;const char* why;bool must;};
+            const Tool tools[]={
+                {"cc","the host C compiler — C interop and the differential suites",false},
+                {"python3","validate_apk.py and the tooling suites",false},
+                {"openssl","keygen's independent oracle",false},
+                {"readelf","ELF inspection",false},
+                {"objdump","disassembly checks",false},
+                {"llvm-dwarfdump","-g output verification",false},
+            };
+            for(const auto& t:tools){
+                if(haveProgram(t.name))say("ok  ",std::string(t.name)+" found — "+t.why);
+                else if(t.must)say("fail",std::string(t.name)+" missing — "+t.why);
+                else say("warn",std::string(t.name)+" missing — optional: "+t.why);
+            }
+            // --- the project, when there is one
+            if(fileExists("aster.proj")){
+                ProjectSpec spec;
+                bool parsed=true;
+                try{ spec=parseProjectFile("aster.proj"); }
+                catch(const Error& e){ parsed=false; say("fail",std::string("aster.proj does not parse: ")+e.what()); }
+                if(parsed){
+                    say(" ok ",std::string("project: kind ")+spec.kind+
+                        (spec.name.empty()?"":" name "+spec.name)+
+                        (spec.package.empty()?"":" package "+spec.package));
+                    int missing=0;
+                    for(const auto& sp:spec.sources)if(!fileExists(sp)){++missing;say("fail","missing source: "+sp);}
+                    if(missing==0)say("ok  ",std::to_string(spec.sources.size())+" source"+((spec.sources.size()==1)?"":"s")+" present");
+                    // exactly one entry expected for a program; an APK has none
+                    int mains=0;
+                    if(spec.kind=="exe"){
+                        for(const auto& sp:spec.sources){
+                            if(!fileExists(sp))continue;
+                            try{
+                                const std::string src=readFile(sp);
+                                g_buildDeps.clear();
+                                Parser p(src,false,dirNameOf(sp));p.parse();
+                                for(const auto& f:p.functions)if(f.name=="main")++mains;
+                            }catch(...){}
+                        }
+                        g_buildDeps.clear();
+                        if(mains==0)say("fail","no source defines `main` — an exe project needs one");
+                        else if(mains>1)say("warn",std::to_string(mains)+" sources define `main` — the link will refuse them");
+                        else say("ok  ","exactly one source defines `main`");
+                    }
+                    if(!spec.tests.empty()){
+                        int tmissing=0;
+                        for(const auto& tp:spec.tests)if(!fileExists(tp)){++tmissing;say("fail","missing test source: "+tp);}
+                        if(tmissing==0){
+                            if(spec.kind=="apk")say("warn",std::to_string(spec.tests.size())+" test line(s) but an apk project cannot run `aster test`");
+                            else say("ok  ",std::to_string(spec.tests.size())+" test"+((spec.tests.size()==1)?"":"s")+" present");
+                        }
+                    }
+                    // --- signing
+                    if(spec.kind=="apk"){
+                        if(spec.signMode=="release"){
+                            if(spec.keystore.empty()||spec.cert.empty())
+                                say("fail","sign-mode release needs keystore and cert in aster.proj");
+                            else if(!fileExists(spec.keystore))say("fail","release keystore missing: "+spec.keystore);
+                            else if(!fileExists(spec.cert))say("fail","release certificate missing: "+spec.cert);
+                            else {
+                                try{
+                                    SigningKey k=releaseKey(spec.keystore,spec.cert);
+                                    say("ok  ",std::string("release signing: key and certificate load (")+
+                                        std::to_string(k.n.size()*8)+"-bit RSA)");
+                                }catch(const std::exception& e){
+                                    say("fail",std::string("release signing does not load: ")+e.what());
+                                }
+                            }
+                        } else {
+                            if(!spec.keystore.empty()||!spec.cert.empty())
+                                say("fail","keystore/cert are release settings — add `sign-mode release` or remove them");
+                            else {
+                                const std::string kd=projectKeyDir("");
+                                if(fileExists(debugKeyPath(kd))&&fileExists(debugCertPath(kd)))
+                                    say("ok  ","debug signing key present: "+debugKeyPath(kd));
+                                else say("warn","no project debug key yet — the first APK build creates one in "+kd);
+                            }
+                        }
+                    } else if(spec.signMode=="release") {
+                        say("warn","sign-mode release has no effect on an exe project");
+                    }
+                }
+            } else {
+                say("ok  ","no aster.proj here — nothing to check; `aster new <dir>` starts a project");
+            }
+            // --- room to build
+            {
+                struct statvfs vf{};
+                if(::statvfs(".",&vf)==0){
+                    const double free=(double)vf.f_bavail*(double)vf.f_frsize;
+                    char buf[64];
+                    std::snprintf(buf,sizeof buf,"%.1f MiB",free/(1024.0*1024.0));
+                    if(free<50.0*1024.0*1024.0)say("warn",std::string("low disk space in this directory: ")+buf);
+                    else say("ok  ",std::string("free space here: ")+buf);
+                } else say("warn","cannot read free space for this directory");
+            }
+            if(fileExists("build/.cache")&&dirExists("build/.cache")){
+                int entries=0;
+                DIR* d=::opendir("build/.cache");
+                if(d){while(struct dirent* e=::readdir(d))if(e->d_name[0]!='.')++entries;::closedir(d);}
+                say("ok  ",std::to_string(entries)+" files in build/.cache (safe to delete)");
+            }
+            std::cout<<"Aster doctor: "<<okCount<<" ok, "<<warnCount<<" warning"<<(warnCount==1?"":"s")
+                     <<", "<<failCount<<" failure"<<(failCount==1?"":"s")<<"\n";
+            if(failCount>0)return 1;
+            if(strict&&warnCount>0)return 1;
+            return 0;
         }
         if(cmd=="build"||cmd=="run"){
             const bool isRun=cmd=="run";

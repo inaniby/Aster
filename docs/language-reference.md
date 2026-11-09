@@ -1284,6 +1284,7 @@ aster new [--apk] <dir>
 aster add <source.ast>
 aster build|run [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache] [-- args…]
 aster test  [-g] [--bounds-check] [--page-size N] [--no-cache] [filter]
+aster doctor [--strict]
 aster deps [<source.ast> ...] [-o OBJ]
 ```
 
@@ -1331,6 +1332,30 @@ sections with the five `DT_VER*` tags. Exported symbols answer `name@@aster`
 under `readelf --version-info`, exactly as a `gcc -shared` link with a
 version script does.
 
+
+## 11d. `aster doctor` — check the host and the project (v0.23.77-dev)
+
+`aster doctor` answers "will this machine and this directory build what I think
+they will" before anything is compiled. It prints one line per check with
+`[ok  ]`, `[warn]` or `[fail]`, a summary, and exits 1 when anything failed
+(`--strict` also fails on warnings):
+
+* the compiler itself — version, word size, endianness;
+* the host — `uname`, and whether that host can **run** AArch64 output itself or
+  needs `qemu-aarch64`;
+* the kernel/loader page size, and the `--page-size` it implies (4096 default;
+  16384 for Android 15+ 16 KB pages);
+* on Android: `pm`, so an APK can be installed;
+* a writable scratch directory (`TMPDIR` or `/tmp`);
+* the optional tools the suites and C interop use — `cc`, `python3`, `openssl`,
+  `readelf`, `objdump`, `llvm-dwarfdump` — as warnings, never failures;
+* the project, when `aster.proj` is here: `kind`, the sources (each present),
+  whether exactly one defines `main` for an exe project, the `test` sources, the
+  signing configuration (release keys actually load, or where the debug key is),
+  free space for `build/`, and how many files the object cache holds.
+
+It never writes to the project and never needs one: outside a project it simply
+says so.
 
 ## 11c. Projects: `aster new`, `add`, `build`, `run`, `deps` (v0.23.77-dev)
 

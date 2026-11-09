@@ -65,6 +65,14 @@ breaking this project's own `-Werror` build.
   suite: `aster test` links each test against the non-entry sources, runs it,
   and reports pass/fail by exit code, with an optional substring filter and the
   same object cache. APK projects refuse `test` (they are shared objects).
+* **`aster doctor`** checks the environment before anything is built: the
+  compiler and host descriptions (word size, endianness, and whether this host
+  runs AArch64 output or needs qemu), the page size and the `--page-size` it
+  implies, `pm` on Android, a writable scratch directory, the optional tools the
+  suites use (`cc`, `python3`, `openssl`, `readelf`, `objdump`,
+  `llvm-dwarfdump` — warnings, not failures), and, inside a project, its kind,
+  sources, entry source, tests, signing configuration and free space. It exits 1
+  on any failure, and `--strict` turns warnings into failures too.
 
 ### Byte baseline
 
