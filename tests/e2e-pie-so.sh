@@ -47,10 +47,14 @@ for image in tmp-pie-global tmp-pie-modular; do
 done
 
 # --- shared object through dlopen/dlsym ----------------------------------------------
+if aster_can_dlopen_glibc_so; then
 ./aster build-so examples/so_math.ast -o tmp-so-math.so
 set +e; run ./tmp-so-host ./tmp-so-math.so; got=$?; set -e
 [ "$got" -eq 0 ] || { echo "FAIL: shared-object host exit=$got"; exit 1; }
 echo "PASS: dlopen/dlsym shared-object host exit=$got"
+else
+echo "SKIP: this host's loader cannot resolve an Aster .so's glibc DT_NEEDED (Android bionic)"
+fi
 
 rm -f tmp-pie-hello tmp-pie-global tmp-pie-modular tmp-pie-main.o tmp-pie-helper.o \
       tmp-pie-loader tmp-so-host tmp-so-math.so tmp-pie-bases tmp-pie-base.log

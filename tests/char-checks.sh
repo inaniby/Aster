@@ -46,6 +46,7 @@
 
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 . tests/lib/baseline.sh
 . tests/lib/verdict.sh
 CXX=${CXX:-c++}
@@ -158,7 +159,9 @@ int main(void){
 C
 "$HOSTCC" -c "$W/c_caller.c" -o "$W/c_caller.o" >"$W/c_caller.clog" 2>&1 \
     || { echo 'FAIL: C caller does not compile:' >&2; cat "$W/c_caller.clog" >&2; exit 1; }
-"$HOSTCC" "$W/aster_charfn.o" "$W/c_caller.o" -o "$W/hybrid" -static >"$W/hybrid.log" 2>&1 \
+# v0.23.76-dev (audit): -static is the CI shape (cross build + qemu-user); a
+# native AArch64 toolchain links these two leaf objects dynamically.
+aster_hostcc_link "$W/hybrid" "$W/aster_charfn.o" "$W/c_caller.o" >"$W/hybrid.log" 2>&1 \
     || { echo 'FAIL: C caller cannot link Aster char function (ABI mismatch):' >&2; cat "$W/hybrid.log" >&2; exit 1; }
 run "$W/hybrid" >/dev/null 2>&1 && hy=0 || hy=$?
 [ "$hy" -gt 127 ] && hy=$((hy - 256))

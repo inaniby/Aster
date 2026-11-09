@@ -50,7 +50,11 @@ while [ "$i" -le 3 ]; do
 done
 check "static-PIE run-time initializer at a random base" 42 ./tmp-sym-loader ./tmp-sym-e2e-init
 
-check "shared object with .symtab through dlopen/dlsym" 0 ./tmp-sym-host ./tmp-sym-e2e.so
+if aster_can_dlopen_glibc_so; then
+  check "shared object with .symtab through dlopen/dlsym" 0 ./tmp-sym-host ./tmp-sym-e2e.so
+else
+  echo "SKIP: this host's loader cannot resolve an Aster .so's glibc DT_NEEDED (Android bionic)"
+fi
 
 # ---------------------------------------------------------------- readelf -s evidence
 if [ "$READELF" = none ]; then

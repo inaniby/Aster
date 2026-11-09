@@ -32,3 +32,16 @@ aster_hostcc_link() {
     "$HOSTCC" -O2 "$@" -o "$_out" >/dev/null 2>&1 && return 0
     return 1
 }
+
+# aster_can_dlopen_glibc_so — can this host load a shared object whose DT_NEEDED
+# names a glibc soname (libc.so.6)?
+#
+# The e2e dlopen layers feed an Aster-built .so to the host loader. On Linux the
+# loader resolves libc.so.6 by name. Android's bionic loader only provides
+# libc.so, so the load aborts with
+#   cannot find "libc.so.6" from verneed[0] in DT_NEEDED list
+# — a host property, not something the shared object can be blamed for. Those
+# layers skip on Android and run everywhere else.
+aster_can_dlopen_glibc_so() {
+    [ -z "${ANDROID_ROOT:-}" ] && [ ! -f /system/build.prop ]
+}

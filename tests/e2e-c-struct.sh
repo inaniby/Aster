@@ -19,6 +19,7 @@
 set -eu
 . tests/host-toolchain-probe.sh
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 CXX=${CXX:-c++}
 OUT=${OUT:-tmp-c-struct}
 mkdir -p "$OUT"
@@ -30,9 +31,14 @@ $CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o "$OUT/aste
 printf '%s\n' '[2/4] Aster compiles its half: a relocatable object, no C involved'
 "$OUT/aster" build-obj examples/c_struct_abi.ast -o "$OUT/c_struct_abi.o"
 
-printf '%s\n' '[3/4] Link the two halves statically'
-${HOSTCC:-cc} -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -static \
-    tests/c-struct-host.c "$OUT/c_struct_abi.o" -o "$OUT/c-struct-host"
+printf '%s\n' '[3/4] Link the two halves'
+# v0.23.76-dev (audit): -static when the toolchain has it (cross gcc + qemu-user),
+# otherwise a plain link — a native AArch64 host has no libc.a and runs the
+# binary directly.
+HOSTCC=${HOSTCC:-cc}
+aster_hostcc_link "$OUT/c-struct-host" -std=c11 -Wall -Wextra -Wpedantic -Werror \
+    tests/c-struct-host.c "$OUT/c_struct_abi.o" \
+    || { echo 'FAIL: cannot link the C host against the Aster object' >&2; exit 1; }
 
 printf '%s\n' '[4/4] Run: C calls Aster, Aster calls C'
 "$PWD/tests/run-aarch64.sh" "$OUT/c-struct-host"

@@ -11,6 +11,10 @@
 # Control flow: this file is *sourced*, so `return` continues the caller and
 # `exit` terminates it — a skip exits, a successful probe returns.
 HOSTCC=${HOSTCC:-cc}
+# v0.23.76-dev (audit): the e2e tests also read the ELF back; resolve
+# readelf/objdump/objcopy for this host in one place (plain names on a
+# native AArch64 host, cross names on an x86 CI box).
+. tests/lib/tools.sh
 if ! command -v "$HOSTCC" >/dev/null 2>&1; then
     echo "SKIP: $0 needs \$HOSTCC=$HOSTCC on PATH" >&2
     exit 0
