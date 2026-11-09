@@ -89,7 +89,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.76-dev"
+#define ASTER_VERSION_STRING "0.23.77-dev"
 
 namespace {
 constexpr const char* kVersion = ASTER_VERSION_STRING;
@@ -118,7 +118,7 @@ std::string readFile(const std::string& p) {
 // points call setSourceCache() right before parsing.
 std::string g_srcFile;
 std::vector<std::string> g_srcLines;
-// v0.23.76-dev (audit A-15): when a diagnostic comes out of an included file,
+// v0.23.77-dev (audit A-15): when a diagnostic comes out of an included file,
 // the reporter must name that file and echo its line. The include parser
 // fills these in as the exception passes through it: by the time main prints
 // the message the sub-parse has already been unwound, so a swap would be
@@ -984,7 +984,7 @@ static bool caseValueFits(Ty t,int64_t folded){
         default:      return true;
     }
 }
-// v0.23.76-dev (audit A-06b): the value a folded constant really has, read at
+// v0.23.77-dev (audit A-06b): the value a folded constant really has, read at
 // the type the expression itself names. constantInteger() and foldConst() fold
 // in i64, so a u32 expression's wrap never happens there: `4294967295u + 1u`
 // folds to 4294967296 and a u32 slot then refused it ("local initializer does
@@ -1005,7 +1005,7 @@ static int64_t foldAtExprType(Ty t,Ty slot,int64_t v){
 // The promotion rule is defined with the type helpers further down; the parser
 // needs it early, for the constant-expression type below.
 static Ty promoteInt(Ty a,Ty b);
-// v0.23.76-dev (audit A-06b): the type a *constant* expression has, computed
+// v0.23.77-dev (audit A-06b): the type a *constant* expression has, computed
 // before Sema exists. Global initializers are folded inside the parser, where
 // exprType() is not available, and the shapes a constant can take are few, so
 // the same answer is derived here. Only the u32 answer is consumed today (by
@@ -2891,7 +2891,7 @@ class Parser {
             if(g.isArray){
                 if(!isConstExpr(*init))throw Error("array initializer must be a constant expression: "+g.name);
                 const int64_t value=foldConst(*init,ty.k==Ty::U64);
-                // v0.23.76-dev (audit A-06b): the fit check sees the value
+                // v0.23.77-dev (audit A-06b): the fit check sees the value
                 // the program stores, so a u32 expression wraps here, while
                 // `value` stays the plain i64 fold that the u64-target
                 // guard in const-fold-u64-checks.sh pins by its exact text.
@@ -2901,7 +2901,7 @@ class Parser {
                 if(tyIs64(ty))g.wideInit=(uint64_t)folded;else g.init=(int32_t)(uint32_t)(uint64_t)folded;
             } else if(isConstExpr(*init)){
                 const int64_t value=foldConst(*init,ty.k==Ty::U64);
-                // v0.23.76-dev (audit A-06b): the fit check sees the value
+                // v0.23.77-dev (audit A-06b): the fit check sees the value
                 // the program stores, so a u32 expression wraps here, while
                 // `value` stays the plain i64 fold that the u64-target
                 // guard in const-fold-u64-checks.sh pins by its exact text.
@@ -2992,14 +2992,14 @@ public:
         Parser sub(text,false,dirNameOf(full),includes);
         includes->stack.push_back(full);
         includes->done.insert(full);
-        // v0.23.76-dev (audit A-15): while this file is parsed, a diagnostic is
+        // v0.23.77-dev (audit A-15): while this file is parsed, a diagnostic is
         // about *this* file. Without the swap the reporter printed the including
         // file's name with this file's line number and then echoed the wrong
         // source line (or none at all).
         try{ sub.parse(); }
         catch(...){
             includes->stack.pop_back();
-            // v0.23.76-dev (audit A-15): the position in this message belongs to
+            // v0.23.77-dev (audit A-15): the position in this message belongs to
             // the included file, so hand the reporter that file and its lines.
             // The innermost include owns the diagnostic: an outer one must not
             // overwrite the file the message is really about.
@@ -3478,7 +3478,7 @@ struct Codegen {
     std::string initSymbol;
     int callDepth=0;
     mutable unsigned typeDepth=0;
-    // v0.23.76-dev (audit A-11): memoised operand types. Every operator asks
+    // v0.23.77-dev (audit A-11): memoised operand types. Every operator asks
     // exprType for both operands twice — once in the void check above the type
     // switch and once inside its own arm — so a left-deep chain of n operators
     // cost 2^n type computations: `1+1+...+1` with 20 terms ran 11,010,020 of
@@ -6154,7 +6154,7 @@ struct Codegen {
                         // masking below still truncates the value to the element
                         // width — that is the ordinary store path, and it now
                         // only ever sees a constant that fits.)
-                        value=foldAtExprType(constExprType(*s.expr),elem,value);   // v0.23.76-dev (audit A-06b)
+                        value=foldAtExprType(constExprType(*s.expr),elem,value);   // v0.23.77-dev (audit A-06b)
                         if(!initializerFits(elem,*s.expr,value))
                             throw Error("local array initializer does not fit in "+tyNameFull(elem)+": "+s.name+" ("+std::to_string(value)+")");
                     }
@@ -6213,7 +6213,7 @@ struct Codegen {
                         // v0.23.27-dev: sema's range check, mirrored.
                         int64_t cv=0;
                         if(constantInteger(*s.expr,cv)){
-                            cv=foldAtExprType(constExprType(*s.expr),s.ty,cv);   // v0.23.76-dev (audit A-06b)
+                            cv=foldAtExprType(constExprType(*s.expr),s.ty,cv);   // v0.23.77-dev (audit A-06b)
                             if(!initializerFits(s.ty,*s.expr,cv))
                                 throw Error("local initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(cv)+")");
                         }
@@ -8028,7 +8028,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         int64_t v=0;
                         if(!constantInteger(*s.expr,v))
                             throw Error(loc(s.line,s.col,"array initializer must be a constant expression: "+s.name));
-                        v=foldAtExprType(constExprType(*s.expr),s.ty,v);   // v0.23.76-dev (audit A-06b)
+                        v=foldAtExprType(constExprType(*s.expr),s.ty,v);   // v0.23.77-dev (audit A-06b)
                         // v0.23.27-dev: the check a global array initializer has
                         // always had. A local array used to accept any constant
                         // and store its low bytes, so `let a: u8[4] = 300;` filled
@@ -8106,7 +8106,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         // an error in both places.
                         int64_t v=0;
                         if(constantInteger(*s.expr,v)){
-                            // v0.23.76-dev (audit A-06b): check the value the
+                            // v0.23.77-dev (audit A-06b): check the value the
                             // program stores, not the i64 fold.
                             v=foldAtExprType(constExprType(*s.expr),s.ty,v);
                             if(!initializerFits(s.ty,*s.expr,v))
@@ -8164,7 +8164,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         // (v0.23.61-dev).
                         int64_t v=0;
                         if(constantInteger(*s.expr,v)){
-                            v=foldAtExprType(constExprType(*s.expr),b->ty,v);   // v0.23.76-dev (audit A-06b)
+                            v=foldAtExprType(constExprType(*s.expr),b->ty,v);   // v0.23.77-dev (audit A-06b)
                             if(!initializerFits(b->ty,*s.expr,v))
                                 throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(b->ty)+": "+s.name+" ("+std::to_string(v)+")"));
                         }
@@ -8201,7 +8201,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     } else {
                         int64_t v=0;
                         if(constantInteger(*s.expr,v)){
-                            v=foldAtExprType(constExprType(*s.expr),want,v);   // v0.23.76-dev (audit A-06b)
+                            v=foldAtExprType(constExprType(*s.expr),want,v);   // v0.23.77-dev (audit A-06b)
                             if(!initializerFits(want,*s.expr,v))
                                 throw Error(loc(s.line,s.col,"assignment does not fit in "+tyNameFull(want)+": "+s.name+" ("+std::to_string(v)+")"));
                         }
@@ -8409,7 +8409,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     int64_t v=0;
                     if(!constantInteger(c,v))
                         throw Error(loc(c.line,c.col,"case value must be a compile-time constant"));
-                    // v0.23.76-dev (audit A-08): a case label is a constant
+                    // v0.23.77-dev (audit A-08): a case label is a constant
                     // expression, so its value is read at the type it names
                     // before the width check. `case 0u - 1u` on a u32 subject is
                     // 4294967295 — the emitted comparison already runs at the
@@ -8879,7 +8879,7 @@ static const std::vector<uint8_t>& debugAbbrevTable(){
             kUpper=0x2f,kMemberLoc=0x38,kDeclLine=0x3b,kExternal=0x3f,kFrameBase=0x40,
             kDeclFile=0x3a;
         // Forms
-        // v0.23.76-dev (audit A-09): DW_AT_stmt_list is a section offset, and
+        // v0.23.77-dev (audit A-09): DW_AT_stmt_list is a section offset, and
         // in a DWARF4 unit (the version this writer emits) that is
         // DW_FORM_sec_offset (0x17) — not DW_FORM_data4. LLVM's verifier
         // rejects the data4 spelling outright ("DIE has invalid
@@ -9068,7 +9068,7 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         auto it=byName.find(f.name);if(it==byName.end())continue;
         const Function& src=*it->second;
         const uint32_t off=w.dieOffset();
-        // v0.23.76-dev (audit A-10): a type reference must be emitted *before*
+        // v0.23.77-dev (audit A-10): a type reference must be emitted *before*
         // the DIE that names it. typeRef() appends the type's DIE to the same
         // buffer, so calling it inside the argument list of dbgPut32 put that
         // DIE between the current DIE's attributes — the unit then parsed as
@@ -9096,7 +9096,7 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         if(g.external||g.isString||g.fromEmbed)continue;
         if(!gdef.count(g.name))continue;                   // laid out in this object
         const std::vector<uint32_t> dims=g.dims.empty()?(g.isArray?std::vector<uint32_t>{g.count}:std::vector<uint32_t>{}):g.dims;
-        // v0.23.76-dev (audit A-10): the type's DIE is emitted first, outside
+        // v0.23.77-dev (audit A-10): the type's DIE is emitted first, outside
         // the attribute stream (see the subroutine_type note above).
         const uint32_t globalRef=w.typeRef(g.ty,dims);
         dbgUleb(w.info,kAbbrGlobalVar);
@@ -9119,7 +9119,7 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         w.patches.push_back({(uint64_t)w.info.size()-8,f.name,0});
         dbgPut64(w.info,size);                             // DW_AT_high_pc: a length
         w.expr(DwarfDieWriter::frameBaseOps());
-        // v0.23.76-dev (audit A-10): the fallback return type and every
+        // v0.23.77-dev (audit A-10): the fallback return type and every
         // variable's type are resolved before the subprogram's DIE begins.
         const uint32_t selfRef=subprogType.count(f.name)?subprogType.at(f.name):w.typeRef(src.retType,{});
         std::vector<uint32_t> varRefs;
@@ -9475,7 +9475,7 @@ std::string symbolName(const std::vector<uint8_t>& file,const Shdr& strtab,uint3
 }
 struct ParsedSymbol { std::string name; uint64_t value=0,size=0; uint8_t info=0; uint16_t shndx=0; };
 struct ParsedReloc { uint64_t offset=0; std::string symbol; uint32_t type=0; int64_t addend=0; };
-// v0.23.76-dev (audit A-12): where a unit's DW_AT_stmt_list value sits.
+// v0.23.77-dev (audit A-12): where a unit's DW_AT_stmt_list value sits.
 //
 // Every object carries one CU whose stmt_list is 0 — the line program starts
 // at the beginning of its own .debug_line. The link concatenates those line
@@ -9555,7 +9555,7 @@ struct ParsedObject {
     // -g: the object's DWARF line program and the offsets in it that hold an
     // address, which the linker rewrites to the final text virtual address.
     std::vector<uint8_t> debugLine; std::vector<uint64_t> debugLinePatches;
-    // v0.23.76-dev (audit A-12): where this object's DW_AT_stmt_list value
+    // v0.23.77-dev (audit A-12): where this object's DW_AT_stmt_list value
     // sits inside its .debug_info, so the link can point it at the merged
     // .debug_line offset instead of at the first unit's program.
     bool hasDebugStmtList=false; uint64_t debugStmtListOff=0;
@@ -10128,7 +10128,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     dyn.push_back({1879048185,(uint64_t)(nglobals+(hasInit?1u:0u))});    // DT_RELACOUNT
     dyn.push_back({0x6ffffffc,(uint64_t)verDefOff});   // DT_VERDEF -> .gnu.version_d
     dyn.push_back({0x6ffffffd,2});                     // DT_VERDEFNUM (BASE + "aster")
-    // v0.23.76-dev (audit A-16): this writer (SysV hash, no imports) has no
+    // v0.23.77-dev (audit A-16): this writer (SysV hash, no imports) has no
     // DT_NEEDED at all, so it cannot honour a VERNEED either. The section is
     // still emitted — its layout predates this round and removing it would move
     // every offset after it — but DT_VERNEED/DT_VERNEEDNUM are not registered:
@@ -10619,7 +10619,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     if(hasInit){dyn.push_back({25,initArrVaddr});dyn.push_back({27,initArrSize});}
     dyn.push_back({0x6ffffffc,(uint64_t)verDefOff});   // DT_VERDEF -> .gnu.version_d
     dyn.push_back({0x6ffffffd,2});                     // DT_VERDEFNUM (BASE + "aster")
-    // v0.23.76-dev (audit A-16): a VERNEED must name an object this one really
+    // v0.23.77-dev (audit A-16): a VERNEED must name an object this one really
     // depends on. The section below declares libc.so.6 / GLIBC_2.17, but no
     // symbol here takes that version index (imports are unversioned on purpose,
     // see the notes above) and a cross-.so chain has no libc among its
@@ -11073,7 +11073,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
             mergedDebugInfo.insert(mergedDebugInfo.end(),obj.debugInfo.begin(),obj.debugInfo.end());
             for(const auto& p:obj.debugInfoPatches)
                 debugInfoFixups.push_back({diBase+p.offset,p.symbol,p.symbol==".text"?(int64_t)textBase:p.addend});
-            // v0.23.76-dev (audit A-13): every unit is decoded through the one
+            // v0.23.77-dev (audit A-13): every unit is decoded through the one
             // abbreviation table the link keeps, so the tables have to agree. A
             // stale object (built before an abbreviations change) merged into a
             // fresh one used to corrupt every later unit in silence; say so
@@ -11081,7 +11081,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
             if(mergedDebugAbbrev.empty())mergedDebugAbbrev=obj.debugAbbrev;
             else if(mergedDebugAbbrev!=obj.debugAbbrev)
                 throw Error(input+": .debug_abbrev differs from the first input object's; rebuild every -g input with the same compiler");
-            // v0.23.76-dev (audit A-12): the unit's stmt_list becomes the offset
+            // v0.23.77-dev (audit A-12): the unit's stmt_list becomes the offset
             // of this object's own line program in the merged .debug_line.
             if(obj.hasDebugStmtList){
                 const uint64_t lineOff=obj.debugLine.empty()?0:mergedDebugLine.size()-obj.debugLine.size();
@@ -11296,9 +11296,9 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
             for(const auto& p:obj.debugInfoPatches)
                 debugInfoFixups.push_back({diBase+p.offset,p.symbol,p.symbol==".text"?(int64_t)textBase:p.addend});
             if(mergedDebugAbbrev.empty())mergedDebugAbbrev=obj.debugAbbrev;
-            else if(mergedDebugAbbrev!=obj.debugAbbrev)   // v0.23.76-dev (audit A-13)
+            else if(mergedDebugAbbrev!=obj.debugAbbrev)   // v0.23.77-dev (audit A-13)
                 throw Error(input+": .debug_abbrev differs from the first input object's; rebuild every -g input with the same compiler");
-            // v0.23.76-dev (audit A-12): this unit's line program starts where
+            // v0.23.77-dev (audit A-12): this unit's line program starts where
             // its own .debug_line blob was appended, not at the section start.
             if(obj.hasDebugStmtList){
                 const uint64_t lineOff=obj.debugLine.empty()?0:mergedDebugLine.size()-obj.debugLine.size();
@@ -13711,7 +13711,7 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
                     const std::vector<std::pair<std::string,std::string>>& extraStrings,
                     const SigningKey& key, bool selfVerify, bool labelAsReference,
                     bool debuggable = false, uint64_t pageSize = 4096) {
-    // v0.23.76-dev (audit A-14): --abi has to describe the library the APK
+    // v0.23.77-dev (audit A-14): --abi has to describe the library the APK
     // ships. It used to accept any ABI-shaped name, so building with
     // `--abi x86_64` around an AArch64 shared object produced an APK that no
     // device could install — PackageManager answers INSTALL_FAILED_NO_MATCHING_ABIS
@@ -14069,7 +14069,7 @@ int main(int argc,char**argv){
         }
         if(haveSoname&&soname.empty()){std::cerr<<"Aster: --soname requires a non-empty library name\n";return false;}
         for(const auto& lib:needed)if(lib.empty()){std::cerr<<"Aster: --needed requires a non-empty library name\n";return false;}
-        // v0.23.76-dev (audit A-16): a repeated --needed used to become a
+        // v0.23.77-dev (audit A-16): a repeated --needed used to become a
         // repeated DT_NEEDED, which no linker emits and readers treat as a
         // mistake. Keep the first occurrence and the order it was given in.
         {

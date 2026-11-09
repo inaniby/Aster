@@ -127,7 +127,7 @@ ATTRS = {
     0x49: "type",
 }
 # Forms that carry a fixed number of bytes; anything else is handled below.
-# v0.23.76-dev (audit A-09): DW_AT_stmt_list is a section offset, and in a
+# v0.23.77-dev (audit A-09): DW_AT_stmt_list is a section offset, and in a
 # DWARF4 unit that is DW_FORM_sec_offset (0x17) — 4 bytes in a 32-bit DWARF
 # section, exactly the width DW_FORM_data4 used to occupy here.
 FIXED = {0x01: 8, 0x05: 2, 0x06: 4, 0x07: 8, 0x0b: 1, 0x0d: 2, 0x0e: 4, 0x0f: 8, 0x17: 4}
@@ -367,7 +367,7 @@ def main(argv):
         return v[1] if v else default
 
     if mode == "--units":
-        # v0.23.76-dev (audit A-12): columns 4 and 5 are the unit's
+        # v0.23.77-dev (audit A-12): columns 4 and 5 are the unit's
         # DW_AT_stmt_list and the size of .debug_line. The link concatenates
         # line tables, so after a multi-object link each unit's stmt_list must
         # be its own program's offset — the two extra columns make that

@@ -287,7 +287,7 @@ if [ -n "$HOSTCC" ]; then
     printf 'int main(){return 0;}\n' > "$W/hostprobe.c"
     for f in "-static" ""; do
         if "$HOSTCC" -O2 -fwrapv $f "$W/hostprobe.c" -o "$W/hostprobe" 2>/dev/null; then
-            # v0.23.76-dev (audit): an empty flag list is a *successful* probe.
+            # v0.23.77-dev (audit): an empty flag list is a *successful* probe.
             # A native aarch64 host (Termux) and an ordinary cross gcc both link
             # with no extra flags, and testing "$hostcc_flags" for emptiness
             # declared them "not an AArch64 C compiler", so the differential
@@ -343,7 +343,7 @@ CHOST_EOF
     # allocated but unknown to Aster, and an empty .data/.bss carries
     # attributes Aster refuses. Removing them changes no instruction — the
     # host is three leaf functions with no data of their own.
-    # v0.23.76-dev (audit): derive the binutils sibling of $HOSTCC, and fall
+    # v0.23.77-dev (audit): derive the binutils sibling of $HOSTCC, and fall
     # back to any objcopy on the box. The old s/gcc$/objcopy/ left "cc" and
     # "clang" unchanged, so the step re-ran the compiler with -R flags.
     OBJCOPY=$(printf '%s\n' "$HOSTCC" | sed -e 's/cc$/objcopy/' -e 's/gcc$/objcopy/')

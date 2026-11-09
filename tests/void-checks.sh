@@ -86,8 +86,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.76-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.76-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.77-dev" >&2; exit 1; }
 guard ' Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool, Void,' 'the Void token'
 guard 'else if(x=="void")k=TK::Void;' 'the void reserved word'
 guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };' 'the Void type'

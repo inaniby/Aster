@@ -83,7 +83,7 @@ grep -qF 'result.relocs.push_back({r.offset,namesByIndex[si],type,r.addend});}' 
 if grep -qF 'remain");result.relocs' src/aster.cpp; then
     echo 'FAIL: the push_back is glued to the throw line again — -Werror rejects it (F-05)' >&2; exit 1
 fi
-# v0.23.76-dev (audit A-11): exprType is memoised, so the cache and the pure
+# v0.23.77-dev (audit A-11): exprType is memoised, so the cache and the pure
 # implementation both exist. Removing either brings back exponential type
 # computation (a 20-term chain already ran 11M type computations).
 [ "$(grep -c 'Ty exprTypeUncached(const Expr& e) const {' src/aster.cpp)" -eq 1 ] \

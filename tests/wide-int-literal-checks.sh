@@ -420,7 +420,7 @@ if [ -n "$HOSTCC" ]; then
     printf 'int main(){return 0;}\n' > "$W/hostprobe.c"
     for f in "-static" ""; do
         if "$HOSTCC" -O2 -fwrapv $f "$W/hostprobe.c" -o "$W/hostprobe" 2>/dev/null; then
-            # v0.23.76-dev (audit): an empty flag list is a *successful* probe.
+            # v0.23.77-dev (audit): an empty flag list is a *successful* probe.
             # A native aarch64 host (Termux) and an ordinary cross gcc both link
             # with no extra flags, and testing "$hostcc_flags" for emptiness
             # declared them "not an AArch64 C compiler", so the differential

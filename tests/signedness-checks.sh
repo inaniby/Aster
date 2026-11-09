@@ -34,8 +34,8 @@ bump(){ COVER=$((COVER + 1)); }
 printf '%s\n' '[1/9] Strictly build Aster compiler'
 $CXX -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 A=$OUT/aster
-grep -qF '#define ASTER_VERSION_STRING "0.23.76-dev"' src/aster.cpp \
-    || { echo 'FAIL: the version constant is not 0.23.76-dev' >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
+    || { echo 'FAIL: the version constant is not 0.23.77-dev' >&2; exit 1; }
 bump
 
 # ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ printf '%s\n' '[3/9] Static structure: condition codes and divide opcodes'
 static_case(){ "$A" build-elf "$W/$1.ast" -o "$W/$1.elf" >"$W/$1.build" 2>&1 \
     || { echo "FAIL: $1 does not build" >&2; exit 1; }
     "$AST_OBJDUMP" -d "$W/$1.elf" > "$W/$1.dis"
-    # v0.23.76-dev (audit): LLVM spells the unsigned aliases `b.hs` / `b.lo`
+    # v0.23.77-dev (audit): LLVM spells the unsigned aliases `b.hs` / `b.lo`
     # where GNU objdump prints `b.cs` / `b.cc`; the guards below name the GNU
     # spelling, so normalise whichever disassembler this host has.
     sed -i -e 's/\bb\.hs\b/b.cs/g' -e 's/\bb\.lo\b/b.cc/g' "$W/$1.dis"; }

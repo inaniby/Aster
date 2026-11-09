@@ -83,7 +83,7 @@ do
     [ "$(grep -cF "$lit" src/aster.cpp)" = 2 ] \
         || fail "the version literal is not present in both writers (or moved): $lit"
 done
-# v0.23.76-dev (audit A-16): a VERNEED names the object that must supply the
+# v0.23.77-dev (audit A-16): a VERNEED names the object that must supply the
 # version. The writer only registers DT_VERNEED when libc.so.6 really is one of
 # its DT_NEEDED entries — otherwise bionic refuses to dlopen the library
 # ("cannot find \"libc.so.6\" from verneed[0] in DT_NEEDED list"). The section is
@@ -167,7 +167,7 @@ d = sec['.dynamic']; dyn = {}
 for i in range(d[5] // 16):
     tag, val = struct.unpack_from('<qQ', b, d[4] + i*16)
     if tag: dyn.setdefault(tag, []).append(val)
-# v0.23.76-dev (audit A-16): this .so has no DT_NEEDED, so it carries no
+# v0.23.77-dev (audit A-16): this .so has no DT_NEEDED, so it carries no
 # VERNEED tag either — the section is written, the dependency is not declared.
 for tag in (0x6ffffffc, 0x6ffffffd, 0x6ffffff0):
     assert tag in dyn, ('a version tag is missing from .dynamic', hex(tag))
@@ -262,7 +262,7 @@ assert 0x6ffffef5 in dyn, 'DT_GNU_HASH must survive the version sections'
 assert dyn[0x6ffffffc][0] == verdef[3]
 assert dyn[0x6ffffff0][0] == versym[3], 'DT_VERSYM must point at .gnu.version'
 assert dyn[0x6ffffffd] == [2]
-# v0.23.76-dev (audit A-16): --needed libdyn.so is the only dependency here, so
+# v0.23.77-dev (audit A-16): --needed libdyn.so is the only dependency here, so
 # no VERNEED is declared; the section bytes are still emitted.
 assert 0x6ffffffe not in dyn and 0x6fffffff not in dyn, \
     'a .so whose dependencies do not include libc must not declare a VERNEED'
@@ -360,7 +360,7 @@ if [ "$can_run" = yes ] && command -v "$HOSTCC" >/dev/null 2>&1 \
     host_ok=yes
 fi
 if [ "$host_ok" = yes ] && ! aster_can_dlopen_glibc_so; then
-    # v0.23.76-dev (audit A-12): the GNU path below asks link-so for
+    # v0.23.77-dev (audit A-12): the GNU path below asks link-so for
     # --needed libc.so.6, and Android's bionic loader has no such soname, so the
     # witness cannot run here (the symbol tables are still checked by the
     # readers above). Linux hosts take the branch below.

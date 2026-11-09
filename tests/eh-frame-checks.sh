@@ -314,7 +314,7 @@ printf '  %-34s %s\n' 'PT_GNU_EH_FRAME + PT_LOAD' '3 products'
 
 # --- 7. two independent readers agree --------------------------------------------
 printf '%s\n' '[7/9] independent readers'
-# v0.23.76-dev (audit): `readelf --debug-dump=frames` is a GNU option; LLVM's
+# v0.23.77-dev (audit): `readelf --debug-dump=frames` is a GNU option; LLVM's
 # readelf (the only readelf on a Termux host) rejects it. Compare with either
 # spelling of GNU readelf when there is one, otherwise say so and skip.
 FRAMES_READELF=

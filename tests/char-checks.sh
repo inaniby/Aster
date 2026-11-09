@@ -91,8 +91,8 @@ guard(){ # $1 = literal source text, $2 = what it is
         || { printf 'FAIL: %s is gone\n' "$2" >&2; exit 1; }
     guard_count=$((guard_count + 1))
 }
-grep -qF '#define ASTER_VERSION_STRING "0.23.76-dev"' src/aster.cpp \
-    || { echo "FAIL: the version constant is not 0.23.76-dev" >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
+    || { echo "FAIL: the version constant is not 0.23.77-dev" >&2; exit 1; }
 guard 'else if(x=="char")k=TK::CharType;' 'the char reserved word'
 guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };' 'the Char type'
 guard 'case TK::CharType: out=Ty::Char; ++p; return true;' 'char parsed as a type'
@@ -159,7 +159,7 @@ int main(void){
 C
 "$HOSTCC" -c "$W/c_caller.c" -o "$W/c_caller.o" >"$W/c_caller.clog" 2>&1 \
     || { echo 'FAIL: C caller does not compile:' >&2; cat "$W/c_caller.clog" >&2; exit 1; }
-# v0.23.76-dev (audit): -static is the CI shape (cross build + qemu-user); a
+# v0.23.77-dev (audit): -static is the CI shape (cross build + qemu-user); a
 # native AArch64 toolchain links these two leaf objects dynamically.
 aster_hostcc_link "$W/hybrid" "$W/aster_charfn.o" "$W/c_caller.o" >"$W/hybrid.log" 2>&1 \
     || { echo 'FAIL: C caller cannot link Aster char function (ABI mismatch):' >&2; cat "$W/hybrid.log" >&2; exit 1; }

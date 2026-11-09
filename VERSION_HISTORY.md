@@ -1,3 +1,56 @@
+## v0.23.77-dev — The audit round ships: sixteen defects, Termux CI, and a new snapshot
+
+The release that carries the audit round (A-01 … A-16). It is a version bump and
+a process step, not a new feature round: `src/aster.cpp` is the audited compiler,
+`ASTER_VERSION_STRING` and the CMake project version move together, and this
+version owns its own frozen snapshot under `tests/baseline/v0.23.77-dev/`.
+
+### What changed in the product
+
+| Id | Defect | Repair |
+| --- | --- | --- |
+| A-01 | An unsuffixed literal past `2^63-1` kept the `I32` type, so `18446744073709551615 > 0` compared as a negative value. | Such a literal types as `u64`, as C types a decimal constant too large for `long long`. |
+| A-06 | `constExceedsI32` ignored the `u` suffix, forcing u32 arithmetic to 64 bits (`4294967295u * 2u` = 8589934590). | The suffix wins: a `u` literal stays 32-bit. |
+| A-06b | Constant initializers folded in i64, so `let q: u32 = 4294967295u + 1u;` was refused although the emitted ADD stores 0. | `foldAtExprType` folds at the expression's type, gated on the consumer's width, in all eight places a constant lands in a slot. |
+| A-08 | A `switch` case label folded in i64, so a u32 label was refused. | The same fold rule for labels. |
+| A-09 | `DW_AT_stmt_list` used `DW_FORM_data4` in a DWARF4 unit; LLVM rejects the unit. | `DW_FORM_sec_offset`. |
+| A-10 | A type DIE could be emitted inside another DIE's attribute stream, corrupting the unit. | References are resolved before the DIE header is written. |
+| A-11 | Every operator asked `exprType` for both operands twice, so a chain of n operators cost 2^n type computations (20 terms = 200 ms, 30 terms never finished). | `exprType` is memoised; 1000-term chains compile instantly. |
+| A-12 | A multi-object `-g` link left every unit pointing at the first unit's line program. | The link rebases each unit's `DW_AT_stmt_list` to its own line blob. |
+| A-13 | The link kept the first input's `.debug_abbrev` without comparing the rest, silently corrupting stale objects. | A differing table is refused with "rebuild every -g input with the same compiler". |
+| A-14 | `build-apk --abi` never looked at the library's `e_machine`, producing APKs no device would install. | The ABI is checked against the ELF header; a mismatch writes nothing. |
+| A-15 | Diagnostics inside an included file named the including file and dropped the source-line echo. | The include parser hands the reporter the file it is really about. |
+| A-16 | Every shared object declared a `VERNEED` for `libc.so.6` it did not depend on; bionic refuses to load such a library, and a repeated `--needed` duplicated `DT_NEEDED`. | `DT_VERNEED` is registered only when `libc.so.6` is a real dependency; `--needed` collapses duplicates. |
+
+A-02, A-04 and A-07 were documentation corrections, A-03 was retracted after
+re-checking both CLI paths, and A-05 is the formatting fix that had been
+breaking this project's own `-Werror` build.
+
+### Byte baseline
+
+`v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
+exactly in all three writer modes. The previous snapshot is left untouched, as
+the process requires; note that A-16 changes **every `build-so` product** (126
+of 393 rows: the dynamic tags and the string table move), while all 267
+`build-elf` / `build-obj --pic` rows are byte-identical — the repair only
+touches shared objects.
+
+### Evidence
+
+- `-g` over all 78 examples: `llvm-dwarfdump --verify` reports no errors (78/78
+  rejected before A-09/A-10, clean after).
+- Multi-object `-g` links in all three shapes (link-pie, link-so, three objects)
+  verify clean after A-12.
+- A cross-.so chain now dlopens on Android after A-16 (`callable` through
+  `--needed`), and `e2e-pie-so` / `e2e-symtab` pass there without their skip.
+- Differential and fuzz evidence: struct layout 60/60 against the C compiler,
+  440 arithmetic/comparison cases against `gcc -O2 -fwrapv`, and an ASAN build
+  of the compiler surviving 200 malformed sources, 260 mutated APKs and 220
+  mutated object files.
+- On a native AArch64 host the suites run without a cross toolchain: `TMPDIR`
+  defaults to `$HOME/tmp` on Termux (`tests/lib/tmpdir.sh`), so `apk-checks.sh`
+  and the rest run on the phone.
+
 ## v0.23.76-dev — Audit round: literal typing, constant folding, switch labels, and `-g` DWARF
 
 An audit round on top of v0.23.76-dev (see `AUDIT-v0.23.76-dev.md`). It finds and

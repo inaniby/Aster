@@ -68,7 +68,7 @@ grep -qF 'if(cur().k==TK::True||cur().k==TK::False){' src/aster.cpp \
 # first, and only then does the suffix decide the width — in both copies.
 [ "$(grep -cF 'if(e.boolLit) return Ty::Bool;' src/aster.cpp)" -eq 2 ] \
     || { echo 'FAIL: both exprType copies must type a bool literal as bool' >&2; exit 1; }
-# v0.23.76-dev (audit A-06b/A-11): three sites answer a literal's type from its
+# v0.23.77-dev (audit A-06b/A-11): three sites answer a literal's type from its
 # suffix now — Sema's typeOf, codegen's exprType (the uncached half of a memoised
 # wrapper) and constExprType, which the parser-side constant fold needs. The pin
 # is about the rule, so it counts every site that implements it.

@@ -384,7 +384,7 @@ eqaddr "$mstart" "$(section_addr "$OUT/linked.elf" .text)" "the first unit does 
 $DECODE --functions "$OUT/linked.elf" | sort > "$OUT/lfuncs.txt"
 grep -q '^add2 ' "$OUT/lfuncs.txt" || fail "the linked output has no subprogram for add2"
 grep -q '^main ' "$OUT/lfuncs.txt" || fail "the linked output has no subprogram for main"
-# v0.23.76-dev (audit A-12): the link concatenates .debug_line, so each unit's
+# v0.23.77-dev (audit A-12): the link concatenates .debug_line, so each unit's
 # DW_AT_stmt_list has to name its own program. Before the fix both units said 0,
 # which llvm-dwarfdump --verify reports as "Identical DW_AT_stmt_list ...".
 mstmt=$(awk '/^main\.ast/{print $4}' "$OUT/lunits.txt")
@@ -396,7 +396,7 @@ lsize=$(awk '/^main\.ast/{print $5}' "$OUT/lunits.txt")
 [ $((dstmt)) -lt $((lsize)) ] || fail "the second unit's stmt_list $dstmt is past .debug_line ($lsize bytes)"
 [ $((dstmt)) -gt 0 ] || fail "the second unit's line program starts inside the first"
 
-# v0.23.76-dev (audit A-13): the link keeps one abbreviation table, so an input
+# v0.23.77-dev (audit A-13): the link keeps one abbreviation table, so an input
 # whose table differs (a stale object, built before an abbreviations change)
 # must be refused instead of merged into a unit that decodes as garbage. The
 # mutation below stays parseable — language's DW_FORM_data2 becomes data1 — so
@@ -460,7 +460,7 @@ p2=$(awk '/^pb\.ast/{print $2}' "$OUT/sunits.txt")
 [ -n "$p1" ] && [ -n "$p2" ] || fail "a unit is missing from the linked shared object"
 eqaddr "$p1" "$(section_addr "$OUT/libp.so" .text)" "the first PIC unit does not start at .text"
 [ $((p2)) -ge $((p1 + s1)) ] || fail "the second PIC unit starts at $p2, inside the first ($p1 + $s1)"
-# v0.23.76-dev (audit A-12): and each PIC unit names its own line program.
+# v0.23.77-dev (audit A-12): and each PIC unit names its own line program.
 pm=$(awk '/^pa\.ast/{print $4}' "$OUT/sunits.txt")
 pd=$(awk '/^pb\.ast/{print $4}' "$OUT/sunits.txt")
 pl=$(awk '/^pa\.ast/{print $5}' "$OUT/sunits.txt")

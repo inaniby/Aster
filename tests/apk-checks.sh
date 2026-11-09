@@ -113,7 +113,7 @@ echo "[3/7] build-apk $SO -> $APK"
     --label "Aster APK Test" --min-sdk 24 --target-sdk 34 \
     --version-code 1 --version-name "1.0" --keystore-dir "$KEY_DIR"
 
-# v0.23.76-dev (audit A-14): --abi has to describe the library being packaged.
+# v0.23.77-dev (audit A-14): --abi has to describe the library being packaged.
 # An AArch64 .so under --abi x86_64 used to build silently and then fail to
 # install on every device (INSTALL_FAILED_NO_MATCHING_ABIS), because
 # lib/x86_64/ held an e_machine = AArch64 file.

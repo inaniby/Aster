@@ -37,8 +37,8 @@ bump(){ COVER=$((COVER + 1)); }
 printf '%s\n' '[1/9] Strictly build Aster compiler'
 $CXX -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 A=$OUT/aster
-grep -qF '#define ASTER_VERSION_STRING "0.23.76-dev"' src/aster.cpp \
-    || { echo 'FAIL: the version constant is not 0.23.76-dev' >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
+    || { echo 'FAIL: the version constant is not 0.23.77-dev' >&2; exit 1; }
 bump
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ lines = open(sys.argv[1]).read().split('\n')
 # The only call with three stack slots (a 16-byte aggregate + two scalars) is
 # aggOnStack. Before the fix the outgoing area was 16 bytes and the two scalar
 # stores did not exist at all.
-# v0.23.76-dev (audit): LLVM's disassembler prints immediates in hex with a
+# v0.23.77-dev (audit): LLVM's disassembler prints immediates in hex with a
 # 0x prefix (#0x20, #0x10) where GNU prints decimal (#32, #16); both spellings
 # name the same instruction, so the patterns accept either.
 assert any(re.search(r'sub\s+sp, sp, #(?:0x)?20\b', l) for l in lines), \

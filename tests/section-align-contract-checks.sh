@@ -1,6 +1,6 @@
 #!/bin/sh
 # tests/section-align-contract-checks.sh — F-08 / F-09 / F-10 / F-12 of the
-# second full source audit (AUDIT-v0.23.72-dev.md), repaired in v0.23.76-dev.
+# second full source audit (AUDIT-v0.23.72-dev.md), repaired in v0.23.77-dev.
 #
 # Four ways an ELF section's declared alignment used to disagree with the
 # address the writer gave it: .tbss started at a fixed 16, .data/.bss only at
@@ -34,8 +34,8 @@ fail(){ echo "FAIL: $*" >&2; exit 1; }
 printf '%s\n' '[1/9] Strictly build Aster compiler'
 $CXX -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 A=$OUT/aster
-grep -qF '#define ASTER_VERSION_STRING "0.23.76-dev"' src/aster.cpp \
-    || fail 'the version constant is not 0.23.76-dev'
+grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
+    || fail 'the version constant is not 0.23.77-dev'
 bump
 
 # ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ done
 
 # ---------------------------------------------------------------------------
 printf '%s\n' '[6/9] Every writer and link: EXEC, PIE, DYN, ET_REL'
-# v0.23.76-dev (audit): prefer the plain tools. A native aarch64 host (Termux)
+# v0.23.77-dev (audit): prefer the plain tools. A native aarch64 host (Termux)
 # has no aarch64-linux-gnu-* names, and the Python oracle above this line
 # already falls back the same way; the shell helper was the only hard-coded one.
 READELF=${READELF:-$(command -v aarch64-linux-gnu-readelf || command -v readelf || command -v llvm-readelf || true)}
@@ -433,8 +433,8 @@ mutate 'm5: link-so drops the merged TLS alignment' \
     '    spec.tlsAlign=maxTlsAlign;' \
     '    spec.tlsAlign=kTlsBlockAlign;'
 mutate 'm6: linkObjects adds the .tbss base twice again' \
-    '    // v0.23.76-dev: linkObjects resolves kind 5 as tbssVaddr + off, and' \
-    '    if(!mergedTls.empty()||mergedTbss>0){const uint64_t tb=alignUp(mergedTls.size(),maxTlsAlign);for(auto& kv:definitions)if(kv.second.kind==5)kv.second.off+=tb;} // v0.23.76-dev: linkObjects resolves kind 5 as tbssVaddr + off, and'
+    '    // v0.23.77-dev: linkObjects resolves kind 5 as tbssVaddr + off, and' \
+    '    if(!mergedTls.empty()||mergedTbss>0){const uint64_t tb=alignUp(mergedTls.size(),maxTlsAlign);for(auto& kv:definitions)if(kv.second.kind==5)kv.second.off+=tb;} // v0.23.77-dev: linkObjects resolves kind 5 as tbssVaddr + off, and'
 
 # ---------------------------------------------------------------------------
 printf '%s\n' '[9/9] Byte baseline: zero drift, all 393 rows reproduced'
@@ -473,4 +473,4 @@ for key in $(grep -E '^(tls_demo|signedness|stack_arg_abi)\.' "$BASE" | cut -d' 
 done
 printf '  %-40s %s\n' 'baseline rows reproduced' 'sample'; bump
 
-printf '%s\n' 'PASS: all v0.23.76-dev F-08/F-09/F-10/F-12 section-alignment contract checks'
+printf '%s\n' 'PASS: all v0.23.77-dev F-08/F-09/F-10/F-12 section-alignment contract checks'

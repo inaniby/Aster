@@ -43,8 +43,8 @@ bump(){ COVER=$((COVER + 1)); }
 printf '%s\n' '[1/9] Strictly build Aster compiler'
 $CXX -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 A=$OUT/aster
-grep -qF '#define ASTER_VERSION_STRING "0.23.76-dev"' src/aster.cpp \
-    || { echo 'FAIL: the version constant is not 0.23.76-dev' >&2; exit 1; }
+grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
+    || { echo 'FAIL: the version constant is not 0.23.77-dev' >&2; exit 1; }
 bump
 
 # ---------------------------------------------------------------------------
@@ -236,7 +236,7 @@ refuse deref_bool       'type mismatch assigning through a pointer: expected i64
 # ---------------------------------------------------------------------------
 printf '%s\n' '[5/9] C twin: gcc computes the same accepted-side answer'
 if [ -n "$HOSTCC" ]; then
-    # v0.23.76-dev (audit): -static first (CI hosts), then a plain link; a
+    # v0.23.77-dev (audit): -static first (CI hosts), then a plain link; a
     # native Termux toolchain ships no libc.a.
     $HOSTCC -static -O2 tests/front-sema-twin.c -o "$W/twin" >/dev/null 2>&1 \
         || $HOSTCC -O2 tests/front-sema-twin.c -o "$W/twin" >/dev/null 2>&1 \

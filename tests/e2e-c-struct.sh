@@ -32,7 +32,7 @@ printf '%s\n' '[2/4] Aster compiles its half: a relocatable object, no C involve
 "$OUT/aster" build-obj examples/c_struct_abi.ast -o "$OUT/c_struct_abi.o"
 
 printf '%s\n' '[3/4] Link the two halves'
-# v0.23.76-dev (audit): -static when the toolchain has it (cross gcc + qemu-user),
+# v0.23.77-dev (audit): -static when the toolchain has it (cross gcc + qemu-user),
 # otherwise a plain link — a native AArch64 host has no libc.a and runs the
 # binary directly.
 HOSTCC=${HOSTCC:-cc}
