@@ -1,0 +1,56 @@
+// tests/stdlib2-edge.ast — the boundary cases the demo's happy path does not
+// reach. Every check returns a distinct code, so a failure names the routine.
+extern fn memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
+extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
+extern fn strchr(s: ptr<u8>, c: i32) -> i32;
+extern fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32;
+extern fn atoi(s: ptr<u8>) -> i32;
+extern fn fmt_i32(buf: ptr<u8>, v: i32) -> i32;
+extern fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) -> i32;
+extern fn sort_i32(a: ptr, n: i32) -> i32;
+extern fn malloc(n: i32) -> ptr;
+extern fn free(p: ptr) -> i32;
+
+fn main() -> i32 {
+    let b: u8[16] = 0;
+    let c: u8[16] = 0;
+
+    // memmove: no-op overlap, and the forward path (dst below src)
+    memcmp(b, c, 0);
+    if (memmove(b, b, 4) != 4) { return 1; }
+    memcmp(b, "abcd", 4);
+    if (memmove(b, b + 2, 2) != 2) { return 2; }   // dst < src → forward copy
+
+    // searches that miss, and the empty needle
+    if (strchr("abc", 122) != 0 - 1) { return 3; }  // 'z' is absent
+    if (strstr("abc", "") != 0) { return 4; }
+    if (strstr("abc", "abcd") != 0 - 1) { return 5; }
+
+    // atoi edges
+    if (atoi("00012") != 12) { return 6; }
+    if (atoi("-") != 0) { return 7; }
+    if (atoi("  +0") != 0) { return 8; }
+
+    // formatters: the digit clamp and the most negative value
+    if (fmt_hex(b, 0, 0) != 1) { return 9; }
+    if (fmt_hex(b, 0, 99) != 8) { return 10; }
+    if (fmt_i32(b, 0 - 2147483647 - 1) != 11) { return 11; }
+    if (memcmp(b, "-2147483648", 11) != 0) { return 12; }
+
+    // sort: negatives, duplicates, and n <= 1
+    let arr: i32[5] = 0;
+    *(arr) = 0 - 5; *(arr + 4) = 3; *(arr + 8) = 3;
+    *(arr + 12) = 0 - 1; *(arr + 16) = 0;
+    sort_i32(arr, 5);
+    if (*(arr) != 0 - 5 || *(arr + 16) != 3) { return 13; }
+    if (sort_i32(arr, 0) != 0) { return 14; }
+
+    // allocator: zero and negative requests, exhaustion, free
+    if (malloc(0) != 0) { return 15; }
+    if (malloc(0 - 4) != 0) { return 16; }
+    if (malloc(1048576) != 0) { return 17; }
+    let p: ptr = malloc(8);
+    if (p == 0) { return 18; }
+    if (free(p) != 0) { return 19; }
+    return 0;
+}

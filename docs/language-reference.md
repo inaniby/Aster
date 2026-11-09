@@ -1590,6 +1590,15 @@ aster link-obj app.o std.o -o app
 ```
 
 | Family | Signatures |
+
+| Family | Signatures |
+| --- | --- |
+| mem (v0.23.77-dev) | `memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` |
+| str (v0.23.77-dev) | `strncmp`, `strchr(s, c) -> i32` (an offset or -1), `strstr(h, n) -> i32`, `strcat` (returns the new length) |
+| parse (v0.23.77-dev) | `atoi(s) -> i32`, `is_digit` / `is_space` / `is_alpha` |
+| format (v0.23.77-dev) | `fmt_i32(buf, v) -> i32`, `fmt_hex(buf, v, digits) -> i32` — fixed-arity writers returning the byte count, because there is no variadic call |
+| sort (v0.23.77-dev) | `sort_i32(a: ptr, n: i32) -> i32` — ascending insertion sort |
+| heap (v0.23.77-dev) | `malloc(n: i32) -> ptr` (a 64 KiB `mmap` bump allocator, 8-byte aligned, 0 when exhausted) and `free(p) -> i32` (the documented no-op answering 0) |
 | --- | --- |
 | mem | `memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` · `memset(dst: ptr<u8>, c: i32, n: i32) -> i32` · `memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32` |
 | str | `strlen(s: ptr<u8>) -> i32` · `strcmp(a: ptr<u8>, b: ptr<u8>) -> i32` · `strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` |

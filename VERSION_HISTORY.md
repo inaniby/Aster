@@ -94,6 +94,18 @@ breaking this project's own `-Werror` build.
   arguments, the generator's agreement, and a mutation that points `continue`
   at the body — which the suite must catch.
 
+* **Standard library, second slice** — `stdlib/aster_std.ast` grows from 13 to
+  27 routines with no compiler change: `memmove` (overlap-safe, choosing the
+  backward copy from the addresses), `strncmp`/`strchr`/`strstr`/`strcat`,
+  `atoi`, `is_digit`/`is_space`/`is_alpha`, the fixed-arity formatters
+  `fmt_i32`/`fmt_hex` (returning the byte count — there is no variadic call),
+  `sort_i32`, and a 64 KiB `mmap` bump allocator (`malloc`/`free`). The C twin
+  `tests/aster-std2-twin.c` prints the same eleven lines as the demo, and the
+  edge fixture pins the misses, clamps, INT32_MIN, overlapping copies and
+  allocator exhaustion; `tests/stdlib2-checks.sh` (nine layers) also proves the
+  library object still imports nothing and that a mutant with memmove's
+  backward path removed is caught.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

@@ -1,4 +1,10 @@
-// aster_std.ast — the first slice of a standard library written in Aster
+// aster_std.ast — the standard library written in Aster itself: the first
+// slice (mem/str/num/hash, v0.23.42-dev) and the second (v0.23.77-dev:
+// memmove, the C string searches, atoi, the fixed-arity formatters, an
+// integer sort and a bump allocator over mmap — 27 routines in all).
+// The original introduction:
+//
+// the first slice of a standard library written in Aster
 // itself: the routines a self-hosting compiler reaches for before it has a
 // compiler to build them with (SELFHOSTING-PLAN M2). No libc, no allocator,
 // no compiler change — pure Aster over the v0.23.40/41-dev syscall and byte
@@ -254,4 +260,227 @@ fn hash_get(key: ptr<u8>) -> i64 {
         probes = probes + 1;
     }
     return -1;
+}
+
+// ===========================================================================
+// v0.23.77-dev: the second slice — the routines a command-line tool needs
+// before it can be pleasant to write: overlap-safe copy, the string searches
+// C programs reach for, an integer parser, fixed-arity formatting (there is no
+// variadic call, so formatting is a family of typed writers rather than one
+// printf), an in-place integer sort, and a bump allocator over mmap.
+//
+// Casts are available since v0.23.48-dev (`i32(x)`, `i64(x)`), so where the
+// first slice narrowed with `%` the new code spells the width it means.
+// Everything still returns a non-void value: a count, a sentinel, or the
+// input pointer, because a wrong answer has to be observable.
+// ===========================================================================
+
+// memmove(dst, src, n): copy n bytes, correct when the ranges overlap. A
+// forward copy is used unless dst starts above src, where it would overwrite
+// bytes it has not read yet; that case copies backwards. Returns n.
+fn memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+    if (dst == src || n <= 0) { return n; }
+    if (i64(dst) < i64(src)) {
+        let i: i32 = 0;
+        while (i < n) {
+            store_u8(dst + i, load_u8(src + i));
+            i = i + 1;
+        }
+    } else {
+        let i: i32 = n;
+        while (i > 0) {
+            i = i - 1;
+            store_u8(dst + i, load_u8(src + i));
+        }
+    }
+    return n;
+}
+
+// strncmp(a, b, n): the first differing pair's difference over at most n
+// bytes, 0 when equal — unsigned bytes, the same reading memcmp uses.
+fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x != y) { return x - y; }
+        if (x == 0) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// strchr(s, c): an offset of the first c in s, or -1. c is compared at its
+// low 8 bits, so strchr(s, 'a') and strchr(s, 97) are the same question.
+fn strchr(s: ptr<u8>, c: i32) -> i32 {
+    let i: i32 = 0;
+    let want: i32 = c & 255;
+    while (1) {
+        let ch: i32 = load_u8(s + i);
+        if (ch == want) { return i; }
+        if (ch == 0) { return -1; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// strstr(h, n): an offset of the first occurrence of n in h, or -1. The empty
+// needle answers 0, as C's does.
+fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32 {
+    let nl: i32 = strlen(n);
+    if (nl == 0) { return 0; }
+    let i: i32 = 0;
+    while (1) {
+        if (load_u8(h + i) == 0) { return -1; }
+        if (strncmp(h + i, n, nl) == 0) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// strcat(d, s): append s to d, NUL included; d must have room. Returns the
+// resulting length (not d's address), because the length is what a caller
+// advancing a cursor needs.
+fn strcat(d: ptr<u8>, s: ptr<u8>) -> i32 {
+    let dl: i32 = strlen(d);
+    let sl: i32 = strlen(s);
+    let i: i32 = 0;
+    while (i <= sl) {
+        store_u8(d + dl + i, load_u8(s + i));
+        i = i + 1;
+    }
+    return dl + sl;
+}
+
+// atoi(s): leading spaces, an optional sign, then decimal digits until the
+// first non-digit. Anything else is 0, and a lone sign is 0 too. The value
+// wraps like ordinary 32-bit arithmetic past the range, which is what an
+// unchecked C atoi does with 32 bits.
+fn atoi(s: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (load_u8(s + i) == 32) { i = i + 1; }
+    let neg: i32 = 0;
+    let ch: i32 = load_u8(s + i);
+    if (ch == 45) { neg = 1; i = i + 1; }
+    else if (ch == 43) { i = i + 1; }
+    let v: i32 = 0;
+    while (1) {
+        let d: i32 = load_u8(s + i);
+        if (d < 48 || d > 57) { break; }
+        v = v * 10 + (d - 48);
+        i = i + 1;
+    }
+    if (neg) { return 0 - v; }
+    return v;
+}
+
+// is_digit / is_space / is_alpha: 1 or 0, ASCII only (the same test set a
+// lexer needs, which is what this library is written for).
+fn is_digit(c: i32) -> i32 {
+    if (c >= 48 && c <= 57) { return 1; }
+    return 0;
+}
+fn is_space(c: i32) -> i32 {
+    if (c == 32 || (c >= 9 && c <= 13)) { return 1; }
+    return 0;
+}
+fn is_alpha(c: i32) -> i32 {
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95) { return 1; }
+    return 0;
+}
+
+// fmt_i32(buf, v): v in decimal, no padding, NUL-terminated. Returns the
+// digit count (-1 aside). INT32_MIN is handled by working on the magnitude in
+// i64, where its absolute value fits.
+fn fmt_i32(buf: ptr<u8>, v: i32) -> i32 {
+    let at: i32 = 0;
+    let w: i64 = v;
+    if (w < 0) {
+        store_u8(buf, 45);
+        at = 1;
+        w = 0 - w;
+    }
+    let tmp: u8[16] = 0;
+    let i: i32 = 0;
+    if (w == 0) {
+        store_u8(tmp, 48);
+        i = 1;
+    }
+    while (w > 0) {
+        store_u8(tmp + i, 48 + i32(w % 10));
+        w = w / 10;
+        i = i + 1;
+    }
+    let j: i32 = i;
+    while (j > 0) {
+        j = j - 1;
+        store_u8(buf + at, load_u8(tmp + j));
+        at = at + 1;
+    }
+    store_u8(buf + at, 0);
+    return at;
+}
+
+// fmt_hex(buf, v, digits): exactly `digits` lowercase hex characters, zero
+// padded, NUL-terminated; digits is clamped to 1..8. Returns the count.
+fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) -> i32 {
+    let d: i32 = digits;
+    if (d < 1) { d = 1; }
+    if (d > 8) { d = 8; }
+    let i: i32 = 0;
+    while (i < d) {
+        let shift: i32 = (d - 1 - i) * 4;
+        let nib: i32 = (v >> shift) & 15;
+        let ch: i32 = 48 + nib;
+        if (nib > 9) { ch = 87 + nib; }
+        store_u8(buf + i, ch);
+        i = i + 1;
+    }
+    store_u8(buf + d, 0);
+    return d;
+}
+
+// sort_i32(a, n): in-place ascending insertion sort of n 32-bit values at a.
+// The array is addressed as a bare ptr so `*(a + i * 4)` is a 32-bit load and
+// store; a ptr<u8> would read bytes. Returns n.
+fn sort_i32(a: ptr, n: i32) -> i32 {
+    let i: i32 = 1;
+    while (i < n) {
+        let v: i32 = *(a + i * 4);
+        let j: i32 = i;
+        while (j > 0) {
+            if (*(a + (j - 1) * 4) <= v) { break; }
+            *(a + j * 4) = *(a + (j - 1) * 4);
+            j = j - 1;
+        }
+        *(a + j * 4) = v;
+        i = i + 1;
+    }
+    return n;
+}
+
+// A bump allocator over one 64 KiB anonymous mapping: the shape a compiler's
+// arena wants (no free list, no metadata, 8-byte aligned). malloc answers 0
+// when the mapping is exhausted; free is the documented no-op, so a program
+// that frees is still correct and simply does not reclaim.
+let heap_base: ptr = 0;
+let heap_used: i32 = 0;
+let heap_size: i32 = 0;
+
+fn malloc(n: i32) -> ptr {
+    if (heap_base == 0) {
+        heap_base = mmap(ptr(0), 65536, 3, 34, 0 - 1, 0);
+        heap_size = 65536;
+        heap_used = 0;
+    }
+    if (n <= 0) { return 0; }
+    let need: i32 = (n + 7) & (0 - 8);
+    if (heap_used + need > heap_size) { return 0; }
+    let p: ptr = heap_base + heap_used;
+    heap_used = heap_used + need;
+    return p;
+}
+
+fn free(p: ptr) -> i32 {
+    return 0;
 }

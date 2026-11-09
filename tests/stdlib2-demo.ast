@@ -1,0 +1,130 @@
+// tests/stdlib2-demo.ast — the v0.23.77-dev half of the standard library,
+// exercised end to end and printed through its own formatting routines. Its C
+// twin (tests/aster-std2-twin.c) performs the same operations with libc and
+// prints the same lines; the suite diffs the two outputs byte for byte and
+// also pins each line's expected numbers, so neither side is the only oracle.
+extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
+extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
+extern fn memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
+extern fn strlen(s: ptr<u8>) -> i32;
+extern fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
+extern fn strchr(s: ptr<u8>, c: i32) -> i32;
+extern fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32;
+extern fn strcat(d: ptr<u8>, s: ptr<u8>) -> i32;
+extern fn atoi(s: ptr<u8>) -> i32;
+extern fn fmt_i32(buf: ptr<u8>, v: i32) -> i32;
+extern fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) -> i32;
+extern fn sort_i32(a: ptr, n: i32) -> i32;
+extern fn malloc(n: i32) -> ptr;
+extern fn free(p: ptr) -> i32;
+
+fn put(out: ptr<u8>, at: i32, s: ptr<u8>) -> i32 {
+    let n: i32 = strlen(s);
+    memcpy(out + at, s, n);
+    return at + n;
+}
+fn num(out: ptr<u8>, at: i32, v: i32) -> i32 {
+    return at + fmt_i32(out + at, v);
+}
+
+fn main() -> i32 {
+    let ok: i32 = 0;
+    let b: u8[64] = 0;
+    let c: u8[64] = 0;
+    let out: u8[512] = 0;
+    let at: i32 = 0;
+
+    // 1. memmove with overlapping ranges (dst above src: the backward path)
+    memcpy(b, "abcdef", 6);
+    memmove(b + 2, b, 4);
+    if (memcmp(b, "ababcd", 6) == 0) { ok = ok + 1; }
+    at = put(out, at, "memmove ");
+    at = num(out, at, memcmp(b, "ababcd", 6));
+    at = put(out, at, "\n");
+
+    // 2. the string searches
+    if (strncmp("abc", "abd", 2) == 0) { ok = ok + 1; }
+    at = put(out, at, "strncmp ");
+    at = num(out, at, strncmp("abc", "abd", 3));
+    at = put(out, at, "\n");
+    let p: i32 = strchr("hello", 108);
+    if (p == 2) { ok = ok + 1; }
+    at = put(out, at, "strchr ");
+    at = num(out, at, p);
+    at = put(out, at, "\n");
+    p = strstr("hello world", "wor");
+    if (p == 6) { ok = ok + 1; }
+    at = put(out, at, "strstr ");
+    at = num(out, at, p);
+    at = put(out, at, "\n");
+    strcat(c, "ab");
+    p = strcat(c, "cd");
+    if (p == 4 && memcmp(c, "abcd", 4) == 0) { ok = ok + 1; }
+    at = put(out, at, "strcat ");
+    at = num(out, at, p);
+    at = put(out, at, "\n");
+
+    // 3. the integer parser
+    let v: i32 = atoi("  -123x");
+    if (v == 0 - 123) { ok = ok + 1; }
+    at = put(out, at, "atoi ");
+    at = num(out, at, v);
+    at = put(out, at, " ");
+    at = num(out, at, atoi("+7"));
+    at = put(out, at, " ");
+    at = num(out, at, atoi(""));
+    at = put(out, at, "\n");
+
+    // 4. the formatters
+    v = fmt_i32(b, 0 - 1234);
+    if (v == 5 && memcmp(b, "-1234", 5) == 0) { ok = ok + 1; }
+    at = put(out, at, "fmt_i32 ");
+    at = num(out, at, v);
+    at = put(out, at, "\n");
+    v = fmt_hex(b, 48879, 4);
+    if (v == 4 && memcmp(b, "beef", 4) == 0) { ok = ok + 1; }
+    at = put(out, at, "fmt_hex ");
+    at = num(out, at, v);
+    at = put(out, at, "\n");
+
+    // 5. the sort: ascending
+    let arr: i32[6] = 0;
+    *(arr) = 5; *(arr + 4) = 3; *(arr + 8) = 9;
+    *(arr + 12) = 1; *(arr + 16) = 4; *(arr + 20) = 2;
+    sort_i32(arr, 6);
+    if (*(arr) == 1 && *(arr + 20) == 9) { ok = ok + 1; }
+    at = put(out, at, "sort ");
+    at = num(out, at, *(arr));
+    at = put(out, at, " ");
+    at = num(out, at, *(arr + 20));
+    at = put(out, at, "\n");
+
+    // 6. the bump allocator: distinct blocks, the value survives, exhaustion
+    let a: ptr = malloc(16);
+    let bq: ptr = malloc(8);
+    let good: i32 = 0;
+    if (a != 0 && bq != 0 && bq == a + 16) { good = 1; }
+    if (good == 1) { ok = ok + 1; }
+    store_i64(a, 0x1122334455667788);
+    if (load_i64(a) == 0x1122334455667788) { ok = ok + 1; }
+    let same: i32 = 0;
+    if (load_i64(a) == 0x1122334455667788) { same = 1; }
+    let exhausted: i32 = 0;
+    if (malloc(1048576) == 0) { exhausted = 1; }
+    at = put(out, at, "malloc ");
+    at = num(out, at, good);
+    at = put(out, at, " ");
+    at = num(out, at, same);
+    at = put(out, at, " ");
+    at = num(out, at, exhausted);
+    at = put(out, at, " ");
+    at = num(out, at, free(a));
+    at = put(out, at, "\n");
+
+    if (free(a) == 0) { ok = ok + 1; }
+    at = put(out, at, "checks ");
+    at = num(out, at, ok);
+    at = put(out, at, "\n");
+    write(1, out, at);
+    return ok == 12 ? 0 : 1;
+}
