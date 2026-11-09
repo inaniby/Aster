@@ -18,6 +18,17 @@
 # openssl is used here as an independent oracle on purpose: everything Aster
 # writes is produced by its own code, so an implementation that agrees with
 # itself proves nothing. It is never used to *produce* anything Aster ships.
+#
+# v0.23.77-dev (audit): ci.sh reports openssl as optional, so a machine without
+# it must SKIP rather than fail — the first layer used to fail with "openssl
+# cannot parse the generated private key" because the *shell* could not run
+# openssl at all. Exit 77 is the suite protocol's SKIP.
+if ! command -v openssl >/dev/null 2>&1; then
+    echo "SKIP: signing-checks needs openssl as its independent key/PKCS#7 oracle"
+    exit 77
+fi
+# writes is produced by its own code, so an implementation that agrees with
+# itself proves nothing. It is never used to *produce* anything Aster ships.
 set -eu
 . tests/lib/tmpdir.sh
 

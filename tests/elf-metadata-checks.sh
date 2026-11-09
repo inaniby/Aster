@@ -454,11 +454,19 @@ grep -q 'sh\[idxSym\].info=1;' "$OUT/m2.cpp" \
 $CXX -std=c++17 -O2 -w "$OUT/m2.cpp" -o "$OUT/m2" 2>/dev/null \
     || { echo 'FAIL: mutation (b) no longer compiles' >&2; exit 1; }
 "$OUT/m2" build-obj --pic -g "$OUT/full.ast" -o "$OUT/m2.o" >/dev/null 2>&1
-if readelf -s "$OUT/m2.o" 2>&1 | grep -qi 'local symbol'; then
-    printf '  %-40s %s\n' 'mutation b) sh_info back to 1' 'noticed (readelf warns again)'
+# v0.23.77-dev (audit): the "local symbol" complaint is GNU readelf's own
+# diagnostic; LLVM's readelf (the only readelf on a Termux host) stays quiet,
+# which would turn this mutation into a false FAIL. Run it where GNU readelf
+# exists and say so otherwise.
+if command -v readelf >/dev/null 2>&1 && readelf --version 2>/dev/null | head -1 | grep -q GNU; then
+    if readelf -s "$OUT/m2.o" 2>&1 | grep -qi 'local symbol'; then
+        printf '  %-40s %s\n' 'mutation b) sh_info back to 1' 'noticed (readelf warns again)'
+    else
+        echo 'FAIL: mutation (b) was not noticed — readelf no longer objects' >&2
+        exit 1
+    fi
 else
-    echo 'FAIL: mutation (b) was not noticed — readelf no longer objects' >&2
-    exit 1
+    printf '  %-40s %s\n' 'mutation b) sh_info back to 1' 'skipped (no GNU readelf)'
 fi
 # (c) .hash entsize back to 0: the decoder must object.
 sed 's|setSh(S_HASH,5,0x2,hashOff,hashOff,hashSize,S_DYNSYM,0,4,4);|setSh(S_HASH,5,0x2,hashOff,hashOff,hashSize,S_DYNSYM,0,4,0);|' \

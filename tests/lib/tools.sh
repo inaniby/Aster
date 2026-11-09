@@ -45,3 +45,13 @@ aster_hostcc_link() {
 aster_can_dlopen_glibc_so() {
     [ -z "${ANDROID_ROOT:-}" ] && [ ! -f /system/build.prop ]
 }
+
+# aster_can_dlopen_ie_tls — can a host loader give a dlopened library its
+# initial-exec TLS block? bionic answers no: it insists the block is known
+# before the object is loaded and fails the dlopen with
+#   TLS symbol "..." in dlopened "..." using IE access model
+# so the TLS dlopen witness skips on Android (the static and structural layers
+# still run) and runs normally on Linux.
+aster_can_dlopen_ie_tls() {
+    [ -z "${ANDROID_ROOT:-}" ] && [ ! -f /system/build.prop ]
+}

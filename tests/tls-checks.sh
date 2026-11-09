@@ -45,6 +45,7 @@
 # the suite can still fail.
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 OUT=${OUT:-tmp-tls-checks}
 mkdir -p "$OUT"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 RUNNER=${RUNNER:-tests/run-aarch64.sh}
@@ -431,7 +432,13 @@ if [ "$can_run" = yes ]; then
 else
     printf '  %-40s %s\n' 'qemu: read/write the TLS block' 'skipped (no runner)'
 fi
-if [ "$can_run" = yes ] && command -v "$HOSTCC" >/dev/null 2>&1 \
+if [ "$can_run" = yes ] && ! aster_can_dlopen_ie_tls; then
+    # v0.23.77-dev (audit): bionic cannot give a dlopened library an
+    # initial-exec TLS block ("using IE access model"), so this witness skips on
+    # Android; the static block, the structural layers and the executable
+    # witnesses above all ran.
+    printf '  %-40s %s\n' 'dlopen: scalars + tls arrays per-thread' 'skipped (host loader has no IE TLS for dlopen)'
+elif [ "$can_run" = yes ] && command -v "$HOSTCC" >/dev/null 2>&1 \
    && echo 'int main(){return 0;}' | "$HOSTCC" -x c - -o "$OUT/probe" 2>/dev/null; then
     "$HOSTCC" -O2 -o "$OUT/so-tls-host" tests/so-tls-host.c -ldl -lpthread
     # The dlopen trio, three times over: a scalar (bump: 33 then 36), a mutable
