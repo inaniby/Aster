@@ -152,6 +152,16 @@ breaking this project's own `-Werror` build.
   once per element); a non-constant initializer is refused as it is for an
   integer global. `f32` and printing remain deferred.
 
+* **`f32`, the four-byte single** — the same machinery one width down: a
+  `f32` type (`f32(x)`/`f64(x)` conversions, one rounding at the narrowing),
+  arithmetic and the six relations on the S registers, unary negation, storage
+  in slots/fields/elements, parameters in the same `d0`-`d7` bank and an f32
+  result in `s0`, plus a folding f32 global. Mixing f32 with f64 or with an
+  integer needs an explicit cast, exactly as f64 does.
+  `tests/float-checks.sh` grows an f32 layer (arithmetic, relations, four
+  conversions, a parameter, a global, an array and a struct) and three mixing
+  refusals.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

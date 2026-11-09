@@ -161,6 +161,7 @@ leading `&` and the bitwise level only sees one in operator position.
 | `fn(P1,..,Pn) -> R` | 8 | 8 | function pointer carrying a signature (v0.23.37-dev); stored as a `ptr`. Since v0.23.38-dev it is also legal as a **struct field** type and as a function's **return** type |
 | `u8` | 1 | 1 | zero-extended on load, truncated on store |
 | `f64` | 8 | 8 | an IEEE-754 double (v0.23.77-dev); lives in the FP register bank (checked in the first slice by `LDR D`/`STR D`), spelled like a struct name rather than a reserved word |
+| `f32` | 4 | 4 | a four-byte IEEE-754 single beside it (v0.23.77-dev), the same FP bank's low half; arithmetic is same-type only, and `f64(x)`/`f32(x)` convert between the two" 
 | `char` | 1 | 1 | unsigned 8-bit; **identical width/ABI to `u8`**, so byte-for-byte ABI-compatible with C `unsigned char` (v0.23.69-dev). Distinct from the `'a'` character *literal*, which still folds to `i32` |
 | `u16` | 2 | 2 | same |
 | `bool` | 4 | 4 | holds 0 or 1 |
@@ -269,7 +270,13 @@ fn main() -> i32 {
   repeated once per element, in .data or .bss when it is all zero). Only a
   constant expression is accepted — a call is refused, as it is for an integer
   global.
-* **Still deferred:** `f32` and printing.
+* **`f32`** is the four-byte single: `f32(x)` converts from an integer or an
+  f64 (the latter through FCVT, one rounding), `f64(x)` widens back, and
+  arithmetic and comparisons are available on the S registers when both
+  operands are f32. An f32 parameter rides in the same `d0`-`d7` bank, a global
+  folds through the same float constant folder, and storage is four bytes in a
+  slot, a field or an element.
+* **Still deferred:** printing.
 
 ### 5.1 `char` — an unsigned 8-bit integer type (v0.23.69-dev)
 
