@@ -140,6 +140,13 @@ breaking this project's own `-Werror` build.
   `tests/float-checks.sh` (seven layers) pins the arithmetic, the relations,
   the conversions, the storage and six refusals; the snapshot still reproduces
   393/393 rows, because no shipped program uses a double.
+  **The FP calling convention** (same release): an f64 parameter rides in
+  `d0`-`d7`, allocated independently of `x0`-`x7` (AAPCS64's two banks), with
+  the ninth and later doubles on the stack in the outgoing area; an f64 result
+  comes back in `d0`. Mixed integer/FP calls, a function returning an f64, and
+  an f64 operation that calls on both sides (up to four nested levels, parked
+  in the frame gap) are supported. Global initializers, `f32` and printing
+  remain deferred and are refused with a message naming the slice.
 
 ### Byte baseline
 

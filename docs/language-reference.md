@@ -257,9 +257,16 @@ fn main() -> i32 {
   interchangeable with an i64 one in the register file.
 * **Not defined:** `%`, the shifts and the bitwise operators answer a
   diagnostic naming the operator.
-* **Deferred to the ABI slice:** parameters and returns (the `d0`-`d15` bank
-  under AAPCS64), global initializers (the float constant folder), `f32` and
-  printing. Each is refused at compile time today.
+* **The FP calling convention:** an f64 parameter rides in `d0`-`d7` (the first
+  eight), allocated **independently** of the integer bank — `f(a: i32, x: f64)`
+  takes `x0` for the integer and `d0` for the double — and a ninth or later
+  double goes on the stack in the same outgoing area integer arguments use. An
+  f64 result comes back in `d0`. Mixed integer/FP calls, a function returning an
+  f64, and a float operation that calls on both sides (up to four nested, the
+  left result parked in the compiler's frame gap) are supported.
+* **Still deferred:** global initializers (the float constant folder), `f32`,
+  and printing. Each is refused at compile time today with a message naming the
+  slice.
 
 ### 5.1 `char` — an unsigned 8-bit integer type (v0.23.69-dev)
 

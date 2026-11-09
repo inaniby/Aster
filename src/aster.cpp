@@ -2850,6 +2850,10 @@ class Parser {
         need(TK::Colon,"expected ':'");
         const Ty ty=needType(kTypeExpected);
         // v0.23.77-dev: an f64 global needs the float constant folder (its 8-byte
+        // IEEE pattern written straight into .data), which is the next slice.
+        if(ty==Ty::F64)
+            throw Error(loc(id.line,id.col,"an f64 global arrives with the constant-folding slice — declare it local and initialize it in code"));
+        // v0.23.77-dev: an f64 global needs the float constant folder (its 8-byte
         // IEEE pattern written straight into .data), which is not part of this
         // slice. A local double is fully supported, so the diagnostic says so.
         if(ty==Ty::F64)
@@ -4237,6 +4241,19 @@ struct Codegen {
     //     comparison paths did exempt a bare literal from this the day the
     //     exemption was written; round 2 removes the extension instead, so the
     //     exemption no longer has to guess which operands are constants.
+    // v0.23.77-dev: does this expression contain a call? A double temporary
+    // cannot be spilled across a call yet (the integer spill bank would save an
+    // x register the double never wrote), so a float operation evaluates the
+    // side with the call first and holds nothing live across it. An expression
+    // that calls on both sides is refused rather than left wrong.
+    static bool exprHasCall(const Expr& e){
+        if(e.k==Expr::Call||e.k==Expr::FieldCall)return true;
+        if(e.a&&exprHasCall(*e.a))return true;
+        if(e.b&&exprHasCall(*e.b))return true;
+        if(e.k==Expr::Index&&e.a&&exprHasCall(*e.a))return true;
+        for(const auto& x:e.args)if(x&&exprHasCall(*x))return true;
+        return false;
+    }
     // (3) An operation runs at 64 bits when the context asks for i64, when
     //     either operand is i64, or when a constant operand does not fit in
     //     32 bits. Deriving it from `want` alone dropped the high word of an
@@ -5198,10 +5215,42 @@ struct Codegen {
                 if(ta==Ty::F64||tb==Ty::F64){
                     if(!(ta==Ty::F64&&tb==Ty::F64))
                         throw Error("f64 arithmetic needs two f64 operands");
-                    int fa=gen(*e.a,Ty::F64),fb=gen(*e.b,Ty::F64);
+                    const bool ca=exprHasCall(*e.a), cb=exprHasCall(*e.b);
                     const uint32_t fop=e.k==Expr::Add?0x1e602800u:
                                         e.k==Expr::Sub?0x1e603800u:
                                         e.k==Expr::Mul?0x1e600800u:0x1e601800u;
+                    // v0.23.77-dev: a call clobbers d0-d7, so a double that must
+                    // live across one is parked in the frame gap the integer spill
+                    // area leaves (4000..4032, four slots). The side with the call
+                    // is evaluated first whenever only one has a call; both sides
+                    // calling parks the left result for the second call.
+                    if(ca&&cb){
+                        if(floatSpillDepth>=4)
+                            throw Error("an f64 expression nests calls more than four levels deep in one operator");
+                        const uint32_t slot=4000u+uint32_t(floatSpillDepth)*8u;
+                        ++floatSpillDepth;
+                        int fa=gen(*e.a,Ty::F64);
+                        storeStackOff(fa,slot,Ty::F64);
+                        releaseTemp(fa);
+                        int fb=gen(*e.b,Ty::F64);
+                        int d=temp();
+                        loadStackOff(d,slot,Ty::F64);
+                        // The result lands in the lower temporary so the
+                        // higher one can be released first (the pool is LIFO).
+                        emit(fop|(uint32_t(d)<<16)|(uint32_t(fb)<<5)|uint32_t(fb));
+                        releaseTemp(d);
+                        --floatSpillDepth;
+                        return fb;
+                    }
+                    if(cb){
+                        int fb=gen(*e.b,Ty::F64);
+                        int fa=gen(*e.a,Ty::F64);
+                        emit(fop|(uint32_t(fa)<<16)|(uint32_t(fb)<<5)|uint32_t(fb));
+                        releaseTemp(fa);
+                        return fb;
+                    }
+                    int fa=gen(*e.a,Ty::F64);
+                    int fb=gen(*e.b,Ty::F64);
                     emit(fop|(uint32_t(fb)<<16)|(uint32_t(fa)<<5)|uint32_t(fa));
                     releaseTemp(fb);
                     return fa;
@@ -5271,17 +5320,27 @@ struct Codegen {
     // replaced by a pointer to a caller-made copy wherever it ends up — even
     // on the stack, where it is an eight-byte slot holding that address.
     struct ArgLayout {
-        int reg[32];            // first register, or -1 when the argument is on the stack
+        int reg[32];            // first integer register, or -1 (stack, or an f64)
+        int fp[32];             // v0.23.77-dev: first FP register for an f64, or -1
         int count[32];          // 1 or 2 registers
         uint32_t stackOff[32];  // byte offset in the incoming stack area
         uint32_t stackBytes;    // the area's size, rounded up to 16
     };
     static ArgLayout layoutArgs(const std::vector<Ty>& ts,size_t n){
         ArgLayout l{};
-        for(size_t i=0;i<32;++i){l.reg[i]=-1;l.count[i]=1;}
-        int ngrn=0;uint32_t nsaa=0;
+        for(size_t i=0;i<32;++i){l.reg[i]=-1;l.fp[i]=-1;l.count[i]=1;}
+        int ngrn=0,fpreg=0;uint32_t nsaa=0;
         for(size_t i=0;i<n&&i<32;++i){
             const Ty t=i<ts.size()?ts[i]:Ty::I32;
+            // v0.23.77-dev: an f64 argument takes the next d register, allocated
+            // independently of the integer bank (AAPCS64: v0-v7 for the first
+            // eight FP arguments, x0-x7 for the integers). Past eight it goes on
+            // the stack in the same area the integer stack arguments use.
+            if(t==Ty::F64){
+                if(fpreg<8){l.fp[i]=fpreg;++fpreg;}
+                else { l.stackOff[i]=nsaa;nsaa+=8u; }
+                continue;
+            }
             const int need=structInMemory(t)?1:int(aapcs64Slots(t));
             if(ngrn+need<=8){l.reg[i]=ngrn;l.count[i]=need;ngrn+=need;}
             else {
@@ -5829,7 +5888,15 @@ struct Codegen {
         }
         // Registers first, while SP still points at the frame: these loads use
         // the offsets every pre-existing call has always used.
-        for(size_t i=0;i<std::min<size_t>(8,nargs);++i){
+        for(size_t i=0;i<nargs;++i){
+            // v0.23.77-dev: an f64 argument rides in its d register, read from the
+            // staging slot at its own width (LDR D), and never in x0-x7.
+            if(at(i)==Ty::F64){
+                if(lay.fp[i]<0)continue;                    // on the stack: the loop below
+                loadStackOff(lay.fp[i],uint32_t(scratchByte+argOff[i]),Ty::F64);
+                continue;
+            }
+            if(i>=8)continue;
             if(lay.reg[i]<0)continue;                       // on the stack: needs the outgoing area
             if(structInMemory(at(i)))continue;              // likewise: only its address is ready
             const uint32_t off=uint32_t(scratchByte+argOff[i]);
@@ -5906,10 +5973,13 @@ struct Codegen {
             emitStructCopy(17,kGlobalBase,sretBytes);
         } else {
             d=temp();
+            // v0.23.77-dev: an f64 result comes back in d0 and moves in the FP
+            // bank, with no second register.
+            if(rt==Ty::F64)emit(0x1e604000u|uint32_t(d));   // FMOV Dd, D0
             // A struct result is eight bytes a register even when the struct
             // is narrower, so it moves at full width.
-            if(d!=0)emit(((tyIs64(rt)||tyIsStruct(rt))?0xaa0003e0u:0x2a0003e0u)|uint32_t(d));
-            if(aapcs64Slots(rt)==2u){
+            else if(d!=0)emit(((tyIs64(rt)||tyIsStruct(rt))?0xaa0003e0u:0x2a0003e0u)|uint32_t(d));
+            if(rt!=Ty::F64&&aapcs64Slots(rt)==2u){
                 int d2=temp();                               // X1 carries the second half
                 if(d2!=1)emit(movX(d2,1));
             }
@@ -6178,7 +6248,11 @@ struct Codegen {
     // are patched when the size is known, and a function that neither calls nor
     // copies/returns an aggregate keeps none of the compiler scratch tail.
     std::vector<size_t> frameWords;
-    std::vector<size_t> incomingBaseWords;   // ADD X16, SP, #frame: caller stack arguments
+    std::vector<size_t> incomingBaseWords;
+    // v0.23.77-dev: a double that must survive a call on the *other* side of
+    // one operator. It is parked in the four-slot gap between the locals and
+    // the integer spill area (4000..4032), one slot per nesting level.
+    int floatSpillDepth=0;   // ADD X16, SP, #frame: caller stack arguments
     // v0.23.77-dev (milestone 2): the call/syscall scratch grid starts at
     // 4160 in the historical layout. When a function has no aggregate scratch
     // (the part that lives in the tail) it can move the grid down to just above
@@ -6229,6 +6303,10 @@ struct Codegen {
                 loadStackOff(kGlobalBase,kSretSlot,Ty::I64);
                 emitStructStore(e);
                 loadStackOff(0,kSretSlot,Ty::I64);       // a nested call may have taken X8
+            } else if(retTy==Ty::F64){
+                int v=gen(e,Ty::F64);
+                emit(0x1e604000u|(uint32_t(v)<<5));          // FMOV D0, Dv
+                releaseTemp(v);
             } else {
                 emitAddOff(kGlobalBase,31,kRetBuf);
                 emitStructStore(e);
@@ -6757,15 +6835,9 @@ struct Codegen {
             slot+=width;
         }
         nextSlot=slot;
-        // v0.23.77-dev: f64 parameters and returns are the ABI slice's business
-        // — the s0-s15/d0-d15 bank, mixed with the integer bank under AAPCS64.
-        // Until that lands, a float in a signature is refused here rather than
-        // quietly marshalled as an integer.
-        for(Ty pt:f.paramTypes)
-            if(pt==Ty::F64)
-                throw Error("f64 parameters arrive with the ABI slice: pass f64 by value once it lands");
-        if(f.retType==Ty::F64)
-            throw Error("an f64 return arrives with the ABI slice");
+        // v0.23.77-dev: an f64 parameter arrives in a d register (d0-d7 for the
+        // first eight, the stack after that) and an f64 result comes back in d0
+        // — AAPCS64's FP bank, allocated independently of x0-x7.
         const bool haveMainArgs=isMain&&!f.params.empty();
         if(compact){
             if(haveMainArgs)emit(0x910003f0u);   // ADD X16, SP, #0 — the initial SP, before the frame moves
@@ -6824,6 +6896,18 @@ struct Codegen {
             const Ty pt=f.paramTypes[i];
             const int pslot=scopes.back()[f.params[i]];
             const uint32_t pbase=uint32_t(pslot)*8u;
+            if(pt==Ty::F64){
+                if(lay.fp[i]>=0){
+                    emit(storeVarT(lay.fp[i],pslot,Ty::F64));   // STR D, [SP, #slot*8]
+                } else {
+                    // A ninth FP argument arrives on the stack, at the caller's
+                    // outgoing area: X16 = SP + frame, then LDR D from it.
+                    incomingBaseWords.push_back(code.size());emit(0x91400bf0u); // ADD X16, SP, #8192 (patched)
+                    emit(0xfd400000u|((lay.stackOff[i]/8u)<<10)|(uint32_t(kGlobalBase)<<5)|0u); // LDR D0, [X16,#off]
+                    emit(storeVarT(0,pslot,Ty::F64));
+                }
+                continue;
+            }
             if(tyIsStruct(pt)){
                 // A struct parameter always arrives as memory the caller owns:
                 // in registers it is one or two eight-byte halves to spill, and
