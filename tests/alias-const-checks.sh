@@ -638,8 +638,8 @@ _prev_v=$(ls tests/baseline/ | grep -v "^v${_cur_v}\$" | sort -V | tail -1)
 if [ -n "$_prev_v" ]; then
     PREV="tests/baseline/${_prev_v}/example-hashes.txt"
     if [ -f "$PREV" ]; then
-        moved=$(awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' \
-                     "$PREV" "$OUT/hashes.filtered.txt" | grep -v '\.build-so$')
+        moved=$( (awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' \
+                     "$PREV" "$OUT/hashes.filtered.txt" | grep -v '\.build-so$') || true)
         prev_rows=$(wc -l < "$PREV")
         if [ -n "$moved" ]; then
             echo 'FAIL: this round moved bytes of a program written before it:' >&2
