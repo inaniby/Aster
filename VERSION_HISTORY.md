@@ -59,6 +59,12 @@ breaking this project's own `-Werror` build.
   rows — and `tests/project-checks.sh` covers scaffolding, reuse, both kinds of
   invalidation, `deps`, `--no-cache`, the error paths and a mutation that proves
   the meta validation is load-bearing.
+  The project file also carries the APK signing configuration — `sign-mode
+  debug|release`, `keystore`, `cert`, `key-bits` — with the same fail-closed
+  rules as the command-line options, and `test` lines give the project a test
+  suite: `aster test` links each test against the non-entry sources, runs it,
+  and reports pass/fail by exit code, with an optional substring filter and the
+  same object cache. APK projects refuse `test` (they are shared objects).
 
 ### Byte baseline
 

@@ -11558,6 +11558,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "       aster new [--apk] <dir>              scaffold a program or APK project\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
 "       aster build|run [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache] [-- args]\n"
+"       aster test  [-g] [--bounds-check] [--page-size N] [--no-cache] [filter]\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs"
     "       aster link-obj|link-pie <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
@@ -14164,7 +14165,11 @@ struct ProjectSpec {
     std::string name, package, abi="arm64-v8a", label;
     int minSdk=21, targetSdk=30;
     uint64_t pageSize=0;             // 0 = use the command line / default
+    std::string signMode="debug";    // debug | release
+    std::string keystore, cert;      // release signing material
+    int keyBits=2048;                // size of a generated debug key
     std::vector<std::string> sources;
+    std::vector<std::string> tests;  // `test <path>` lines
 };
 // v0.23.77-dev: aster.proj is line-oriented. `kind`, `package`, `name`, `abi`,
 // `label`, `min-sdk`, `target-sdk` and `page-size` are settings; every other
@@ -14182,6 +14187,18 @@ static ProjectSpec parseProjectFile(const std::string& path){
             if(v!="exe"&&v!="apk")throw Error(path+": kind must be exe or apk (got \""+v+"\")");
             spec.kind=v;
         } else if(k=="package") spec.package=v;
+        else if(k=="sign-mode"){
+            if(v!="debug"&&v!="release")throw Error(path+": sign-mode must be debug or release (got \""+v+"\")");
+            spec.signMode=v;
+        }
+        else if(k=="keystore") spec.keystore=v;
+        else if(k=="cert") spec.cert=v;
+        else if(k=="key-bits"){
+            char* end=nullptr; long n=std::strtol(v.c_str(),&end,10);
+            if(!end||*end||(n!=2048&&n!=3072&&n!=4096))throw Error(path+": key-bits must be 2048, 3072 or 4096 (got \""+v+"\")");
+            spec.keyBits=(int)n;
+        }
+        else if(k=="test") spec.tests.push_back(v);
         else if(k=="name") spec.name=v;
         else if(k=="abi") spec.abi=v;
         else if(k=="label") spec.label=v;
@@ -14199,6 +14216,81 @@ static ProjectSpec parseProjectFile(const std::string& path){
     handle(cur);
     return spec;
 }
+// v0.23.77-dev: one source through the project object cache. The key hashes
+// the compiler version, the flags (including whether the object is PIC) and the
+// source path; the meta records the source's content hash and one line per
+// input the compilation read, each with its own hash.
+static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,bool bc,uint64_t page,
+                                       const std::string& cacheDir,int& compiled,int& reused,bool noCache){
+    const std::string src=readFile(sp);
+    const std::string srcHash=sha256Hex(src);
+    const std::string flags=std::string(dbg?"g":"-")+std::string(bc?"b":"-")+(pic?"p":"-")+"|"+std::to_string(page);
+    const std::string key=sha256Hex(std::string(kVersion)+"|"+flags+"|"+sp);
+    const std::string objPath=cacheDir+"/"+key+".o";
+    const std::string metaPath=cacheDir+"/"+key+".meta";
+    bool reuse=false;
+    if(!noCache&&fileExists(objPath)&&fileExists(metaPath)){
+        const std::string meta=readFile(metaPath);
+        bool ok=true,sawSrc=false;
+        std::string cur; std::vector<std::string> lines;
+        for(char ch:meta){if(ch=='\n'){lines.push_back(cur);cur.clear();}else cur.push_back(ch);}
+        if(!cur.empty())lines.push_back(cur);
+        for(const auto& ln:lines){
+            const std::string l=trimWs(ln);
+            if(l.rfind("version ",0)==0){if(l.substr(8)!=kVersion)ok=false;}
+            else if(l.rfind("flags ",0)==0){if(trimWs(l.substr(6))!=flags)ok=false;}
+            else if(l.rfind("src ",0)==0){
+                const std::string rest=l.substr(4);
+                const size_t cut=rest.find(' ');
+                if(cut==std::string::npos){ok=false;continue;}
+                const std::string q=rest.substr(0,cut),h=rest.substr(cut+1);
+                if(q!=sp||h!=srcHash)ok=false; else sawSrc=true;
+            }
+            else if(l.rfind("dep ",0)==0){
+                const std::string rest=l.substr(4);
+                const size_t cut=rest.find(' ');
+                if(cut==std::string::npos){ok=false;continue;}
+                const std::string h=rest.substr(0,cut),q=rest.substr(cut+1);
+                if(!fileExists(q)||sha256Hex(readFile(q))!=h)ok=false;
+            }
+        }
+        if(ok&&sawSrc)reuse=true;
+    }
+    if(!reuse){
+        g_buildDeps.clear();
+        setSourceCache(sp,src);
+        Parser p(src,true,dirNameOf(sp));p.parse();
+        auto funcs=compileProgram(p.functions,p.globals,pic,true,bc,dbg);
+        auto mkDL=[&]()->DebugLineBlob{
+            if(!dbg)return DebugLineBlob{};
+            ObjectLayout L=layoutObject(funcs,p.globals);
+            const size_t sl=sp.find_last_of('/');
+            return encodeDebugLine(L.lineRows,L.ins.size()*4,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
+        };
+        auto mkDI=[&]()->DebugInfoBlob{
+            if(!dbg)return DebugInfoBlob{};
+            ObjectLayout L=layoutObject(funcs,p.globals);
+            const size_t sl=sp.find_last_of('/');
+            return encodeDebugInfo(L,funcs,p.functions,p.globals,sl==std::string::npos?std::string():sp.substr(0,sl),baseNameOf(sp));
+        };
+        auto mkEH=[&]()->EhFrameBlob{
+            if(!dbg)return EhFrameBlob{};
+            ObjectLayout L=layoutObject(funcs,p.globals);
+            return encodeEhFrame(L,funcs);
+        };
+        const std::string tmp=cacheDir+"/tmp-"+key+".o";
+        writeObject(tmp,funcs,p.globals,pic,mkDL(),mkDI(),mkEH());
+        writeFileAtomic(objPath,readFile(tmp));
+        std::remove(tmp.c_str());
+        std::string meta="version "+std::string(kVersion)+"\nflags "+flags+"\nsrc "+sp+" "+srcHash+"\n";
+        for(const auto& kv:g_buildDeps)meta+="dep "+kv.second+" "+kv.first+"\n";
+        writeFileAtomic(metaPath,meta);
+        g_buildDeps.clear();
+        ++compiled;
+    } else ++reused;
+    return objPath;
+}
+
 int main(int argc,char**argv){
     const std::string cmd=argc>1?argv[1]:"";
     std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false;
@@ -14296,7 +14388,8 @@ int main(int argc,char**argv){
                     "# Initializers run in this order, and the object holding main must\n"
                     "# hold at least one run-time initialized global (see A-21/A-22).\n"
                     "src/main.ast\n"
-                    "src/util.ast\n");
+                    "src/util.ast\n"
+                    "test tests/util_test.ast\n");
                 writeFileAtomic(dir+"/src/main.ast",
                     "// `aster build` compiles the sources in aster.proj and links them\n"
                     "// into build/" + name + ".\n"
@@ -14308,11 +14401,22 @@ int main(int argc,char**argv){
                     "fn add(a: i32, b: i32) -> i32 {\n"
                     "    return a + b;\n"
                     "}\n");
+                if(!makeDirs(dir+"/tests")){std::cerr<<"aster new: cannot create "<<dir<<"/tests\n";return 1;}
+                writeFileAtomic(dir+"/tests/util_test.ast",
+                    "// `aster test` builds this against the project's non-main sources\n"
+                    "// and runs it: exit 0 is a pass.\n"
+                    "include \"../src/util.ast\";\n\n"
+                    "fn main() -> i32 {\n"
+                    "    if (add(2, 3) != 5) { return 1; }\n"
+                    "    if (add(0, 0) != 0) { return 2; }\n"
+                    "    return 0;\n"
+                    "}\n");
             }
             writeFileAtomic(dir+"/.gitignore","build/\n");
             std::cout<<"Aster v"<<kVersion<<": created "<<(apk?"APK ":"")<<"project "<<dir
                      <<(apk?" (aster.proj, src/main.ast)":" (aster.proj, src/main.ast, src/util.ast)")<<"\n"
-                     <<"  cd "<<dir<<" && aster build";
+                     <<"  cd "<<dir<<" && aster build"
+                     <<(apk?"":"   # or aster test");
             if(apk)std::cout<<"   # build/"<<name<<".apk";
             std::cout<<"\n";
             return 0;
@@ -14377,6 +14481,86 @@ int main(int argc,char**argv){
                 std::cout<<"\n";
             }
             return 0;
+        }
+        if(cmd=="test"){
+            bool dbg=false,bc2=false,noCache=false; uint64_t ps=4096; std::string filter;
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                if(a=="-g"||a=="--debug-line")dbg=true;
+                else if(a=="--bounds-check")bc2=true;
+                else if(a=="--no-cache")noCache=true;
+                else if(a=="--page-size"){
+                    if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
+                        std::cerr<<"aster test: --page-size must be 4096 or 16384\n";return 2;
+                    }
+                }
+                else if(!a.empty()&&a[0]=='-'){std::cerr<<"aster test: unknown option "<<a<<"\n";return 2;}
+                else if(filter.empty())filter=a;
+                else {std::cerr<<"aster test: usage: aster test [-g] [--bounds-check] [--page-size N] [--no-cache] [filter]\n";return 2;}
+            }
+            if(ps!=4096&&ps!=16384){std::cerr<<"aster test: --page-size must be 4096 or 16384\n";return 2;}
+            if(!fileExists("aster.proj")){
+                std::cerr<<"aster test: no aster.proj in this directory (create one with `aster new NAME`)\n";
+                return 2;
+            }
+            const ProjectSpec spec=parseProjectFile("aster.proj");
+            if(spec.kind=="apk"){
+                std::cerr<<"aster test: an apk project is a shared object; list `test` sources in a program project instead\n";
+                return 2;
+            }
+            if(spec.tests.empty()){
+                std::cerr<<"aster test: aster.proj lists no `test` sources (a line `test tests/foo.ast`)\n";
+                return 2;
+            }
+            const std::string cacheDir="build/.cache";
+            if(!makeDirs(cacheDir)){std::cerr<<"aster test: cannot create "<<cacheDir<<"\n";return 1;}
+            int compiled=0,reused=0;
+            std::vector<std::string> libs;
+            for(const auto& sp:spec.sources){
+                if(!fileExists(sp)){std::cerr<<"aster test: missing source "<<sp<<"\n";return 1;}
+                // The program's own entry source is not a library: a test defines
+                // its own main, so the file that supplies the app's is left out.
+                // Detected by parsing, not guessed from a file name.
+                bool hasMain=false;
+                {
+                    g_buildDeps.clear();
+                    const std::string src=readFile(sp);
+                    setSourceCache(sp,src);
+                    Parser p(src,false,dirNameOf(sp));p.parse();
+                    for(const auto& f:p.functions)if(f.name=="main")hasMain=true;
+                }
+                g_buildDeps.clear();
+                if(hasMain)continue;
+                libs.push_back(cachedProjectObject(sp,false,dbg,bc2,ps,cacheDir,compiled,reused,noCache));
+            }
+            int ran=0,failed=0;
+            for(const auto& tp:spec.tests){
+                if(!filter.empty()&&tp.find(filter)==std::string::npos)continue;
+                if(!fileExists(tp)){std::cerr<<"aster test: missing test source "<<tp<<"\n";return 1;}
+                std::vector<std::string> objs=libs;
+                objs.push_back(cachedProjectObject(tp,false,dbg,bc2,ps,cacheDir,compiled,reused,noCache));
+                std::string exe="build/tests/"+baseNameOf(tp);
+                if(exe.size()>4&&exe.compare(exe.size()-4,4,".ast")==0)exe=exe.substr(0,exe.size()-4);
+                if(!makeDirs(dirNameOf(exe))){std::cerr<<"aster test: cannot create "<<dirNameOf(exe)<<"\n";return 1;}
+                linkObjects(objs,exe,0x400000,2,ps);
+                pid_t pid=::fork();
+                if(pid<0){std::cerr<<"aster test: cannot fork\n";return 1;}
+                if(pid==0){::execl(exe.c_str(),exe.c_str(),(char*)nullptr);std::perror("aster test");::_exit(127);}
+                int st=0;
+                if(::waitpid(pid,&st,0)<0){std::cerr<<"aster test: waitpid failed\n";return 1;}
+                const int rc=WIFEXITED(st)?WEXITSTATUS(st):(WIFSIGNALED(st)?128+WTERMSIG(st):1);
+                ++ran;
+                if(rc==0)std::cout<<"PASS "<<tp<<"\n";
+                else {std::cout<<"FAIL "<<tp<<" (exit "<<rc<<")\n";++failed;}
+            }
+            if(ran==0&&!filter.empty()){
+                std::cerr<<"aster test: no test matched \""<<filter<<"\"\n";
+                return 1;
+            }
+            std::cout<<"Aster v"<<kVersion<<": "<<ran<<" test"<<(ran==1?"":"s")<<", "<<failed
+                     <<" failed ("<<compiled<<" compiled, "<<reused<<" reused)\n";
+            return failed==0?0:1;
         }
         if(cmd=="build"||cmd=="run"){
             const bool isRun=cmd=="run";
@@ -14505,7 +14689,23 @@ int main(int argc,char**argv){
                 if(!validateApkInputs(spec.package,spec.abi,name,err)){
                     std::cerr<<"aster build: "<<err<<"\n";return 2;
                 }
-                const SigningKey key=debugKeyFor(projectKeyDir(""), 2048);
+                // v0.23.77-dev: the project may configure signing; release
+                // needs both files and debug must not carry them, exactly as
+                // build-apk's own options behave.
+                SigningKey key;
+                if(spec.signMode=="release"){
+                    if(spec.keystore.empty()||spec.cert.empty()){
+                        std::cerr<<"aster build: sign-mode release needs `keystore <path>` and `cert <path>` in aster.proj\n";
+                        return 2;
+                    }
+                    key=releaseKey(spec.keystore,spec.cert);
+                } else {
+                    if(!spec.keystore.empty()||!spec.cert.empty()){
+                        std::cerr<<"aster build: keystore/cert are release settings — add `sign-mode release` or remove them\n";
+                        return 2;
+                    }
+                    key=debugKeyFor(projectKeyDir(""), spec.keyBits);
+                }
                 const std::string soText=readFile(soPath);
                 std::vector<uint8_t> so(soText.begin(),soText.end());
                 const std::string label=spec.label.empty()?name:spec.label;

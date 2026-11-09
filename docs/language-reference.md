@@ -1283,6 +1283,7 @@ aster verify-apk <app.apk>
 aster new [--apk] <dir>
 aster add <source.ast>
 aster build|run [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache] [-- args…]
+aster test  [-g] [--bounds-check] [--page-size N] [--no-cache] [filter]
 aster deps [<source.ast> ...] [-o OBJ]
 ```
 
@@ -1360,6 +1361,11 @@ source path, in link order.
 | `abi <abi>` | `arm64-v8a` by default (checked against the shared object, A-14) |
 | `min-sdk N` / `target-sdk N` | manifest values, defaults 21 / 30 |
 | `page-size 4096\|16384` | load-segment page size; 16384 for Android 15+ 16 KB pages |
+| `sign-mode debug\|release` | APK signing; `debug` (default) uses the project key in `.aster/` |
+| `keystore <path>` | release private key (PEM/DER, PKCS#8 or PKCS#1) |
+| `cert <path>` | release certificate (PEM/DER); both are required with `sign-mode release` |
+| `key-bits 2048\|3072\|4096` | size of a generated debug key (default 2048) |
+| `test <path>` | a test program (v0.23.77-dev): `aster test` builds and runs it |
 | *anything else* | a source path, relative to the project root |
 
 A program project is `build/<name>`; an APK project is `build/<name>.apk`,
@@ -1370,6 +1376,43 @@ first build) unless `build-apk` options are used directly.
 the same path is a no-op). `aster run` builds and executes the program, forwards
 everything after `--` to it, and returns the program's exit code; on an APK
 project it says so and builds nothing.
+
+### Signing
+
+`build-apk`'s signing options can live in the project file instead of on the
+command line. `sign-mode release` needs both `keystore` and `cert`; leaving one
+out is refused ("sign-mode release needs `keystore <path>` and `cert <path>` in
+aster.proj"), and giving either one without `sign-mode release` is refused too
+("keystore/cert are release settings — add `sign-mode release` or remove
+them"). The default is `debug`, which uses (and creates on first build) the
+project's key under `.aster/`, sized by `key-bits`.
+
+### Tests
+
+A program project may list test programs:
+
+```
+kind exe
+src/main.ast
+src/util.ast
+test tests/util_test.ast
+```
+
+`aster test` links each test source against the project's **non-entry** sources
+(the ones that do not define `main`, found by parsing, not by file name), runs
+the result, and reports pass/fail by exit code: 0 is a pass, anything else is a
+failure carrying that code:
+
+```
+PASS tests/util_test.ast
+Aster v0.23.77-dev: 1 test, 0 failed (2 compiled, 0 reused)
+```
+
+A non-zero exit from a test makes `aster test` exit 1. An optional argument is a
+substring filter on the test path; a filter that matches nothing is an error
+rather than a green run. Objects come from the same content cache the build
+uses, so an unchanged library is compiled once. APK projects are shared objects
+and are refused ("list `test` sources in a program project instead").
 
 ### The object cache
 
