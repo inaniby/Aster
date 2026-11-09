@@ -396,6 +396,40 @@ lsize=$(awk '/^main\.ast/{print $5}' "$OUT/lunits.txt")
 [ $((dstmt)) -lt $((lsize)) ] || fail "the second unit's stmt_list $dstmt is past .debug_line ($lsize bytes)"
 [ $((dstmt)) -gt 0 ] || fail "the second unit's line program starts inside the first"
 
+# v0.23.76-dev (audit A-13): the link keeps one abbreviation table, so an input
+# whose table differs (a stale object, built before an abbreviations change)
+# must be refused instead of merged into a unit that decodes as garbage. The
+# mutation below stays parseable — language's DW_FORM_data2 becomes data1 — so
+# only the equality check can catch it.
+cp "$OUT/b.o" "$OUT/bad.o"
+python3 - "$OUT/bad.o" <<'PY'
+import struct, sys
+p = sys.argv[1]
+d = bytearray(open(p, 'rb').read())
+shoff = struct.unpack_from("<Q", d, 0x28)[0]
+shent = struct.unpack_from("<H", d, 0x3a)[0]
+shnum = struct.unpack_from("<H", d, 0x3c)[0]
+shstr = struct.unpack_from("<H", d, 0x3e)[0]
+secs = []
+for i in range(shnum):
+    name, typ, flags, addr, off, size = struct.unpack_from("<IIQQQQ", d, shoff + i * shent)[:6]
+    secs.append((name, off, size))
+strtab = secs[shstr][1]
+for name, off, size in secs:
+    end = d.find(b"\0", strtab + name)
+    if d[strtab + name:end] == b".debug_abbrev":
+        i = d.find(b"\x13\x05", off, off + size)
+        assert i >= 0, "language's data2 form not found"
+        d[i + 1] = 0x0b          # DW_FORM_data2 -> DW_FORM_data1
+        open(p, 'wb').write(bytes(d))
+        break
+PY
+if $ASTER link-obj "$OUT/a.o" "$OUT/bad.o" -o "$OUT/bad.elf" >"$OUT/bad.log" 2>&1; then
+    fail "a .debug_abbrev that differs from the first input was accepted"
+fi
+grep -qF '.debug_abbrev differs from the first input object' "$OUT/bad.log" \
+    || fail "the .debug_abbrev mismatch is refused without its diagnostic: $(head -1 "$OUT/bad.log")"
+
 # A shared object linked out of PIC objects keeps one unit per object too, each
 # raised to where that object's text landed in the merged image.
 cat > "$OUT/pa.ast" <<'AST'

@@ -11026,7 +11026,14 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
             mergedDebugInfo.insert(mergedDebugInfo.end(),obj.debugInfo.begin(),obj.debugInfo.end());
             for(const auto& p:obj.debugInfoPatches)
                 debugInfoFixups.push_back({diBase+p.offset,p.symbol,p.symbol==".text"?(int64_t)textBase:p.addend});
+            // v0.23.76-dev (audit A-13): every unit is decoded through the one
+            // abbreviation table the link keeps, so the tables have to agree. A
+            // stale object (built before an abbreviations change) merged into a
+            // fresh one used to corrupt every later unit in silence; say so
+            // instead, the way a differing .eh_frame CIE already does.
             if(mergedDebugAbbrev.empty())mergedDebugAbbrev=obj.debugAbbrev;
+            else if(mergedDebugAbbrev!=obj.debugAbbrev)
+                throw Error(input+": .debug_abbrev differs from the first input object's; rebuild every -g input with the same compiler");
             // v0.23.76-dev (audit A-12): the unit's stmt_list becomes the offset
             // of this object's own line program in the merged .debug_line.
             if(obj.hasDebugStmtList){
@@ -11242,6 +11249,8 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
             for(const auto& p:obj.debugInfoPatches)
                 debugInfoFixups.push_back({diBase+p.offset,p.symbol,p.symbol==".text"?(int64_t)textBase:p.addend});
             if(mergedDebugAbbrev.empty())mergedDebugAbbrev=obj.debugAbbrev;
+            else if(mergedDebugAbbrev!=obj.debugAbbrev)   // v0.23.76-dev (audit A-13)
+                throw Error(input+": .debug_abbrev differs from the first input object's; rebuild every -g input with the same compiler");
             // v0.23.76-dev (audit A-12): this unit's line program starts where
             // its own .debug_line blob was appended, not at the section start.
             if(obj.hasDebugStmtList){

@@ -278,3 +278,29 @@ error: Identical DW_AT_stmt_list section offset occurred 1 time(s).
 第一个单元为 0、两单元互不相同、第二个落在 `.debug_line` 范围内。
 另外把 `tests/symbol-versioning-checks.sh` 的 `dlopen` 见证层在 bionic 宿主上改为跳过
 （它要求 `--needed libc.so.6`，Android 的加载器没有这个名字）——与之前 e2e 层的处理一致。
+
+---
+
+## 10. A-13（P2，已修）：链接不校验各输入的 `.debug_abbrev` 是否一致
+
+**现象**：链接器只保留**第一个**输入对象的 abbrev 表，却对后续对象不做任何比较。
+一个"陈旧"对象（例如切换 abbrev 表之前的版本编译出来的 `.o`）混进来后，它自己的属性流会
+被按第一张表解码 → 该单元之后的所有内容读错，而链接器**静默成功**。
+
+**复现**（ELF 手术，与仓库自己的审计手法一致）：把 `b.o` 的 abbrev 里 language 的
+`DW_FORM_data2` 改成 `DW_FORM_data1`（仍然可解析，只是表不同），再与正常 `a.o` 链接：
+
+| | 修前 | 修后 |
+| --- | --- | --- |
+| `link-pie a.o b3.o` | rc=0，静默产出损坏的 `.debug_info`（`llvm-dwarfdump --verify` 失败） | rc=1，`error: … .debug_abbrev differs from the first input object's; rebuild every -g input with the same compiler` |
+
+**修复**：`linkObjects` 与 `linkSharedObjects` 在合并调试信息时比较每个输入的 `.debug_abbrev`，
+不同即报错——与它们对 `.eh_frame` CIE 不一致的处理方式一致（那里早就拒绝了）。
+
+**回归**：`debug-info-checks.sh` 在链接层之后加了一个 ELF 手术用例：改一个缩写表字节，
+断言 `link-obj` 必须失败且报出上述诊断。
+
+## 11. `-g` 与 `--bounds-check` 同时开启（负结果）
+
+78 个 example 全部用 `-g --bounds-check` 编译：`llvm-dwarfdump --verify` **0 失败**；
+越界下标在带调试信息时仍触发 SIGTRAP（退出码 133）。两者互不干扰。
