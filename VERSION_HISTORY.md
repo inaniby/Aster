@@ -29,6 +29,20 @@ A-02, A-04 and A-07 were documentation corrections, A-03 was retracted after
 re-checking both CLI paths, and A-05 is the formatting fix that had been
 breaking this project's own `-Werror` build.
 
+### Added
+
+* **One command compiles several sources.** `build-elf`, `build-pie` and
+  `build-so` take one or more inputs — `aster build-elf main.ast defs.ast -o
+  demo` — and accept prebuilt `.o` files alongside sources, so
+  `build-elf main.ast defs.o -o demo` never recompiles what did not change.
+  Each source is compiled to a private temporary object next to the output and
+  removed afterwards; the inputs reach the linker in argument order, which is
+  also the order run-time initializers run in. `build-obj` still compiles
+  exactly one file. Single-source invocations go through the historical path
+  unchanged: the v0.23.77-dev snapshot reproduces 393/393 rows, and
+  `tests/linker-checks.sh` pins the new shape (elf, pie, `.so`, mixed with a
+  prebuilt object, the `build-obj` refusal, and no leftover temporaries).
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
