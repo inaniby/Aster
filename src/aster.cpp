@@ -118,6 +118,13 @@ std::string readFile(const std::string& p) {
 // points call setSourceCache() right before parsing.
 std::string g_srcFile;
 std::vector<std::string> g_srcLines;
+// v0.23.76-dev (audit A-15): when a diagnostic comes out of an included file,
+// the reporter must name that file and echo its line. The include parser
+// fills these in as the exception passes through it: by the time main prints
+// the message the sub-parse has already been unwound, so a swap would be
+// undone before anyone read it.
+std::string g_diagFile;
+std::vector<std::string> g_diagLines;
 static void setSourceCache(const std::string& path, const std::string& text) {
     g_srcFile = path;
     g_srcLines.clear();
@@ -157,7 +164,10 @@ static std::string loc(unsigned line,unsigned col,std::string msg){
     return msg;
 }
 static void reportError(const std::string& msg) {
-    const char* file = g_srcFile.empty() ? "<source>" : g_srcFile.c_str();
+    const bool fromInclude = !g_diagFile.empty();
+    const char* file = fromInclude ? g_diagFile.c_str()
+                                   : (g_srcFile.empty() ? "<source>" : g_srcFile.c_str());
+    const std::vector<std::string>& srcLines = fromInclude ? g_diagLines : g_srcLines;
     size_t at = msg.rfind(" at ");
     unsigned ln = 0, col = 0; bool haveLoc = false;
     if (at != std::string::npos) {
@@ -172,8 +182,8 @@ static void reportError(const std::string& msg) {
     }
     if (haveLoc) {
         std::cerr << "aster: " << file << ":" << ln << ":" << col << ": error: " << msg << "\n";
-        if (ln > 0 && ln - 1 < g_srcLines.size()) {
-            const std::string& raw = g_srcLines[ln - 1];
+        if (ln > 0 && ln - 1 < srcLines.size()) {
+            const std::string& raw = srcLines[ln - 1];
             std::string disp = expandTabs(raw);
             std::cerr << "    " << disp << "\n";
             std::string pointer = "    ";
@@ -2982,8 +2992,29 @@ public:
         Parser sub(text,false,dirNameOf(full),includes);
         includes->stack.push_back(full);
         includes->done.insert(full);
+        // v0.23.76-dev (audit A-15): while this file is parsed, a diagnostic is
+        // about *this* file. Without the swap the reporter printed the including
+        // file's name with this file's line number and then echoed the wrong
+        // source line (or none at all).
         try{ sub.parse(); }
-        catch(...){ includes->stack.pop_back(); throw; }
+        catch(...){
+            includes->stack.pop_back();
+            // v0.23.76-dev (audit A-15): the position in this message belongs to
+            // the included file, so hand the reporter that file and its lines.
+            // The innermost include owns the diagnostic: an outer one must not
+            // overwrite the file the message is really about.
+            if(g_diagFile.empty()){
+            g_diagFile=full;
+            g_diagLines.clear();
+            std::string cur;
+            for(char ch : text){
+                if(ch=='\n'){g_diagLines.push_back(std::move(cur));cur.clear();}
+                else if(ch!='\r')cur.push_back(ch);
+            }
+            g_diagLines.push_back(std::move(cur));
+            }
+            throw;
+        }
         includes->stack.pop_back();
         mergeIncluded(sub);
     }
@@ -10097,8 +10128,14 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     dyn.push_back({1879048185,(uint64_t)(nglobals+(hasInit?1u:0u))});    // DT_RELACOUNT
     dyn.push_back({0x6ffffffc,(uint64_t)verDefOff});   // DT_VERDEF -> .gnu.version_d
     dyn.push_back({0x6ffffffd,2});                     // DT_VERDEFNUM (BASE + "aster")
-    dyn.push_back({0x6ffffffe,(uint64_t)verNeedOff});  // DT_VERNEED -> .gnu.version_r
-    dyn.push_back({0x6fffffff,1});                     // DT_VERNEEDNUM
+    // v0.23.76-dev (audit A-16): this writer (SysV hash, no imports) has no
+    // DT_NEEDED at all, so it cannot honour a VERNEED either. The section is
+    // still emitted — its layout predates this round and removing it would move
+    // every offset after it — but DT_VERNEED/DT_VERNEEDNUM are not registered:
+    // loaders check VERNEED files against DT_NEEDED before mapping anything, and
+    // Android's bionic refuses a library whose VERNEED names libc.so.6 while
+    // DT_NEEDED does not ("cannot find \"libc.so.6\" from verneed[0]"). glibc
+    // only tolerates it because libc is loaded anyway.
     dyn.push_back({0x6ffffff0,(uint64_t)gnuVersionOff}); // DT_VERSYM -> .gnu.version
     dyn.push_back({0,0});                              // DT_NULL
     // Section headers (the string table and the header table itself are not loaded).
@@ -10582,8 +10619,18 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     if(hasInit){dyn.push_back({25,initArrVaddr});dyn.push_back({27,initArrSize});}
     dyn.push_back({0x6ffffffc,(uint64_t)verDefOff});   // DT_VERDEF -> .gnu.version_d
     dyn.push_back({0x6ffffffd,2});                     // DT_VERDEFNUM (BASE + "aster")
-    dyn.push_back({0x6ffffffe,(uint64_t)verNeedOff});  // DT_VERNEED -> .gnu.version_r
-    dyn.push_back({0x6fffffff,1});                     // DT_VERNEEDNUM
+    // v0.23.76-dev (audit A-16): a VERNEED must name an object this one really
+    // depends on. The section below declares libc.so.6 / GLIBC_2.17, but no
+    // symbol here takes that version index (imports are unversioned on purpose,
+    // see the notes above) and a cross-.so chain has no libc among its
+    // DT_NEEDED entries — bionic then refuses the whole library. Register the
+    // tags only when libc.so.6 is genuinely one of the dependencies.
+    bool needsLibcVerneed=false;
+    for(const auto& n:spec.needed)if(n=="libc.so.6")needsLibcVerneed=true;
+    if(needsLibcVerneed){
+        dyn.push_back({0x6ffffffe,(uint64_t)verNeedOff});  // DT_VERNEED -> .gnu.version_r
+        dyn.push_back({0x6fffffff,1});                     // DT_VERNEEDNUM
+    }
     dyn.push_back({0x6ffffff0,(uint64_t)gnuVersionOff}); // DT_VERSYM -> .gnu.version
     dyn.push_back({0,0});
     const uint64_t dynSize=dyn.size()*sizeof(Elf64Dyn);
@@ -14022,6 +14069,18 @@ int main(int argc,char**argv){
         }
         if(haveSoname&&soname.empty()){std::cerr<<"Aster: --soname requires a non-empty library name\n";return false;}
         for(const auto& lib:needed)if(lib.empty()){std::cerr<<"Aster: --needed requires a non-empty library name\n";return false;}
+        // v0.23.76-dev (audit A-16): a repeated --needed used to become a
+        // repeated DT_NEEDED, which no linker emits and readers treat as a
+        // mistake. Keep the first occurrence and the order it was given in.
+        {
+            std::vector<std::string> unique;
+            for(const auto& lib:needed){
+                bool seen=false;
+                for(const auto& u:unique)if(u==lib){seen=true;break;}
+                if(!seen)unique.push_back(lib);
+            }
+            needed.swap(unique);
+        }
         if(pageSize!=4096&&pageSize!=16384){std::cerr<<"Aster: --page-size must be 4096 or 16384 (got "<<pageSize<<")\n";return false;}
         publishPathOpts();
         return haveOutput;

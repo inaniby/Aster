@@ -351,3 +351,72 @@ INSTALL_FAILED_NO_MATCHING_ABIS: Failed to extract native libraries, res=-113
 
 另记：`tests/apk-checks.sh` 在本机跑不了——它硬编码 `/tmp` 路径，而 Termux 没有可写的 `/tmp`
 （SELinux）。这是测试基础设施的宿主假设，属于此前记录的一类问题；A-14 的用例仍留给 Linux CI 跑。
+
+---
+
+## 14. A-15（P2，已修）：include 文件里的诊断归错了文件
+
+**现象**：`include "bad2.ast";` 里第 5 行有语法错误时，报的是
+
+```
+aster: m5.ast:5:36: error: expected expression at 5:36
+```
+
+——文件名是**包含方**（m5.ast 只有 2 行），而且**没有**源码回显与 `^` 指示（位置在顶层文件里无效）。
+单独编译 `bad2.ast` 时两者都正常。
+
+**根因**：诊断渲染器 `reportError()` 用全局的"当前源文件 / 源行缓存"（顶层文件），而 include 的子解析器
+只是把位置（行:列）留在消息里；异常穿透回 main 时，RAII 已经把它还原成顶层文件。
+
+**修复**：include 解析器在异常穿出时，把**该文件**与它的源行缓存存进一组"待报诊断"全局
+（`g_diagFile`/`g_diagLines`，只由最内层 include 写入），`reportError()` 优先使用它们。
+现在：
+
+```
+aster: /…/bad2.ast:5:36: error: expected expression at 5:36
+    fn broken2() -> i32 { let x: i32 = ; return x; }
+                                       ^
+```
+
+嵌套 include 也指向真正出错的那一层（`m6 → bad3 → bad2` 报 bad2.ast）。
+
+## 15. A-16（P2，已修）：`VERNEED` 无条件声明 `libc.so.6`，Android 直接拒绝加载
+
+**现象**：任何 Aster 产出的 `.so`（即使只依赖另一个 Aster `.so`、完全不碰 libc）都带
+
+```
+.gnu.version_r: Version: 1  File: libc.so.6  Cnt: 1  Name: GLIBC_2.17  Version: 3
+0x6ffffffe (VERNEED) / 0x6fffffff (VERNEEDNUM) = 1
+```
+
+但 `.gnu.version` 里**没有任何符号用 3 号索引**（import 一律是未版本化的 1），`DT_NEEDED` 里也没有 libc。
+载入器在映射前就要核对 VERNEED 的文件名：Android bionic 直接拒绝
+
+```
+dlopen failed: cannot find "libc.so.6" from verneed[0] in DT_NEEDED list
+```
+
+glibc 只是容忍（因为 libc 本来就被加载）。**这正是前几轮 e2e/dlopen 层在 Android 上失败的真因**——
+当时我把它当成"宿主加载器的限制"加了 SKIP，实际是写者产出了自相矛盾的动态信息。
+
+**直接后果**：跨 `.so` 依赖链在 Android 上不可用。修前：
+
+```
+link-so libb.o --needed liba.so  →  libb.so 有 VERNEED libc.so.6（DT_NEEDED 只有 liba.so）
+dlopen(libb.so) → cannot find "libc.so.6" …（exit 2）
+```
+
+修后（只在 `DT_NEEDED` 真的包含 `libc.so.6` 时才注册 DT_VERNEED/DT_VERNEEDNUM；两个写者都改）：
+
+```
+libb.so: NEEDED=liba.so, 无 VERNEED
+dlopen(libb.so) → callval=8（exit 0）
+```
+
+**附带修复**：重复的 `--needed` 以前会变成重复的 `DT_NEEDED`（`--needed libA.so --needed libA.so` → 两条）。
+现在按首次出现去重（
+
+| 命令 | 修前 | 修后 |
+| --- | --- | --- |
+| `--needed libA.so --needed libA.so` | NEEDED=2（libA 两遍） | NEEDED=1 |
+| `--needed libA.so --needed libB.so --needed libA.so` | NEEDED=3 | NEEDED=2（顺序保留） |

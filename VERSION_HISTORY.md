@@ -1,13 +1,13 @@
 ## v0.23.76-dev — Audit round: literal typing, constant folding, switch labels, and `-g` DWARF
 
 An audit round on top of v0.23.76-dev (see `AUDIT-v0.23.76-dev.md`). It finds and
-fixes **ten defects** — four in the constant-folding path and two in the debug
+fixes **twelve defects** — four in the constant-folding path and two in the debug
 writer — corrects three documentation statements, repairs one formatting bug
 that was already breaking this project's own `-Werror` build, adds one 9-layer
 suite, and makes the suites runnable on a native AArch64 host where no
 `aarch64-linux-gnu-*` toolchain exists.
 
-### The ten defects
+### The twelve defects
 
 | Id | Defect | Repair |
 | --- | --- | --- |
@@ -21,6 +21,8 @@ suite, and makes the suites runnable on a native AArch64 host where no
 | A-12 | Every object's unit carries `DW_AT_stmt_list = 0`, and the link concatenates the `.debug_line` sections while rebasing only the addresses inside them — so after a multi-object `-g` link every unit still pointed at the first unit's program. `llvm-dwarfdump --verify`: "Identical DW_AT_stmt_list section offset occurred"; a debugger read the second source file against the first file's line numbers. | `parseObject` locates the field with a small DWARF reader (CU header → abbrev table → attribute list; unrecognised forms are refused rather than merged) and `linkObjects` / `linkSharedObjects` rewrite it to that object's own line-program offset. Two objects: `0x0` / `0x71`; three: `0x0` / `0x71` / `0xd7`; verify clean in all three link shapes. |
 | A-13 | The link keeps the first input's `.debug_abbrev` and never compares the rest, so a stale object (built before an abbreviations change) was merged silently: its unit decoded through the wrong table and every following unit was garbage. | Both linkers now compare each input's table and refuse a mismatch with "rebuild every -g input with the same compiler", matching what a differing `.eh_frame` CIE already did. |
 | A-14 | `--abi` only checked that the string looked like an ABI, never the library's ELF header: `--abi x86_64` around an AArch64 `.so` built silently and produced `lib/x86_64/` holding an `e_machine = AArch64` file, which every device rejects with `INSTALL_FAILED_NO_MATCHING_ABIS`. | `buildApk` reads the shared object's class and `e_machine` and compares them against the ABI (arm64-v8a/arm64, armeabi-v7a/armeabi, x86, x86_64, riscv64, mips, mips64); a mismatch is an error and no APK is written; an unknown ABI name lists the known set. `tests/apk-checks.sh` pins the refusal. |
+| A-15 | A diagnostic raised inside an included file named the *including* file and dropped the source-line echo, because the reporter reads one global file/line cache that the include sub-parse had already restored by unwinding. `include "bad2.ast"` at line 5 reported `m5.ast:5:36` with no caret. | The include parser stashes that file and its lines in a pending-diagnostic global as the exception passes through (innermost include wins) and `reportError()` prefers it, so the message names the real file and echoes its line. |
+| A-16 | Every shared object declared `.gnu.version_r` entry `File: libc.so.6 / GLIBC_2.17`, even when no symbol used that index and libc was not among its `DT_NEEDED` entries. Loaders check VERNEED against the dependency list before mapping: bionic refuses the library (`cannot find "libc.so.6" from verneed[0] in DT_NEEDED list`), which is why cross-.so chains could not be dlopen'ed on Android. A repeated `--needed` also produced duplicate `DT_NEEDED` entries. | Both writers register `DT_VERNEED`/`DT_VERNEEDNUM` only when `libc.so.6` is one of the actual dependencies (the section stays where it was, so no offset moves), and `--needed` collapses duplicates keeping first-mention order. A `--needed liba.so` chain now dlopens on Android (`callval=8`), and the e2e dlopen layers no longer need their Android skip. |
 
 ### Documentation corrections
 

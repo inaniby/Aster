@@ -68,8 +68,6 @@ printf '%s\n' '[2/9] Source guards: the version triad, its five dynamic tags, th
 for lit in \
     'dyn.push_back({0x6ffffffc,(uint64_t)verDefOff});' \
     'dyn.push_back({0x6ffffffd,2});' \
-    'dyn.push_back({0x6ffffffe,(uint64_t)verNeedOff});' \
-    'dyn.push_back({0x6fffffff,1});' \
     'dyn.push_back({0x6ffffff0,(uint64_t)gnuVersionOff});' \
     'const uint64_t verDefSize=56;' \
     'const uint64_t verNeedSize=32;' \
@@ -85,6 +83,15 @@ do
     [ "$(grep -cF "$lit" src/aster.cpp)" = 2 ] \
         || fail "the version literal is not present in both writers (or moved): $lit"
 done
+# v0.23.76-dev (audit A-16): a VERNEED names the object that must supply the
+# version. The writer only registers DT_VERNEED when libc.so.6 really is one of
+# its DT_NEEDED entries — otherwise bionic refuses to dlopen the library
+# ("cannot find \"libc.so.6\" from verneed[0] in DT_NEEDED list"). The section is
+# still written (layout), the tag is what follows the dependency.
+[ "$(grep -cF 'dyn.push_back({0x6ffffffe,(uint64_t)verNeedOff});' src/aster.cpp)" = 1 ] \
+    || fail "the VERNEED tag is no longer a single, gated site (A-16)"
+[ "$(grep -cF 'bool needsLibcVerneed=false;' src/aster.cpp)" = 1 ] \
+    || fail "the VERNEED gate is missing (A-16)"
 # The SysV writer: its own section-table row, its own index loop, its own string
 # pool helpers — and the kDynEntries count that must cover all fifteen tags.
 grep -qF 'const uint32_t verBaseStr=addVerStr(baseName);' src/aster.cpp \
@@ -160,13 +167,17 @@ d = sec['.dynamic']; dyn = {}
 for i in range(d[5] // 16):
     tag, val = struct.unpack_from('<qQ', b, d[4] + i*16)
     if tag: dyn.setdefault(tag, []).append(val)
-for tag in (0x6ffffffc, 0x6ffffffd, 0x6ffffffe, 0x6fffffff, 0x6ffffff0):
+# v0.23.76-dev (audit A-16): this .so has no DT_NEEDED, so it carries no
+# VERNEED tag either — the section is written, the dependency is not declared.
+for tag in (0x6ffffffc, 0x6ffffffd, 0x6ffffff0):
     assert tag in dyn, ('a version tag is missing from .dynamic', hex(tag))
+assert 0x6ffffffe not in dyn and 0x6fffffff not in dyn, \
+    'this import-free .so must not declare a VERNEED (A-16)'
 assert dyn[0x6ffffffc][0] == verdef[3], 'DT_VERDEF must point at .gnu.version_d'
-assert dyn[0x6ffffffe][0] == verneed[3], 'DT_VERNEED must point at .gnu.version_r'
 assert dyn[0x6ffffff0][0] == versym[3], 'DT_VERSYM must point at .gnu.version'
-assert dyn[0x6ffffffd] == [2] and dyn[0x6fffffff] == [1], 'VERDEFNUM must be 2 (BASE + aster), VERNEEDNUM 1'
-assert dyn[0x6ffffffd][0] == verdef[7] and dyn[0x6fffffff][0] == verneed[7], 'the NUM tags must match sh_info'
+assert dyn[0x6ffffffd] == [2], 'VERDEFNUM must be 2 (BASE + aster)'
+assert dyn[0x6ffffffd][0] == verdef[7], 'the NUM tags must match sh_info'
+assert verneed[7] == 1, 'the section still describes one VERNEED entry'
 # --- the VERDEF bytes: BASE first (VER_FLG_BASE, hash 0, name = the output
 # file's basename, as ld does without -soname), then "aster" at index 2.
 vd = b[verdef[4]:verdef[4]+verdef[5]]
@@ -248,9 +259,14 @@ for i in range(d[5] // 16):
     tag, val = struct.unpack_from('<qQ', b, d[4] + i*16)
     if tag: dyn.setdefault(tag, []).append(val)
 assert 0x6ffffef5 in dyn, 'DT_GNU_HASH must survive the version sections'
-assert dyn[0x6ffffffc][0] == verdef[3] and dyn[0x6ffffffe][0] == verneed[3]
+assert dyn[0x6ffffffc][0] == verdef[3]
 assert dyn[0x6ffffff0][0] == versym[3], 'DT_VERSYM must point at .gnu.version'
-assert dyn[0x6ffffffd] == [2] and dyn[0x6fffffff] == [1]
+assert dyn[0x6ffffffd] == [2]
+# v0.23.76-dev (audit A-16): --needed libdyn.so is the only dependency here, so
+# no VERNEED is declared; the section bytes are still emitted.
+assert 0x6ffffffe not in dyn and 0x6fffffff not in dyn, \
+    'a .so whose dependencies do not include libc must not declare a VERNEED'
+assert verneed[7] == 1
 # verdef bytes: BASE@1 then "aster"@2, as in the SysV layer. This path does
 # carry a soname, so the BASE name is the soname, not the path basename.
 vd = b[verdef[4]:verdef[4]+verdef[5]]
