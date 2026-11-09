@@ -23,6 +23,7 @@
 # every ELF writer; a coverage census; six mutations; the byte baseline.
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 . tests/lib/baseline.sh
 . tests/lib/verdict.sh
 CXX=${CXX:-c++}
@@ -235,7 +236,10 @@ refuse deref_bool       'type mismatch assigning through a pointer: expected i64
 # ---------------------------------------------------------------------------
 printf '%s\n' '[5/9] C twin: gcc computes the same accepted-side answer'
 if [ -n "$HOSTCC" ]; then
+    # v0.23.76-dev (audit): -static first (CI hosts), then a plain link; a
+    # native Termux toolchain ships no libc.a.
     $HOSTCC -static -O2 tests/front-sema-twin.c -o "$W/twin" >/dev/null 2>&1 \
+        || $HOSTCC -O2 tests/front-sema-twin.c -o "$W/twin" >/dev/null 2>&1 \
         || { echo 'FAIL: cannot build the C twin' >&2; exit 1; }
     rc=0; run "$W/twin" >/dev/null 2>&1 || rc=$?
     [ "$rc" = 28 ] \
@@ -255,14 +259,14 @@ printf '%s\n' '[6/9] Every writer: EXEC, PIE, DYN and ET_REL'
     || { echo 'FAIL: build-so failed' >&2; exit 1; }; bump
 "$A" build-obj --pic examples/front_sema.ast -o "$W/w.o" >/dev/null 2>&1 \
     || { echo 'FAIL: build-obj --pic failed' >&2; exit 1; }; bump
-if command -v aarch64-linux-gnu-readelf >/dev/null 2>&1; then
-    aarch64-linux-gnu-readelf -h "$W/w.elf" | grep -q 'EXEC' \
+if [ -n "$AST_READELF" ]; then
+    "$AST_READELF" -h "$W/w.elf" | grep -q 'EXEC' \
         || { echo 'FAIL: build-elf is not ET_EXEC' >&2; exit 1; }
-    aarch64-linux-gnu-readelf -h "$W/w.pie" | grep -q 'DYN' \
+    "$AST_READELF" -h "$W/w.pie" | grep -q 'DYN' \
         || { echo 'FAIL: build-pie is not ET_DYN' >&2; exit 1; }
-    aarch64-linux-gnu-readelf -h "$W/w.so"  | grep -q 'DYN' \
+    "$AST_READELF" -h "$W/w.so"  | grep -q 'DYN' \
         || { echo 'FAIL: build-so is not ET_DYN' >&2; exit 1; }
-    aarch64-linux-gnu-readelf -h "$W/w.o"   | grep -q 'REL' \
+    "$AST_READELF" -h "$W/w.o"   | grep -q 'REL' \
         || { echo 'FAIL: build-obj is not ET_REL' >&2; exit 1; }
     printf '  %-40s %s\n' 'four ELF types verified' 'yes'; bump
 fi

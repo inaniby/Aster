@@ -17,6 +17,7 @@
 # coverage counting; six mutations; and the byte baseline.
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 . tests/lib/baseline.sh
 . tests/lib/verdict.sh
 CXX=${CXX:-c++}
@@ -65,7 +66,7 @@ bump
 printf '%s\n' '[3/9] Static layout: the outgoing argument area at the call site'
 "$A" build-elf examples/stack_arg_abi.ast -o "$W/abi.elf" >/dev/null 2>&1 \
     || { echo 'FAIL: cannot build examples/stack_arg_abi.ast' >&2; exit 1; }
-aarch64-linux-gnu-objdump -d "$W/abi.elf" > "$W/abi.dis" 2>/dev/null \
+"$AST_OBJDUMP" -d "$W/abi.elf" > "$W/abi.dis" 2>/dev/null \
     || { echo 'FAIL: objdump is unavailable' >&2; exit 1; }
 python3 - "$W/abi.dis" <<'PY'
 import re, sys
@@ -73,15 +74,18 @@ lines = open(sys.argv[1]).read().split('\n')
 # The only call with three stack slots (a 16-byte aggregate + two scalars) is
 # aggOnStack. Before the fix the outgoing area was 16 bytes and the two scalar
 # stores did not exist at all.
-assert any(re.search(r'sub\s+sp, sp, #0x20\b', l) for l in lines), \
+# v0.23.76-dev (audit): LLVM's disassembler prints immediates in hex with a
+# 0x prefix (#0x20, #0x10) where GNU prints decimal (#32, #16); both spellings
+# name the same instruction, so the patterns accept either.
+assert any(re.search(r'sub\s+sp, sp, #(?:0x)?20\b', l) for l in lines), \
     'no 32-byte outgoing argument area at the aggOnStack call'
 call = next(i for i, l in enumerate(lines) if re.search(r'bl\s+.*<aggOnStack>', l))
 window = '\n'.join(lines[max(0, call-26):call])
-assert 'str\tx15, [x17]' in window and 'str\tx15, [x17, #8]' in window, \
+assert re.search(r'str\s+x15, \[x17\]', window) and re.search(r'str\s+x15, \[x17, #(?:0x)?8\]', window), \
     'the 12-byte aggregate is not copied into the outgoing area'
-assert re.search(r'str\s+w\d+, \[sp, #16\]', window), \
+assert re.search(r'str\s+w\d+, \[sp, #(?:16|0x10)\]', window), \
     'the ninth argument is not stored at [sp, #16]'
-assert re.search(r'str\s+w\d+, \[sp, #24\]', window), \
+assert re.search(r'str\s+w\d+, \[sp, #(?:24|0x18)\]', window), \
     'the tenth argument is not stored at [sp, #24]'
 assert not re.search(r'ldr\s+w7,', window), \
     'a scalar is still being passed in x7 past a spill'
@@ -258,7 +262,7 @@ rc=0; run "$W/abi.pie" >/dev/null 2>&1 || rc=$?
 printf '  %-40s %s\n' 'build-pie of the shipped example' 'agrees'
 "$A" build-so examples/stack_arg_abi.ast -o "$W/abi.so" >/dev/null 2>&1 \
     || { echo 'FAIL: build-so of the shipped example failed' >&2; exit 1; }
-aarch64-linux-gnu-readelf -h "$W/abi.so" | grep -q 'DYN' \
+"$AST_READELF" -h "$W/abi.so" | grep -q 'DYN' \
     || { echo 'FAIL: build-so did not produce an ET_DYN' >&2; exit 1; }
 printf '  %-40s %s\n' 'build-so produces ET_DYN' 'yes'
 bump; bump; bump

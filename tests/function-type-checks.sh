@@ -37,6 +37,7 @@
 
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 OUT=${OUT:-tmp-function-type-checks}
 W="$OUT/work"
 mkdir -p "$W"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
@@ -485,7 +486,7 @@ printf '%s\n' '[5/8] The shipped example, against its C twin'
 if ! "$OUT/aster" build-elf examples/fn_type.ast -o "$W/fn_type" >"$W/ex.log" 2>&1; then
     echo "FAIL: examples/fn_type.ast no longer builds:" >&2; cat "$W/ex.log" >&2; exit 1
 fi
-"$HOSTCC" -O2 -static -o "$W/fn_type.twin" tests/function-type-twin.c
+aster_hostcc_link "$W/fn_type.twin" tests/function-type-twin.c
 run "$W/fn_type" >/dev/null 2>&1 && a=0 || a=$?
 run "$W/fn_type.twin" >/dev/null 2>&1 && c=0 || c=$?
 [ "$a" -gt 127 ] && a=$((a-256)); [ "$c" -gt 127 ] && c=$((c-256))

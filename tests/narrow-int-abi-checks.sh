@@ -282,15 +282,21 @@ if [ -z "$HOSTCC" ] && command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
     HOSTCC=aarch64-linux-gnu-gcc
 fi
 hostcc_flags=""
+hostcc_ok=0
 if [ -n "$HOSTCC" ]; then
     printf 'int main(){return 0;}\n' > "$W/hostprobe.c"
     for f in "-static" ""; do
         if "$HOSTCC" -O2 -fwrapv $f "$W/hostprobe.c" -o "$W/hostprobe" 2>/dev/null; then
-            if readelf -h "$W/hostprobe" 2>/dev/null | grep -q 'AArch64'; then hostcc_flags=$f; break; fi
+            # v0.23.76-dev (audit): an empty flag list is a *successful* probe.
+            # A native aarch64 host (Termux) and an ordinary cross gcc both link
+            # with no extra flags, and testing "$hostcc_flags" for emptiness
+            # declared them "not an AArch64 C compiler", so the differential
+            # layer skipped on exactly the machines where it needs no setup.
+            if readelf -h "$W/hostprobe" 2>/dev/null | grep -q 'AArch64'; then hostcc_flags=$f; hostcc_ok=1; break; fi
         fi
     done
 fi
-if [ -z "$hostcc_flags" ] && [ -n "$HOSTCC" ]; then
+if [ "$hostcc_ok" = 0 ] && [ -n "$HOSTCC" ]; then
     echo "SKIP: C differential needs an AArch64 C compiler ($HOSTCC is not one)"
 elif [ -z "$HOSTCC" ]; then
     echo "SKIP: C differential needs an AArch64 C compiler (none found)"
@@ -337,7 +343,15 @@ CHOST_EOF
     # allocated but unknown to Aster, and an empty .data/.bss carries
     # attributes Aster refuses. Removing them changes no instruction — the
     # host is three leaf functions with no data of their own.
-    OBJCOPY=$(printf '%s\n' "$HOSTCC" | sed 's/gcc$/objcopy/')
+    # v0.23.76-dev (audit): derive the binutils sibling of $HOSTCC, and fall
+    # back to any objcopy on the box. The old s/gcc$/objcopy/ left "cc" and
+    # "clang" unchanged, so the step re-ran the compiler with -R flags.
+    OBJCOPY=$(printf '%s\n' "$HOSTCC" | sed -e 's/cc$/objcopy/' -e 's/gcc$/objcopy/')
+    if ! command -v "$OBJCOPY" >/dev/null 2>&1; then
+        for _oc in llvm-objcopy objcopy aarch64-linux-gnu-objcopy; do
+            if command -v "$_oc" >/dev/null 2>&1; then OBJCOPY=$_oc; break; fi
+        done
+    fi
     if ! command -v "$OBJCOPY" >/dev/null 2>&1; then
         echo "SKIP: cross-language link needs $OBJCOPY (not found)"
     else

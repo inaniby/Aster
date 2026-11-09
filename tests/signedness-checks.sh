@@ -14,6 +14,7 @@
 # baseline.
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 . tests/lib/baseline.sh
 . tests/lib/verdict.sh
 CXX=${CXX:-c++}
@@ -186,12 +187,16 @@ bump
 printf '%s\n' '[3/9] Static structure: condition codes and divide opcodes'
 static_case(){ "$A" build-elf "$W/$1.ast" -o "$W/$1.elf" >"$W/$1.build" 2>&1 \
     || { echo "FAIL: $1 does not build" >&2; exit 1; }
-    aarch64-linux-gnu-objdump -d "$W/$1.elf" > "$W/$1.dis"; }
+    "$AST_OBJDUMP" -d "$W/$1.elf" > "$W/$1.dis"
+    # v0.23.76-dev (audit): LLVM spells the unsigned aliases `b.hs` / `b.lo`
+    # where GNU objdump prints `b.cs` / `b.cc`; the guards below name the GNU
+    # spelling, so normalise whichever disassembler this host has.
+    sed -i -e 's/\bb\.hs\b/b.cs/g' -e 's/\bb\.lo\b/b.cc/g' "$W/$1.dis"; }
 static_has(){ grep -q "$2" "$W/$1.dis" \
     || { echo "FAIL: $1 is missing $2" >&2; exit 1; }; }
 static_lacks(){ if grep -q "$2" "$W/$1.dis"; then \
         echo "FAIL: $1 still contains $2" >&2; exit 1; fi; }
-if command -v aarch64-linux-gnu-objdump >/dev/null 2>&1; then
+if [ -n "$AST_OBJDUMP" ]; then
     # The mixed pair must be signed now: LT inverts to GE on the false path.
     static_case c_i64_u32_m84_5_lt
     static_has   c_i64_u32_m84_5_lt '\sb\.ge\b'
@@ -246,14 +251,14 @@ printf '  %-30s accept exit 63\n' 'signedness (shipped)'; bump
 # ---------------------------------------------------------------------------
 printf '%s\n' '[5/9] C twin and the generated gcc matrix oracle'
 if [ -n "$HOSTCC" ]; then
-    $HOSTCC -static -O2 tests/signedness-twin.c -o "$W/twin" >/dev/null 2>&1 \
+    aster_hostcc_link "$W/twin" tests/signedness-twin.c >/dev/null 2>&1 \
         || { echo 'FAIL: cannot build the C twin' >&2; exit 1; }
     rc=0; run "$W/twin" >/dev/null 2>&1 || rc=$?
     [ "$rc" = 63 ] \
         || { echo "FAIL: the C twin returned $rc, Aster returned 63" >&2; exit 1; }
     printf '  %-40s %s\n' 'gcc twin agrees on the shipped example' 'yes'; bump
 
-    $HOSTCC -static -O2 "$W/matrix_twin.c" -o "$W/matrix_twin" >/dev/null 2>&1 \
+    aster_hostcc_link "$W/matrix_twin" "$W/matrix_twin.c" >/dev/null 2>&1 \
         || { echo 'FAIL: cannot build the gcc matrix oracle' >&2; exit 1; }
     run "$W/matrix_twin" > "$W/matrix_gcc.txt" 2>/dev/null \
         || { echo 'FAIL: the gcc matrix oracle did not run' >&2; exit 1; }
@@ -276,14 +281,14 @@ printf '%s\n' '[6/9] Every writer: EXEC, PIE, DYN and ET_REL'
     || { echo 'FAIL: build-so failed' >&2; exit 1; }; bump
 "$A" build-obj --pic examples/signedness.ast -o "$W/w.o" >/dev/null 2>&1 \
     || { echo 'FAIL: build-obj --pic failed' >&2; exit 1; }; bump
-if command -v aarch64-linux-gnu-readelf >/dev/null 2>&1; then
-    aarch64-linux-gnu-readelf -h "$W/w.elf" | grep -q 'EXEC' \
+if [ -n "$AST_READELF" ]; then
+    "$AST_READELF" -h "$W/w.elf" | grep -q 'EXEC' \
         || { echo 'FAIL: build-elf is not ET_EXEC' >&2; exit 1; }
-    aarch64-linux-gnu-readelf -h "$W/w.pie" | grep -q 'DYN' \
+    "$AST_READELF" -h "$W/w.pie" | grep -q 'DYN' \
         || { echo 'FAIL: build-pie is not ET_DYN' >&2; exit 1; }
-    aarch64-linux-gnu-readelf -h "$W/w.so"  | grep -q 'DYN' \
+    "$AST_READELF" -h "$W/w.so"  | grep -q 'DYN' \
         || { echo 'FAIL: build-so is not ET_DYN' >&2; exit 1; }
-    aarch64-linux-gnu-readelf -h "$W/w.o"   | grep -q 'REL' \
+    "$AST_READELF" -h "$W/w.o"   | grep -q 'REL' \
         || { echo 'FAIL: build-obj is not ET_REL' >&2; exit 1; }
     printf '  %-40s %s\n' 'four ELF types verified' 'yes'; bump
 fi

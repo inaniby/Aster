@@ -33,6 +33,7 @@
 
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 . tests/lib/baseline.sh
 . tests/lib/verdict.sh
 CXX=${CXX:-c++}
@@ -305,7 +306,7 @@ rc=0; run "$W/example.build-pie" || rc=$?
 [ "$rc" = 215 ] || { echo "FAIL: build-pie exited $rc, C twin exits 215" >&2; exit 1; }
 printf '  %-30s %s\n' "build-pie under qemu" "exit $rc"; bump
 if [ -n "$HOSTCC" ] && [ "$have_qemu" = yes ]; then
-    "$HOSTCC" -O2 -static tests/embed-align-twin.c -o "$W/twin" >/dev/null 2>&1 \
+    aster_hostcc_link "$W/twin" tests/embed-align-twin.c >/dev/null 2>&1 \
         || { echo 'FAIL: the C twin does not build' >&2; exit 1; }
     rc=0; run "$W/twin" || rc=$?
     [ "$rc" = 215 ] || { echo "FAIL: gcc differential: twin exited $rc, Aster 215" >&2; exit 1; }

@@ -415,15 +415,21 @@ if [ -z "$HOSTCC" ] && command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
     HOSTCC=aarch64-linux-gnu-gcc
 fi
 hostcc_flags=""
+hostcc_ok=0
 if [ -n "$HOSTCC" ]; then
     printf 'int main(){return 0;}\n' > "$W/hostprobe.c"
     for f in "-static" ""; do
         if "$HOSTCC" -O2 -fwrapv $f "$W/hostprobe.c" -o "$W/hostprobe" 2>/dev/null; then
-            if readelf -h "$W/hostprobe" 2>/dev/null | grep -q 'AArch64'; then hostcc_flags=$f; break; fi
+            # v0.23.76-dev (audit): an empty flag list is a *successful* probe.
+            # A native aarch64 host (Termux) and an ordinary cross gcc both link
+            # with no extra flags, and testing "$hostcc_flags" for emptiness
+            # declared them "not an AArch64 C compiler", so the differential
+            # layer skipped on exactly the machines where it needs no setup.
+            if readelf -h "$W/hostprobe" 2>/dev/null | grep -q 'AArch64'; then hostcc_flags=$f; hostcc_ok=1; break; fi
         fi
     done
 fi
-if [ -z "$hostcc_flags" ] && [ -n "$HOSTCC" ]; then
+if [ "$hostcc_ok" = 0 ] && [ -n "$HOSTCC" ]; then
     # HOSTCC was given but cannot emit AArch64 (e.g. ci.sh's plain cc fallback
     # on an x86 host): the differential has no oracle to compare against.
     echo "SKIP: C differential needs an AArch64 C compiler ($HOSTCC is not one)"

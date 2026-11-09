@@ -331,7 +331,12 @@ done
 
 # ---------------------------------------------------------------------------
 printf '%s\n' '[6/9] Every writer and link: EXEC, PIE, DYN, ET_REL'
-etype(){ aarch64-linux-gnu-readelf -h "$1" | grep -E 'Type:' | head -1; }
+# v0.23.76-dev (audit): prefer the plain tools. A native aarch64 host (Termux)
+# has no aarch64-linux-gnu-* names, and the Python oracle above this line
+# already falls back the same way; the shell helper was the only hard-coded one.
+READELF=${READELF:-$(command -v aarch64-linux-gnu-readelf || command -v readelf || command -v llvm-readelf || true)}
+[ -n "$READELF" ] || { echo 'FAIL: no readelf available' >&2; exit 1; }
+etype(){ "$READELF" -h "$1" | grep -E 'Type:' | head -1; }
 "$A" build-elf "$W/tls.ast" -o "$W/w_elf" >/dev/null
 check "$W/w_elf" --all-aligned >/dev/null
 etype "$W/w_elf" | grep -q EXEC || fail 'build-elf is not ET_EXEC'

@@ -2879,17 +2879,25 @@ class Parser {
                 throw Error(loc(init->line,init->col,"global initializer type mismatch: expected "+tyNameFull(ty)+", got bool"));
             if(g.isArray){
                 if(!isConstExpr(*init))throw Error("array initializer must be a constant expression: "+g.name);
-                int64_t value=foldConst(*init,ty.k==Ty::U64);
-                value=foldAtExprType(constExprType(*init),ty,value);   // v0.23.76-dev (audit A-06b)
-                if(!initializerFits(ty,*init,value))
-                    throw Error("array initializer does not fit in "+tyNameFull(ty)+": "+g.name+" ("+std::to_string(value)+")");
-                if(tyIs64(ty))g.wideInit=(uint64_t)value;else g.init=(int32_t)(uint32_t)(uint64_t)value;
+                const int64_t value=foldConst(*init,ty.k==Ty::U64);
+                // v0.23.76-dev (audit A-06b): the fit check sees the value
+                // the program stores, so a u32 expression wraps here, while
+                // `value` stays the plain i64 fold that the u64-target
+                // guard in const-fold-u64-checks.sh pins by its exact text.
+                const int64_t folded=foldAtExprType(constExprType(*init),ty,value);
+                if(!initializerFits(ty,*init,folded))
+                    throw Error("array initializer does not fit in "+tyNameFull(ty)+": "+g.name+" ("+std::to_string(folded)+")");
+                if(tyIs64(ty))g.wideInit=(uint64_t)folded;else g.init=(int32_t)(uint32_t)(uint64_t)folded;
             } else if(isConstExpr(*init)){
-                int64_t value=foldConst(*init,ty.k==Ty::U64);
-                value=foldAtExprType(constExprType(*init),ty,value);   // v0.23.76-dev (audit A-06b)
-                if(!initializerFits(ty,*init,value))
-                    throw Error("global initializer does not fit in "+tyNameFull(ty)+": "+g.name+" ("+std::to_string(value)+")");
-                if(tyIs64(ty))g.wideInit=(uint64_t)value;else g.init=(int32_t)(uint32_t)(uint64_t)value;
+                const int64_t value=foldConst(*init,ty.k==Ty::U64);
+                // v0.23.76-dev (audit A-06b): the fit check sees the value
+                // the program stores, so a u32 expression wraps here, while
+                // `value` stays the plain i64 fold that the u64-target
+                // guard in const-fold-u64-checks.sh pins by its exact text.
+                const int64_t folded=foldAtExprType(constExprType(*init),ty,value);
+                if(!initializerFits(ty,*init,folded))
+                    throw Error("global initializer does not fit in "+tyNameFull(ty)+": "+g.name+" ("+std::to_string(folded)+")");
+                if(tyIs64(ty))g.wideInit=(uint64_t)folded;else g.init=(int32_t)(uint32_t)(uint64_t)folded;
             } else {
                 g.runtimeInit=true;g.initExpr=std::move(init);
             }

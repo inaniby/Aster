@@ -53,6 +53,7 @@
 
 set -eu
 cd "$(dirname "$0")/.."
+. tests/lib/tools.sh
 OUT=${OUT:-tmp-indirect-call-checks}
 W="$OUT/work"
 mkdir -p "$W"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
@@ -539,10 +540,10 @@ fn trampoline(g: ptr, x: i32) -> i32 { return g(x); }' > "$W/so.ast"
 if ! "$OUT/aster" build-so "$W/so.ast" -o "$W/libindirect.so" --soname libindirect.so >"$W/so.log" 2>&1; then
     echo "FAIL: build-so rejected an indirect call:" >&2; cat "$W/so.log" >&2; exit 1
 fi
-if ! aarch64-linux-gnu-objdump -d "$W/libindirect.so" 2>/dev/null | grep -q 'blr'; then
+if ! "$AST_OBJDUMP" -d "$W/libindirect.so" 2>/dev/null | grep -q 'blr'; then
     echo 'FAIL: the shared object contains no BLR — the indirect call did not branch' >&2; exit 1
 fi
-if aarch64-linux-gnu-readelf -r "$W/libindirect.so" 2>/dev/null | grep -q 'R_AARCH64_RELATIVE.*\.text'; then
+if "$AST_READELF" -r "$W/libindirect.so" 2>/dev/null | grep -q 'R_AARCH64_RELATIVE.*\.text'; then
     echo 'FAIL: the shared object carries a text relocation for a function address' >&2; exit 1
 fi
 echo 'OK: the shared object builds, branches through a register, and keeps its text clean'
@@ -557,7 +558,7 @@ printf '%s\n' '[4c/7] The shipped example, against its C twin'
 if ! "$OUT/aster" build-elf examples/indirect_call.ast -o "$W/indirect_call" >"$W/ex.log" 2>&1; then
     echo "FAIL: examples/indirect_call.ast no longer builds:" >&2; cat "$W/ex.log" >&2; exit 1
 fi
-"$HOSTCC" -O2 -static -o "$W/indirect_call.twin" tests/indirect-call-example-twin.c
+aster_hostcc_link "$W/indirect_call.twin" tests/indirect-call-example-twin.c
 run "$W/indirect_call" >/dev/null 2>&1 && a=0 || a=$?
 run "$W/indirect_call.twin" >/dev/null 2>&1 && c=0 || c=$?
 [ "$a" -gt 127 ] && a=$((a-256)); [ "$c" -gt 127 ] && c=$((c-256))

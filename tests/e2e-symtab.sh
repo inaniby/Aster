@@ -8,8 +8,9 @@
 # On an AArch64 host use RUNNER= (the default). HOSTCC compiles the target-architecture test hosts.
 set -eu
 . tests/host-toolchain-probe.sh
+. tests/lib/tools.sh
 HOSTCC=${HOSTCC:-cc}
-READELF=${READELF:-aarch64-linux-gnu-readelf}
+READELF=${READELF:-${AST_READELF:-readelf}}
 RUNNER=${RUNNER:-tests/run-aarch64.sh}
 run() { $RUNNER "$@"; }
 [ -x ./aster ] || { echo "build ./aster first" >&2; exit 2; }
