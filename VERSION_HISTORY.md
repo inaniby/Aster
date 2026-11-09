@@ -1,3 +1,83 @@
+## v0.23.76-dev — Audit round: literal typing, constant folding, switch labels, and `-g` DWARF
+
+An audit round on top of v0.23.76-dev (see `AUDIT-v0.23.76-dev.md`). It finds and
+fixes **six defects** — four in the constant-folding path and two in the debug
+writer — corrects three documentation statements, repairs one formatting bug
+that was already breaking this project's own `-Werror` build, adds one 9-layer
+suite, and makes the suites runnable on a native AArch64 host where no
+`aarch64-linux-gnu-*` toolchain exists.
+
+### The six defects
+
+| Id | Defect | Repair |
+| --- | --- | --- |
+| A-01 | An unsuffixed literal past `2^63-1` kept the `I32` type every rule reads, so `constExceedsI32` widened the *operation* to 64 bits while the condition code stayed signed: `if (18446744073709551615 > 0)` answered false. | `primary()` types such a literal `u64` — what C does with a decimal constant too large for `long long` — so comparisons, `UDIV`/`LSR` and `initializerFits` all follow the type. |
+| A-06 | `constExceedsI32` looked only at the value, so a `u`-suffixed literal (always past `2^31` when interesting) forced 64-bit arithmetic and defeated the 32-bit wrap its type promises: `4294967295u * 2u` was 8589934590. | The suffix wins: `if(p->suffix==Expr::LSU)return false;`. |
+| A-06b | `constantInteger`/`foldConst` fold in i64, so a u32 expression never wrapped at compile time: `let q: u32 = 4294967295u + 1u;` was refused as 4294967296 although the emitted `ADD` stores 0. Assignments, local arrays and global initializers hit the same check. | `foldAtExprType(t, slot, v)` wraps a U32-typed constant at 32 bits before the fit check, in all eight places a constant lands in a slot. The wrap is gated on the consumer: with a 64-bit slot the operation runs at 64 bits (`wideOp` rule 3), so `let q: u64 = 0u - 1u;` keeps `2^64-1`. `constExprType` derives the type of a constant expression where Sema does not exist yet (parser-side global folds). |
+| A-08 | A `switch` case label was folded with `constantInteger` and then checked against the subject width, so a u32 label written as an expression was refused: `case 0u - 1u` on a u32 subject. The emitted comparison already ran at the subject's width and matched. | The label goes through the same `foldAtExprType(constExprType(c), subj, v)`. A bare literal keeps the i64 reading, so `case 4294967296` is still refused. |
+| A-09 | `DW_AT_stmt_list` used `DW_FORM_data4` in a DWARF v4 unit. The attribute names a section offset, which is `DW_FORM_sec_offset` in DWARF4/5, and `llvm-dwarfdump --verify` rejects the data4 spelling outright: `DIE has invalid DW_AT_stmt_list encoding`. | Form `0x17`; the value stays the 4-byte offset a 32-bit DWARF section uses. |
+| A-10 | A type's DIE could be emitted *inside* another DIE's attribute stream: `typeRef()` appends to the same buffer and was called in the argument list of `dbgPut32`, so a type the warm-up pass had not cached (a pointer to an array, say) landed between the DIE's attributes and the unit parsed as garbage. `fn f(a: i32[4])` produced `DW_AT_type = 0x5404` in a 0xd9-byte unit. | All four sites resolve their references before the DIE header is written: subroutine_type return type and parameters, globals, subprogram return-type fallback and variables. |
+
+### Documentation corrections
+
+- **A-02** `docs/language-spec.md` said u8/u16 arithmetic "wraps modulo the type
+  width". It promotes to i32 inside the expression, exactly as C does, and only
+  the store back into a narrow slot truncates. The paragraph now says so and
+  carries a runnable example.
+- **A-04** "a literal must fit the target" has one historical exception: an i32
+  target stores the low 32 bits instead of refusing the literal, and the same
+  silent truncation applies to `return` and to arguments. The exception is
+  documented rather than changed, because existing programs depend on it.
+- **A-07** the overflow message a user sees is `integer literal is too large at
+  L:C` (`unsignedLiteral`), not `integer literal exceeds u64 range` — the guard
+  in `primary()` that names the u64 range is unreachable. Both docs now quote
+  the real message and the spec notes the dead branch.
+
+### Suite and native-host support
+
+`tests/u64-literal-compare-checks.sh` joins `DEFAULT_SUITES`: 9 layers, 28
+behavioural cases (unsigned range, `u`-suffix wrap, mixed i64/u64 reads, u32
+switch labels, the u64-consumer gate), five C differential cases, five
+refusals, four mutants (each must be caught), and the 312-row byte baseline.
+
+Six assumptions in the suites said "x86 CI with `aarch64-linux-gnu-*`"; each one
+either skipped a layer or failed it on a native AArch64 host: the `HOSTCC` probe
+treated an empty flag list as failure; `-static` C twins need a `libc.a` a
+native toolchain does not ship (`aster_hostcc_link` tries `-static`, then a plain
+link); `objcopy` was derived with `s/gcc$/objcopy/`, which leaves `cc`/`clang`
+unchanged; the binutils names were hard-coded (`tests/lib/tools.sh` now resolves
+`AST_READELF`/`AST_OBJDUMP`/`AST_OBJCOPY`); LLVM spells the unsigned aliases
+`b.hs`/`b.lo` where GNU prints `b.cs`/`b.cc` and prints `#0x10` where GNU prints
+`#16`; and an Aster `.so` carries a glibc `DT_NEEDED`, which Android's bionic
+loader cannot resolve (`aster_can_dlopen_glibc_so` skips those layers on
+Android). The `.eh_frame` reader layer skips cleanly when the only `readelf` is
+LLVM's, which has no `--debug-dump=frames`.
+
+### Evidence
+
+- `-g` over every example: **78 units, 78 rejected before, 0 after**
+  (`llvm-dwarfdump --verify`).
+- `debugline-checks.sh`, `debug-info-checks.sh` and `eh-frame-checks.sh` pass;
+  the in-tree decoder learns `DW_FORM_sec_offset`.
+- 27 suites pass on the phone (native aarch64, `HOSTCC=cc`, no qemu), including
+  `literals-checks`, `wide-int-literal-checks`, `const-fold-u64-checks`,
+  `front-sema-checks`, `signedness-checks`, `stack-arg-abi-checks`,
+  `section-align-contract-checks`, `switch-checks` and the new suite.
+- Differential: struct layout 60/60 against the C compiler; 440
+  arithmetic/comparison cases against `gcc -O2 -fwrapv`.
+- ASAN build of the compiler: 200 malformed sources, 260 mutated APKs through
+  `verify-apk`, 220 mutated object files through `link-so` — no crash, no
+  sanitizer report, no hang. `--bounds-check`: negative and out-of-range
+  indices trap, valid ones do not.
+
+### Byte baseline
+
+**Zero drift.** 132 examples × 3 writer modes still reproduce the frozen
+`v0.23.76-dev` rows exactly, and the 312 pre-existing rows every suite pins are
+unchanged. `-g` products change by design (A-09/A-10).
+
+---
+
 ## v0.23.76-dev — ELF section-alignment contracts: declared alignment is the layout
 
 The fourth repair round after `AUDIT-v0.23.72-dev.md`. It closes **F-08**,
