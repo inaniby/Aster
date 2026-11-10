@@ -83,7 +83,11 @@ guard 'StructDef s;s.name=id.s;s.isUnion=isUnion;' 'the declaration bit is set'
 guard 'void structDeclaration(){ structDeclaration(false); }' 'the struct entry point is unchanged'
 guard 'if(eat(TK::Union)){structDeclaration(true);continue;}' 'the union top-level dispatch'
 guard 'else if(x=="union")k=TK::Union;' 'the union reserved word'
-guard 'Union };' 'Union is the last token kind'
+# v0.23.77-dev: `Union` is no longer the *last* token kind — the do-while round
+# appended `Do` after it — so the guard pins the member itself (its trailing
+# comma and the comment) rather than the closing brace of the enum.
+guard 'Union,               // v0.23.70-dev: Union names a `union U { ... }` declaration' \
+    'the union token kind'
 guard 'if (s.isUnion) {' 'the union layout branch'
 guard 'f.offset = 0;' 'every union member overlaps at offset 0'
 guard 'tooLarge(*widest,size);' 'the size overflow names the widest member'

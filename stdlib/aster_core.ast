@@ -273,9 +273,13 @@ fn is_space(c: i32) -> i32 {
     if (c == 32 || (c >= 9 && c <= 13)) { return 1; }
     return 0;
 }
+// v0.23.77-dev: C's isalpha exactly — A-Z and a-z, and *not* '_'. The bootstrap
+// scanner treats an underscore as an identifier character where it needs one
+// (`is_alpha(c) || c == 95`), so keeping the underscore out of here is what let
+// the library's version replace the stage's own without changing the lexer.
 
 fn is_alpha(c: i32) -> i32 {
-    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95) { return 1; }
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { return 1; }
     return 0;
 }
 

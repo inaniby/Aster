@@ -1690,11 +1690,21 @@ local arrays, no pointer-to-integer casts. `stdlib/aster_core.ast` is the seam:
 18 routines (memory, strings, `atoi`, the character classes, `reverse_digits`,
 `utoa`/`itoa`/`utohex`), each a byte-identical copy of the library's, with no
 globals — so the object needs no initialiser and imports nothing.
-`tests/library-core-checks.sh` asserts the extraction is verbatim, builds the
-core with the host and links a consumer against it, and then builds the *same*
-consumer with the self-hosted stage by concatenating the core's bodies with the
-consumer's (the stage has no linker, so its `extern fn` declarations are
-stripped first). That last layer is what proved the core is inside the stage's
+**The stage carries it.** The M4 stage is self-contained by design — a
+standalone ET_EXEC cannot reference an external symbol (CODEGEN-SPEC §10 C9), so
+it cannot *link* the library — and it now carries `stdlib/aster_core.ast` as a
+generated region, owned by `bootstrap/gen_core_region.py`, in the same
+BEGIN/END-marker pattern as its token and node tables: one source of truth, no
+copy that can drift, and both compilers run the same bytes. The stage's own
+`is_space`/`is_digit`/`is_alpha`/`reverse_digits`/`utoa`/`itoa`/`memcmp` are
+gone; `is_alpha` is C's `isalpha` (no `_`) so the change left the lexer's
+behaviour alone.
+
+`tests/library-core-checks.sh` asserts the extraction is verbatim, that the
+stage's region matches (`gen_core_region.py --check`), builds the core with the
+host and links a consumer against it, and then builds the *same* consumer with
+the self-hosted stage by concatenating the core's bodies with the consumer's
+(the stage has no linker, so its `extern fn` declarations are stripped first). That last layer is what proved the core is inside the stage's
 subset — and it found defect **A-26**: the stage's image printed
 `13|-42|8|9|11` where the host printed `13|-42|8|9|101`, a zero digit lost in
 `utoa`. The cause was the M3d codegen sizing a *store* by the value

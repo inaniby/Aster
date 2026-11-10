@@ -31,10 +31,14 @@
 // (strlen/utoa/itoa/memcmp) and take them from std.o at link time — but a
 // standalone ET_EXEC cannot reference an external symbol, so the stage could
 // never compile its own source: its own first extern call hit CODEGEN-SPEC §10
-// C9. The routines are now written here, in the stage's own subset
-// (immediately above bputraw, the emitter that consumes them), and the stage
-// links against nothing at all. `strlen` was declared but never called, so it
-// is gone; `reverse_digits` comes along because utoa ends by calling it.
+// C9. v0.23.77-dev closes that gap the only way the rule allows: the stage now
+// **carries** the library's subset-safe core (`stdlib/aster_core.ast`) as a
+// generated region below, owned by bootstrap/gen_core_region.py — the same
+// source of truth the host compiler's `std.o` is built from, byte for byte. So
+// both compilers run the same routines (`memcmp`, `utoa`/`itoa` +
+// `reverse_digits`, the character classes), the stage still links against
+// nothing at all, and a drift between the two is a generator failure rather
+// than a silent fork.
 
 // ---- BEGIN GENERATED: lexer names (bootstrap/gen_lexer_names.py) ----
 // The 84 token kinds, numbered exactly as `enum class TK`
@@ -430,19 +434,6 @@ let kids: i32[64] = 0;
 // ---------------------------------------------------------------------------
 // Character classes — the C locale's, as exact byte ranges (spec §4).
 // ---------------------------------------------------------------------------
-fn is_space(c: i32) -> i32 {
-    if (c == 32 || c == 9 || c == 10 || c == 11 || c == 12 || c == 13) { return 1; }
-    return 0;
-}
-fn is_digit(c: i32) -> i32 {
-    if (c >= 48 && c <= 57) { return 1; }
-    return 0;
-}
-fn is_alpha(c: i32) -> i32 {
-    if (c >= 65 && c <= 90) { return 1; }
-    if (c >= 97 && c <= 122) { return 1; }
-    return 0;
-}
 fn is_alnum(c: i32) -> i32 {
     if (is_alpha(c) == 1) { return 1; }
     return is_digit(c);
@@ -531,6 +522,109 @@ fn bputs(p: ptr<u8>) -> i32 {
 // byte for byte what it printed when the library supplied them) and written in
 // the stage's own subset: i64 division and modulo, a narrowing i64 -> i32 that
 // is safe because the digit is in 0..9, and the load_u8/store_u8 pair.
+// ---- END M4 ----
+// ---- BEGIN GENERATED: library core (bootstrap/gen_core_region.py) ----
+// The library's subset-safe core, generated from stdlib/aster_core.ast by
+// bootstrap/gen_core_region.py — edit that file, not this region. It is the
+// part of the library the stage's own subset can hold (CODEGEN-SPEC §10 C9
+// means it cannot *call* an external symbol at all), so the stage carries it
+// instead of linking it, and both compilers run the same bytes.
+
+fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(dst + i, load_u8(src + i));
+        i = i + 1;
+    }
+    return n;
+}
+
+// Fill n bytes with c's low 8 bits (store_u8 truncates, as C's unsigned char
+// conversion does). Returns n.
+
+fn memset(dst: ptr<u8>, c: i32, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(dst + i, c);
+        i = i + 1;
+    }
+    return n;
+}
+
+// Byte-wise unsigned comparison of the first n bytes: the first differing
+// pair's difference, 0 when equal. The unsigned reading matters — a signed
+// compare would order 0x80 below 0x7F and flip the answer for high bytes.
+
+fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x != y) { return x - y; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ===========================================================================
+// str — NUL-terminated text: the identifier and keyword matcher's toolkit.
+// ===========================================================================
+
+fn strlen(s: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (load_u8(s + i) != 0) { i = i + 1; }
+    return i;
+}
+
+// C's strcmp: first differing byte pair's difference, 0 when equal. Compares
+// as unsigned bytes (load_u8 zero-extends), and stops at the NUL both share.
+// The loop bound is a guard, not the terminator: every string shorter than a
+// million bytes returns from inside, and the tail return only satisfies the
+// compiler's fall-through check (while(true) returns are not seen as
+// terminating).
+
+fn strcmp(a: ptr<u8>, b: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (i < 1000000) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x != y) { return x - y; }
+        if (x == 0) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// C's strncpy: copy at most n bytes, NUL-pad when src is shorter, no
+// terminator when src runs to n or beyond. Returns min(strlen(src), n) — the
+// number of source characters actually copied — so a truncation shows up in
+// the return value rather than only in the buffer. (The pad loop runs after
+// the count is taken: returning its own index would answer n for every
+// short source.)
+
+fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let c: i32 = load_u8(src + i);
+        store_u8(dst + i, c);
+        if (c == 0) { break; }
+        i = i + 1;
+    }
+    let copied: i32 = i;
+    while (i < n) {
+        store_u8(dst + i, 0);
+        i = i + 1;
+    }
+    return copied;
+}
+
+// ===========================================================================
+// num — integers to text: ELF fields and diagnostics.
+// ===========================================================================
+
+// Reverse the i digits written at buf[0..i) in place, then NUL-terminate.
+// Shared by utoa/utohex — the digits come out least-significant first.
+
 fn reverse_digits(buf: ptr<u8>, i: i32) -> i32 {
     let j: i32 = 0;
     let k: i32 = i - 1;
@@ -544,6 +638,10 @@ fn reverse_digits(buf: ptr<u8>, i: i32) -> i32 {
     store_u8(buf + i, 0);
     return i;
 }
+
+// Unsigned decimal (v is read as its value; the caller keeps it >= 0 — the
+// signed case is itoa's job). Returns the digit count.
+
 fn utoa(v: i64, buf: ptr<u8>) -> i32 {
     if (v == 0) {
         store_u8(buf, 48);
@@ -559,6 +657,11 @@ fn utoa(v: i64, buf: ptr<u8>) -> i32 {
     }
     return reverse_digits(buf, i);
 }
+
+// Signed decimal: '-' then the magnitude. The magnitude of i64's most
+// negative value is not representable, so that one input is out of contract
+// (the twin asserts the same). Returns the character count, sign included.
+
 fn itoa(v: i64, buf: ptr<u8>) -> i32 {
     if (v < 0) {
         store_u8(buf, 45);                // '-'
@@ -566,17 +669,144 @@ fn itoa(v: i64, buf: ptr<u8>) -> i32 {
     }
     return utoa(v, buf);
 }
-fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
+
+// Lowercase hexadecimal, no prefix, no leading zeros ("0" for zero). The
+// width an ELF dump wants is the caller's business (pad in the buffer).
+// Returns the digit count.
+
+fn utohex(v: i64, buf: ptr<u8>) -> i32 {
+    if (v == 0) {
+        store_u8(buf, 48);
+        store_u8(buf + 1, 0);
+        return 1;
+    }
+    let i: i32 = 0;
+    while (v > 0) {
+        let d: i32 = v % 16;
+        let ch: i32 = 48 + d;             // '0'..'9'
+        if (d > 9) { ch = 87 + d; }       // 'a'..'f' (97 - 10)
+        store_u8(buf + i, ch);
+        v = v / 16;
+        i = i + 1;
+    }
+    return reverse_digits(buf, i);
+}
+
+// ===========================================================================
+// hash — open addressing over two global arrays: the symbol table / label
+// table a bootstrap compiler needs. 1024 slots (a power of two, so the mask
+// is an AND), linear probing, an empty slot is key 0, and a key that is
+// already present updates its value instead of duplicating.
+// ===========================================================================
+
+fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
     let i: i32 = 0;
     while (i < n) {
         let x: i32 = load_u8(a + i);
         let y: i32 = load_u8(b + i);
         if (x != y) { return x - y; }
+        if (x == 0) { return 0; }
         i = i + 1;
     }
     return 0;
 }
-// ---- END M4 ----
+
+// strchr(s, c): an offset of the first c in s, or -1. c is compared at its
+// low 8 bits, so strchr(s, 'a') and strchr(s, 97) are the same question.
+
+fn strchr(s: ptr<u8>, c: i32) -> i32 {
+    let i: i32 = 0;
+    let want: i32 = c & 255;
+    while (1) {
+        let ch: i32 = load_u8(s + i);
+        if (ch == want) { return i; }
+        if (ch == 0) { return -1; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// strstr(h, n): an offset of the first occurrence of n in h, or -1. The empty
+// needle answers 0, as C's does.
+
+fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32 {
+    let nl: i32 = strlen(n);
+    if (nl == 0) { return 0; }
+    let i: i32 = 0;
+    while (1) {
+        if (load_u8(h + i) == 0) { return -1; }
+        if (strncmp(h + i, n, nl) == 0) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// strcat(d, s): append s to d, NUL included; d must have room. Returns the
+// resulting length (not d's address), because the length is what a caller
+// advancing a cursor needs.
+
+fn strcat(d: ptr<u8>, s: ptr<u8>) -> i32 {
+    let dl: i32 = strlen(d);
+    let sl: i32 = strlen(s);
+    let i: i32 = 0;
+    while (i <= sl) {
+        store_u8(d + dl + i, load_u8(s + i));
+        i = i + 1;
+    }
+    return dl + sl;
+}
+
+// atoi(s): leading spaces, an optional sign, then decimal digits until the
+// first non-digit. Anything else is 0, and a lone sign is 0 too. The value
+// wraps like ordinary 32-bit arithmetic past the range, which is what an
+// unchecked C atoi does with 32 bits.
+
+fn atoi(s: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (load_u8(s + i) == 32) { i = i + 1; }
+    let neg: i32 = 0;
+    let ch: i32 = load_u8(s + i);
+    if (ch == 45) { neg = 1; i = i + 1; }
+    else if (ch == 43) { i = i + 1; }
+    let v: i32 = 0;
+    while (1) {
+        let d: i32 = load_u8(s + i);
+        if (d < 48 || d > 57) { break; }
+        v = v * 10 + (d - 48);
+        i = i + 1;
+    }
+    if (neg) { return 0 - v; }
+    return v;
+}
+
+// is_digit / is_space / is_alpha: 1 or 0, ASCII only (the same test set a
+// lexer needs, which is what this library is written for).
+
+fn is_digit(c: i32) -> i32 {
+    if (c >= 48 && c <= 57) { return 1; }
+    return 0;
+}
+
+fn is_space(c: i32) -> i32 {
+    if (c == 32 || (c >= 9 && c <= 13)) { return 1; }
+    return 0;
+}
+// v0.23.77-dev: C's isalpha exactly — A-Z and a-z, and *not* '_'. The bootstrap
+// scanner treats an underscore as an identifier character where it needs one
+// (`is_alpha(c) || c == 95`), so keeping the underscore out of here is what let
+// the library's version replace the stage's own without changing the lexer.
+
+fn is_alpha(c: i32) -> i32 {
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { return 1; }
+    return 0;
+}
+
+// fmt_i32(buf, v): v in decimal, no padding, NUL-terminated. Returns the
+// digit count (-1 aside). INT32_MIN is handled by working on the magnitude in
+// i64, where its absolute value fits.
+
+// ---- END GENERATED: library core ----
+
 fn bputraw(p: ptr<u8>, n: i32) -> i32 {
     let i: i32 = 0;
     while (i < n) {

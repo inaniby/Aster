@@ -294,6 +294,24 @@ breaking this project's own `-Werror` build.
   a zero digit lost in `utoa` — and pins the difference so it stays visible until
   the stage is fixed.
 
+* **The bootstrap stage carries the library core** — the last piece of "let the
+  bootstrap use the library". A standalone ET_EXEC cannot reference an external
+  symbol (CODEGEN-SPEC §10 C9), so the stage can never *link* `std.o`; M4 had
+  therefore inlined the helpers. They are now a **generated region** of
+  `bootstrap/aster.ast`, owned by `bootstrap/gen_core_region.py` and copied from
+  `stdlib/aster_core.ast` — the same marker pattern as the token and node
+  tables, so there is one source of truth and a drift between the host's `std.o`
+  and the stage's own copy fails the generator instead of forking silently. The
+  stage's seven hand-written copies (`is_space`, `is_digit`, `is_alpha`,
+  `reverse_digits`, `utoa`, `itoa`, `memcmp`) are gone; `is_alnum`/`is_xdigit`
+  stay (the core has no such pair) and now call the library's. `is_alpha` became
+  C's `isalpha` — no `_` — which is what the stage's scanner already assumed
+  (`is_alpha(c) || c == 95`), so the lexer's behaviour is untouched.
+  Verified: `codegen-checks.sh` passes in full (twin and stage still agree on
+  the corpus; 7/7 mutation probes diverge), `bootstrap-loop-checks.sh` passes
+  (the stage compiles its own core-carrying source and runs the result), and the
+  library suites are green with the `is_alpha` change.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
