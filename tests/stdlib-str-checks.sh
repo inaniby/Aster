@@ -4,7 +4,7 @@
 #
 # Layers:
 #   [1] strict build of the compiler
-#   [2] the library object: 101 routines, 10 globals, 1 UND
+#   [2] the library object: 102 routines, 10 globals, 1 UND
 #   [3] the demo runs and prints its summary line
 #   [4] the C twin agrees byte for byte (strtoll/strtod/snprintf are the oracle)
 #   [5] edges: INT64_MIN, base 0 auto-detection, consumed counts, ".5", "1.",
@@ -31,10 +31,10 @@ ok 'compiler built'
 printf '%s\n' '[2/9] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$OUT/std.o" >"$OUT/std.log" 2>&1 \
     || fail "the library did not build: $(head -3 "$OUT/std.log")"
-grep -q '101 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
+grep -q '102 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
 und=$(readelf -sW "$OUT/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-ok '101 routines, 10 globals, 1 UND entry'
+ok '102 routines, 10 globals, 1 UND entry'
 
 printf '%s\n' '[3/9] the demo runs'
 cp tests/stdlib-str-demo.ast "$OUT/demo.ast"
@@ -193,6 +193,16 @@ fn main() -> i32 {
     if (utf8_len(b) != 2) { return 23; }
     store_u8(b, 195); store_u8(b + 1, 40); store_u8(b + 2, 0);
     if (utf8_decode(b, 0) != 0 - 1) { return 24; }
+    // IEEE-754 binary64 patterns, each one checked against the value written
+    // out in the comment - the converter has to agree with the hardware.
+    if (f64_bits(1, 0) != 4607182418800017408) { return 25; }         // 1.0
+    if (f64_bits(3, 0 - 1) != 4609434218613702656) { return 26; }     // 1.5
+    if (f64_bits(1, 0 - 1) != 4602678819172646912) { return 27; }     // 0.5
+    if (f64_bits(3, 0) != 4613937818241073152) { return 28; }         // 3.0
+    if (f64_bits(5, 0 - 1) != 4612811918334230528) { return 29; }     // 2.5
+    if (f64_bits(1, 10) != 4652218415073722368) { return 30; }        // 1024.0
+    if (f64_bits(0 - 2, 0) != 0 - 4611686018427387904) { return 31; } // -2.0
+    if (f64_bits(0, 0) != 0) { return 32; }                           // +0.0
     return 0;
 }
 AST
