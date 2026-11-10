@@ -377,6 +377,21 @@ breaking this project's own `-Werror` build.
   `tests/stdlib-map-checks.sh` [5/8] covers delete/re-delete/re-put with 500
   neighbours still findable, and the suites' shape assertions moved to 90.
 
+* **A-25 fixed: a string blob is private to its object.** The compiler names a
+  literal's bytes `__aster_string_<n>` with a per-file counter, so two objects
+  that each embed one both define `__aster_string_0` — and the ET_EXEC linker's
+  duplicate check refused the link (`duplicate global symbol '__aster_string_0'
+  across input objects`) while the `.so` linker had been remapping those names
+  per input for releases. The fix teaches `linkObjects` the same remap the `.so`
+  path already had: each input's `__aster_string_*` (and its
+  `__aster_gat___aster_string_*` anchor) gains `_obj<input>_` before the
+  definitions map or the duplicate check sees it, and the relocation symbols go
+  through the same function. No object file changes, so no product changes —
+  the frozen baseline stays at 393 rows byte for byte, and the row reproduction
+  in `tests/string-symbol-checks.sh` [4/4] proves it. That new suite also pins
+  both halves: two objects with literals link into one image that prints both,
+  and the `.so` path still `dlopen`s and finds its literal.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

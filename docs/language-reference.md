@@ -1727,13 +1727,15 @@ aster link-obj your.o std.o -o your
 
 Two rules follow from the object model, both pinned by `tests/stdlib-io-checks.sh`:
 
-* **A library file carries no string literal.** A literal becomes an object
-  symbol named `__aster_string_<n>` with a per-file counter, so a library that
-  has one collides at link time with every consumer that has its own
-  (`duplicate global symbol '__aster_string_0'`). The library assembles its one
-  message from bytes instead; the compiler-side fix (local symbols, or names
-  derived from content) re-records the frozen byte baseline, so it is recorded
-  as audit A-25 rather than done here.
+* **A literal is private to its object** (fixed in v0.23.77-dev, audit A-25).
+  A literal becomes a symbol named `__aster_string_<n>` with a per-file counter,
+  so before the fix two objects that each embedded a literal both defined
+  `__aster_string_0` and the link stopped with
+  `duplicate global symbol '__aster_string_0'`. The linker now makes each
+  object's blob names per-input (`__aster_string_obj<i>_<n>`, and the GOT anchor
+  beside it) *before* the definitions map — and its duplicate check — sees them,
+  in both linkers. Single-file products are untouched, which is why the frozen
+  baseline does not move; `tests/string-symbol-checks.sh` is the regression.
 * **A comparator must be defined in the calling file.** The address of an
   *extern* function cannot be taken ("its location is another object's
   business"), so a consumer cannot hand the library's own `cmp_i32_asc` to

@@ -11804,7 +11804,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         return name;
     };
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
-        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty())ownerOf.emplace(s.name,i);
+        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty())ownerOf.emplace(remapPrivateStringSymbol(s.name,i),i);
         {
             uint64_t initLo=0,initHi=0;bool haveInit=false;
             for(const auto& s:obj.symbols)if(s.name==kInitSymbol&&s.shndx!=0){initLo=s.value;initHi=s.value+s.size;haveInit=true;}
@@ -12037,8 +12037,20 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     // symbols each input's run-time initializer touches.
     std::map<std::string,size_t> ownerOf;
     std::map<size_t,std::set<std::string>> initRefs;
+    // v0.23.77-dev (audit A-25): a compiler-generated string blob is private to
+    // the object that carries it — its name is a per-file counter, so two
+    // objects that both embed a literal each define `__aster_string_0`. The name
+    // is made per-input here, before the definitions map (and its duplicate
+    // check) ever sees it; the cross-references below use the same remap.
+    auto remapPrivateStringSymbol=[](const std::string& name,size_t inputIndex){
+        const std::string direct="__aster_string_";
+        const std::string got="__aster_gat___aster_string_";
+        if(name.compare(0,got.size(),got)==0)return std::string("__aster_gat___aster_string_obj")+std::to_string(inputIndex)+"_"+name.substr(got.size());
+        if(name.compare(0,direct.size(),direct)==0)return std::string("__aster_string_obj")+std::to_string(inputIndex)+"_"+name.substr(direct.size());
+        return name;
+    };
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
-        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty())ownerOf.emplace(s.name,i);
+        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty())ownerOf.emplace(remapPrivateStringSymbol(s.name,i),i);
         {
             uint64_t initLo=0,initHi=0;bool haveInit=false;
             for(const auto& s:obj.symbols)if(s.name==kInitSymbol&&s.shndx!=0){initLo=s.value;initHi=s.value+s.size;haveInit=true;}
@@ -12086,7 +12098,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
             // their shape. Kind 4 makes the lookup below use tlsVaddr even
             // when the block is entirely .tbss.
             if(s.name=="__aster_tls_block"){definitions.emplace("__aster_tls_block",Def{0,4,s.size});continue;}
-            std::string defName=s.name;
+            std::string defName=remapPrivateStringSymbol(s.name,i);
             if(defName==kInitSymbol){defName=initNameByInput.empty()?std::string(kInitSymbol):std::string(kInitSymbol)+"$"+std::to_string(initNameByInput.size());initNameByInput[i]=defName;}
             auto inserted=definitions.emplace(defName,def);if(!inserted.second)throw Error("duplicate global symbol '"+defName+"' across input objects");
             if(s.name=="_start"){
@@ -12096,7 +12108,7 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
                 ++startCount;entryOffset=textBase+s.value;entryInput=i;
             }
         }
-        for(const auto& r:obj.relocs)pending.push_back({textBase+r.offset,r.symbol,r.addend,r.type,i});
+        for(const auto& r:obj.relocs)pending.push_back({textBase+r.offset,remapPrivateStringSymbol(r.symbol,i),r.addend,r.type,i});
         if(!obj.debugLine.empty()){
             const uint64_t dlBase=mergedDebugLine.size();
             mergedDebugLine.insert(mergedDebugLine.end(),obj.debugLine.begin(),obj.debugLine.end());
