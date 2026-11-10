@@ -446,7 +446,15 @@ fi
 printf '%s\n' '[7/9] Coverage: the layers are not vacuous'
 [ "$guard_count" -ge 15 ] || { echo "FAIL: only $guard_count source guards, expected at least 15" >&2; exit 1; }
 [ "$rej_n" -ge 10 ] || { echo "FAIL: only $rej_n refusals held, expected at least 10" >&2; exit 1; }
-[ "$diff_n" -ge 6 ] || { echo "FAIL: only $diff_n differential cases, expected at least 6" >&2; exit 1; }
+# v0.23.77-dev: the differential layer needs a static-capable C compiler and a
+# way to run AArch64; when it has neither it SKIPs (see the probe at the top),
+# and a skip must not turn into a coverage failure - the count is only a floor
+# for a layer that actually ran.
+if [ "$have_qemu" = yes ] && [ -n "$HOSTCC" ]; then
+    [ "$diff_n" -ge 6 ] || { echo "FAIL: only $diff_n differential cases, expected at least 6" >&2; exit 1; }
+else
+    printf '  %-30s %s\n' "gcc differential cases" "SKIP (no static-capable HOSTCC / no AArch64 runner)"
+fi
 printf '  %-30s %s\n' "source guards" "$guard_count"
 printf '  %-30s %s\n' "refusals" "$rej_n"
 printf '  %-30s %s\n' "gcc differential cases" "$diff_n"
