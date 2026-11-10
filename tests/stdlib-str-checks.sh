@@ -218,8 +218,12 @@ fn main() -> i32 {
     if (f64_from_dec(1, 22) != 4936209963552724370) { return 43; }     // 1e22
     if (f64_from_dec(1, 0 - 9) != 4472406533629990549) { return 44; }  // 1e-9, the edge
     if (f64_from_dec(1, 21) != 4921056587992461136) { return 45; }    // 1e21
-    if (f64_from_dec(1, 23) != 0 - 1) { return 46; }                   // out of range: refused
-    if (f64_from_dec(1, 0 - 10) != 0 - 1) { return 47; }               // out of range: refused
+    // the 128-bit window reaches the ends of the range
+    if (f64_from_dec(1, 0 - 12) != 4427486594234968593) { return 46; } // 1e-12
+    if (f64_from_dec(1, 0 - 22) != 4277919505920253670) { return 47; } // 1e-22
+    if (f64_from_dec(1, 300) != 9094988921128908188) { return 48; }    // 1e300
+    if (f64_from_dec(1, 0 - 300) != 118622047889322841) { return 49; } // 1e-300
+    if (f64_from_dec(1, 0 - 320) != 0) { return 50; }                  // subnormal: answers zero
     return 0;
 }
 AST

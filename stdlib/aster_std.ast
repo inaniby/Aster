@@ -1219,87 +1219,98 @@ fn strrchr(s: ptr<u8>, c: i32) -> i32 {
 // makes the result the nearest double instead of an accumulation of ties.
 fn f64_from_dec(digits: u64, exp10: i32) -> i64 {
     if (digits == 0) { return 0; }
-    // The range is bounded on purpose. Each power of ten renormalizes the
-    // mantissa and folds what it dropped into one sticky bit, which is exact
-    // for a step or two but loses the *magnitude* of the dropped bits once a
-    // long chain multiplies them back up - 1e300 came out one ulp low. Within
-    // range below stays under the rounding cutoff, so this answers -1 outside
-    // it rather than a double that looks right and is not; a caller with a
-    // wider literal needs the big-integer path. The two sides are not
-    // symmetric: a multiplication keeps every bit until the mantissa fills, but
-    // a division drops up to three bits per step, so the verified range is
-    // +22 on the positive side and -9 on the negative one.
-    if (exp10 > 22) { return 0 - 1; }
-    if (exp10 < 0 - 9) { return 0 - 1; }
-    let mant: u64 = digits;
+    // A 128-bit window, not 64. The reason is measurable: with 53 bits kept and
+    // a 64-bit window a division leaves only four bits of headroom, so a chain
+    // of them drifts - 1e-22 came out one ulp low. A 128-bit window puts the
+    // per-step truncation at 2^-124, and 300 steps still cannot reach the
+    // rounding cutoff.
+    let hi: u64 = 0;
+    let lo: u64 = digits;
     let k: i32 = 0;
     let sticky: i32 = 0;
-    // bring the mantissa under 2^54 first, so 10^2 of headroom is available
-    while (mant > 18014398509481984) {
-        if ((mant & 1) == 1) { sticky = 1; }
-        mant = mant >> 1;
-        k = k + 1;
+    // normalize until hi's top bit is set: the window is full
+    while (hi < 9223372036854775808) {
+        hi = (hi << 1) | (lo >> 63);
+        lo = lo << 1;
+        k = k - 1;
     }
     let p: i32 = exp10;
     let step: i32 = 0;
     while (step < p) {
-        // renormalize before multiplying: mant <= 2^54, times 10 is < 2^58
-        while (mant > 18014398509481984) {
-            if ((mant & 1) == 1) { sticky = 1; }
-            mant = mant >> 1;
+        // room for *10, dropping the top bits of the window into `sticky`
+        while (hi >= 1152921504606846976) {
+            // order matters: lo takes hi's last bit, so hi must not move first
+            if ((lo & 1) == 1) { sticky = 1; }
+            lo = (lo >> 1) | ((hi & 1) << 63);
+            hi = hi >> 1;
             k = k + 1;
         }
-        mant = mant * 10;
+        // (hi:lo) * 10, split so nothing overflows: lo*8 + lo*2 with carries
+        let c3: u64 = lo >> 61;
+        let c1: u64 = lo >> 63;
+        let a: u64 = lo << 3;
+        let b: u64 = lo << 1;
+        let sl: u64 = a + b;
+        let ov: u64 = 0;
+        if (sl < a) { ov = 1; }
+        lo = sl;
+        // floor(lo*10 / 2^64) is (lo>>61) + (lo>>63) + the add's carry -
+        // each already counts whole 2^64 blocks, so neither is scaled again
+        hi = hi * 10 + c3 + c1 + ov;
         step = step + 1;
     }
     while (step > p) {
-        // A division must not start from a small mantissa, or it would throw
-        // away the precision it is about to need: scale up into [2^60, 2^61)
-        // first, so the quotient still has 56 bits and the remainder - anything
-        // the division drops - is below its last bit, which is exactly what
-        // `sticky` records.
-        while (mant < 1152921504606846976) {
-            mant = mant << 1;
+        // (hi:lo) / 10 - long division, sixty-four bits at a time. The remainder
+        // never exceeds nine, so `rem * 2 + 1` always fits.
+        let qhi: u64 = hi / 10;
+        let rem: u64 = hi - qhi * 10;
+        let qlo: u64 = 0;
+        let bit: i32 = 63;
+        while (bit >= 0) {
+            rem = rem * 2 + ((lo >> bit) & 1);
+            qlo = qlo << 1;
+            if (rem >= 10) {
+                rem = rem - 10;
+                qlo = qlo | 1;
+            }
+            bit = bit - 1;
+        }
+        if (rem != 0) { sticky = 1; }
+        hi = qhi;
+        lo = qlo;
+        // refill the window: a division leaves its top bits empty
+        while (hi < 9223372036854775808) {
+            hi = (hi << 1) | (lo >> 63);
+            lo = lo << 1;
             k = k - 1;
         }
-        if ((mant - (mant / 10) * 10) != 0) { sticky = 1; }
-        mant = mant / 10;
         step = step - 1;
     }
-    // Final normalization: keep 53 bits and decide the rounding once, from the
-    // bits that fall off (the round bit plus everything below it, `sticky`
-    // standing in for what the powers of ten already dropped).
-    let topb: i32 = 0;
-    let probe2: u64 = mant;
-    while (probe2 > 1) {
-        probe2 = probe2 >> 1;
-        topb = topb + 1;
-    }
-    if (topb > 52) {
-        let drop2: i32 = topb - 52;
-        let kept: u64 = mant >> drop2;
-        let roundbit: u64 = (mant >> (drop2 - 1)) & 1;
-        let below: u64 = mant - ((kept << drop2) | (roundbit << (drop2 - 1)));
-        let any: i32 = sticky;
-        if (below != 0) { any = 1; }
-        mant = kept;
-        k = k + drop2;
-        if (roundbit == 1 && (any == 1 || (kept & 1) == 1)) { mant = mant + 1; }
-    }
-    while (mant < 4503599627370496) {
-        mant = mant << 1;
+    // refill the window one last time: the multiplication loop leaves hi
+    // anywhere below 2^64, and the 53 bits are taken from its top
+    while (hi < 9223372036854775808) {
+        hi = (hi << 1) | (lo >> 63);
+        lo = lo << 1;
         k = k - 1;
     }
-    let e: i32 = 52 + k + 1023;
-    if (mant > 9007199254740991) {
-        mant = mant >> 1;
-        e = e + 1;
-    }
+    // one rounding decision: keep 53 bits, look at the next one, and take
+    // `sticky` (plus everything below) as the tie-breaker
+    let kept: u64 = hi >> 11;
+    let roundbit: u64 = (hi >> 10) & 1;
+    let rest: i32 = sticky;
+    if ((hi & 1023) != 0) { rest = 1; }
+    if (lo != 0) { rest = 1; }
+    if (roundbit == 1 && (rest == 1 || (kept & 1) == 1)) { kept = kept + 1; }
+    let e: i32 = 52 + k + 75 + 1023;
+    if (kept > 9007199254740991) { kept = kept >> 1; e = e + 1; }
     if (e >= 2047) { return 9218868437227405312; }
-    let bits: u64 = (u64(e) << 52) | (mant - 4503599627370496);
+    // Below the normal range the exponent field would go negative; the subnormal
+    // forms are not built here, so those literals answer zero rather than a
+    // pattern that is quietly wrong.
+    if (e <= 0) { return 0; }
+    let bits: u64 = (u64(e) << 52) | (kept - 4503599627370496);
     return i64(bits);
 }
-
 // f64_bits(m, k): the IEEE-754 binary64 bit pattern of the exact value
 // m * 2^k, as an i64 - the piece a decimal-literal converter will end on, and
 // useful on its own for hand-built floats. Only integer arithmetic is used,
