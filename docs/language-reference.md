@@ -253,6 +253,11 @@ fn main() -> i32 {
 * **Conversions truncate toward zero**, as C's cast does: `i32(2.9)` is 2,
   `i32(-2.9)` is -2. `i32`/`i64` convert from and to a double; a second
   narrowing behaves as it always has.
+* **Literals are fractional or exponent-form**: `1.5`, `0.25`, `1e9`,
+  `1.5e-3`, `2E+2` (e/E, an optional sign, at least one digit). A hex or binary
+  literal keeps its `e`/`E` digits as digits (`0x1e9` is 489), an integer
+  suffix on a floating literal is refused, and a malformed exponent is reported
+  where it happens instead of surfacing as a parse error two tokens later.
 * **Storage is eight bytes** in a local slot, a struct field or an array
   element, read and written through the FP bank, which is why an f64 slot is not
   interchangeable with an i64 one in the register file.
@@ -1660,9 +1665,16 @@ fn next_id() -> i32 {
 ## 11c. What is not in the language
 
 There is no gap left in the statement grammar: `static let` (11b) covers state
-that outlives a call. What the language still does not offer is deliberate —
-floating-point literals in exponent form, variadic *definitions*, closures,
-generics, and a module system beyond `include`. The differential harness in
+that outlives a call, and floating-point literals take an exponent form. What
+the language still does not offer is deliberate — variadic *definitions*,
+closures, generics, and a module system beyond `include` — and each one is a
+decision about the same three foundations: the AAPCS64 call shape, a `Ty` that
+is a `(kind, index)` pair with no room for type arguments, and a memory model
+with no managed heap. Varargs would need an untyped `va_list` and a stack walk;
+a closure needs a hidden context pointer on every indirect call (an explicit
+`(fn, ctx)` pair is what the language offers instead); generics need either
+monomorphisation through every pass or a uniform heap representation; and a
+module system's versioning half belongs to the project file, not the compiler. The differential harness in
 `tests/difftest/` guards the code generator: it emits the same program in Aster
 and in C and compares the two outputs, so an operator whose lowering drifts is
 caught by the machine rather than by a reader.

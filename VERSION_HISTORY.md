@@ -216,6 +216,17 @@ breaking this project's own `-Werror` build.
   `.data`/`.bss`, two refusals, and a mutation that drops the sequence number
   from the mangled name.
 
+* **Exponent-form float literals** — `1e9`, `1.5e-3`, `2E+2`, `2.5e0`. The
+  lexer takes an exponent only when it really is one (e/E, an optional sign, at
+  least one digit), so a letter that merely follows a number is still the next
+  token; a malformed `1e` or `1.5e+` is now reported as a malformed exponent at
+  the literal instead of surfacing as `expected ';'` two tokens later, and a hex
+  or binary literal keeps its `e`/`E` digits (`0x1e9` is still 489). An integer
+  suffix on a floating literal is refused by name. `tests/float-literal-checks.sh`
+  (eight layers) pins the four shapes, equality with the long spelling, the
+  integer spellings, three refusals, a folded global (1500 lands in `.data` as
+  `0x4097700000000000`) and a mutation that drops the sign.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

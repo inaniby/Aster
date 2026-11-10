@@ -348,7 +348,23 @@ public:
                     if(!isHex&&!isBin&&q=='.'&&std::isdigit((unsigned char)peek(1))){
                         x+=take();
                         while(std::isdigit((unsigned char)peek())) x+=take();
-                        break;
+                        continue;
+                    }
+                    // v0.23.77-dev: an exponent, `1e9`, `1.5e-3`, `2E+4`. Taken
+                    // only when it really is one — e/E, an optional sign, and at
+                    // least one digit — so a letter that merely follows a number
+                    // is still the next token, and a malformed `1e` is reported
+                    // here instead of surfacing as "expected ';'" two tokens on.
+                    if(!isHex&&!isBin&&(q=='e'||q=='E')){
+                        const char n1=peek(1), n2=peek(2);
+                        const bool digitAfter=std::isdigit((unsigned char)n1);
+                        const bool signThenDigit=(n1=='+'||n1=='-')&&std::isdigit((unsigned char)n2);
+                        if(!digitAfter&&!signThenDigit)
+                            throw Error("malformed exponent in a numeric literal at "+std::to_string(l)+":"+std::to_string(c));
+                        x+=take();                                  // 'e' / 'E'
+                        if(peek()=='+'||peek()=='-')x+=take();      // the sign
+                        while(std::isdigit((unsigned char)peek())) x+=take();
+                        continue;
                     }
                     break;
                 }
@@ -1728,15 +1744,28 @@ class Parser {
         // value in s (exactly one code unit); the parser materialises it as an
         // i32 Num, exactly as an unsuffixed integer literal is.
         if(cur().k==TK::Char){auto tok=t[p++];E nn(new Expr(Expr::Num,(uint64_t)(unsigned char)tok.s[0]));nn->line=tok.line;nn->col=tok.col;return nn;}
-        if(cur().k==TK::Number&&cur().s.find('.')!=std::string::npos){auto tok=t[p++];
-            // v0.23.77-dev: a fractional literal. The value is read with strtod so
-            // the decimal digits are rounded to the nearest double exactly once,
-            // and the node carries the bits; an out-of-range literal is infinite,
-            // which a program can see and the suites pin.
-            E nn(new Expr(Expr::Num)); nn->isFloat=true;
-            nn->fv=std::strtod(tok.s.c_str(),nullptr);
-            nn->line=tok.line; nn->col=tok.col;
-            return nn;
+        // v0.23.77-dev: a floating-point literal — a fraction (`1.5`) or an
+        // exponent (`1e9`, `1.5e-3`). A hex or binary literal may contain the
+        // letters e/E as digits, so those prefixes are excluded by name rather
+        // than by scanning for the letter. The value is read with strtod, so the
+        // decimal digits are rounded to the nearest double exactly once.
+        if(cur().k==TK::Number){
+            const std::string& txt=cur().s;
+            const bool hexOrBin=txt.size()>1&&txt[0]=='0'&&(txt[1]=='x'||txt[1]=='X'||txt[1]=='b'||txt[1]=='B');
+            const bool looksFloat=!hexOrBin&&(txt.find('.')!=std::string::npos||
+                                              txt.find('e')!=std::string::npos||
+                                              txt.find('E')!=std::string::npos);
+            if(looksFloat){
+                auto tok=t[p++];
+                const char last=tok.s.empty()?0:tok.s[tok.s.size()-1];
+                if(last=='u'||last=='U'||last=='l'||last=='L')
+                    throw Error("a floating-point literal cannot carry an integer suffix ('"+tok.s+"') at "
+                                +std::to_string(tok.line)+":"+std::to_string(tok.col));
+                E nn(new Expr(Expr::Num)); nn->isFloat=true;
+                nn->fv=std::strtod(tok.s.c_str(),nullptr);
+                nn->line=tok.line; nn->col=tok.col;
+                return nn;
+            }
         }
         if(cur().k==TK::Number){auto tok=t[p++];
             // v0.23.50-dev: peel the optional suffix (u/l/ul/lu) off the token
