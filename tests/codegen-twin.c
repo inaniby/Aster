@@ -112,6 +112,7 @@ static int nfuncs, nglobs, nparams;
 
 /* The parser's cursor and the two nesting counters the caps police. */
 static int p;                           /* index of the current token */
+static int prog_node;                   /* v0.23.77-dev: for `static let` */
 static int lname[64], lname_depth;      /* v0.23.77-dev: loop labels being parsed */
 static int exdepth;                     /* C1 */
 static int sdepth;                      /* C2 */
@@ -1176,6 +1177,14 @@ static int is_compound(int k) {
 
 static int statement(void) {
     int k = cur();
+    /* v0.23.77-dev: `static let x: T = init;` becomes a file-scope global and a
+     * statement that generates nothing. */
+    if (k == TK_Ident && name_is("static") && ahead() == TK_Let) {
+        adv(); adv();
+        int gs = global_decl(0);
+        append(prog_node, gs);
+        return newnode(S_Nop, nodes[gs].tok);
+    }
     /* v0.23.77-dev: `name: while (...) { }` / `name: do { } while (...);` */
     if (k == TK_Ident && p + 2 < ntok && toks[p + 1].kind == TK_Colon &&
         (toks[p + 2].kind == TK_While || toks[p + 2].kind == TK_Do)) {
@@ -1331,6 +1340,7 @@ static int statement(void) {
 /* ----------------------------------------------------------- program (§4.1) */
 static int parse_program(void) {
     int prog = newnode(N_Program, ntok == 0 ? -1 : 0);
+    prog_node = prog;
     while (cur() != TK_End) {
         int k = cur();
         if (k == TK_Include)
@@ -1992,6 +2002,7 @@ static int sema_stmt(int s) {
                    tok_line(nodes[s].tok), tok_col(nodes[s].tok));
         return 0;
     }
+    if (k == S_Nop) return 0;
     if (k == S_Expr) {
         int e = nodes[s].first;
         if (tc_expr(e) != 0) return 1;
@@ -2914,6 +2925,7 @@ static int gen_stmt(int s){
         if (emit_b(lp_cont[tgt])) return 1;
         return 0;
     }
+    if (k==S_Nop) return 0;
     int v=gen_expr(NF(s),1); if (v<0) return 1;
     if (free_tmp(v)) return 1;
     return 0;

@@ -216,7 +216,7 @@ let E_BitAnd: i32 = 27;
 let E_BitOr: i32 = 28;
 let E_BitXor: i32 = 29;
 
-// The 10 statement kinds (§2.2), the host's Stmt::Kind
+// The 11 statement kinds (§2.2), the host's Stmt::Kind
 // numbers + 64; FieldAssign, DerefAssign, For and Switch are
 // excluded (§12.2), their numbers skipped.
 let S_Let: i32 = 64;
@@ -229,6 +229,7 @@ let S_Break: i32 = 73;
 let S_Continue: i32 = 74;
 let S_Expr: i32 = 76;
 let S_DoWhile: i32 = 77;
+let S_Nop: i32 = 78;
 
 // The 5 structural kinds (§2.3) — no host counterpart; the
 // dump makes the host's side vectors nodes so every line
@@ -344,6 +345,9 @@ let nfuncs: i32 = 0;
 let nglobs: i32 = 0;
 
 let ppos: i32 = 0;                // the parser's cursor: index of the current token
+// v0.23.77-dev: the program node, so a `static let` written inside a body
+// can hand the global it declares to the top level.
+let prog_node: i32 = 0;
 // The label tokens of the loops being parsed, innermost last: a labeled
 // jump is resolved here, at parse time, exactly as the host does.
 let lname: i32[64] = 0;
@@ -2378,6 +2382,20 @@ fn assign_stmt() -> i32 {
 }
 fn statement() -> i32 {
     let k: i32 = curk();
+    // v0.23.77-dev: `static let x: T = init;` — the declaration is a *file-scope*
+    // global (initialized before main, like any other) and the statement itself
+    // generates nothing. The name is kept as written, so at most one function may
+    // own a given static name; the duplicate check is `global_decl`'s.
+    if (k == K_Ident && name_is("static") == 1 && nextk() == K_Let) {
+        advance();
+        advance();
+        let gs: i32 = global_decl(0);
+        if (perr != 0) { return 0; }
+        append(prog_node, gs);
+        let ns: i32 = newnode(S_Nop, ntok[gs - 1]);
+        if (ns == 0) { return 0; }
+        return ns;
+    }
     // v0.23.77-dev: `name: while (...) { }` / `name: do { } while (...);` — the
     // label is pushed before the body is parsed so a `break name` inside it
     // resolves, and it is recorded on the loop node for the code generator.
@@ -2604,6 +2622,7 @@ fn parse_program() -> i32 {
     if (ntoks == 0) { pt = 0 - 1; }
     let prog: i32 = newnode(N_Program, pt);
     if (prog == 0) { return 0; }
+    prog_node = prog;
     while (curk() != K_End) {
         let k: i32 = curk();
         if (k == K_Include) {
@@ -3425,6 +3444,7 @@ fn sema_stmt(s: i32) -> i32 {
         }
         return 0;
     }
+    if (k == S_Nop) { return 0; }
     if (k == S_Expr) {
         let e: i32 = nfirst[s - 1];
         if (tc_expr(e) != 0) { return 1; }
@@ -5333,6 +5353,7 @@ fn gen_stmt(s: i32) -> i32 {
         if (emit_b(lp_cont[tgt]) != 0) { return 1; }
         return 0;
     }
+    if (k == S_Nop) { return 0; }
     // S_Expr: a discarded call — computed for its side effects, the result
     // register released (the host's v0.23.39-dev path, :4858).
     let v: i32 = gen_expr(nfirst[s - 1], TY_I32);

@@ -109,6 +109,15 @@ innermost-first (`lname[]`), so a label that names nothing is a **parse error**
 (`no such loop label: <name>`), not a run-time jump. Two writings of the same
 name are two different tokens, so the comparison is over the tokens' bytes.
 
+**`static let` (v0.23.77-dev).** At statement position, `static let name: T = init;`
+declares a **file-scope** global — the declaration is registered with `global_decl`
+and joined to the program's item list, so its initializer runs before `main` like
+any other global's — and leaves an `S_Nop` (78) where the statement stood. The
+stage keeps the name as written, so at most one function may own a given static
+name; `global_decl`'s duplicate check is what refuses a second one. (The host
+mangles the name per declaration, which is how it allows the same spelling in two
+functions; that is a host-only refinement, not a subset rule.)
+
 ### 2.3 Structural kinds (5)
 
 No counterpart in `src/aster.cpp`: the host carries functions, globals,

@@ -1,0 +1,21 @@
+// tests/codegen-fixtures/static_let.ast — `static let` inside a function: the
+// declaration is a file-scope global (initialized before main), and the
+// statement generates nothing. The counter keeps its value across calls, which
+// a plain `let` cannot do.
+let out: u8[8] = 0;
+
+fn bump() -> i32 {
+    static let hits: i32 = 0;
+    hits = hits + 1;
+    return hits;
+}
+
+fn main() -> i32 {
+    bump();
+    bump();
+    let n: i32 = bump();
+    store_u8(out, 48 + n);        // 3: three calls, one counter
+    store_u8(out + 1, 10);
+    write(1, out, 2);
+    return 0;
+}

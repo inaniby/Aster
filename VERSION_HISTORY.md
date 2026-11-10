@@ -338,6 +338,19 @@ breaking this project's own `-Werror` build.
   outer` and a `break outer` through two loops, and the stage and the twin emit
   byte-identical ELFs for it; both images print `33`.
 
+* **`static let` moves into the bootstrap subset** — the third shape, and the
+  last one smaller than `switch`. At statement position `static let name: T =
+  init;` registers a **file-scope** global (the declaration joins the program's
+  item list, so its initializer runs before `main` like any other global's) and
+  leaves an `S_Nop` (78) where the statement stood; `gen_stmt` emits nothing for
+  it. The stage keeps the name as written, so at most one function may own a
+  given static name — the host's per-declaration mangling is what lets two
+  functions each have a `static let x`, and that refinement stays host-only.
+  The twin carries the same pieces (`prog_node`, the `S_Nop` arms), the new
+  corpus fixture `tests/codegen-fixtures/static_let.ast` counts three calls
+  through one counter, and the stage and the twin emit byte-identical ELFs for
+  it; both images print `3`.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
