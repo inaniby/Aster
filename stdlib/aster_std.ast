@@ -432,6 +432,28 @@ fn fmt_i32(buf: ptr<u8>, v: i32) -> i32 {
 
 // fmt_hex(buf, v, digits): exactly `digits` lowercase hex characters, zero
 // padded, NUL-terminated; digits is clamped to 1..8. Returns the count.
+// fmt_i32_w(buf, v, width): v in decimal, right-aligned in a field of `width`
+// columns, space padded, NUL terminated; answers the bytes written. A value
+// wider than the field is written in full (the field is a minimum, not a
+// truncation) - the same rule C's "%*d" with a positive width follows.
+fn fmt_i32_w(buf: ptr<u8>, v: i32, width: i32) -> i32 {
+    let tmp: u8[24] = 0;
+    let n: i32 = fmt_i32(tmp, v);
+    let pad: i32 = width - n;
+    let at: i32 = 0;
+    while (at < pad) {
+        store_u8(buf + at, 32);
+        at = at + 1;
+    }
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(buf + at + i, load_u8(tmp + i));
+        i = i + 1;
+    }
+    store_u8(buf + at + n, 0);
+    return at + n;
+}
+
 fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) -> i32 {
     let d: i32 = digits;
     if (d < 1) { d = 1; }

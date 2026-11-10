@@ -4,7 +4,7 @@
 #
 # Layers:
 #   [1] strict build of the compiler
-#   [2] the library object: 90 routines, 10 globals, 1 UND
+#   [2] the library object: 91 routines, 10 globals, 1 UND
 #   [3] the demo runs and prints its summary line
 #   [4] the C twin agrees byte for byte (strtoll/strtod/snprintf are the oracle)
 #   [5] edges: INT64_MIN, base 0 auto-detection, consumed counts, ".5", "1.",
@@ -30,10 +30,10 @@ ok 'compiler built'
 printf '%s\n' '[2/8] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$OUT/std.o" >"$OUT/std.log" 2>&1 \
     || fail "the library did not build: $(head -3 "$OUT/std.log")"
-grep -q '90 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
+grep -q '91 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
 und=$(readelf -sW "$OUT/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-ok '90 routines, 10 globals, 1 UND entry'
+ok '91 routines, 10 globals, 1 UND entry'
 
 printf '%s\n' '[3/8] the demo runs'
 cp tests/stdlib-str-demo.ast "$OUT/demo.ast"
@@ -86,6 +86,15 @@ fn main() -> i32 {
     if (i32(f[0]) != 1) { return 16; }
     if (atof("1e2", of) != 3) { return 17; }
     if (i32(f[0]) != 100) { return 18; }
+    // v0.23.77-dev: the padded writer
+    let wb: u8[32] = 0;
+    if (fmt_i32_w(wb, 7, 3) != 3) { return 21; }
+    if (strlen(wb) != 3) { return 22; }
+    if (load_u8(wb) != 32 || load_u8(wb + 2) != 55) { return 23; }
+    if (fmt_i32_w(wb, 0 - 12, 4) != 4) { return 24; }
+    if (load_u8(wb) != 32 || load_u8(wb + 1) != 45) { return 25; }
+    if (fmt_i32_w(wb, 12345, 2) != 5) { return 26; }
+    if (load_u8(wb) != 49) { return 27; }
     if (atof("-0.5", of) != 4) { return 19; }
     if (i32(f[0] * 10.0) != 0 - 5) { return 20; }
     return 0;

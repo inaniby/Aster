@@ -419,6 +419,13 @@ breaking this project's own `-Werror` build.
   both spellings on a local and a global and `i++` in a `for` step; the stage and
   the twin emit byte-identical ELFs for it and both images print `513`.
 
+* **`fmt_i32_w`** — 90 → **91 routines**: decimal right-aligned in a field of
+  `width` columns, space padded, answering the bytes written. A value wider than
+  the field is written in full (the width is a minimum, like C's `%*d` with a
+  positive width), and a negative value keeps its sign inside the padding.
+  `tests/stdlib-str-checks.sh` [5/8] covers `7` in 3, `-12` in 4 and the
+  over-wide case; the suites' shape assertions moved to 91.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
