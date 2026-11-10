@@ -65,7 +65,11 @@ grep -qF 'std::vector<uint8_t> structConstantImage(Ty ty,const Expr& init,const 
     || { echo 'FAIL: constant aggregate folding for globals missing' >&2; exit 1; }
 # The hidden result pointer: saved on entry (X8 is caller-saved scratch) and
 # returned in X0 so a nesting sret call cannot lose it.
-grep -qF 'if(!isMain&&structInMemory(f.retType))storeStackOff(8,kSretSlot,Ty::I64);' src/aster.cpp \
+# v0.23.77-dev: the compact-frames round made the prologue record that the frame
+# also carries the scratch buffer, so the pinned line grew a
+# `usesStructScratch=true;` between the condition and the store. Pin the store
+# itself, which is the part this suite owns.
+grep -qF 'storeStackOff(8,kSretSlot,Ty::I64);}' src/aster.cpp \
     || { echo 'FAIL: the sret pointer is not saved in the prologue' >&2; exit 1; }
 grep -qF 'loadStackOff(0,kSretSlot,Ty::I64);       // a nested call may have taken X8' src/aster.cpp \
     || { echo 'FAIL: the sret pointer is not reloaded for the return value' >&2; exit 1; }
