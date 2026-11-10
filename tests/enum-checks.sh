@@ -66,7 +66,10 @@ grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
 grep -qF 'else if(x=="enum")k=TK::Enum;' src/aster.cpp \
     || { echo "FAIL: the lexer no longer recognises enum" >&2; exit 1; }
 # the type system carries a distinct enum kind
-grep -qF 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };' src/aster.cpp \
+# v0.23.77-dev: the enum's tail moved when the float round appended F32/F64
+# after Void, so this pins the members (the same stale-guard trap the struct and
+# union suites hit) instead of one exact spelling.
+grep -qF 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void,' src/aster.cpp \
     || { echo "FAIL: Ty::Kind no longer lists Enum" >&2; exit 1; }
 # the declaration parser builds the enum tables
 grep -qF 'void enumDeclaration(){' src/aster.cpp \

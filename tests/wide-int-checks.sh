@@ -26,7 +26,7 @@ printf '%s\n' '[2/8] Source guard: the unified value-lattice and width helpers e
 # discipline pins FieldCall in callback-table-checks.sh and SizeOf/Len in
 # sizeof-len-checks.sh).
 grep -qF 'enum Kind { I32,' src/aster.cpp \
-    && grep -qF 'Void };' src/aster.cpp \
+    && grep -qF 'Void,' src/aster.cpp \
     || { echo 'FAIL: unified Ty lattice missing' >&2; exit 1; }
 grep -qF 'static bool tyIs64(Ty t)' src/aster.cpp \
     || { echo 'FAIL: tyIs64 helper missing' >&2; exit 1; }
