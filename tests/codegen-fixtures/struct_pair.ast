@@ -1,0 +1,28 @@
+struct P { a: i32, b: i32 }
+struct Q { x: i32, y: i32, z: i32 }
+
+let o: u8[8] = 0;
+
+fn qsum(q: Q) -> i32 {
+    return q.x + q.y + q.z;
+}
+fn psum(p: P) -> i32 {
+    return p.a + p.b;
+}
+fn both(p: P, q: Q) -> i32 {
+    return p.a + q.z;
+}
+
+fn main() -> i32 {
+    let p: P = P { 1, 2 };
+    let q: Q = Q { 10, 20, 30 };
+    let a: i32 = psum(p);
+    let b: i32 = qsum(q);
+    let c: i32 = both(p, q);
+    store_u8(o, 48 + a % 10);
+    store_u8(o + 1, 48 + b / 10 % 10);
+    store_u8(o + 2, 48 + c / 10);
+    store_u8(o + 3, 10);
+    write(1, o, 4);
+    return 0;
+}
