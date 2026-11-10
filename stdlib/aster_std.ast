@@ -1206,6 +1206,90 @@ fn strrchr(s: ptr<u8>, c: i32) -> i32 {
     return last;
 }
 
+// utf8_encode(cp, buf): write the UTF-8 form of code point cp into buf and
+// answer the bytes written (1..4). Answers 0 - writing nothing - for a value
+// that is not a code point (negative, above U+10FFFF, or a surrogate).
+fn utf8_encode(cp: i32, buf: ptr<u8>) -> i32 {
+    if (cp < 0) { return 0; }
+    if (cp > 1114111) { return 0; }
+    if (cp >= 55296 && cp <= 57343) { return 0; }
+    if (cp < 128) {
+        store_u8(buf, cp);
+        return 1;
+    }
+    if (cp < 2048) {
+        store_u8(buf, 192 + cp / 64);
+        store_u8(buf + 1, 128 + cp % 64);
+        return 2;
+    }
+    if (cp < 65536) {
+        store_u8(buf, 224 + cp / 4096);
+        store_u8(buf + 1, 128 + cp / 64 % 64);
+        store_u8(buf + 2, 128 + cp % 64);
+        return 3;
+    }
+    store_u8(buf, 240 + cp / 262144);
+    store_u8(buf + 1, 128 + cp / 4096 % 64);
+    store_u8(buf + 2, 128 + cp / 64 % 64);
+    store_u8(buf + 3, 128 + cp % 64);
+    return 4;
+}
+
+// utf8_decode(s, at): the code point whose first byte is s[at], or -1 when the
+// bytes there are not a valid sequence (an unexpected continuation byte, a
+// truncated sequence, an overlong form, or a surrogate).
+fn utf8_decode(s: ptr<u8>, at: i32) -> i32 {
+    let b0: i32 = load_u8(s + at);
+    if (b0 < 128) {
+        if (b0 == 0) { return 0 - 1; }
+        return b0;
+    }
+    if (b0 < 194) { return 0 - 1; }
+    if (b0 < 224) {
+        let b1: i32 = load_u8(s + at + 1);
+        if (b1 / 64 != 2) { return 0 - 1; }
+        return (b0 - 192) * 64 + (b1 - 128);
+    }
+    if (b0 < 240) {
+        let c1: i32 = load_u8(s + at + 1);
+        let c2: i32 = load_u8(s + at + 2);
+        if (c1 / 64 != 2) { return 0 - 1; }
+        if (c2 / 64 != 2) { return 0 - 1; }
+        let cp3: i32 = (b0 - 224) * 4096 + (c1 - 128) * 64 + (c2 - 128);
+        if (cp3 < 2048) { return 0 - 1; }
+        if (cp3 >= 55296 && cp3 <= 57343) { return 0 - 1; }
+        return cp3;
+    }
+    if (b0 < 245) {
+        let d1: i32 = load_u8(s + at + 1);
+        let d2: i32 = load_u8(s + at + 2);
+        let d3: i32 = load_u8(s + at + 3);
+        if (d1 / 64 != 2) { return 0 - 1; }
+        if (d2 / 64 != 2) { return 0 - 1; }
+        if (d3 / 64 != 2) { return 0 - 1; }
+        let cp4: i32 = (b0 - 240) * 262144 + (d1 - 128) * 4096 + (d2 - 128) * 64 + (d3 - 128);
+        if (cp4 < 65536) { return 0 - 1; }
+        if (cp4 > 1114111) { return 0 - 1; }
+        return cp4;
+    }
+    return 0 - 1;
+}
+
+// utf8_len(s): the number of code points in s - every byte that is not a
+// continuation byte (top bits 10) starts one. Bytes are assumed well formed,
+// which utf8_decode is there to check.
+fn utf8_len(s: ptr<u8>) -> i32 {
+    let n: i32 = 0;
+    let i: i32 = 0;
+    while (1 == 1) {
+        let b: i32 = load_u8(s + i);
+        if (b == 0) { return n; }
+        if (b / 64 != 2) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
 // i32_abs(v): |v|, without the INT32_MIN trap a naive negate would have -
 // the single unrepresentable value answers INT32_MIN, as C's abs() does.
 fn i32_abs(v: i32) -> i32 {

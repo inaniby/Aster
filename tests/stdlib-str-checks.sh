@@ -4,7 +4,7 @@
 #
 # Layers:
 #   [1] strict build of the compiler
-#   [2] the library object: 98 routines, 10 globals, 1 UND
+#   [2] the library object: 101 routines, 10 globals, 1 UND
 #   [3] the demo runs and prints its summary line
 #   [4] the C twin agrees byte for byte (strtoll/strtod/snprintf are the oracle)
 #   [5] edges: INT64_MIN, base 0 auto-detection, consumed counts, ".5", "1.",
@@ -31,10 +31,10 @@ ok 'compiler built'
 printf '%s\n' '[2/9] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$OUT/std.o" >"$OUT/std.log" 2>&1 \
     || fail "the library did not build: $(head -3 "$OUT/std.log")"
-grep -q '98 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
+grep -q '101 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
 und=$(readelf -sW "$OUT/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-ok '98 routines, 10 globals, 1 UND entry'
+ok '101 routines, 10 globals, 1 UND entry'
 
 printf '%s\n' '[3/9] the demo runs'
 cp tests/stdlib-str-demo.ast "$OUT/demo.ast"
@@ -181,6 +181,18 @@ fn main() -> i32 {
     if (strcmp(b, "  ff") != 0) { return 12; }
     if (fmt_hex_w(b, 255, 2) != 2) { return 13; }
     if (strcmp(b, "ff") != 0) { return 14; }
+    if (utf8_encode(233, b) != 2) { return 15; }
+    if (load_u8(b) != 195) { return 16; }
+    if (load_u8(b + 1) != 169) { return 17; }
+    if (utf8_decode(b, 0) != 233) { return 18; }
+    if (utf8_encode(128512, b) != 4) { return 19; }
+    if (utf8_decode(b, 0) != 128512) { return 20; }
+    if (utf8_encode(55296, b) != 0) { return 21; }
+    if (utf8_encode(1114112, b) != 0) { return 22; }
+    store_u8(b, 104); store_u8(b + 1, 195); store_u8(b + 2, 169); store_u8(b + 3, 0);
+    if (utf8_len(b) != 2) { return 23; }
+    store_u8(b, 195); store_u8(b + 1, 40); store_u8(b + 2, 0);
+    if (utf8_decode(b, 0) != 0 - 1) { return 24; }
     return 0;
 }
 AST
