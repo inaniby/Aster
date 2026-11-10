@@ -90,7 +90,10 @@ grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
     || { echo "FAIL: the version constant is not 0.23.77-dev" >&2; exit 1; }
 guard ' Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool, Void,' 'the Void token'
 guard 'else if(x=="void")k=TK::Void;' 'the void reserved word'
-guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };' 'the Void type'
+# v0.23.77-dev: the float round appended F32/F64 after Void, so the
+# enum's closing brace moved - pin the members (the struct/union/enum suites
+# hit the same trap).
+guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void,' 'the Void type'
 guard 'if (t.k == Ty::Void) return 0u;' 'void has no storage (tySize)'
 guard 'if (t.k == Ty::Void) return 1u;' 'void never used as storage (tyAlign)'
 guard 'case Ty::Void: return "void";' 'void names itself'
@@ -160,7 +163,10 @@ int main(void){ logit(5); logit(-1); return 0; }
 C
 "$HOSTCC" -c "$W/c_caller.c" -o "$W/c_caller.o" >"$W/c_caller.clog" 2>&1 \
     || { echo 'FAIL: C caller does not compile:' >&2; cat "$W/c_caller.clog" >&2; exit 1; }
-"$HOSTCC" "$W/aster_void.o" "$W/c_caller.o" -o "$W/hybrid" -static >"$W/hybrid.log" 2>&1 \
+# v0.23.77-dev: the mode is probed, not assumed - see tests/lib/linkmode.sh
+. tests/lib/linkmode.sh
+linkmode_probe "$W" "$RUNNER" || true
+"$HOSTCC" "$W/aster_void.o" "$W/c_caller.o" -o "$W/hybrid" $LINKSTATIC >"$W/hybrid.log" 2>&1 \
     || { echo 'FAIL: C caller cannot link Aster void function (ABI mismatch):' >&2; cat "$W/hybrid.log" >&2; exit 1; }
 run "$W/hybrid" >/dev/null 2>&1 && hy=0 || hy=$?
 [ "$hy" -gt 127 ] && hy=$((hy - 256))

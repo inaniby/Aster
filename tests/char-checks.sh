@@ -94,7 +94,10 @@ guard(){ # $1 = literal source text, $2 = what it is
 grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
     || { echo "FAIL: the version constant is not 0.23.77-dev" >&2; exit 1; }
 guard 'else if(x=="char")k=TK::CharType;' 'the char reserved word'
-guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void };' 'the Char type'
+# v0.23.77-dev: the float round appended F32/F64 after Void, so the
+# enum's closing brace moved - pin the members (the struct/union/enum suites
+# hit the same trap).
+guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void,' 'the Char type'
 guard 'case TK::CharType: out=Ty::Char; ++p; return true;' 'char parsed as a type'
 guard 'case TK::CharType: t=Ty::Char; break;' 'the char cast'
 # tySize and tyAlign both say char is one byte; the count is part of the guard.
