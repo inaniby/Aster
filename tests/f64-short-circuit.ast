@@ -1,0 +1,11 @@
+let o: u8[8] = 0;
+fn main() -> i32 {
+    let a: f64 = 1.5;
+    let b: f64 = 2.5;
+    let c: f64 = a + b;
+    if (c > 3.9 && c < 4.1) { store_u8(o, 49); } else { store_u8(o, 48); }
+    if (c > 3.9 && c < 4.1) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    store_u8(o + 2, 10);
+    write(1, o, 3);
+    return 0;
+}

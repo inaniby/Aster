@@ -286,6 +286,7 @@ printf 'CACHE     : compiler builds through %s\n' "$CXX"
 # ---------------------------------------------------------------------------
 DEFAULT_SUITES="
 string-symbol-checks.sh
+f64-short-circuit-checks.sh
 library-core-checks.sh
 stdlib-map-checks.sh
 stdlib-str-checks.sh

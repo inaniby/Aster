@@ -6397,7 +6397,7 @@ struct Codegen {
                 if(!(ta==tb&&tyIsFloat(ta)))
                     throw Error("comparing floating-point values needs two of the same type");
                 int fa=gen(*e.a,ta),fb=gen(*e.b,ta);
-                emit((ta==Ty::F64?0x1e612000u:0x1e212000u)|(uint32_t(fb)<<16)|(uint32_t(fa)<<5)); // FCMP D/S
+                emit((ta==Ty::F64?0x1e602000u:0x1e202000u)|(uint32_t(fb)<<16)|(uint32_t(fa)<<5)); // FCMP D/S
                 releaseTemp(fb);releaseTemp(fa);
                 int d=temp();
                 emit(csetBool(d,comparisonCond(e.k,false)));              // CSET Wd, <cond>
@@ -6502,7 +6502,7 @@ struct Codegen {
                 if(!(ta==tb&&tyIsFloat(ta)))
                     throw Error("comparing floating-point values needs two of the same type");
                 int fa=gen(*c.a,ta),fb=gen(*c.b,ta);
-                emit((ta==Ty::F64?0x1e612000u:0x1e212000u)|(uint32_t(fb)<<16)|(uint32_t(fa)<<5)); // FCMP D/S
+                emit((ta==Ty::F64?0x1e602000u:0x1e202000u)|(uint32_t(fb)<<16)|(uint32_t(fa)<<5)); // FCMP D/S
                 releaseTemp(fb);releaseTemp(fa);
                 at=code.size();emit(0);
                 return comparisonCond(c.k,false)^1;
