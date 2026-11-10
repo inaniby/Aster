@@ -1137,6 +1137,46 @@ fn next_line(line: ptr<u8>) -> ptr<u8> {
 }
 
 // str_dup(s): a copy of s in the growable arena (0 when the arena refuses).
+// to_upper(s): ASCII letters to uppercase *in place* (the buffer must be
+// writable), answering s.
+fn to_upper(s: ptr<u8>) -> ptr<u8> {
+    let i: i32 = 0;
+    while (1 == 1) {
+        let ch: i32 = load_u8(s + i);
+        if (ch == 0) { return s; }
+        if (ch >= 97 && ch <= 122) { store_u8(s + i, ch - 32); }
+        i = i + 1;
+    }
+    return s;
+}
+
+// to_lower(s): ASCII letters to lowercase in place, answering s.
+fn to_lower(s: ptr<u8>) -> ptr<u8> {
+    let i: i32 = 0;
+    while (1 == 1) {
+        let ch: i32 = load_u8(s + i);
+        if (ch == 0) { return s; }
+        if (ch >= 65 && ch <= 90) { store_u8(s + i, ch + 32); }
+        i = i + 1;
+    }
+    return s;
+}
+
+// strrchr(s, c): the index of the LAST c in s, or -1. `strchr`'s companion; the
+// terminator is not searched, matching C.
+fn strrchr(s: ptr<u8>, c: i32) -> i32 {
+    let want: i32 = c & 255;
+    let i: i32 = 0;
+    let last: i32 = 0 - 1;
+    while (1 == 1) {
+        let ch: i32 = load_u8(s + i);
+        if (ch == 0) { return last; }
+        if (ch == want) { last = i; }
+        i = i + 1;
+    }
+    return last;
+}
+
 fn str_dup(s: ptr<u8>) -> ptr<u8> {
     let n: i32 = strlen(s);
     let p: ptr = alloc(n + 1);

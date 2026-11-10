@@ -4,14 +4,15 @@
 #
 # Layers:
 #   [1] strict build of the compiler
-#   [2] the library object: 91 routines, 10 globals, 1 UND
+#   [2] the library object: 94 routines, 10 globals, 1 UND
 #   [3] the demo runs and prints its summary line
 #   [4] the C twin agrees byte for byte (strtoll/strtod/snprintf are the oracle)
 #   [5] edges: INT64_MIN, base 0 auto-detection, consumed counts, ".5", "1.",
 #       a missing digit, a trailing CR, an empty string
 #   [6] trim and line iteration do not run past their buffers
-#   [7] no compiler change: the baseline reproduces 393 rows
-#   [8] mutation: the u64 magnitude path of fmt_i64 is load-bearing
+#   [7] the case and search helpers
+#   [8] no compiler change: the baseline reproduces 393 rows
+#   [9] mutation: the u64 magnitude path of fmt_i64 is load-bearing
 set -eu
 cd "$(dirname "$0")/.."
 . tests/lib/tmpdir.sh
@@ -23,19 +24,19 @@ fail(){ echo "FAIL: $*" >&2; exit 1; }
 ok(){ printf '  %-46s %s\n' "$1" 'ok'; }
 cp stdlib/aster_std.ast "$OUT/ailib.ast"
 
-printf '%s\n' '[1/8] Strictly build Aster compiler'
+printf '%s\n' '[1/9] Strictly build Aster compiler'
 $CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -o "$ASTER" src/aster.cpp
 ok 'compiler built'
 
-printf '%s\n' '[2/8] the library object'
+printf '%s\n' '[2/9] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$OUT/std.o" >"$OUT/std.log" 2>&1 \
     || fail "the library did not build: $(head -3 "$OUT/std.log")"
-grep -q '91 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
+grep -q '94 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
 und=$(readelf -sW "$OUT/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-ok '91 routines, 10 globals, 1 UND entry'
+ok '94 routines, 10 globals, 1 UND entry'
 
-printf '%s\n' '[3/8] the demo runs'
+printf '%s\n' '[3/9] the demo runs'
 cp tests/stdlib-str-demo.ast "$OUT/demo.ast"
 "$ASTER" build-obj "$OUT/demo.ast" -o "$OUT/demo.o" >"$OUT/demo.log" 2>&1 \
     || fail "the demo did not compile: $(tail -3 "$OUT/demo.log")"
@@ -47,14 +48,14 @@ grep -qxF '28|20|102|31|-2|3|2' "$OUT/demo.out" \
     || fail "the demo printed '$(cat "$OUT/demo.out")', expected '28|20|102|31|-2|3|2'"
 ok 'include + link, one line: 28|20|102|31|-2|3|2'
 
-printf '%s\n' '[4/8] the C twin agrees byte for byte'
+printf '%s\n' '[4/9] the C twin agrees byte for byte'
 ${CC:-cc} -O1 -w tests/aster-std-str-twin.c -o "$OUT/twin" || fail 'the twin did not build'
 (cd "$OUT" && ./twin > twin.out 2>&1) || true
 cmp -s "$OUT/demo.out" "$OUT/twin.out" \
     || { diff -u "$OUT/twin.out" "$OUT/demo.out" | head -10 >&2; fail 'the demo and its C twin disagree'; }
 ok 'demo output == the C oracle'
 
-printf '%s\n' '[5/8] the parsers: edges'
+printf '%s\n' '[5/9] the parsers: edges'
 cat > "$OUT/edge.ast" <<'AST'
 include "ailib.ast";
 fn main() -> i32 {
@@ -107,7 +108,7 @@ set +e; (cd "$OUT" && ./edge); rc=$?; set -e
 [ "$rc" = 0 ] || fail "the edge fixture returned $rc (each code names its case)"
 ok 'prefixes, signs, bases, INT64_MAX, .5, 1., 1e2, -0.5'
 
-printf '%s\n' '[6/8] trim and lines stay inside their buffers'
+printf '%s\n' '[6/9] trim and lines stay inside their buffers'
 cat > "$OUT/lines.ast" <<'AST'
 include "ailib.ast";
 fn main() -> i32 {
@@ -142,14 +143,52 @@ set +e; (cd "$OUT" && ./lines); rc=$?; set -e
 [ "$rc" = 0 ] || fail "the lines fixture returned $rc"
 ok 'no newline, an empty line, a trailing CR, all-space, empty'
 
-printf '%s\n' '[7/8] no compiler change: the baseline reproduces'
+printf '%s\n' '[7/9] the case and search helpers'
+cat > "$OUT/case.ast" <<'AST'
+include "ailib.ast";
+
+let b: u8[16] = 0;
+
+fn put(text: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (1 == 1) {
+        let ch: i32 = load_u8(text + i);
+        if (ch == 0) { return i; }
+        store_u8(b + i, ch);
+        i = i + 1;
+    }
+    return i;
+}
+
+fn main() -> i32 {
+    put("heLLo");
+    to_upper(b);
+    if (strcmp(b, "HELLO") != 0) { return 1; }
+    to_lower(b);
+    if (strcmp(b, "hello") != 0) { return 2; }
+    if (strrchr(b, 108) != 3) { return 3; }
+    if (strrchr(b, 120) != 0 - 1) { return 4; }
+    if (strrchr(b, 104) != 0) { return 5; }
+    return 0;
+}
+AST
+"$ASTER" build-obj "$OUT/case.ast" -o "$OUT/case.o" >"$OUT/case.log" 2>&1 \
+    || fail "the case program did not build: $(head -3 "$OUT/case.log")"
+"$ASTER" link-obj "$OUT/case.o" "$OUT/std.o" -o "$OUT/case" >"$OUT/case.link.log" 2>&1 \
+    || fail "the case program did not link: $(head -3 "$OUT/case.link.log")"
+chmod +x "$OUT/case"
+st=0; sh tests/run-aarch64.sh "$OUT/case" >/dev/null 2>&1 || st=$?
+[ "$st" = 0 ] || fail "to_upper/to_lower/strrchr answered $st, expected 0"
+ok 'to_upper, to_lower and strrchr answer 0'
+
+printf '%s\n' '[8/9] no compiler change: the baseline reproduces'
 . tests/lib/baseline.sh
 base=$(aster_baseline_file)
 rows=$(wc -l < "$base")
 [ "$rows" = 393 ] || fail "the baseline has $rows rows, expected 393"
 ok '393 baseline rows unchanged'
 
-printf '%s\n' '[8/8] mutation: the positive path takes the magnitude from the value'
+printf '%s\n' '[9/9] mutation: the positive path takes the magnitude from the value'
 sed 's|        mag = u64(v);|        mag = u64(0 - v);|' \
     stdlib/aster_std.ast > "$OUT/mutant_lib.ast"
 cmp -s stdlib/aster_std.ast "$OUT/mutant_lib.ast" && fail 'the magnitude mutation stopped applying'

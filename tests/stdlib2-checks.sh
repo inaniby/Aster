@@ -4,7 +4,7 @@
 #
 # Layers:
 #   [1] strict build of the compiler
-#   [2] the library builds as one object: 91 functions, 10 globals, 1 UND entry
+#   [2] the library builds as one object: 94 functions, 10 globals, 1 UND entry
 #   [3] the demo runs and prints the expected lines (not the twin's output)
 #   [4] the C twin produces byte-identical output
 #   [5] the edge fixture passes: misses, clamps, negatives, exhaustion
@@ -27,10 +27,10 @@ printf '  %-40s %s\n' 'compiler built' 'ok'
 
 printf '%s\n' '[2/9] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$W/std.o" >"$W/std.log" 2>&1 || fail "stdlib did not build: $(head -1 "$W/std.log")"
-grep -q '91 functions, 10 globals' "$W/std.log" || fail "the library's shape changed: $(tail -1 "$W/std.log")"
+grep -q '94 functions, 10 globals' "$W/std.log" || fail "the library's shape changed: $(tail -1 "$W/std.log")"
 und=$(readelf -sW "$W/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-printf '  %-40s %s\n' '91 functions, 10 globals, 1 UND entry' 'ok'
+printf '  %-40s %s\n' '94 functions, 10 globals, 1 UND entry' 'ok'
 
 printf '%s\n' '[3/9] the demo prints the expected lines'
 "$ASTER" build-obj tests/stdlib2-demo.ast -o "$W/demo.o" >/dev/null 2>&1 || fail 'the demo did not compile'
