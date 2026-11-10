@@ -879,6 +879,7 @@ static int ty_reg_slots(int t){ return (ty_is_struct(t) && struct_size_s(t-TY_ST
 static int ty_slots(int t){ return ty_is_struct(t) ? (struct_size_s(t-TY_STRUCT_BASE)+7)/8 : 1; }
 static int parse_type(void) {
     int k = cur();
+    if (k == TK_U64) { adv(); return 8; }   /* v0.23.77-dev: u64 */
     if (k == TK_I32) { adv(); return TY_I32; }
     if (k == TK_I64) { adv(); return TY_I64; }
     if (k == TK_U8)  { adv(); return TY_U8; }
@@ -2448,8 +2449,8 @@ static int ty_width_t(int t){
     if (t==3) return 1;   /* u8  */
     return 8;             /* every pointer is 8 bytes */
 }
-static int ty_is64_t(int t){ return (t==2) || is_ptr_tag_t(t); }
-static int ty_is_uns_t(int t){ return (t==3); }
+static int ty_is64_t(int t){ return (t==2) || (t==8) || is_ptr_tag_t(t); }  /* 8 = u64 */
+static int ty_is_uns_t(int t){ return (t==3) || (t==8); }  /* 8 = u64 */
 static int log2w_t(int w){ if (w==1) return 0; if (w==4) return 2; return 3; }
 static int mem_scale_t(int w){ if (w==1) return 0; if (w==2) return 1;   /* A-26 */
     if (w==4) return 2; return 3; }
@@ -2875,7 +2876,7 @@ static int param_type(int fnode,int i){
     return 1;
 }
 static int cmp_cond(int k,int lt,int rt){
-    int uns=0; if (lt==3||rt==3) uns=1;
+    int uns=0; if (ty_is_uns_t(lt)||ty_is_uns_t(rt)) uns=1;  /* v0.23.77-dev: u64 joins u8 */
     if (k==E_Eq) return 0;
     if (k==E_Ne) return 1;
     if (k==E_Lt){ return uns?3:11; }

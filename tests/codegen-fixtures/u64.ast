@@ -1,0 +1,18 @@
+let o: u8[32] = 0;
+let g: u64 = 0;
+
+fn main() -> i32 {
+    let x: u64 = 0 - 1;            // all ones: 2^64-1 (a literal that wide is D0b)
+    let y: u64 = x >> 60;          // LSR gives 15; a signed shift keeps the sign bits
+    if (y == 15) { store_u8(o, 49); } else { store_u8(o, 48); }
+    let z: u64 = x >> 63;          // 1
+    if (z == 1) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    if (x > 1) { store_u8(o + 2, 49); } else { store_u8(o + 2, 48); }
+    g = x >> 40;                   // 16777215
+    if (g == 16777215) { store_u8(o + 3, 49); } else { store_u8(o + 3, 48); }
+    let w: u64 = x / 3;            // UDIV: 6148914691236517205
+    if (w == 6148914691236517205) { store_u8(o + 4, 49); } else { store_u8(o + 4, 48); }
+    store_u8(o + 5, 10);
+    write(1, o, 6);
+    return 0;
+}

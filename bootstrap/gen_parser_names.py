@@ -118,6 +118,9 @@ TYPE_TAGS = [
     ("TY_PTR_U8", "ptr<u8>"),
     ("TY_PTR_I32", "ptr<i32>"),
     ("TY_PTR_I64", "ptr<i64>"),
+    # v0.23.77-dev: u64 - the IEEE-754 converters need it (their 128-bit window
+    # uses the top bit, which a signed shift would fill).
+    ("TY_U64", "u64"),
 ]
 
 # One record per table entry: the name's bytes, NUL-padded. The longest name
@@ -128,7 +131,7 @@ RECORD = 16
 EXPR_COUNT = len(EXPR_KINDS)          # 35 — entab's record count
 STMT_COUNT = len(STMT_KINDS)          # 15 — sntab's record count
 STRUCT_COUNT = len(STRUCT_KINDS)      # 7  — nntab's record count
-TYPE_COUNT = len(TYPE_TAGS)           # 7  — tytab's record count
+TYPE_COUNT = len(TYPE_TAGS)           # 8  — tytab's record count
 EXPR_SUBSET_COUNT = len(EXPR_SUBSET)  # 25 — the E_* constants
 STMT_SUBSET_COUNT = len(STMT_SUBSET)  # 14 — the S_* constants
 
@@ -164,8 +167,8 @@ def check_list():
             % STMT_SUBSET_COUNT)
     if STRUCT_COUNT != 7:
         die("expected 7 structural kinds, list has %d" % STRUCT_COUNT)
-    if TYPE_COUNT != 7:
-        die("expected 7 type tags, list has %d" % TYPE_COUNT)
+    if TYPE_COUNT != 8:
+        die("expected 8 type tags, list has %d" % TYPE_COUNT)
     for label, names in (("expression", EXPR_KINDS),
                          ("expression subset", EXPR_SUBSET),
                          ("statement", STMT_KINDS),
