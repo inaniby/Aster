@@ -466,6 +466,23 @@ breaking this project's own `-Werror` build.
   none. Nine fixtures hold it to the twin, and `docs/language-spec.md` carries
   the chapter.
 
+* **Library: `to_upper`, `to_lower`, `strrchr`** - 91 -> 94 routines. ASCII case
+  conversion in place, and the index of the *last* occurrence (strchr's
+  companion, answering an index rather than a pointer like the rest of the
+  library). The round began with a full symbol inventory, because the previous
+  one had added `starts_with`/`ends_with` that were already there.
+* **Library: `i32_abs`, `memchr`, `strncat`** - 94 -> 97. Each carries the trap it
+  avoids: INT32_MIN for the absolute value, no terminator needed and a hard stop
+  at n for `memchr`, and a bounded append for `strncat`. A new layer in
+  `stdlib-str-checks` exercises all six additions end to end, answering a
+  distinct code per mismatch.
+* **`union-checks` passes on this phone** - its differential layer needs a
+  static-capable C compiler and an AArch64 runner, so it SKIPs here; the coverage
+  layer nevertheless demanded six cases and turned that skip into a failure. The
+  floor now applies only to a layer that actually ran, and the suite's other
+  eight layers all pass: 15+ guards, 13 refusals, 6 mutations noticed, 3 baseline
+  rows reproduced.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
