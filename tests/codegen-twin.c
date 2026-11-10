@@ -1012,7 +1012,7 @@ static int function_decl(int external) {
             allow_struct_type = 1;
             int pty = parse_type();
             allow_struct_type = 0;
-            if (ty_is_struct(pty) && struct_size_s(pty-TY_STRUCT_BASE) > 16)
+            if (ty_is_struct(pty) && struct_size_s(pty-TY_STRUCT_BASE) > 32)
                 die_at("a struct larger than 16 bytes cannot be passed by value in the bootstrap subset",
                        tok_line(pt), tok_col(pt));
             if (cur() == TK_LBracket)
@@ -3132,7 +3132,31 @@ static int gen_call(int n,int want){
     int i=0, reg=0; int arg=NF(n);
     while (arg!=0){
         int pty=param_type(fnode,i), rsl=ty_reg_slots(pty); cg_grid_hi=base+reg;
-        if (rsl==2){
+        if (ty_is_struct(pty) && struct_size_s(pty-TY_STRUCT_BASE) > 16){
+            if (nodes[arg].kind != E_Var){
+                cg_die_at_node("a struct over 16 bytes must be passed as a variable in the bootstrap subset", arg);
+                return -1;
+            }
+            int vtok9=nodes[arg].tok, li9=cg_find_local(vtok9);
+            int sz9=struct_size_s(pty-TY_STRUCT_BASE);
+            int src9=alloc_tmp(); if (src9<0) return -1;
+            if (li9>=0){ if (emit_frame_addr(src9, cg_loc_slot[li9]*8)) return -1; }
+            else {
+                int gs9=cg_find_global(vtok9);
+                if (gs9<0) return cg_die_name_at("unknown variable: ", vtok9);
+                if (emit_addr64(src9, g_addr[gs9])) return -1;
+            }
+            int dst9=alloc_tmp(); if (dst9<0) return -1;
+            if (emit_addsub_imm(dst9,31,0,0,1)) return -1;
+            int tp9=alloc_tmp(); if (tp9<0) return -1;
+            for (int o9=0; o9<sz9; o9+=4){
+                if (emit_mem(0,2,tp9,src9,o9)) return -1;
+                if (emit_mem(1,2,tp9,dst9,o9)) return -1;
+            }
+            if (free_tmp(tp9)) return -1;
+            if (free_tmp(dst9)) return -1;
+            if (free_tmp(src9)) return -1;
+        } else if (rsl==2){
             if (nodes[arg].kind != E_Var){
                 cg_die_at_node("a 9-16-byte struct argument must be a variable in the bootstrap subset", arg);
                 return -1;
@@ -3163,7 +3187,9 @@ static int gen_call(int n,int want){
             if (emit_mem(1, mem_scale_t(ty_width_t(pty)), v, 31, (800+base+reg)*8)) return -1;
             if (free_tmp(v)) return -1;
         }
-        i++; reg+=rsl; arg=NN(arg);
+        i++;
+        if (!(ty_is_struct(pty) && struct_size_s(pty-TY_STRUCT_BASE) > 16)) reg+=rsl;
+        arg=NN(arg);
     }
     cg_grid_hi=base;
     int j2=0; while (j2<reg && j2<8){ if (emit_mem(0,3,j2,31,(800+base+j2)*8)) return -1; j2++; }
@@ -3607,7 +3633,17 @@ static int gen_function(int f){
         if (NK(p)==N_Param){
             int pty0=NTY(p), rsl=ty_reg_slots(pty0);
             int slot=cg_add_local(NT(p), pty0, 1); if (slot<0) return 1;
-            if (i+rsl<=8){
+            if (ty_is_struct(pty0) && struct_size_s(pty0-TY_STRUCT_BASE) > 16){
+                if (i != 0)
+                    return cg_die_name_at("a struct over 16 bytes must be the first stacked parameter in the bootstrap subset: ", NT(p));
+                int szp=struct_size_s(pty0-TY_STRUCT_BASE);
+                int tp=alloc_tmp(); if (tp<0) return 1;
+                for (int op=0; op<szp; op+=4){
+                    if (emit_mem(0,2,tp,31,8192+op)) return 1;
+                    if (emit_mem(1,2,tp,31,slot*8+op)) return 1;
+                }
+                if (free_tmp(tp)) return 1;
+            } else if (i+rsl<=8){
                 if (rsl==2){ if (emit_mem(1,3,i,31,slot*8)) return 1; if (emit_mem(1,3,i+1,31,slot*8+8)) return 1; }
                 else { if (emit_mem(1, mem_scale_t(ty_width_t(pty0)), i, 31, slot*8)) return 1; }
             } else {
@@ -3615,7 +3651,7 @@ static int gen_function(int f){
                 if (emit_mem(0,3,9,31,8192+8*(i-8))) return 1;
                 if (emit_mem(1,3,9,31,slot*8)) return 1;
             }
-            i+=rsl;
+            if (!(ty_is_struct(pty0) && struct_size_s(pty0-TY_STRUCT_BASE) > 16)) i+=rsl;
         }
         p=NN(p);
     }
