@@ -6058,7 +6058,11 @@ struct Codegen {
         // the loop at 8 lost that argument entirely. reg[i]>=0 means the
         // register loop above has already placed it.
         for(size_t i=0;i<nargs;++i){
-            if(lay.reg[i]>=0)continue;
+            // v0.23.77-dev: an argument that went to the FP bank is not a stack
+            // argument, even though it has no integer register: skipping only
+            // reg[] copied every f64 to the outgoing area as well, which wrote
+            // the caller's frame when the call needed no outgoing space at all.
+            if(lay.reg[i]>=0||lay.fp[i]>=0)continue;
             const uint32_t sourceOffset=total+uint32_t(scratchByte+argOff[i]);
             if(sourceOffset>32760)throw Error("argument scratch offset exceeds load range");
             const Ty ty=at(i);

@@ -1,0 +1,87 @@
+// tests/stdlib3-demo.ast — printing a double with the library's own formatters.
+//
+// Every line pins one property, and the C twin (tests/aster-std3-twin.c) prints
+// the same lines through printf's "%.*f", so the two implementations are
+// compared byte for byte rather than against a hand-written expectation.
+extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
+extern fn strlen(s: ptr<u8>) -> i32;
+extern fn fmt_i32(buf: ptr<u8>, v: i32) -> i32;
+extern fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) -> i32;
+extern fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) -> i32;
+
+fn put(out: ptr<u8>, at: i32, s: ptr<u8>) -> i32 {
+    let n: i32 = strlen(s);
+    memcpy(out + at, s, n);
+    return at + n;
+}
+
+fn main() -> i32 {
+    let ok: i32 = 0;
+    let b: u8[64] = 0;
+    let out: u8[512] = 0;
+    let at: i32 = 0;
+    let n: i32 = 0;
+
+    // 1. a value that needs rounding down
+    n = fmt_f64(b, 3.14159, 2);
+    if (n == 4 && load_u8(b) == 51) { ok = ok + 1; }        // "3.14"
+    at = put(out, at, b); at = put(out, at, "\n");
+
+    // 2. a negative value: the sign leads and the magnitude rounds
+    n = fmt_f64(b, 0.0 - 2.718, 1);
+    if (n == 4 && load_u8(b) == 45) { ok = ok + 1; }        // "-2.7"
+    at = put(out, at, b); at = put(out, at, "\n");
+
+    // 3. zero decimals: no point at all
+    n = fmt_f64(b, 2.6, 0);
+    if (n == 1 && load_u8(b) == 51) { ok = ok + 1; }        // "3"
+    at = put(out, at, b); at = put(out, at, "\n");
+
+    // 4. the fraction is zero-padded, not printed short
+    n = fmt_f64(b, 100.0, 3);
+    if (n == 7) { ok = ok + 1; }                            // "100.000"
+    at = put(out, at, b); at = put(out, at, "\n");
+
+    // 5. a small value keeps its leading zero
+    n = fmt_f64(b, 0.5, 1);
+    if (n == 3 && load_u8(b) == 48) { ok = ok + 1; }        // "0.5"
+    at = put(out, at, b); at = put(out, at, "\n");
+
+    // 6. nine digits is the clamp, and anything larger is clamped to it
+    n = fmt_f64(b, 1.0 / 3.0, 9);
+    at = put(out, at, b); at = put(out, at, "\n");
+    let c: u8[64] = 0;
+    n = fmt_f64(c, 0.125, 99);
+    if (n == 11) { ok = ok + 1; }                           // "0.125000000"
+    at = put(out, at, c); at = put(out, at, "\n");
+
+    // 7. a single widens exactly, so the digits are the ones it holds
+    n = fmt_f32(b, f32(0.5), 2);
+    if (n == 4) { ok = ok + 1; }                            // "0.50"
+    at = put(out, at, b); at = put(out, at, "\n");
+    n = fmt_f32(b, f32(1.0) / f32(3.0), 6);
+    at = put(out, at, b); at = put(out, at, "\n");
+
+    // 8. the two spellings printf shares with the library
+    n = fmt_f64(b, 1.0 / 0.0, 2);
+    if (n == 3 && load_u8(b) == 105) { ok = ok + 1; }       // "inf"
+    at = put(out, at, b); at = put(out, at, "\n");
+    n = fmt_f64(b, 0.0 / 0.0, 2);
+    if (n == 3 && load_u8(b) == 110) { ok = ok + 1; }       // "nan"
+    at = put(out, at, b); at = put(out, at, "\n");
+
+    // 9. mixing an integer formatter and a float one in one buffer
+    let line: u8[128] = 0;
+    let lat: i32 = 0;
+    lat = fmt_i32(line, 0 - 7);
+    lat = put(line, lat, " and ");          // put answers the new cursor
+    lat = lat + fmt_f64(line + lat, 0.75, 2);
+    at = put(out, at, line); at = put(out, at, "\n");
+    if (lat == 11) { ok = ok + 1; }
+
+    at = put(out, at, "checks ");
+    at = at + fmt_i32(out + at, ok);
+    at = put(out, at, "\n");
+    write(1, out, at);
+    return ok == 10 ? 0 : 1;
+}

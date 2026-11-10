@@ -1,7 +1,8 @@
 // aster_std.ast — the standard library written in Aster itself: the first
-// slice (mem/str/num/hash, v0.23.42-dev) and the second (v0.23.77-dev:
-// memmove, the C string searches, atoi, the fixed-arity formatters, an
-// integer sort and a bump allocator over mmap — 27 routines in all).
+// slice (mem/str/num/hash, v0.23.42-dev), the second (v0.23.77-dev: memmove,
+// the C string searches, atoi, the fixed-arity formatters, an integer sort and
+// a bump allocator over mmap) and the same release's printing slice
+// (fmt_f64/fmt_f32: a double in fixed point — 29 routines in all).
 // The original introduction:
 //
 // the first slice of a standard library written in Aster
@@ -483,4 +484,91 @@ fn malloc(n: i32) -> ptr {
 
 fn free(p: ptr) -> i32 {
     return 0;
+}
+
+// ===========================================================================
+// v0.23.77-dev: printing a double.
+//
+// There is no variadic call and no printf, so the shape is the same one the
+// integer formatters already use: a writer that emits into a caller's buffer
+// and answers how many bytes it wrote. The number is printed in fixed point
+// (d digits after the point, d clamped to 0..9): an exponent form needs a
+// second rounding decision and a cursor that can shift, which a compiler's
+// diagnostic output does not need.
+//
+// Rounding is half-up on the *binary* value, so 3.14159 with two digits is
+// 3.14 and -2.718 with one digit is -2.7. A value that is exactly halfway
+// between two representable decimals goes up, which is the rule a person
+// reading a diagnostic expects, and is deliberately not C's round-half-even.
+// ===========================================================================
+
+// fmt_f64(buf, v, decimals): v in fixed point with `decimals` digits after
+// the point (clamped to 0..9), NUL-terminated. Returns the byte count, sign
+// included. `nan` and `inf` are spelled the way a C printf spells them, so a
+// program's output stays comparable with one.
+fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) -> i32 {
+    let at: i32 = 0;
+    let x: f64 = v;
+    // A NaN is neither negative nor orderable, so it is answered first.
+    if (x != x) {
+        store_u8(buf, 110);                // 'n'
+        store_u8(buf + 1, 97);             // 'a'
+        store_u8(buf + 2, 110);            // 'n'
+        store_u8(buf + 3, 0);
+        return 3;
+    }
+    if (x < 0.0) {
+        store_u8(buf, 45);                 // '-'
+        at = 1;
+        x = 0.0 - x;
+    }
+    // An infinity times zero is a NaN; a finite value times zero is a plain
+    // zero. That is the whole test, and it needs no constant beyond 0.0.
+    let probe: f64 = x * 0.0;
+    if (probe != probe) {
+        store_u8(buf + at, 105);           // 'i'
+        store_u8(buf + at + 1, 110);       // 'n'
+        store_u8(buf + at + 2, 102);       // 'f'
+        store_u8(buf + at + 3, 0);
+        return at + 3;
+    }
+    let d: i32 = decimals;
+    if (d < 0) { d = 0; }
+    if (d > 9) { d = 9; }
+    // The same power of ten twice: once as a double, for the rounding, and
+    // once as an integer, for splitting the rounded value into halves.
+    let scale: f64 = 1.0;
+    let iscale: i64 = 1;
+    let i: i32 = 0;
+    while (i < d) {
+        scale = scale * 10.0;
+        iscale = iscale * 10;
+        i = i + 1;
+    }
+    let total: i64 = i64(x * scale + 0.5);
+    at = at + utoa(total / iscale, buf + at);
+    if (d > 0) {
+        store_u8(buf + at, 46);            // '.'
+        at = at + 1;
+        let frac: i64 = total % iscale;
+        let div: i64 = iscale / 10;
+        let k: i32 = 1;
+        while (k < d) {
+            store_u8(buf + at, 48 + i32((frac / div) % 10));
+            at = at + 1;
+            div = div / 10;
+            k = k + 1;
+        }
+        store_u8(buf + at, 48 + i32(frac % 10));
+        at = at + 1;
+    }
+    store_u8(buf + at, 0);
+    return at;
+}
+
+// fmt_f32(buf, v, decimals): the single-precision sibling. The value widens to
+// a double first — one exact conversion, so the digits printed are the digits
+// the single actually holds, not a second rounding's worth of noise past them.
+fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) -> i32 {
+    return fmt_f64(buf, f64(v), decimals);
 }

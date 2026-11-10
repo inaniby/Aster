@@ -162,6 +162,23 @@ breaking this project's own `-Werror` build.
   conversions, a parameter, a global, an array and a struct) and three mixing
   refusals.
 
+* **Printing a double** — `stdlib/aster_std.ast` grows `fmt_f64(buf, v,
+  digits)` and `fmt_f32`, fixed-arity writers in the shape the integer
+  formatters already use: `digits` is clamped to 0..9, the value is rounded
+  half-up on its binary value, the fraction is zero-padded, a carry out of it
+  reaches the integer part, and `nan`/`inf` are spelled as a C printf spells
+  them. The library is 29 routines and still imports nothing;
+  `tests/stdlib3-checks.sh` (eight layers) pins the demo's thirteen lines, diffs
+  them against printf's `%.*f` byte for byte, covers the clamps, whole values,
+  negative zero, `-inf`, an exactly representable single, the rounding rule on a
+  tie and just below it, and a mutant whose fraction is no longer padded.
+  **A compiler bug fell out of writing it:** an f64 argument was copied to the
+  outgoing stack area as well as loaded into its `d` register — the stack loop
+  only asked whether the argument had an *integer* register — so a call with no
+  stack arguments wrote the caller's frame (observable as a clobbered local
+  right after the call). The loop now skips an argument that took an FP
+  register, and `tests/float-checks.sh`'s FP layer covers the shape.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

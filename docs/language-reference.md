@@ -276,7 +276,12 @@ fn main() -> i32 {
   operands are f32. An f32 parameter rides in the same `d0`-`d7` bank, a global
   folds through the same float constant folder, and storage is four bytes in a
   slot, a field or an element.
-* **Still deferred:** printing.
+* **Printing** is a writer in the library, not a language feature:
+  `fmt_f64(buf, v, digits)` (and `fmt_f32`) writes `v` in fixed point with
+  `digits` digits after the point — clamped to 0..9, half-up on the binary
+  value, the fraction zero-padded, `nan`/`inf` spelled as a C printf spells
+  them — and returns the byte count, the same contract `fmt_i32` and `fmt_hex`
+  keep. There is no printf: formatting is a family of typed writers.
 
 ### 5.1 `char` — an unsigned 8-bit integer type (v0.23.69-dev)
 
@@ -1646,6 +1651,7 @@ aster link-obj app.o std.o -o app
 | str (v0.23.77-dev) | `strncmp`, `strchr(s, c) -> i32` (an offset or -1), `strstr(h, n) -> i32`, `strcat` (returns the new length) |
 | parse (v0.23.77-dev) | `atoi(s) -> i32`, `is_digit` / `is_space` / `is_alpha` |
 | format (v0.23.77-dev) | `fmt_i32(buf, v) -> i32`, `fmt_hex(buf, v, digits) -> i32` — fixed-arity writers returning the byte count, because there is no variadic call |
+| format (v0.23.77-dev) | `fmt_f64(buf, v, digits) -> i32`, `fmt_f32(buf, v, digits) -> i32` — a double in fixed point (0..9 digits, half-up, `nan`/`inf` like C), returning the byte count |
 | sort (v0.23.77-dev) | `sort_i32(a: ptr, n: i32) -> i32` — ascending insertion sort |
 | heap (v0.23.77-dev) | `malloc(n: i32) -> ptr` (a 64 KiB `mmap` bump allocator, 8-byte aligned, 0 when exhausted) and `free(p) -> i32` (the documented no-op answering 0) |
 | --- | --- |
