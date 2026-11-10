@@ -183,7 +183,7 @@ fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
 // ---- END GENERATED: lexer names ----
 
 // ---- BEGIN GENERATED: parser names (bootstrap/gen_parser_names.py) ----
-// The 26 expression node kinds this parser builds
+// The 27 expression node kinds this parser builds
 // (PARSER-SPEC.md §2.1), at the host's `enum Kind` numbers
 // inside struct Expr: the subset keeps the numbering, the
 // eleven excluded kinds (§12.2) are simply absent, so a kind's
@@ -210,6 +210,7 @@ let E_And: i32 = 17;
 let E_Or: i32 = 18;
 let E_Not: i32 = 19;
 let E_Field: i32 = 20;
+let E_StructLit: i32 = 22;
 let E_Mod: i32 = 24;
 let E_Shl: i32 = 25;
 let E_Shr: i32 = 26;
@@ -1664,6 +1665,31 @@ fn parse_expr() -> i32 {
                     if (push_marker(3, nt) != 0) { return 0; }
                     continue;
                 }
+                if (nxt == K_LBrace) {
+                    let sname: i32 = nt;
+                    if (struct_find(sname) < 0) { die_name_at("unknown struct type: ", sname); return 0; }
+                    advance();
+                    advance();
+                    let sl: i32 = newnode(E_StructLit, sname);
+                    if (sl == 0) { return 0; }
+                    if (curk() != K_RBrace) {
+                        while (1) {
+                            let v: i32 = parse_expr();
+                            if (perr != 0) { return 0; }
+                            append(sl, v);
+                            if (curk() == K_Comma) { advance(); continue; }
+                            break;
+                        }
+                    }
+                    if (curk() != K_RBrace) {
+                        die_at("expected '}' after a struct literal", tok_line(ppos), tok_col(ppos));
+                        return 0;
+                    }
+                    advance();
+                    if (vpush(sl) != 0) { return 0; }
+                    state = 1;
+                    continue;
+                }
                 if (nxt == K_Dot) {
                     // v0.23.77-dev: `p.f` - a leaf whose child is the base
                     // variable, its own token the field name.
@@ -2389,15 +2415,30 @@ fn let_stmt() -> i32 {
     if (ty_is_struct(ty) == 1) {
         // v0.23.77-dev: a struct local is declared *without* an initializer and
         // zero-filled; the subset has no struct-literal syntax.
-        if (curk() != K_Semi) {
-            die_at("a struct local is zero-filled; a struct literal is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+        if (curk() == K_Semi) {
+            advance();
+            let ss: i32 = newnode(S_Let, nt);
+            if (ss == 0) { return 0; }
+            nnty[ss - 1] = ty;
+            return ss;
+        }
+        if (curk() != K_Eq) {
+            die_at("expected '=' or ';' after a struct type", tok_line(ppos), tok_col(ppos));
             return 0;
         }
         advance();
-        let ss: i32 = newnode(S_Let, nt);
-        if (ss == 0) { return 0; }
-        nnty[ss - 1] = ty;
-        return ss;
+        let se: i32 = parse_expr();
+        if (perr != 0) { return 0; }
+        if (curk() != K_Semi) {
+            die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let ss2: i32 = newnode(S_Let, nt);
+        if (ss2 == 0) { return 0; }
+        nnty[ss2 - 1] = ty;
+        append(ss2, se);
+        return ss2;
     }
     if (curk() == K_LBracket) {
         die_at("local arrays are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
@@ -3564,6 +3605,26 @@ fn tc_combine(n: i32) -> i32 {
         return 0;
     }
     if (k == E_String) { ex_ty[n - 1] = TY_PTR_U8; ex_arr[n - 1] = 0; return 0; }
+    if (k == E_StructLit) {
+        let siL: i32 = struct_find(ntok[n - 1]);
+        if (siL < 0) { die_name_at("unknown struct type: ", ntok[n - 1]); return 1; }
+        let cntL: i32 = 0;
+        let chL: i32 = nfirst[n - 1];
+        while (chL != 0) {
+            if (tc_expr(chL) != 0) { return 1; }
+            if (ex_ty[chL - 1] != TY_I32) {
+                die_name_at("a struct literal value must be i32: ", ntok[chL - 1]); return 1;
+            }
+            cntL = cntL + 1;
+            chL = nnext[chL - 1];
+        }
+        if (cntL != stk_cnt[siL]) {
+            die_name_at("struct literal value count does not match the struct: ", ntok[n - 1]); return 1;
+        }
+        ex_ty[n - 1] = TY_STRUCT_BASE + siL;
+        ex_arr[n - 1] = 0;
+        return 0;
+    }
     if (k == E_Field) {
         let bf: i32 = nfirst[n - 1];
         if (find_var(ntok[bf - 1]) == 0) { die_name_at("unknown variable: ", ntok[bf - 1]); return 1; }
@@ -5698,6 +5759,24 @@ fn gen_stmt(s: i32) -> i32 {
         let tyst: i32 = nnty[s - 1];
         let slotst: i32 = cg_add_local(ntok[s - 1], tyst, 1);
         if (slotst < 0) { return 1; }
+        let si3: i32 = tyst - TY_STRUCT_BASE;
+        let init3: i32 = nfirst[s - 1];
+        if (init3 != 0) {
+            if (nkind[init3 - 1] != E_StructLit) {
+                die_name_at("a struct local is initialized by a struct literal: ", ntok[init3 - 1]); return 1;
+            }
+            let fi3: i32 = 0;
+            let vi3: i32 = nfirst[init3 - 1];
+            while (vi3 != 0) {
+                let vv: i32 = gen_expr(vi3, TY_I32);
+                if (vv < 0) { return 1; }
+                if (emit_mem(1, 2, vv, 31, slotst * 8 + stk_foff[si3 * 8 + fi3]) != 0) { return 1; }
+                if (free_tmp(vv) != 0) { return 1; }
+                fi3 = fi3 + 1;
+                vi3 = nnext[vi3 - 1];
+            }
+            return 0;
+        }
         let nsl: i32 = ty_slots(tyst);
         let isl: i32 = 0;
         while (isl < nsl) {

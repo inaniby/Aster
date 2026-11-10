@@ -532,6 +532,7 @@ static int mkbin(int kind, int a, int b) {
     return z;
 }
 
+static int struct_find(int nm);   /* v0.23.77-dev: defined with the struct tables */
 static int primary(void) {
     int k = cur();
     if (k == TK_Ident || k == TK_Main) {
@@ -578,6 +579,22 @@ static int primary(void) {
             int z = newnode(E_Index, nt);
             append(z, e);
             return z;
+        }
+        if (ahead() == TK_LBrace) {
+            if (struct_find(nt) < 0) die_name_at("unknown struct type: ", nt);
+            adv(); adv();
+            int sl = newnode(E_StructLit, nt);
+            if (cur() != TK_RBrace) {
+                for (;;) {
+                    append(sl, expr());
+                    if (cur() == TK_Comma) { adv(); continue; }
+                    break;
+                }
+            }
+            if (cur() != TK_RBrace)
+                die_at("expected '}' after a struct literal", tok_line(p), tok_col(p));
+            adv();
+            return sl;
         }
         if (ahead() == TK_Dot) {
             adv();                       /* the name */
@@ -1124,13 +1141,22 @@ static int let_stmt(void) {
     int ty = parse_type();
     allow_struct_type = 0;
     if (ty_is_struct(ty)) {
-        if (cur() != TK_Semi)
-            die_at("a struct local is zero-filled; a struct literal is not in the bootstrap subset",
-                   tok_line(p), tok_col(p));
+        if (cur() == TK_Semi) {
+            adv();
+            int ss = newnode(S_Let, nt);
+            nodes[ss].ty = ty;
+            return ss;
+        }
+        if (cur() != TK_Eq)
+            die_at("expected '=' or ';' after a struct type", tok_line(p), tok_col(p));
         adv();
-        int ss = newnode(S_Let, nt);
-        nodes[ss].ty = ty;
-        return ss;
+        int se = expr();
+        if (cur() != TK_Semi) die_at("expected ';'", tok_line(p), tok_col(p));
+        adv();
+        int ss2 = newnode(S_Let, nt);
+        nodes[ss2].ty = ty;
+        append(ss2, se);
+        return ss2;
     }
     if (cur() == TK_LBracket)
         die_at("local arrays are not in the bootstrap subset",
@@ -1984,6 +2010,22 @@ static int tc_combine(int n) {
         return 0;
     }
     if (k == E_String) { ety[n] = TY_PTR_U8; earr[n] = 0; return 0; }
+    if (k == E_StructLit) {
+        int siL = struct_find(nodes[n].tok);
+        if (siL < 0) die_name_at("unknown struct type: ", nodes[n].tok);
+        int cntL = 0;
+        for (int chL = nodes[n].first; chL >= 0; chL = nodes[chL].next) {
+            if (tc_expr(chL) != 0) return 1;
+            if (ety[chL] != TY_I32)
+                die_name_at("a struct literal value must be i32: ", nodes[chL].tok);
+            cntL++;
+        }
+        if (cntL != stk_cnt[siL])
+            die_name_at("struct literal value count does not match the struct: ", nodes[n].tok);
+        ety[n] = TY_STRUCT_BASE + siL;
+        earr[n] = 0;
+        return 0;
+    }
     if (k == E_Field) {
         int bf = nodes[n].first;
         if (!sym_find_var(nodes[bf].tok))
@@ -2778,6 +2820,7 @@ static int gen_expr_at(int h,int want,int base){
         if (st==1){ if (gen_combine(n,wt)) return -1; continue; }
         if (st==2){ if (gen_logical(n,wt)) return -1; continue; }
         int k=NK(n);
+        if (k==E_StructLit){ cg_die_at_node("a struct literal is only an initializer in the bootstrap subset", n); return -1; }
         if (k==E_Field){ int rf2=gen_field_load(n); if (rf2<0) return -1; gx_val[n]=rf2; continue; }
         if (k==E_Num||k==E_String||k==E_Var){
             int r=0;
@@ -3111,8 +3154,21 @@ static int gen_block(int b){
 static int gen_stmt(int s){
     int k=NK(s);
     if (k==S_Let && ty_is_struct(nodes[s].ty)){
-        int tyst=nodes[s].ty;
+        int tyst=nodes[s].ty, si3=tyst-TY_STRUCT_BASE;
         int slotst=cg_add_local(NT(s), tyst, 1); if (slotst<0) return 1;
+        int init3=nodes[s].first;
+        if (init3 >= 0){
+            if (nodes[init3].kind != E_StructLit)
+                die_name_at("a struct local is initialized by a struct literal: ", nodes[init3].tok);
+            int fi3=0;
+            for (int vi3=nodes[init3].first; vi3>=0; vi3=nodes[vi3].next){
+                int vv=gen_expr(vi3,1); if (vv<0) return 1;
+                if (emit_mem(1,2,vv,31,slotst*8+stk_foff[si3*8+fi3])) return 1;
+                if (free_tmp(vv)) return 1;
+                fi3++;
+            }
+            return 0;
+        }
         int nsl=ty_slots(tyst);
         for (int isl=0; isl<nsl; isl++)
             if (emit_mem(1,3,31,31,(slotst+isl)*8)) return 1;
