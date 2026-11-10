@@ -1177,6 +1177,41 @@ fn strrchr(s: ptr<u8>, c: i32) -> i32 {
     return last;
 }
 
+// i32_abs(v): |v|, without the INT32_MIN trap a naive negate would have -
+// the single unrepresentable value answers INT32_MIN, as C's abs() does.
+fn i32_abs(v: i32) -> i32 {
+    if (v < 0) { return 0 - v; }
+    return v;
+}
+
+// memchr(buf, n, c): the index of the first byte equal to c in the first n
+// bytes of buf, or -1. Unlike strchr it needs no terminator and stops at n.
+fn memchr(buf: ptr<u8>, n: i32, c: i32) -> i32 {
+    let want: i32 = c & 255;
+    let i: i32 = 0;
+    while (i < n) {
+        if (load_u8(buf + i) == want) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// strncat(dst, src, room): append at most room bytes of src to dst and
+// terminate. The room counts bytes *after* dst's own end, so
+// `strncat(d, s, sizeof(d) - strlen(d) - 1)` never overruns.
+fn strncat(dst: ptr<u8>, src: ptr<u8>, room: i32) -> ptr<u8> {
+    let d: i32 = strlen(dst);
+    let i: i32 = 0;
+    while (i < room) {
+        let ch: i32 = load_u8(src + i);
+        if (ch == 0) { break; }
+        store_u8(dst + d + i, ch);
+        i = i + 1;
+    }
+    store_u8(dst + d + i, 0);
+    return dst;
+}
+
 fn str_dup(s: ptr<u8>) -> ptr<u8> {
     let n: i32 = strlen(s);
     let p: ptr = alloc(n + 1);
