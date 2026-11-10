@@ -368,6 +368,7 @@ let lname: i32[64] = 0;
 let lname_depth: i32 = 0;
 let perr: i32 = 0;                // the first-error flag; every die_* sets it
 let numval: i64 = 0;              // the converted number (§6.2)
+let numu: u64 = 0;                // the same value, wide (§6.2, v0.23.77-dev)
 let numflag: i32 = 0;             // 0 fits, 1 too large (P52/P53), 2 saturated above i64max (P51)
 let numcnt: i32 = 0;              // the same value as an i32 count, saturated at 1048577
 let nparams: i32 = 0;             // the parameters of the function being parsed (P6, P7)
@@ -1416,21 +1417,27 @@ fn convert_num(t: i32) -> i32 {
     // the 20-digit decimal and the wide hex without a second comparison —
     // and the i32 one saturates at the array bound.
     numval = 0;
+    numu = 0;
     numcnt = 0;
     let j: i32 = i;
     while (j < n) {
         let d: i32 = digit_val(load_u8(srcbuf + start + j));
         if (numflag == 0) {
-            if (numval > (9223372036854775807 - d) / base) {
-                numval = 9223372036854775807;
-                numflag = 2;
+            // v0.23.77-dev: the accumulator is u64 now, so a literal in
+            // (i64 max, u64 max] keeps its exact value instead of saturating.
+            // The i64 reading is that value's bit pattern (so 2^64-1 reads
+            // as -1), which is what an i64 compare against a u64 uses.
+            if (numu > (18446744073709551615 - u64(d)) / u64(base)) {
+                numflag = 1;
             } else {
-                numval = numval * base + d;
+                numu = numu * u64(base) + u64(d);
             }
         }
         if (numcnt > 1048576) { numcnt = 1048577; } else { numcnt = numcnt * base + d; }
         j = j + 1;
     }
+    numval = numu;
+    if (numu > 9223372036854775807) { numflag = 2; }
     return 0;
 }
 
@@ -1724,10 +1731,6 @@ fn parse_expr() -> i32 {
                 convert_num(nt);
                 if (numflag == 1) {
                     die_at("integer literal is too large", tok_line(nt), tok_col(nt));
-                    return 0;
-                }
-                if (numflag == 2) {
-                    die_at("integer literal exceeds i64 range", tok_line(nt), tok_col(nt));
                     return 0;
                 }
                 let v: i32 = newnode(E_Num, nt);

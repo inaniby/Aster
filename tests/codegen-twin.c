@@ -485,12 +485,11 @@ static void convert_num(int t) {
     memcpy(buf, s + i, (size_t)dcount);
     buf[dcount] = '\0';
     unsigned long long v = strtoull(buf, NULL, base);
-    if (v > (unsigned long long)INT64_MAX) {
-        numval = INT64_MAX;            /* saturated, and flagged */
-        numflag = 2;
-    } else {
-        numval = (int64_t)v;
-    }
+    /* v0.23.77-dev: the bits are kept, not saturated - the subset has u64 now,
+     * so a literal in (i64max, 2^64-1] is exact and reads as its bit pattern
+     * through an i64. numflag 2 only records that it is above i64 max. */
+    numval = (int64_t)v;
+    if (v > (unsigned long long)INT64_MAX) numflag = 2;
     numcnt = v > (unsigned long long)MAXDIM ? MAXDIM + 1 : (int)v;
 }
 
@@ -617,8 +616,7 @@ static int primary(void) {
         convert_num(nt);
         if (numflag == 1) die_at("integer literal is too large",
                                  tok_line(nt), tok_col(nt));
-        if (numflag == 2) die_at("integer literal exceeds i64 range",
-                                 tok_line(nt), tok_col(nt));
+
         return newnode(E_Num, nt);
     }
     if (k == TK_String) {

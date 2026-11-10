@@ -1,0 +1,14 @@
+let o: u8[32] = 0;
+
+fn main() -> i32 {
+    // a literal wider than i64 max: exact as u64, so the compare is true
+    let big: u64 = 18446744073709551615;
+    if (big > 1) { store_u8(o, 49); } else { store_u8(o, 48); }
+    let half: u64 = big >> 1;
+    if (half == 9223372036854775807) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    let w: u64 = big / 5;
+    if (w == 3689348814741910323) { store_u8(o + 2, 49); } else { store_u8(o + 2, 48); }
+    store_u8(o + 3, 10);
+    write(1, o, 4);
+    return 0;
+}
