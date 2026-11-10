@@ -2194,8 +2194,17 @@ fn function_decl(external: i32) -> i32 {
                 return 0;
             }
             advance();
+            // v0.23.77-dev: a struct parameter arrives in one integer register
+            // when it is at most 8 bytes; anything wider would need the pair or
+            // the stack, which is a later slice.
+            allow_struct_type = 1;
             let pty: i32 = parse_type();
+            allow_struct_type = 0;
             if (perr != 0) { return 0; }
+            if (ty_is_struct(pty) == 1 && struct_size(pty - TY_STRUCT_BASE) > 8) {
+                die_at("a struct larger than 8 bytes cannot be passed by value in the bootstrap subset", tok_line(pt), tok_col(pt));
+                return 0;
+            }
             if (curk() == K_LBracket) {
                 die_at("array parameters are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
                 return 0;

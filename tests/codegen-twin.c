@@ -1008,7 +1008,12 @@ static int function_decl(int external) {
                 die_at("expected ':' after parameter name",
                        tok_line(p), tok_col(p));
             adv();
+            allow_struct_type = 1;
             int pty = parse_type();
+            allow_struct_type = 0;
+            if (ty_is_struct(pty) && struct_size_s(pty-TY_STRUCT_BASE) > 8)
+                die_at("a struct larger than 8 bytes cannot be passed by value in the bootstrap subset",
+                       tok_line(pt), tok_col(pt));
             if (cur() == TK_LBracket)
                 die_at("array parameters are not in the bootstrap subset",
                        tok_line(p), tok_col(p));

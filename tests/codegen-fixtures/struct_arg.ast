@@ -1,0 +1,23 @@
+struct P { a: i32, b: i32 }
+
+let o: u8[8] = 0;
+
+fn sum(p: P) -> i32 {
+    return p.a + p.b;
+}
+
+fn addp(p: P, k: i32) -> i32 {
+    return p.a + p.b + k;
+}
+
+fn main() -> i32 {
+    let p: P = P { 3, 4 };
+    let n: i32 = sum(p);
+    let m: i32 = addp(p, 100);
+    store_u8(o, 48 + n / 10);
+    store_u8(o + 1, 48 + n % 10);
+    store_u8(o + 2, 48 + m / 100);
+    store_u8(o + 3, 10);
+    write(1, o, 4);
+    return 0;
+}
