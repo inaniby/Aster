@@ -49,14 +49,32 @@ if [ -z "$HOSTCC" ] && command -v cc >/dev/null 2>&1; then HOSTCC=cc; fi
 have_qemu=yes
 command -v qemu-aarch64 >/dev/null 2>&1 || have_qemu=no
 case $(uname -m) in aarch64|arm64) have_qemu=yes ;; esac
+# v0.23.77-dev: -static is the portable choice (qemu needs it), but Android's
+# libc ships no crtbegin_static.o - and when the device *is* the target, a
+# dynamically linked C program runs natively just as well. So the probe picks
+# the link mode once and every later compile uses it.
+LINKSTATIC=-static
 if [ "$have_qemu" = yes ] && [ -n "$HOSTCC" ]; then
     printf 'int main(void){return 0;}\n' > "$W/probe.c"
     if ! "$HOSTCC" -O2 -fwrapv -static "$W/probe.c" -o "$W/probe" >/dev/null 2>&1; then
-        have_qemu=no
-    elif ! run "$W/probe" >/dev/null 2>&1; then
+        if "$HOSTCC" -O2 -fwrapv "$W/probe.c" -o "$W/probe" >/dev/null 2>&1; then
+            LINKSTATIC=
+        else
+            have_qemu=no
+        fi
+    fi
+    if [ "$have_qemu" = yes ] && ! run "$W/probe" >/dev/null 2>&1; then
         have_qemu=no
     fi
 fi
+# every later compile site asks for $LINKSTATIC instead of a hard-coded -static
+cmp_c() {  # $1 = source, $2 = output; the wrapper keeps the flags in one place
+    if [ -n "$LINKSTATIC" ]; then
+        "$HOSTCC" -O2 -fwrapv $LINKSTATIC "$1" -o "$2"
+    else
+        "$HOSTCC" -O2 -fwrapv "$1" -o "$2"
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # [1/9] Strictly build the Aster compiler
@@ -154,7 +172,7 @@ int main(void){
 C
 "$HOSTCC" -c "$W/c_caller.c" -o "$W/c_caller.o" >"$W/c_caller.clog" 2>&1 \
     || { echo 'FAIL: C caller does not compile:' >&2; cat "$W/c_caller.clog" >&2; exit 1; }
-"$HOSTCC" "$W/aster_unionfn.o" "$W/c_caller.o" -o "$W/hybrid" -static >"$W/hybrid.log" 2>&1 \
+"$HOSTCC" "$W/aster_unionfn.o" "$W/c_caller.o" -o "$W/hybrid" $LINKSTATIC >"$W/hybrid.log" 2>&1 \
     || { echo 'FAIL: C caller cannot link Aster union function (ABI mismatch):' >&2; cat "$W/hybrid.log" >&2; exit 1; }
 run "$W/hybrid" >/dev/null 2>&1 && hy=0 || hy=$?
 [ "$hy" -gt 127 ] && hy=$((hy - 256))
@@ -173,7 +191,7 @@ int main(void){
     return 0;
 }
 C
-"$HOSTCC" -O2 -fwrapv -static "$W/c_only.c" -o "$W/c_only" >/dev/null 2>&1 \
+cmp_c "$W/c_only.c" "$W/c_only" >/dev/null 2>&1 \
     || { echo 'FAIL: C-only oracle does not compile' >&2; exit 1; }
 run "$W/c_only" >/dev/null 2>&1 && cy=0 || cy=$?
 [ "$cy" -gt 127 ] && cy=$((cy - 256))
@@ -318,7 +336,7 @@ for n in $DIFF_CASES; do
     if ! "$A" build-elf "$W/$n.ast" -o "$W/$n.a64" >"$W/$n.ab.log" 2>&1; then
         echo "FAIL: $n — Aster build failed:" >&2; cat "$W/$n.ab.log" >&2; failed=1; continue
     fi
-    if ! "$HOSTCC" -O2 -fwrapv -static "$W/$n.c" -o "$W/$n.c64" >"$W/$n.cb.log" 2>&1; then
+    if ! cmp_c "$W/$n.c" "$W/$n.c64" >"$W/$n.cb.log" 2>&1; then
         echo "FAIL: $n — C oracle build failed:" >&2; cat "$W/$n.cb.log" >&2; failed=1; continue
     fi
     run "$W/$n.a64" >/dev/null 2>&1 && a=0 || a=$?
@@ -428,7 +446,7 @@ ex=union_layout; twin=tests/union-layout-twin.c
 if ! "$A" build-elf "examples/$ex.ast" -o "$W/$ex" >"$W/$ex.log" 2>&1; then
     echo "FAIL: examples/$ex.ast no longer builds:" >&2; cat "$W/$ex.log" >&2; exit 1
 fi
-if ! "$HOSTCC" -O2 -fwrapv -static "$twin" -o "$W/$ex.c64" >"$W/$ex.c.log" 2>&1; then
+if ! cmp_c "$twin" "$W/$ex.c64" >"$W/$ex.c.log" 2>&1; then
     echo "FAIL: $twin no longer builds:" >&2; cat "$W/$ex.c.log" >&2; exit 1
 fi
 run "$W/$ex" >/dev/null 2>&1 && ae=0 || ae=$?
