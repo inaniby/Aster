@@ -2237,7 +2237,11 @@ fn function_decl(external: i32) -> i32 {
         return 0;
     }
     advance();
+    // v0.23.77-dev: a struct may be a return type (it comes back in X0 when it
+    // is at most 8 bytes); a struct *parameter* is still outside the subset.
+    allow_struct_type = 1;
     let rty: i32 = parse_type();
+    allow_struct_type = 0;
     if (perr != 0) { return 0; }
     if (curk() == K_LBracket) {
         die_open();
@@ -5763,7 +5767,16 @@ fn gen_stmt(s: i32) -> i32 {
         let init3: i32 = nfirst[s - 1];
         if (init3 != 0) {
             if (nkind[init3 - 1] != E_StructLit) {
-                die_name_at("a struct local is initialized by a struct literal: ", ntok[init3 - 1]); return 1;
+                // A call returning the struct: the 8 bytes arrive in a temp and
+                // are stored into the local's slot whole.
+                if (struct_size(si3) > 8) {
+                    die_name_at("a struct larger than 8 bytes cannot be passed by value in the bootstrap subset: ", ntok[init3 - 1]); return 1;
+                }
+                let vc: i32 = gen_expr(init3, tyst);
+                if (vc < 0) { return 1; }
+                if (emit_mem(1, 3, vc, 31, slotst * 8) != 0) { return 1; }
+                if (free_tmp(vc) != 0) { return 1; }
+                return 0;
             }
             let fi3: i32 = 0;
             let vi3: i32 = nfirst[init3 - 1];
@@ -5837,10 +5850,17 @@ fn gen_stmt(s: i32) -> i32 {
         return 0;
     }
     if (k == S_Return) {
+        // v0.23.77-dev: a struct of at most 8 bytes is returned in X0, so the
+        // move has to be a 64-bit one - a 32-bit MOV would drop the second field.
+        if (ty_is_struct(cg_ret_ty) == 1 && struct_size(cg_ret_ty - TY_STRUCT_BASE) > 8) {
+            cg_die_at_node("a struct larger than 8 bytes cannot be returned in the bootstrap subset", s);
+            return 1;
+        }
         let v: i32 = gen_expr(nfirst[s - 1], cg_ret_ty);
         if (v < 0) { return 1; }
         let is64: i32 = 0;
         if (ty_is64(cg_ret_ty) == 1) { is64 = 1; }
+        if (ty_is_struct(cg_ret_ty) == 1) { is64 = 1; }
         if (emit_mov_rr(0, v, is64) != 0) { return 1; }
         if (free_tmp(v) != 0) { return 1; }
         if (cg_is_main == 1) {

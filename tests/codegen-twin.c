@@ -1036,7 +1036,9 @@ static int function_decl(int external) {
     adv();
     if (cur() != TK_Arrow) die_at("expected ->", tok_line(p), tok_col(p));
     adv();
+    allow_struct_type = 1;
     int rty = parse_type();
+    allow_struct_type = 0;
     if (cur() == TK_LBracket) {
         snprintf(msgbuf, sizeof msgbuf,
                  "a function cannot return an array: return ptr<%s>, or take "
@@ -3158,8 +3160,14 @@ static int gen_stmt(int s){
         int slotst=cg_add_local(NT(s), tyst, 1); if (slotst<0) return 1;
         int init3=nodes[s].first;
         if (init3 >= 0){
-            if (nodes[init3].kind != E_StructLit)
-                die_name_at("a struct local is initialized by a struct literal: ", nodes[init3].tok);
+            if (nodes[init3].kind != E_StructLit){
+                if (struct_size_s(si3) > 8)
+                    die_name_at("a struct larger than 8 bytes cannot be passed by value in the bootstrap subset: ", nodes[init3].tok);
+                int vc=gen_expr(init3, tyst); if (vc<0) return 1;
+                if (emit_mem(1,3,vc,31,slotst*8)) return 1;
+                if (free_tmp(vc)) return 1;
+                return 0;
+            }
             int fi3=0;
             for (int vi3=nodes[init3].first; vi3>=0; vi3=nodes[vi3].next){
                 int vv=gen_expr(vi3,1); if (vv<0) return 1;
@@ -3211,8 +3219,12 @@ static int gen_stmt(int s){
         return 0;
     }
     if (k==S_Return){
+        if (ty_is_struct(cg_ret_ty) && struct_size_s(cg_ret_ty-TY_STRUCT_BASE) > 8){
+            cg_die_at_node("a struct larger than 8 bytes cannot be returned in the bootstrap subset", s);
+            return 1;
+        }
         int v=gen_expr(NF(s), cg_ret_ty); if (v<0) return 1;
-        int is64 = ty_is64_t(cg_ret_ty)?1:0;
+        int is64 = (ty_is64_t(cg_ret_ty)||ty_is_struct(cg_ret_ty))?1:0;
         if (emit_mov_rr(0,v,is64)) return 1;
         if (free_tmp(v)) return 1;
         if (cg_is_main==1){
