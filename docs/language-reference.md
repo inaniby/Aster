@@ -1681,6 +1681,25 @@ caught by the machine rather than by a reader.
 
 ## 12. The standard library (v0.23.42-dev)
 
+### The subset-safe core
+
+The full library cannot be linked into the *self-hosting* chain: the bootstrap
+stage (`bootstrap/aster.ast`) is compiled by itself, and its own compiler
+accepts a deliberately small language — no `struct`, no `f64`, no `ptr<S>`, no
+local arrays, no pointer-to-integer casts. `stdlib/aster_core.ast` is the seam:
+18 routines (memory, strings, `atoi`, the character classes, `reverse_digits`,
+`utoa`/`itoa`/`utohex`), each a byte-identical copy of the library's, with no
+globals — so the object needs no initialiser and imports nothing.
+`tests/library-core-checks.sh` asserts the extraction is verbatim, builds the
+core with the host and links a consumer against it, and then builds the *same*
+consumer with the self-hosted stage by concatenating the core's bodies with the
+consumer's (the stage has no linker, so its `extern fn` declarations are
+stripped first). That last layer is what proved the core is inside the stage's
+subset — and it found defect **A-26**: the stage's image prints `13|-42|8|9|11`
+where the host prints `13|-42|8|9|101`, so a zero digit is lost in `utoa`'s
+`48 + d`. The layer pins that difference so it cannot be forgotten; it says so
+when the defect is fixed.
+
 ### Taking the library
 
 `include "stdlib/aster_std.ast";` brings every declaration the library makes —

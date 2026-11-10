@@ -1,0 +1,48 @@
+// A consumer of the subset-safe core, written only with what the bootstrap
+// stage accepts: i32/i64/u8/ptr, while/if/return, calls, no structs, no f64,
+// no *local* arrays (the stage keeps its buffers at file scope) and no casts.
+//
+// The declarations below are what a caller writes when the core is a separate
+// object; tests/library-core-checks.sh strips them and prepends the core
+// itself for the self-hosted stage, which has no linker.
+extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
+extern fn strlen(s: ptr<u8>) -> i32;
+extern fn atoi(s: ptr<u8>) -> i32;
+extern fn itoa(v: i64, buf: ptr<u8>) -> i32;
+extern fn utoa(v: i64, buf: ptr<u8>) -> i32;
+extern fn strchr(s: ptr<u8>, c: i32) -> i32;
+extern fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32;
+extern fn is_digit(c: i32) -> i32;
+extern fn is_space(c: i32) -> i32;
+
+let out: u8[128] = 0;
+let text: u8[32] = 0;
+let at: i32 = 0;
+
+fn sep() -> i32 {
+    store_u8(out + at, 124);
+    at = at + 1;
+    return at;
+}
+
+fn main() -> i32 {
+    memcpy(text, "  -42 trailing", 13);
+    let n: i64 = strlen(text);
+    at = at + utoa(n, out + at);
+    sep();
+    let v: i64 = atoi(text);
+    at = at + itoa(v, out + at);
+    sep();
+    let a: i64 = strchr(text, 97);          // 'a' at offset 8
+    at = at + utoa(a, out + at);
+    sep();
+    let s: i64 = strstr(text, "ilin");      // offset 9 in "  -42 trailin"
+    at = at + utoa(s, out + at);
+    sep();
+    let digs: i32 = is_digit(52) + is_digit(65) * 10 + is_space(32) * 100;
+    let d: i64 = digs;
+    at = at + utoa(d, out + at);
+    store_u8(out + at, 10);
+    write(1, out, at + 1);
+    return 0;
+}

@@ -285,6 +285,7 @@ printf 'CACHE     : compiler builds through %s\n' "$CXX"
 # 3. Suites
 # ---------------------------------------------------------------------------
 DEFAULT_SUITES="
+library-core-checks.sh
 stdlib-map-checks.sh
 stdlib-str-checks.sh
 stdlib-io-checks.sh

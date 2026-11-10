@@ -280,6 +280,20 @@ breaking this project's own `-Werror` build.
   cannot be taken**, so a consumer supplies its own comparator rather than the
   library's.
 
+* **The subset-safe core, and a stage defect it found** — `stdlib/aster_core.ast`:
+  18 of the library's routines (memory, strings, `atoi`, the character classes,
+  `reverse_digits`, `utoa`/`itoa`/`utohex`) that a *self-hosted* compiler can
+  actually compile — no `struct`, no `f64`, no `ptr<S>`, no local arrays, no
+  pointer-to-integer casts, no globals — as byte-identical copies of the
+  library's. `tests/library-core-checks.sh` asserts the extraction is verbatim,
+  links a host-built consumer against it, and then builds the *same* consumer
+  with the self-hosted stage (core bodies prepended, `extern fn` lines stripped
+  because the stage has no linker): the stage accepts it, which is the proof the
+  core really is inside the bootstrap's subset. That last layer found **A-26** —
+  the stage's image prints `13|-42|8|9|11` where the host prints `13|-42|8|9|101`,
+  a zero digit lost in `utoa` — and pins the difference so it stays visible until
+  the stage is fixed.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
