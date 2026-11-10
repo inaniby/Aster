@@ -216,7 +216,7 @@ let E_BitAnd: i32 = 27;
 let E_BitOr: i32 = 28;
 let E_BitXor: i32 = 29;
 
-// The 9 statement kinds (§2.2), the host's Stmt::Kind
+// The 10 statement kinds (§2.2), the host's Stmt::Kind
 // numbers + 64; FieldAssign, DerefAssign, For and Switch are
 // excluded (§12.2), their numbers skipped.
 let S_Let: i32 = 64;
@@ -228,6 +228,7 @@ let S_While: i32 = 71;
 let S_Break: i32 = 73;
 let S_Continue: i32 = 74;
 let S_Expr: i32 = 76;
+let S_DoWhile: i32 = 77;
 
 // The 5 structural kinds (§2.3) — no host counterpart; the
 // dump makes the host's side vectors nodes so every line
@@ -2394,6 +2395,41 @@ fn statement() -> i32 {
         die_at("'++' and '--' are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
         return 0;
     }
+    // v0.23.77-dev: do { body } while (cond); — the body runs once and the
+    // condition decides whether it runs again. The children are [body, cond],
+    // the host's field order, so the dump reads body-first.
+    if (k == K_Do) {
+        advance();
+        let b: i32 = parse_block();
+        if (perr != 0) { return 0; }
+        if (curk() != K_While) {
+            die_at("expected 'while' after a do body", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        if (curk() != K_LParen) {
+            die_at("expected '(' after while", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let e: i32 = parse_expr();
+        if (perr != 0) { return 0; }
+        if (curk() != K_RParen) {
+            die_at("expected ')' after condition", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        if (curk() != K_Semi) {
+            die_at("expected ';' after do-while condition", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let ds: i32 = newnode(S_DoWhile, ntok[e - 1]);
+        if (ds == 0) { return 0; }
+        append(ds, b);
+        append(ds, e);
+        return ds;
+    }
     if (k == K_While) {
         advance();
         if (curk() != K_LParen) {
@@ -3323,6 +3359,18 @@ fn sema_stmt(s: i32) -> i32 {
         push_scope();
         if (sema_block(b) != 0) { return 1; }
         pop_scope();
+        return 0;
+    }
+    if (k == S_DoWhile) {
+        let b: i32 = nfirst[s - 1];
+        push_scope();
+        if (sema_block(b) != 0) { return 1; }
+        pop_scope();
+        let cond: i32 = nnext[b - 1];
+        if (tc_expr(cond) != 0) { return 1; }
+        if (cond_ok(cond) == 0) {
+            die_at("condition must be a comparison, a bool expression, or an integer", tok_line(ntok[s - 1]), tok_col(ntok[s - 1])); return 1;
+        }
         return 0;
     }
     if (k == S_Expr) {
@@ -5166,6 +5214,39 @@ fn gen_stmt(s: i32) -> i32 {
         if (cg_pop_scope() != 0) { return 1; }
         lp_depth = lp_depth - 1;
         if (emit_b(lcond) != 0) { return 1; }
+        if (place_label(lexit) != 0) { return 1; }
+        return 0;
+    }
+    // v0.23.77-dev: the body runs once, then the condition is tested at the
+    // `continue` target (a `continue` in a do-while means "test now", which is
+    // what C says) and a false answer leaves.
+    if (k == S_DoWhile) {
+        let b: i32 = nfirst[s - 1];
+        let cond: i32 = nnext[b - 1];
+        let lbody: i32 = new_label();
+        if (lbody < 0) { return 1; }
+        let ltest: i32 = new_label();
+        if (ltest < 0) { return 1; }
+        let lexit: i32 = new_label();
+        if (lexit < 0) { return 1; }
+        if (place_label(lbody) != 0) { return 1; }
+        if (lp_depth >= 64) { return cg_die_at_node("loops nested too deeply (limit 64)", s); }
+        lp_exit[lp_depth] = lexit;
+        lp_cont[lp_depth] = ltest;
+        lp_depth = lp_depth + 1;
+        if (cg_push_scope() != 0) { return 1; }
+        if (gen_block(b) != 0) { return 1; }
+        if (cg_pop_scope() != 0) { return 1; }
+        lp_depth = lp_depth - 1;
+        if (place_label(ltest) != 0) { return 1; }
+        let r: i32 = gen_expr(cond, TY_I32);
+        if (r < 0) { return 1; }
+        let is64: i32 = 0;
+        if (ty_is64(ex_ty[cond - 1]) == 1) { is64 = 1; }
+        if (emit_cmp_imm(r, 0, is64) != 0) { return 1; }
+        if (free_tmp(r) != 0) { return 1; }
+        if (emit_bcond(0, lexit) != 0) { return 1; }
+        if (emit_b(lbody) != 0) { return 1; }
         if (place_label(lexit) != 0) { return 1; }
         return 0;
     }

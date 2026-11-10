@@ -39,7 +39,7 @@ enum {
     E_BitXor = 29,
 };
 
-/* The 9 statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, DerefAssign, For and Switch are excluded (§12.2). */
+/* The 10 statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, DerefAssign, For and Switch are excluded (§12.2). */
 enum {
     S_Let = 64,
     S_Assign = 65,
@@ -50,6 +50,7 @@ enum {
     S_Break = 73,
     S_Continue = 74,
     S_Expr = 76,
+    S_DoWhile = 77,
 };
 
 /* The 5 structural kinds (§2.3). */

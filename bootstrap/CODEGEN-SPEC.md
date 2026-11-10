@@ -190,6 +190,14 @@
 | `SVC #0` | `0xd4000001` |
 
 ### 4.5 访存（imm12 为**缩放后**偏移：X/8、W/4、H/2、B 不缩放）
+### 4.4b `do { … } while (cond);`（v0.23.77-dev）
+
+三个标签：`lbody`（体首）、`ltest`（条件处，也是 `continue` 的落点）、`lexit`。
+生成顺序固定为 `place_label(lbody)` → 体（自带一个作用域）→ `place_label(ltest)` →
+求值条件 → `CMP <r>, #0` → `B.<cond==false> lexit` → `B lbody` → `place_label(lexit)`。
+`continue` 落在 `ltest`（C 的语义：重新测条件，不是回到体首），`break` 落在 `lexit`。
+体先于条件生成，所以条件里读到的变量已是本轮更新后的值；循环嵌套上限 64 与 `while` 同。
+
 
 | 助记符 | 编码 |
 |---|---|

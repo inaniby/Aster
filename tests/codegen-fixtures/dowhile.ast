@@ -1,0 +1,25 @@
+// tests/codegen-fixtures/dowhile.ast — `do { … } while (cond);` through the
+// stage: the body runs once even when the condition starts false, the trailing
+// `;` is required, and a `continue` re-tests instead of jumping to the body.
+// The buffers are at file scope because the bootstrap subset has no local
+// arrays.
+let out: u8[8] = 0;
+
+fn main() -> i32 {
+    let n: i32 = 0;
+    do {
+        n = n + 1;
+    } while (0);
+    store_u8(out, 48 + n);           // 1: the body ran once against a false condition
+    let i: i32 = 0;
+    let acc: i32 = 0;
+    do {
+        i = i + 1;
+        if (i == 2) { continue; }    // re-tests, does not restart the body
+        acc = acc + i;
+    } while (i < 4);
+    store_u8(out + 1, 48 + acc);     // 8 = 1 + 3 + 4
+    store_u8(out + 2, 10);
+    write(1, out, 3);
+    return 0;
+}

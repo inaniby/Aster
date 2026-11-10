@@ -1190,6 +1190,27 @@ static int statement(void) {
     if (k == TK_PlusPlus || k == TK_MinusMinus)
         die_at("'++' and '--' are not in the bootstrap subset",
                tok_line(p), tok_col(p));
+    if (k == TK_Do) {
+        adv();
+        int b = parse_block();
+        if (cur() != TK_While)
+            die_at("expected 'while' after a do body", tok_line(p), tok_col(p));
+        adv();
+        if (cur() != TK_LParen)
+            die_at("expected '(' after while", tok_line(p), tok_col(p));
+        adv();
+        int e = expr();
+        if (cur() != TK_RParen)
+            die_at("expected ')' after condition", tok_line(p), tok_col(p));
+        adv();
+        if (cur() != TK_Semi)
+            die_at("expected ';' after do-while condition", tok_line(p), tok_col(p));
+        adv();
+        int ds = newnode(S_DoWhile, nodes[e].tok);
+        append(ds, b);
+        append(ds, e);
+        return ds;
+    }
     if (k == TK_While) {
         adv();
         if (cur() != TK_LParen)
@@ -1926,6 +1947,18 @@ static int sema_stmt(int s) {
         push_scope();
         if (sema_block(b) != 0) return 1;
         pop_scope();
+        return 0;
+    }
+    if (k == S_DoWhile) {
+        int b = nodes[s].first;
+        push_scope();
+        if (sema_block(b) != 0) return 1;
+        pop_scope();
+        int cond = nodes[b].next;
+        if (tc_expr(cond) != 0) return 1;
+        if (cond_ok(cond) == 0)
+            die_at("condition must be a comparison, a bool expression, or an integer",
+                   tok_line(nodes[s].tok), tok_col(nodes[s].tok));
         return 0;
     }
     if (k == S_Expr) {
@@ -2805,6 +2838,28 @@ static int gen_stmt(int s){
         if (cg_pop_scope()) return 1;
         lp_depth--;
         if (emit_b(lcond)) return 1;
+        if (place_label(lexit)) return 1;
+        return 0;
+    }
+    if (k==S_DoWhile){
+        int b=NF(s), cond=NN(b);
+        int lbody=new_label(); if (lbody<0) return 1;
+        int ltest=new_label(); if (ltest<0) return 1;
+        int lexit=new_label(); if (lexit<0) return 1;
+        if (place_label(lbody)) return 1;
+        if (lp_depth>=64){ return cg_die_at_node("loops nested too deeply (limit 64)", s); }
+        lp_exit[lp_depth]=lexit; lp_cont[lp_depth]=ltest; lp_depth++;
+        if (cg_push_scope()) return 1;
+        if (gen_block(b)) return 1;
+        if (cg_pop_scope()) return 1;
+        lp_depth--;
+        if (place_label(ltest)) return 1;
+        int r=gen_expr(cond,1); if (r<0) return 1;
+        int is64 = ty_is64_t(ETY(cond))?1:0;
+        if (emit_cmp_imm(r,0,is64)) return 1;
+        if (free_tmp(r)) return 1;
+        if (emit_bcond(0,lexit)) return 1;
+        if (emit_b(lbody)) return 1;
         if (place_label(lexit)) return 1;
         return 0;
     }

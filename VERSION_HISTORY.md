@@ -312,6 +312,18 @@ breaking this project's own `-Werror` build.
   (the stage compiles its own core-carrying source and runs the result), and the
   library suites are green with the `is_alpha` change.
 
+* **`do-while` moves into the bootstrap subset** — the first control shape the
+  stage gained after the ones it was born with. `bootstrap/aster.ast` parses
+  `do { … } while (cond);` (children `[body, cond]`, the host's field order),
+  checks the condition in the M3c pass, and lowers it with three labels —
+  `lbody`, `ltest` (the `continue` target), `lexit` — so a `continue` re-tests
+  instead of restarting the body. `tests/codegen-twin.c` implements the same
+  three pieces with the same label order, `gen_parser_names.py` grows the
+  `S_*` set to ten (`S_DoWhile` = 77), and the new corpus fixture
+  `tests/codegen-fixtures/dowhile.ast` pins the three behaviours (a body that
+  runs once against a false condition, the trailing `;`, `continue` re-testing):
+  the stage and the twin agree byte for byte, and both images print `18`.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

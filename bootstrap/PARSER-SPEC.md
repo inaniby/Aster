@@ -82,7 +82,7 @@ numbers are skipped so the surviving 25 keep the host's numbering. The name
 table still carries all 35 records (§13), and §12.2 records what replaces each
 excluded construct.
 
-### 2.2 Statement kinds (9)
+### 2.2 Statement kinds (10)
 
 The subset of `enum Kind` inside `struct Stmt`, host numbers **+ 64**.
 
@@ -96,10 +96,11 @@ The subset of `enum Kind` inside `struct Stmt`, host numbers **+ 64**.
 
 **v0.23.77-dev:** the host's statement enum gained `DoWhile` (13) and `Nop`
 (14) — `do { … } while (cond);`, and the node a consumed `static let` leaves
-behind. The bootstrap's parser builds neither, so the subset is unchanged and
-their numbers (77, 78) are simply reserved: a surviving kind keeps the host's
-number, which is the contract the generator enforces against
-`src/aster.cpp`.
+behind. **`DoWhile` is in the subset** (number 77, ten `S_*` constants now):
+the stage parses `do`, a block, `while (cond);` and builds a node with the
+children `[body, cond]`, the host's field order. `Nop` stays out — its number
+(78) is reserved — and a surviving kind still keeps the host's number, which is
+the contract the generator enforces against `src/aster.cpp`.
 
 ### 2.3 Structural kinds (5)
 

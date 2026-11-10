@@ -81,6 +81,9 @@ STMT_KINDS = [
 STMT_SUBSET = [
     "Let", "Assign", "IndexAssign", "Return", "If", "While",
     "Break", "Continue", "Expr",
+    # v0.23.77-dev: `do { … } while (cond);` — the first of the host's control
+    # shapes to move into the subset after the ones the stage was born with.
+    "DoWhile",
 ]
 
 # The structural kinds (§2.3): no counterpart in the host, which carries
@@ -110,7 +113,7 @@ STMT_COUNT = len(STMT_KINDS)          # 15 — sntab's record count
 STRUCT_COUNT = len(STRUCT_KINDS)      # 5  — nntab's record count
 TYPE_COUNT = len(TYPE_TAGS)           # 7  — tytab's record count
 EXPR_SUBSET_COUNT = len(EXPR_SUBSET)  # 25 — the E_* constants
-STMT_SUBSET_COUNT = len(STMT_SUBSET)  # 9  — the S_* constants
+STMT_SUBSET_COUNT = len(STMT_SUBSET)  # 10 — the S_* constants
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -139,8 +142,8 @@ def check_list():
             % EXPR_SUBSET_COUNT)
     if STMT_COUNT != 15:
         die("expected 15 statement kinds, list has %d" % STMT_COUNT)
-    if STMT_SUBSET_COUNT != 9:
-        die("expected 9 statement kinds in the subset, list has %d"
+    if STMT_SUBSET_COUNT != 10:
+        die("expected 10 statement kinds in the subset, list has %d"
             % STMT_SUBSET_COUNT)
     if STRUCT_COUNT != 5:
         die("expected 5 structural kinds, list has %d" % STRUCT_COUNT)
