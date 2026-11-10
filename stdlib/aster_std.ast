@@ -454,6 +454,35 @@ fn fmt_i32_w(buf: ptr<u8>, v: i32, width: i32) -> i32 {
     return at + n;
 }
 
+// fmt_hex_w(buf, v, width): lowercase hex, right-aligned in a field of `width`
+// columns, SPACE padded - the companion of fmt_hex (which zero pads). A value
+// wider than the field is written in full, the same rule fmt_i32_w follows.
+fn fmt_hex_w(buf: ptr<u8>, v: i32, width: i32) -> i32 {
+    // fmt_hex prints exactly the digits it is asked for, so ask for the full
+    // width and drop the leading zeros here - that is the natural length.
+    let tmp: u8[16] = 0;
+    let full: i32 = fmt_hex(tmp, v, 8);
+    let start: i32 = 0;
+    while (start < full - 1) {
+        if (load_u8(tmp + start) != 48) { break; }
+        start = start + 1;
+    }
+    let n: i32 = full - start;
+    let pad: i32 = width - n;
+    let at: i32 = 0;
+    while (at < pad) {
+        store_u8(buf + at, 32);
+        at = at + 1;
+    }
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(buf + at + i, load_u8(tmp + start + i));
+        i = i + 1;
+    }
+    store_u8(buf + at + n, 0);
+    return at + n;
+}
+
 fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) -> i32 {
     let d: i32 = digits;
     if (d < 1) { d = 1; }
