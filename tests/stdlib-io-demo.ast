@@ -1,0 +1,75 @@
+// tests/stdlib-io-demo.ast — the basic library: files, the growable arena, a
+// byte buffer and two vectors. The declarations (types included) come in
+// through `include`; the bodies come from the library object at link time.
+//
+// Its C twin (tests/aster-std-io-twin.c) performs the same operations with the
+// same syscalls and prints the same summary line, so the two are compared byte
+// for byte instead of against a hand-written expectation.
+include "aiolib.ast";
+
+fn main() -> i32 {
+    let ok: i32 = 0;
+
+    // 1. write a file through the wrappers, then measure and read it back
+    let fd: i32 = fd_open("io-demo.txt", 577, 420);        // O_WRONLY|O_CREAT|O_TRUNC
+    if (fd >= 0) { ok = ok + 1; }
+    let wrote: i32 = write_all(fd, "hello, library\n", 15);
+    fd_close(fd);
+    if (wrote == 15) { ok = ok + 1; }
+    let size: i64 = file_size("io-demo.txt");
+    if (size == 15) { ok = ok + 1; }
+    let text: ptr = slurp("io-demo.txt");
+    if (text != 0 && strlen(text) == 15) { ok = ok + 1; }
+    let got: u8[8] = 0;
+    let raw: ptr = slurp_bytes("io-demo.txt", &got);
+    if (raw != 0 && load_i64(&got) == 15) { ok = ok + 1; }
+    if (slurp("io-demo-missing.txt") == 0) { ok = ok + 1; }
+
+    // 2. a buffer built up in the arena
+    let b: Buf = Buf { 0, 0, 0 };
+    buf_init(&b, 4);
+    buf_appends(&b, "abc=");
+    buf_putc(&b, 49);
+    let d: u8[16] = 0;
+    fmt_i32(d, 2345);
+    buf_appends(&b, d);
+    if (strlen(buf_cstr(&b)) == 9) { ok = ok + 1; }
+
+    // 3. vectors that grow across realloc
+    let v: Vec32 = Vec32 { 0, 0, 0 };
+    vec32_init(&v, 2);
+    let i: i32 = 0;
+    while (i < 100) { vec32_push(&v, i * 3); i = i + 1; }
+    if (vec32_get(&v, 99) == 297 && vec32_get(&v, 1) == 3) { ok = ok + 1; }
+    let pv: VecPtr = VecPtr { 0, 0, 0 };
+    vecptr_init(&pv, 2);
+    vecptr_push(&pv, text);
+    vecptr_push(&pv, raw);
+    if (vecptr_get(&pv, 1) == raw) { ok = ok + 1; }
+
+    // 4. past the first 64 KiB chunk, and a copy that keeps its bytes
+    let big: ptr = alloc(200000);
+    if (big != 0) { ok = ok + 1; }
+    store_u8(big + 199999, 66);
+    if (load_u8(big + 199999) == 66) { ok = ok + 1; }
+    let src: u8[8] = 0;
+    store_u8(src, 65); store_u8(src + 1, 66); store_u8(src + 2, 67);
+    let copy: ptr = ralloc(ptr(&src), 3, 64);
+    if (load_u8(copy) == 65 && load_u8(copy + 2) == 67) { ok = ok + 1; }
+
+    // one line, built with the library and the raw write: ok|size|buflen|v99
+    let out: u8[128] = 0;
+    let at: i32 = 0;
+    at = at + fmt_i32(out, ok);
+    out[at] = 124; at = at + 1;
+    at = at + fmt_i32(out + at, i32(size));
+    out[at] = 124; at = at + 1;
+    at = at + fmt_i32(out + at, strlen(buf_cstr(&b)));
+    out[at] = 124; at = at + 1;
+    at = at + fmt_i32(out + at, vec32_get(&v, 99));
+    write_all(1, out, at);
+    let nl: u8[2] = 0;
+    store_u8(nl, 10);
+    write_all(1, nl, 1);
+    return ok == 12 ? 0 : 1;
+}

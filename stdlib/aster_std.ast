@@ -1,8 +1,9 @@
 // aster_std.ast — the standard library written in Aster itself: the first
 // slice (mem/str/num/hash, v0.23.42-dev), the second (v0.23.77-dev: memmove,
 // the C string searches, atoi, the fixed-arity formatters, an integer sort and
-// a bump allocator over mmap) and the same release's printing slice
-// (fmt_f64/fmt_f32: a double in fixed point — 29 routines in all).
+// a bump allocator over mmap), the printing slice (fmt_f64/fmt_f32) and the
+// basic library (files, a growable arena, a byte buffer, two vectors and a
+// panic — 60 routines in all, declarations shared by `include`).
 // The original introduction:
 //
 // the first slice of a standard library written in Aster
@@ -571,4 +572,329 @@ fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) -> i32 {
 // the single actually holds, not a second rounding's worth of noise past them.
 fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) -> i32 {
     return fmt_f64(buf, f64(v), decimals);
+}
+
+// ===========================================================================
+// v0.23.77-dev: the basic library — files, a growable arena, and buffers.
+//
+// The syscalls have been reachable from Aster since v0.23.40-dev, but only as
+// raw intrinsics: every program wrote `openat(-100, path, 0, 0)` itself and
+// every program that needed a string built up in memory used a fixed-size
+// global array with a capacity check. This section is the missing layer.
+//
+// Two allocators, deliberately:
+//   * `malloc`/`free` (the v0.23.42-dev pair) stay exactly as they are — one
+//     64 KiB mapping, 8-byte aligned, 0 when exhausted. That exhaustion
+//     sentinel is a documented, tested contract, and the bootstrap relies on
+//     the small footprint.
+//   * `alloc`/`ralloc` are the growable pair the buffers below use: when the
+//     current mapping has no room, `alloc` maps another one and keeps using
+//     it. Nothing is ever returned to the kernel, so a pointer stays valid for
+//     the life of the program — which is the arena rule the language already
+//     documents (`free` answers 0 and reclaims nothing).
+// ===========================================================================
+
+// --- files ---------------------------------------------------------------
+
+// Linux's AT_FDCWD, the only directory handle a program needs here.
+const kAtFdcwd: i32 = 0 - 100;
+
+// fd_open(path, flags, mode): openat(AT_FDCWD, …) with the caller's flags
+// (`O_RDONLY` = 0, `O_WRONLY|O_CREAT|O_TRUNC` = 577). Answers the fd, or -1.
+fn fd_open(path: ptr<u8>, flags: i32, mode: i32) -> i32 {
+    return openat(kAtFdcwd, path, flags, mode);
+}
+fn fd_read(fd: i32, buf: ptr<u8>, n: i32) -> i32 { return read(fd, buf, n); }
+fn fd_write(fd: i32, buf: ptr<u8>, n: i32) -> i32 { return write(fd, buf, n); }
+fn fd_close(fd: i32) -> i32 { return close(fd); }
+
+// write_all(fd, buf, n): a short write is legal (a pipe, a tty), so a loop
+// writes the rest. Answers the bytes written, or -1 when the kernel refuses.
+fn write_all(fd: i32, buf: ptr<u8>, n: i32) -> i32 {
+    let done: i32 = 0;
+    while (done < n) {
+        let w: i32 = write(fd, buf + done, n - done);
+        if (w <= 0) { return 0 - 1; }
+        done = done + w;
+    }
+    return done;
+}
+
+// file_size(path): st_size out of an fstat, or -1. The AArch64 `struct stat`
+// puts st_size at byte 48, so the buffer is read at that offset rather than
+// as a typed array — the layout is the kernel's, not ours.
+fn file_size(path: ptr<u8>) -> i64 {
+    let fd: i32 = fd_open(path, 0, 0);
+    if (fd < 0) { return 0 - 1; }
+    let st: u8[128] = 0;
+    let r: i32 = fstat(fd, &st);
+    fd_close(fd);
+    if (r != 0) { return 0 - 1; }
+    return load_i64(&st + 48);
+}
+
+// slurp_bytes(path, out_len): the whole file in a fresh `alloc` buffer, NUL
+// terminated, with the length written through `out_len` (may be 0). Answers 0
+// when the file cannot be opened or read. A length of 0 from the descriptor is
+// not trusted alone — a directory or a pipe answers 0 — so the buffer is read
+// until the kernel says there is nothing left.
+fn slurp_bytes(path: ptr<u8>, out_len: ptr<u8>) -> ptr {
+    let fd: i32 = fd_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    let size: i64 = file_size(path);
+    let cap: i32 = (size > 0) ? i32(size) + 1 : 4096;
+    let buf: ptr = alloc(cap);
+    if (buf == 0) { fd_close(fd); return 0; }
+    let count: i32 = 0;
+    let space: i32 = cap - 1;
+    while (1) {
+        if (space <= 0) {
+            // The file grew under us (or the size was a lie): double and go on.
+            let bigger: ptr = ralloc(buf, cap, cap * 2);
+            if (bigger == 0) { fd_close(fd); return 0; }
+            buf = bigger;
+            cap = cap * 2;
+            space = cap - 1 - count;
+        }
+        let n: i32 = read(fd, buf + count, space);
+        if (n < 0) { fd_close(fd); return 0; }
+        if (n == 0) { break; }
+        count = count + n;
+        space = space - n;
+    }
+    fd_close(fd);
+    store_u8(buf + count, 0);
+    if (out_len != 0) { store_i64(out_len, i64(count)); }
+    return buf;
+}
+
+// slurp(path): the same, for text, answering only the pointer (0 on failure).
+fn slurp(path: ptr<u8>) -> ptr {
+    let n: u8[8] = 0;                 // the out-parameter is a byte buffer, so
+    return slurp_bytes(path, &n);     // the length has a place to land
+}
+
+// --- the growable arena --------------------------------------------------
+// One chunk at a time: when the current mapping is full, a new one is mapped
+// and becomes current. Nothing is freed, so every earlier pointer stays valid.
+
+let arena_base: ptr = 0;
+let arena_used: i32 = 0;
+let arena_size: i32 = 0;
+// A single request larger than this is refused rather than mapped: a typo in
+// a size must not ask the kernel for a gigabyte.
+const kArenaMaxChunk: i32 = 67108864;   // 64 MiB
+
+fn arena_new_chunk(n: i32) -> ptr {
+    let want: i32 = n < 65536 ? 65536 : n;
+    let p: ptr = mmap(ptr(0), want, 3, 34, 0 - 1, 0);
+    if (p == 0) { return 0; }
+    arena_base = p;
+    arena_used = 0;
+    arena_size = want;
+    return p;
+}
+
+// alloc(n): n bytes, 8-byte aligned, from the growable arena; 0 when n <= 0 or
+// the request is beyond kArenaMaxChunk.
+fn alloc(n: i32) -> ptr {
+    if (n <= 0) { return 0; }
+    if (n > kArenaMaxChunk) { return 0; }
+    let need: i32 = (n + 7) & (0 - 8);
+    if (arena_base == 0) {
+        if (arena_new_chunk(need) == 0) { return 0; }
+    }
+    if (arena_used + need > arena_size) {
+        if (arena_new_chunk(need) == 0) { return 0; }
+    }
+    let p: ptr = arena_base + arena_used;
+    arena_used = arena_used + need;
+    return p;
+}
+
+// ralloc(p, old_n, new_n): a copy into a fresh block, which is all a grow-only
+// arena can promise. Answers the new pointer (0 on failure); the old one keeps
+// its bytes at its old address.
+fn ralloc(p: ptr, old_n: i32, new_n: i32) -> ptr {
+    if (new_n <= 0) { return 0; }
+    if (p != 0 && new_n <= old_n) { return p; }
+    let q: ptr = alloc(new_n);
+    if (q == 0) { return 0; }
+    if (p != 0) {
+        let copy: i32 = old_n < new_n ? old_n : new_n;
+        let i: i32 = 0;
+        while (i < copy) {
+            store_u8(q + i, load_u8(p + i));
+            i = i + 1;
+        }
+    }
+    return q;
+}
+
+// --- a byte buffer -------------------------------------------------------
+// `Buf` is a pointer/length/capacity triple. It lives in the caller's storage
+// (or in the arena), so a program decides where its buffers are; passing
+// `ptr<Buf>` keeps the ABI to one register.
+
+struct Buf { data: ptr, count: i32, cap: i32 }
+
+fn buf_init(b: ptr<Buf>, cap: i32) -> i32 {
+    let want: i32 = cap < 16 ? 16 : cap;
+    b.data = alloc(want);
+    if (b.data == 0) { return 0 - 1; }
+    b.count = 0;
+    b.cap = want;
+    store_u8(b.data, 0);
+    return 0;
+}
+
+fn buf_free(b: ptr<Buf>) -> i32 {
+    b.data = 0;
+    b.count = 0;
+    b.cap = 0;
+    return 0;
+}
+
+fn buf_reserve(b: ptr<Buf>, extra: i32) -> i32 {
+    let need: i32 = b.count + extra + 1;
+    if (need <= b.cap) { return 0; }
+    let want: i32 = b.cap * 2;
+    let cap: i32 = want < need ? need : want;
+    let bigger: ptr = ralloc(b.data, b.cap, cap);
+    if (bigger == 0) { return 0 - 1; }
+    b.data = bigger;
+    b.cap = cap;
+    return 0;
+}
+
+fn buf_append(b: ptr<Buf>, s: ptr<u8>, n: i32) -> i32 {
+    if (n <= 0) { return b.count; }
+    if (buf_reserve(b, n) != 0) { return 0 - 1; }
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(b.data + b.count + i, load_u8(s + i));
+        i = i + 1;
+    }
+    b.count = b.count + n;
+    store_u8(b.data + b.count, 0);
+    return b.count;
+}
+
+fn buf_appends(b: ptr<Buf>, s: ptr<u8>) -> i32 { return buf_append(b, s, strlen(s)); }
+
+fn buf_putc(b: ptr<Buf>, c: i32) -> i32 {
+    if (buf_reserve(b, 1) != 0) { return 0 - 1; }
+    store_u8(b.data + b.count, c & 255);
+    b.count = b.count + 1;
+    store_u8(b.data + b.count, 0);
+    return b.count;
+}
+
+fn buf_reset(b: ptr<Buf>) -> i32 {
+    b.count = 0;
+    if (b.data != 0) { store_u8(b.data, 0); }
+    return 0;
+}
+
+// buf_cstr(b): NUL terminate in place and hand back the bytes, so a buffer can
+// be passed to any `ptr<u8>` consumer.
+fn buf_cstr(b: ptr<Buf>) -> ptr<u8> {
+    if (b.data == 0) { return 0; }
+    store_u8(b.data + b.count, 0);
+    return b.data;
+}
+
+// --- integer and pointer vectors -----------------------------------------
+// No generics, so the two element kinds the compiler needs are concrete types
+// built the same way: a length, a capacity, and a block of elements.
+
+struct Vec32 { data: ptr, count: i32, cap: i32 }
+struct VecPtr { data: ptr, count: i32, cap: i32 }
+
+fn vec32_init(v: ptr<Vec32>, cap: i32) -> i32 {
+    let want: i32 = cap < 8 ? 8 : cap;
+    v.data = alloc(want * 4);
+    if (v.data == 0) { return 0 - 1; }
+    v.count = 0;
+    v.cap = want;
+    return 0;
+}
+fn vec32_free(v: ptr<Vec32>) -> i32 { v.data = 0; v.count = 0; v.cap = 0; return 0; }
+fn vec32_push(v: ptr<Vec32>, x: i32) -> i32 {
+    if (v.count >= v.cap) {
+        let bigger: ptr = ralloc(v.data, v.cap * 4, v.cap * 8);
+        if (bigger == 0) { return 0 - 1; }
+        v.data = bigger;
+        v.cap = v.cap * 2;
+    }
+    store_i64(v.data + v.count * 4, i64(x));
+    v.count = v.count + 1;
+    return v.count;
+}
+fn vec32_get(v: ptr<Vec32>, i: i32) -> i32 {
+    if (i < 0 || i >= v.count) { return 0; }
+    return i32(load_i64(v.data + i * 4));
+}
+fn vec32_set(v: ptr<Vec32>, i: i32, x: i32) -> i32 {
+    if (i < 0 || i >= v.count) { return 0 - 1; }
+    store_i64(v.data + i * 4, i64(x));
+    return x;
+}
+
+fn vecptr_init(v: ptr<VecPtr>, cap: i32) -> i32 {
+    let want: i32 = cap < 8 ? 8 : cap;
+    v.data = alloc(want * 8);
+    if (v.data == 0) { return 0 - 1; }
+    v.count = 0;
+    v.cap = want;
+    return 0;
+}
+fn vecptr_free(v: ptr<VecPtr>) -> i32 { v.data = 0; v.count = 0; v.cap = 0; return 0; }
+fn vecptr_push(v: ptr<VecPtr>, x: ptr) -> i32 {
+    if (v.count >= v.cap) {
+        let bigger: ptr = ralloc(v.data, v.cap * 8, v.cap * 16);
+        if (bigger == 0) { return 0 - 1; }
+        v.data = bigger;
+        v.cap = v.cap * 2;
+    }
+    store_i64(v.data + v.count * 8, i64(x));
+    v.count = v.count + 1;
+    return v.count;
+}
+fn vecptr_get(v: ptr<VecPtr>, i: i32) -> ptr {
+    if (i < 0 || i >= v.count) { return 0; }
+    return ptr(load_i64(v.data + i * 8));
+}
+fn vecptr_set(v: ptr<VecPtr>, i: i32, x: ptr) -> i32 {
+    if (i < 0 || i >= v.count) { return 0 - 1; }
+    store_i64(v.data + i * 8, i64(x));
+    return 0;
+}
+
+// --- diagnostics ---------------------------------------------------------
+// There is no `exit` intrinsic: a program leaves through `main`'s return. So
+// `panic` reports on stderr and answers the code the caller should return.
+fn eputs(s: ptr<u8>) -> i32 { return write_all(2, s, strlen(s)); }
+
+// No string literal here on purpose: a literal becomes an object symbol with a
+// per-file counter (`__aster_string_0`), so a library carrying one would collide
+// at link time with every consumer that carries its own. The prefix and the
+// newline are assembled in bytes instead — see the note in
+// docs/language-reference.md and audit A-25.
+fn panic(msg: ptr<u8>) -> i32 {
+    let prefix: u8[8] = 0;
+    store_u8(prefix, 97);      // 'a'
+    store_u8(prefix + 1, 115); // 's'
+    store_u8(prefix + 2, 116); // 't'
+    store_u8(prefix + 3, 101); // 'e'
+    store_u8(prefix + 4, 114); // 'r'
+    store_u8(prefix + 5, 58);  // ':'
+    store_u8(prefix + 6, 32);  // ' '
+    store_u8(prefix + 7, 0);
+    let nl: u8[2] = 0;
+    store_u8(nl, 10);
+    write_all(2, prefix, 7);
+    write_all(2, msg, strlen(msg));
+    write_all(2, nl, 1);
+    return 1;
 }

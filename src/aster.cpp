@@ -3279,6 +3279,15 @@ public:
             // with the initializer left behind in the file that owns it.
             Global d;
             d.name=g.name;d.ty=g.ty;d.isArray=g.isArray;d.count=g.count;d.isBool=g.isBool;d.align=g.align;
+            // v0.23.77-dev: the per-dimension lengths and the remaining type
+            // facts travel with the declaration. They did not, so an included
+            // *array* global arrived with an empty `dims` while `isArray` said
+            // yes — and the first reader of `dims[0]` walked off the end of it:
+            // `include` of any file that declares an array crashed the
+            // compiler. `isConst` and a fn-pointer's signature are declarations
+            // too (a header's const stays const, its handler keeps its shape).
+            d.dims=g.dims;d.isConst=g.isConst;d.isString=g.isString;
+            if(g.isFunc){d.isFunc=true;d.funcSig=g.funcSig;}
             d.external=true;d.fromInclude=true;
             // v0.23.52-dev: `tls` travels across an include too. It was the one
             // field the copy dropped, so a `tls let` declared in an included

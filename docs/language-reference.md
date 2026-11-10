@@ -1635,7 +1635,7 @@ otherwise too).
 A `-g` build is per-object: each `build-obj -g` carries its own unit and line
 program, and `link-obj` merges them (§11).
 
-## 11b. `static` locals
+## 11e. `static` locals
 
 ```aster
 fn next_id() -> i32 {
@@ -1662,7 +1662,7 @@ fn next_id() -> i32 {
 * Declaring the same name twice in one function is an error; an array declared
   static cannot be assigned as a whole, exactly as any other array.
 
-## 11c. What is not in the language
+## 11f. What is not in the language
 
 There is no gap left in the statement grammar: `static let` (11b) covers state
 that outlives a call, and floating-point literals take an exponent form. What
@@ -1680,6 +1680,34 @@ and in C and compares the two outputs, so an operator whose lowering drifts is
 caught by the machine rather than by a reader.
 
 ## 12. The standard library (v0.23.42-dev)
+
+### Taking the library
+
+`include "stdlib/aster_std.ast";` brings every declaration the library makes —
+the `struct` types included, which is why `include` is the way to reach
+`Buf`/`Vec32` — and `build-obj` + `link-obj` supplies the bodies:
+
+```sh
+aster build-obj your.ast -o your.o
+aster build-obj stdlib/aster_std.ast -o std.o
+aster link-obj your.o std.o -o your
+```
+
+Two rules follow from the object model, both pinned by `tests/stdlib-io-checks.sh`:
+
+* **A library file carries no string literal.** A literal becomes an object
+  symbol named `__aster_string_<n>` with a per-file counter, so a library that
+  has one collides at link time with every consumer that has its own
+  (`duplicate global symbol '__aster_string_0'`). The library assembles its one
+  message from bytes instead; the compiler-side fix (local symbols, or names
+  derived from content) re-records the frozen byte baseline, so it is recorded
+  as audit A-25 rather than done here.
+* **An included array declaration keeps its shape.** The merge used to copy a
+  declaration's name and type but drop its per-dimension lengths, so including
+  any file that declares an array crashed the compiler; it now carries `dims`,
+  `isConst`, `isString` and a fn-pointer's signature, and layer [7] of that suite
+  is the regression.
+
 
 `stdlib/aster_std.ast` is the first slice of a library written in Aster
 itself — pure Aster over the byte intrinsics, no compiler change. Because
@@ -1702,6 +1730,10 @@ aster link-obj app.o std.o -o app
 | format (v0.23.77-dev) | `fmt_i32(buf, v) -> i32`, `fmt_hex(buf, v, digits) -> i32` — fixed-arity writers returning the byte count, because there is no variadic call |
 | format (v0.23.77-dev) | `fmt_f64(buf, v, digits) -> i32`, `fmt_f32(buf, v, digits) -> i32` — a double in fixed point (0..9 digits, half-up, `nan`/`inf` like C), returning the byte count |
 | sort (v0.23.77-dev) | `sort_i32(a: ptr, n: i32) -> i32` — ascending insertion sort |
+| files (v0.23.77-dev) | `fd_open(path, flags, mode)`, `fd_read`, `fd_write`, `fd_close` (raw `openat`/`read`/`write`/`close`, -1 for failure), `write_all(fd, buf, n)` (a short write is legal, so it loops), `file_size(path) -> i64` (an `fstat`; `st_size` sits at byte 48 of the AArch64 `struct stat`), `slurp(path) -> ptr` (the whole file, NUL terminated, 0 on failure) and `slurp_bytes(path, out_len)` (the same, with the length written through a byte buffer) |
+| arena (v0.23.77-dev) | `alloc(n) -> ptr` — a **growable** bump arena: when the current mapping is full another is mapped and becomes current, nothing is returned to the kernel, so every earlier pointer stays valid; 0 for `n <= 0` or a request past 64 MiB. `ralloc(p, old_n, new_n)` copies into a fresh block. `malloc`/`free` keep their v0.23.42-dev contract (one 64 KiB mapping, 0 when exhausted) |
+| buffers (v0.23.77-dev) | `struct Buf { data: ptr, count: i32, cap: i32 }` with `buf_init`, `buf_free`, `buf_reserve`, `buf_append`, `buf_appends`, `buf_putc`, `buf_reset`, `buf_cstr`; `struct Vec32` and `struct VecPtr` with `init`/`push`/`get`/`set`/`free` each (two concrete types, because the language has no generics) |
+| diagnostics (v0.23.77-dev) | `eputs(s)` writes to fd 2; `panic(msg) -> i32` reports `aster: <msg>` on stderr and **answers the code the caller should return** — there is no `exit` intrinsic, a program leaves through `main` |
 | heap (v0.23.77-dev) | `malloc(n: i32) -> ptr` (a 64 KiB `mmap` bump allocator, 8-byte aligned, 0 when exhausted) and `free(p) -> i32` (the documented no-op answering 0) |
 | --- | --- |
 | mem | `memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` · `memset(dst: ptr<u8>, c: i32, n: i32) -> i32` · `memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32` |

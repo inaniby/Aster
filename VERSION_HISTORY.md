@@ -227,6 +227,30 @@ breaking this project's own `-Werror` build.
   integer spellings, three refusals, a folded global (1500 lands in `.data` as
   `0x4097700000000000`) and a mutation that drops the sign.
 
+* **The basic library** — `stdlib/aster_std.ast` grows from 29 to **60
+  routines**, still one object that imports nothing: file helpers (`fd_open`,
+  `fd_read`, `fd_write`, `fd_close`, `write_all`, `file_size`, `slurp`,
+  `slurp_bytes`), a **growable arena** (`alloc`/`ralloc` — when the current
+  mapping fills, another is mapped and nothing is returned to the kernel, so a
+  pointer stays valid; `malloc`/`free` keep their frozen 64 KiB contract), a
+  **byte buffer** (`struct Buf` + eight operations) and **two vectors**
+  (`struct Vec32`, `struct VecPtr`), plus `eputs`/`panic` for diagnostics.
+  Consumers take the declarations — the struct types included — through
+  `include` and the bodies through `link-obj`; `tests/stdlib-io-checks.sh`
+  (nine layers) runs a demo against a POSIX C twin byte for byte, and pins the
+  files round trip, the arena past its first chunk, the include path and a
+  mutation.
+  **Two defects fell out of building it.** `include` of any file that declares
+  an *array* global crashed the compiler: `mergeIncluded` copied a declaration's
+  name and type but not its per-dimension lengths, and the first reader of
+  `dims[0]` ran off the end — the merge now carries `dims`, `isConst`,
+  `isString` and a fn-pointer's signature. And a *library* object cannot carry a
+  string literal: literals become `__aster_string_<n>` symbols with a per-file
+  counter, so two objects that each have one collide at link time; fixing that
+  properly (local symbols or content-derived names) re-records the frozen byte
+  baseline, so it is recorded as audit A-25 and the library assembles its one
+  message from bytes.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
