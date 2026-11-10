@@ -456,6 +456,16 @@ breaking this project's own `-Werror` build.
   the members now; the suite still fails later on its own pre-existing staleness
   (the sret prologue guard), which is queued separately.
 
+* **`struct` in the bootstrap subset, end to end** (slices 1-2c) - a named
+  group of `i32` fields, up to eight of them, that can be declared, initialised
+  by a literal, stored in a local or a global, read and written through a
+  field, passed by value and returned. AAPCS64's three composite cases are all
+  there: one register (<= 8 bytes), a register pair (9..16), and memory with the
+  hidden `X8` pointer (17..32). Both directions of a call walk a register
+  cursor, because a pair consumes two registers and a memory argument consumes
+  none. Nine fixtures hold it to the twin, and `docs/language-spec.md` carries
+  the chapter.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

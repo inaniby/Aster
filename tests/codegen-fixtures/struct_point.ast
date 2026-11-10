@@ -1,0 +1,15 @@
+struct Point { x: i32, y: i32 }
+
+let origin: Point = Point { 0, 0 };
+
+fn add(p: Point, q: Point) -> Point {
+    let r: Point = Point { p.x + q.x, p.y + q.y };
+    return r;
+}
+
+fn main() -> i32 {
+    let a: Point = Point { 1, 2 };
+    let b: Point = Point { 3, 4 };
+    let c: Point = add(a, b);
+    return c.x + c.y;
+}

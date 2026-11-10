@@ -2007,3 +2007,79 @@ The rules:
 (`tests/function-return-fn-twin.c`); `tests/function-return-fn-checks.sh`
 [8/8] holds the contract (12 differential cases, 6 rejections, a coverage map
 and a 6-mutant layer).
+
+
+## `struct` in the bootstrap subset (v0.23.77-dev, slices 1 to 2c)
+
+A struct is the subset's first aggregate type, and the work of adding it is the
+work of noticing everywhere the compiler had assumed "a value is one word".
+
+### The parser side
+
+- `struct Name { f: i32, g: i32 }` sits at top level. Fields are `i32` only, at
+  most eight to a struct, at most 64 structs; the layout is `i * 4`.
+- **The tag space is dynamic**: a struct's type tag is `32 + index`, so
+  `tyIs64`, `tyWidth` and every width decision see a struct through the same
+  functions they always used. Nothing in the subset knows the difference.
+- `allow_struct_type` gates the type parser. Exactly four places open it - a
+  local `let`, a return type, a parameter type and a global - and it is closed
+  again immediately, so a struct type anywhere else still gets the subset
+  refusal **with its position** rather than a confusing follow-on error.
+- Three node shapes, all new to the generated tables in the host's own numbers
+  (`E_Field` 20, `E_StructLit` 22, `S_FieldAssign` 66), so `gen_parser_names.py`
+  keeps them in step with the host's lists:
+  - `p.f` is `E_Field`, a leaf-shaped node whose **token is the field name** and
+    whose single child is the `E_Var` of the base;
+  - `p.f = v` is `S_FieldAssign`, token the field name, children
+    `[E_Var(base), rhs]`;
+  - `P { 1, 2 }` is `E_StructLit`, token the struct name, children the values.
+
+### The code generator side
+
+- A struct local occupies `ty_slots(t) = (struct_size + 7) / 8` slots, so
+  `cg_add_local` advances the slot cursor by that much, not by one.
+- `let p: P;` zero-fills the local slot by slot (`STR XZR`); `let p: P = P { a, b };`
+  stores each value at `slot * 8 + field offset` instead.
+- A field access is an address: the frame slot (or `ADRP`/`ADD` for a global)
+  plus the field's offset, with the add at **64-bit** width - a 32-bit `ADD`
+  truncates the pointer, which is exactly the bug this slice shipped first.
+- A struct global is `struct_size` bytes in `.bss`; `__aster_init` stores the
+  literal's values at their offsets. `cg_globals` must size it by
+  `struct_size`, not by `ty_width`.
+
+### AAPCS64: the three composite cases
+
+The subset implements all three, and each has one limit:
+
+| size | argument | return | limit in the subset |
+|---|---|---|---|
+| <= 8 bytes | one register `Xn` | `X0` | none |
+| 9..16 bytes | register pair `Xn/Xn+1` | `X0/X1` | the argument must be a **variable** (its two halves are copied from its own storage); a pair crossing the eight-register boundary is refused |
+| 17..32 bytes | memory, at the caller's `SP+0` | `X8` hidden pointer | the argument must be a variable **and** the first stacked parameter; a return must be a variable, and only `let x: S = call();` consumes it |
+
+Both directions walk a **register cursor**, not the argument index, because a
+pair consumes two registers and a memory argument consumes none. The caller's
+outgoing area is its own `SP+0`, which the callee reads at `SP+8192` - the two
+frames are exactly one 8 KiB block apart.
+
+Three scratch slots carry the odd cases: `1020` holds the sret pointer for the
+life of the function (X8 is caller-saved), `1021` holds the second half of a
+pair return while the parked temporaries are restored, and `1022` holds `X0`.
+
+### Evidence
+
+| fixture | what it pins |
+|---|---|
+| `struct.ast` | declaration, zero-filled local, field read and write |
+| `struct_lit.ast` | a literal, and one built from another's fields |
+| `struct_ret.ast` | a <= 8-byte return in X0 |
+| `struct_arg.ast` | a <= 8-byte argument, alone and before an `i32` |
+| `struct_pair.ast` | 8- and 12-byte parameters through the register cursor |
+| `struct_pair_ret.ast` | a 12-byte return in X0/X1 |
+| `struct_sret.ast` | a 20-byte return through X8 |
+| `struct_stk.ast` | a 20-byte argument on the stack |
+| `struct_global.ast` | a struct global, read then written through a field |
+
+`tests/codegen-checks.sh` holds them all to the twin: for every fixture the
+stage's ELF and the twin's are byte-identical, and the seven mutation probes
+still diverge.

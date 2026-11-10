@@ -1691,6 +1691,34 @@ The accept rule is shared by all three: an edit distance of at most two, and
 strictly less than the shorter of the two names — so a one-character field is
 never suggested for a two-letter typo.
 
+## 11e3. Structs
+
+A struct is a named group of `i32` fields, and the subset now carries one end to
+end:
+
+```aster
+struct Point { x: i32, y: i32 }
+
+let origin: Point = Point { 0, 0 };      // a struct global
+
+fn add(p: Point, q: Point) -> Point {    // passed and returned by value
+    let r: Point = Point { p.x + q.x, p.y + q.y };
+    return r;
+}
+
+fn main() -> i32 {
+    let a: Point = Point { 1, 2 };
+    let b: Point = Point { 3, 4 };
+    let c: Point = add(a, b);
+    return c.x + c.y;                    // 10
+}
+```
+
+The limits are sizes, not shapes: a struct may hold at most eight fields (32
+bytes), a function may pass and return one by value at any size up to that, and
+a 9-byte-or-larger struct argument must be a plain variable. A struct literal is
+an *initializer* - `let p: Point = Point { 1, 2 };` - never an ordinary value.
+
 ## 11f. What is not in the language
 
 There is no gap left in the statement grammar: `static let` (11b) covers state
