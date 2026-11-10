@@ -70,7 +70,7 @@ enum {
     N_IncDec = 134,
 };
 
-/* The 8 type tags (§2.4). */
+/* The 9 type tags (§2.4). */
 enum {
     TY_I32 = 1,
     TY_I64 = 2,
@@ -80,6 +80,7 @@ enum {
     TY_PTR_I32 = 6,
     TY_PTR_I64 = 7,
     TY_U64 = 8,
+    TY_F64 = 9,
 };
 
 /* The name tables, the C shape of the Aster side's packed
@@ -157,7 +158,7 @@ static const char *const NK_NAMES[NK_COUNT] = {
     "IncDec",
 };
 
-#define TYT_COUNT 8
+#define TYT_COUNT 9
 static const char *const TY_NAMES[TYT_COUNT] = {
     "i32",
     "i64",
@@ -167,6 +168,7 @@ static const char *const TY_NAMES[TYT_COUNT] = {
     "ptr<i32>",
     "ptr<i64>",
     "u64",
+    "f64",
 };
 
 #endif /* ASTER_PARSER_NAMES_H */

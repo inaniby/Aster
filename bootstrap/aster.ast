@@ -247,7 +247,7 @@ let N_Block: i32 = 132;
 let N_Case: i32 = 133;
 let N_IncDec: i32 = 134;
 
-// The 8 type tags (§2.4).
+// The 9 type tags (§2.4).
 let TY_I32: i32 = 1;
 let TY_I64: i32 = 2;
 let TY_U8: i32 = 3;
@@ -256,18 +256,19 @@ let TY_PTR_U8: i32 = 5;
 let TY_PTR_I32: i32 = 6;
 let TY_PTR_I64: i32 = 7;
 let TY_U64: i32 = 8;
+let TY_F64: i32 = 9;
 
 // The kind names, four packed tables of 16-byte records: a
 // record is the name's bytes, NUL-padded. entab is the
 // host's full Expr::Kind list (36 records, so a kind's
 // record sits at its own number); sntab is Stmt::Kind (15);
 // nntab the structural kinds (7); tytab the type spellings
-// (8, tag 1 at record 0). The dump picks the table by the
+// (9, tag 1 at record 0). The dump picks the table by the
 // kind's space (§9): < 64 entab, < 128 sntab, else nntab.
 let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0Cast\0\0\0\0\0\0\0\0\0\0\0\0";
 let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Switch\0\0\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0DoWhile\0\0\0\0\0\0\0\0\0Nop\0\0\0\0\0\0\0\0\0\0\0\0\0";
 let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0Case\0\0\0\0\0\0\0\0\0\0\0\0IncDec\0\0\0\0\0\0\0\0\0\0";
-let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0u64\0\0\0\0\0\0\0\0\0\0\0\0\0";
+let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0u64\0\0\0\0\0\0\0\0\0\0\0\0\0f64\0\0\0\0\0\0\0\0\0\0\0\0\0";
 // ---- END GENERATED: parser names ----
 
 // ---------------------------------------------------------------------------
@@ -369,6 +370,9 @@ let lname_depth: i32 = 0;
 let perr: i32 = 0;                // the first-error flag; every die_* sets it
 let numval: i64 = 0;              // the converted number (§6.2)
 let numu: u64 = 0;                // the same value, wide (§6.2, v0.23.77-dev)
+let numf: i64 = 0;                // the bits of a float literal (v0.23.77-dev)
+let nflt: i32[65536] = 0;         // per node: 1 when it is a float literal
+let tflt: i32[131072] = 0;        // per token: 1 when the Number spelled a '.'
 let numflag: i32 = 0;             // 0 fits, 1 too large (P52/P53), 2 saturated above i64max (P51)
 let numcnt: i32 = 0;              // the same value as an i32 count, saturated at 1048577
 let nparams: i32 = 0;             // the parameters of the function being parsed (P6, P7)
@@ -481,6 +485,11 @@ fn is_xdigit(c: i32) -> i32 {
 fn peek() -> i32 {
     if (pos >= srclen) { return 0; }
     return load_u8(srcbuf + pos);
+}
+fn peek_at(k: i32) -> i32 {
+    let i: i32 = pos + k;
+    if (i >= srclen) { return 0; }
+    return load_u8(srcbuf + i);
 }
 fn peek2() -> i32 {
     if (pos + 1 >= srclen) { return 0; }
@@ -1141,7 +1150,18 @@ fn scan_one() -> i32 {
                     while (is_xdigit(peek()) == 1) { take(); }
                 }
             }
-            return push(K_Number, start, pos - start, l, c);
+            // v0.23.77-dev: a '.' followed by a digit makes it a float literal
+            let fl: i32 = 0;
+            if (peek() == 46 && is_digit(peek_at(1)) == 1) {
+                take();
+                while (is_digit(peek()) == 1) { take(); }
+                fl = 1;
+            }
+            if (push(K_Number, start, pos - start, l, c) != 0) { return 1; }
+            // v0.23.77-dev: a float literal is a Number token with a dot in it;
+            // the side table keeps the token enum exactly as it was.
+            if (fl == 1) { tflt[ntoks - 1] = 1; }
+            return 0;
         }
         // --- string literal: decode into strpool ---
         if (ch == 34) {
@@ -1565,6 +1585,32 @@ fn gt_lit(p: i32, lit: ptr<u8>) -> i32 {
     }
     return 0;
 }
+// A float literal's bits, from its own text: the digits either side of the
+// point, and a decimal exponent of minus the fraction's length. The heavy
+// lifting is f64_from_dec, which the stage carries in its core region.
+fn convert_float(t: i32) -> i32 {
+    let start: i32 = tstart[t];
+    let n: i32 = tlen[t];
+    numu = 0;
+    let frac: i32 = 0;
+    let seen_dot: i32 = 0;
+    let i: i32 = 0;
+    while (i < n) {
+        let ch: i32 = load_u8(srcbuf + start + i);
+        if (ch == 46) { seen_dot = 1; }
+        else {
+            let d: u64 = digit_val(ch);
+            numu = numu * 10 + d;
+            if (seen_dot == 1) { frac = frac + 1; }
+        }
+        i = i + 1;
+    }
+    let bits: i64 = f64_from_dec(numu, 0 - frac);
+    numf = bits;
+    numflag = 3;             // float: wval carries the bit pattern
+    return 0;
+}
+
 fn convert_num(t: i32) -> i32 {
     let start: i32 = tstart[t];
     let n: i32 = tlen[t];
@@ -1908,13 +1954,15 @@ fn parse_expr() -> i32 {
             if (k == K_Number) {
                 let nt: i32 = ppos;
                 advance();
-                convert_num(nt);
+                let isflt: i32 = tflt[nt];
+                if (isflt == 1) { convert_float(nt); } else { convert_num(nt); }
                 if (numflag == 1) {
                     die_at("integer literal is too large", tok_line(nt), tok_col(nt));
                     return 0;
                 }
                 let v: i32 = newnode(E_Num, nt);
                 if (v == 0) { return 0; }
+                if (isflt == 1) { nflt[v - 1] = 1; }
                 if (vpush(v) != 0) { return 0; }
                 state = 1;
                 continue;
@@ -2218,6 +2266,9 @@ fn parse_type() -> i32 {
     if (k == K_U64) { advance(); return TY_U64; }
     if (k == K_Ptr) { return ptr_type(); }
     if (k == K_Ident) {
+        // v0.23.77-dev: `f64` is not a keyword in this language - the host's
+        // type parser recognises the spelling, and so does this one
+        if (name_is("f64") == 1) { advance(); return TY_F64; }
         let si2: i32 = struct_find(ppos);
         if (si2 >= 0) {
             if (allow_struct_type == 0) {
@@ -2630,6 +2681,10 @@ fn let_stmt() -> i32 {
     let ty: i32 = parse_type();
     allow_struct_type = 0;
     if (perr != 0) { return 0; }
+    if (ty == TY_F64) {
+        die_at("f64 values are not in the bootstrap subset yet: the literal converts to its exact bits, the code generator does not carry them", tok_line(nt), tok_col(nt));
+        return 0;
+    }
     if (ty_is_struct(ty) == 1) {
         // v0.23.77-dev: a struct local is declared *without* an initializer and
         // zero-filled; the subset has no struct-literal syntax.
@@ -3815,6 +3870,11 @@ fn tc_expr(h: i32) -> i32 {
 // rules (§7). Returns 1 on the first type error.
 fn tc_combine(n: i32) -> i32 {
     let k: i32 = nkind[n - 1];
+    if (k == E_Num && nflt[n - 1] == 1) {
+        ex_ty[n - 1] = TY_F64;
+        ex_arr[n - 1] = 0;
+        return 0;
+    }
     if (k == E_Num) {
         convert_num(ntok[n - 1]);
         if (numval >= -2147483648 && numval <= 2147483647) { ex_ty[n - 1] = TY_I32; }
@@ -5865,6 +5925,11 @@ fn main() -> i32 {
 }
 fn gen_leaf(n: i32, want: i32) -> i32 {
     let k: i32 = nkind[n - 1];
+    if (k == E_Num && nflt[n - 1] == 1) {
+        // the value is exact and known; the generator has no F register to put
+        // it in, so it says so rather than emitting the integer path
+        if (cg_die_at_node("f64 values are not in the bootstrap subset yet: the literal converts to its exact bits, the code generator does not carry them", n) != 0) { return -1; }
+    }
     if (k == E_Num) {
         convert_num(ntok[n - 1]);
         let d: i32 = alloc_tmp();
