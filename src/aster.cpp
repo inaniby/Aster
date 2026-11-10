@@ -243,6 +243,38 @@ enum class TK { End, Ident, Number, String,
 // still matches; the hint is appended, and only when a declared function is
 // within two edits or starts with the name (a unique prefix). Nothing is added
 // when nothing is close, so an unknown name reads exactly as it always did.
+static std::string nearestFrom(const std::string& want,const std::vector<std::string>& cands){
+    auto edits=[&](const std::string& a,const std::string& b){
+        const size_t n=a.size(),m=b.size();
+        std::vector<size_t> prev(m+1),cur(m+1);
+        for(size_t j=0;j<=m;++j)prev[j]=j;
+        for(size_t i=1;i<=n;++i){
+            cur[0]=i;
+            for(size_t j=1;j<=m;++j){
+                const size_t sub=prev[j-1]+(a[i-1]==b[j-1]?0u:1u);
+                cur[j]=std::min(sub,std::min(prev[j]+1,cur[j-1]+1));
+            }
+            prev.swap(cur);
+        }
+        return prev[m];
+    };
+    std::string best;
+    size_t bestD=3;
+    for(const auto& cand:cands){
+        if(cand==want)continue;
+        const size_t d=edits(want,cand);
+        if(d<bestD){bestD=d;best=cand;}
+    }
+    if(best.empty()&&want.size()>=2){
+        for(const auto& cand:cands){
+            if(cand.size()>want.size()&&cand.compare(0,want.size(),want)==0){
+                if(!best.empty())return std::string();
+                best=cand;
+            }
+        }
+    }
+    return best;
+}
 static std::string nearestDeclared(const std::string& want,const std::map<std::string,size_t>& names){
     auto edits=[&](const std::string& a,const std::string& b){
         const size_t n=a.size(),m=b.size();
@@ -4794,7 +4826,15 @@ struct Codegen {
                 if(functionArities.count(e.name)&&!externFunctions.count(e.name)){
                     emitGlobalAddress(e.name);int d=temp();emit(0xaa1003e0u|uint32_t(d));return d;
                 }
-                throw Error(loc(e.line,e.col,"unknown variable: "+e.name));
+                {
+                    std::string msg="unknown variable: "+e.name;
+                    std::vector<std::string> cands;
+                    for(const auto& g:globals)cands.push_back(g);
+                    for(const auto& kv:functionArities)cands.push_back(kv.first);
+                    const std::string near=nearestFrom(e.name,cands);
+                    if(!near.empty())msg+=" (did you mean '"+near+"'?)";
+                    throw Error(loc(e.line,e.col,msg));
+                }
             }
             // v0.23.38-dev: `h.onClick(x)` — the call through a fn-pointer
             // field. The field's signature stages the arguments and names the
@@ -8227,7 +8267,15 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 // parameter, a load_ptr out of memory — never as a name.
                 if(arities.count(e.name))
                     throw Error(loc(e.line,e.col,"cannot take the address of extern function '"+e.name+"': its location is another object's business"));
-                throw Error(loc(e.line,e.col,"unknown variable: "+e.name));
+                {
+                    std::string msg="unknown variable: "+e.name;
+                    std::vector<std::string> cands;
+                    for(const auto& sc:scopes)for(const auto& kv:sc)cands.push_back(kv.first);
+                    for(const auto& kv:arities)cands.push_back(kv.first);
+                    const std::string near=nearestFrom(e.name,cands);
+                    if(!near.empty())msg+=" (did you mean '"+near+"'?)";
+                    throw Error(loc(e.line,e.col,msg));
+                }
             }
             case Expr::Call: return checkCall(e);
             // v0.23.38-dev: `h.onClick(x)` — the call through a fn-pointer

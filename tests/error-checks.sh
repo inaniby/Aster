@@ -45,6 +45,21 @@ fn print(x: i32) -> i32 { return x; }
 fn main() -> i32 { return prnt(1); }
 AST
 check_error tmp-typo-call.ast "did you mean 'print'?"
+# v0.23.77-dev: the same hint for a variable, from every live scope.
+cat > tmp-typo-var.ast <<'AST'
+fn main() -> i32 {
+    let counter: i32 = 1;
+    return cuonter;
+}
+AST
+check_error tmp-typo-var.ast "did you mean 'counter'?"
+cat > tmp-far-var.ast <<'AST'
+fn main() -> i32 { return zzzz; }
+AST
+if ./aster build-elf tmp-far-var.ast -o tmp-nohint2 >/dev/null 2>tmp-nohint2.err; then :; fi
+if grep -qF 'did you mean' tmp-nohint2.err; then
+    echo 'FAIL: an unknown variable with nothing close must not get a hint' >&2; exit 1
+fi
 cat > tmp-prefix-call.ast <<'AST'
 fn parse_thing(x: i32) -> i32 { return x; }
 fn main() -> i32 { return parse(1); }
