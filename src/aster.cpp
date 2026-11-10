@@ -263,7 +263,8 @@ static std::string nearestFrom(const std::string& want,const std::vector<std::st
     for(const auto& cand:cands){
         if(cand==want)continue;
         const size_t d=edits(want,cand);
-        if(d<bestD){bestD=d;best=cand;}
+        const size_t shorter=std::min(want.size(),cand.size());
+        if(d<=2&&d<shorter&&d<bestD){bestD=d;best=cand;}
     }
     if(best.empty()&&want.size()>=2){
         for(const auto& cand:cands){
@@ -296,7 +297,8 @@ static std::string nearestDeclared(const std::string& want,const std::map<std::s
         const std::string& cand=kv.first;
         if(cand==want)continue;
         const size_t d=edits(want,cand);
-        if(d<bestD){bestD=d;best=cand;}
+        const size_t shorter=std::min(want.size(),cand.size());
+        if(d<=2&&d<shorter&&d<bestD){bestD=d;best=cand;}
     }
     if(best.empty()&&want.size()>=2){
         for(const auto& kv:names){
@@ -703,6 +705,22 @@ struct StructDef {
 // has to say "struct" while the struct spelling stays byte-for-byte what every
 // existing suite asserts.
 static const char* structKindName(const StructDef& s){ return s.isUnion ? "union" : "struct"; }
+
+// v0.23.77-dev: the same nearest-name hint for a misspelt *field* - the
+// candidates are that struct's own field names. The message keeps its exact
+// prefix ("struct 'S' has no field named 'x'"), so the substring-pinned suites
+// still match, and nothing is appended when no field is close.
+static std::string nearestFieldName(const std::string& want,const StructDef& sd){
+    std::vector<std::string> cands;
+    for(const auto& fld:sd.fields)cands.push_back(fld.name);
+    return nearestFrom(want,cands);
+}
+static std::string noFieldMsg(const StructDef& sd,const std::string& name){
+    std::string msg="struct '"+sd.name+"' has no field named '"+name+"'";
+    const std::string near=nearestFieldName(name,sd);
+    if(!near.empty())msg+=" (did you mean '"+near+"'?)";
+    return msg;
+}
 // v0.23.61-dev: an enum is a nominal i32. Its enumerators are compile-time
 // integer constants (folded to Num at parse time in primary()), and the enum
 // name is a type spelling that resolves to Ty::Enum(sid). Two enums are
@@ -5135,7 +5153,7 @@ struct Codegen {
                 // instead of recomputing exprType.
                 const Ty base=e.a->type;
                 const StructField* f=structFieldOf(base,e.name);
-                if(!f)throw Error("struct '"+structOf(structBaseId(base,e.name)).name+"' has no field named '"+e.name+"'");
+                if(!f)throw Error(noFieldMsg(structOf(structBaseId(base,e.name)),e.name));
                 emitStructAddr(e);
                 int d=temp();emit(loadGlobalT(d,f->ty));   // LDR <T>d, [X16]
                 // An i32 field read into an i64 context is sign-extended, exactly
@@ -5951,7 +5969,7 @@ struct Codegen {
         if(e.k==Expr::Field){
             const Ty base=exprType(*e.a);
             const StructField* f=structFieldOf(base,e.name);
-            if(!f)throw Error("struct '"+structOf(structBaseId(base,e.name)).name+"' has no field named '"+e.name+"'");
+            if(!f)throw Error(noFieldMsg(structOf(structBaseId(base,e.name)),e.name));
             if(tyIsPtrToStruct(base)){
                 int r=gen(*e.a);                     // p.f : p holds the address
                 emit(movX(kGlobalBase,r));
@@ -8286,7 +8304,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 const Ty base=typeOf(*e.a);
                 const int sid=structBaseId(base,e.name);
                 const StructField* f=structOf(sid).find(e.name);
-                if(!f)throw Error(loc(e.line,e.col,"struct '"+structOf(sid).name+"' has no field named '"+e.name+"'"));
+                if(!f)throw Error(loc(e.line,e.col,noFieldMsg(structOf(sid),e.name)));
                 return f->ty;
             }
             case Expr::AddrOf: {
@@ -8775,7 +8793,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
         const Ty base=typeOf(*field.a);
         const int sid=structBaseId(base,field.name);
         const StructField* f=structOf(sid).find(field.name);
-        if(!f)throw Error(loc(field.line,field.col,"struct '"+structOf(sid).name+"' has no field named '"+field.name+"'"));
+        if(!f)throw Error(loc(field.line,field.col,noFieldMsg(structOf(sid),field.name)));
         if(!f->isFunc)
             throw Error(loc(e.line,e.col,"cannot call field '"+field.name+"': its type is "
                             +tyNameFull(f->ty)+", not a function type"));

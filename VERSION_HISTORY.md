@@ -443,6 +443,19 @@ breaking this project's own `-Werror` build.
   helper was split into a candidate-vector form (`nearestFrom`) that both
   diagnostics share.
 
+* **The hint covers a misspelt field too** — `struct 'P' has no field named
+  'btea' (did you mean 'beta'?)`, with that struct's own field names as the
+  candidates. The accept rule was also tightened while it was being shared: an
+  edit distance of at most two, and **strictly less than the shorter of the two
+  names**, so a one-character field is never suggested for a two-letter typo
+  (`p.zz` on `struct P { x }` now says nothing, where the first cut offered
+  `x`). Two more `tests/error-checks.sh` cases pin both halves.
+  **Also fixed:** `tests/struct-checks.sh`'s source guard pinned `Void };` as the
+  last `Ty::Kind` member, which the float round invalidated when it appended
+  `F32/F64` — the same stale-guard trap as the union suite's `Union };`. It pins
+  the members now; the suite still fails later on its own pre-existing staleness
+  (the sret prologue guard), which is queued separately.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

@@ -53,6 +53,26 @@ fn main() -> i32 {
 }
 AST
 check_error tmp-typo-var.ast "did you mean 'counter'?"
+# v0.23.77-dev: and for a field, from that struct's own field names.
+cat > tmp-typo-field.ast <<'AST'
+struct P { alpha: i32, beta: i32 }
+fn main() -> i32 {
+    let p: P = P { 1, 2 };
+    return p.btea;
+}
+AST
+check_error tmp-typo-field.ast "did you mean 'beta'?"
+cat > tmp-far-field.ast <<'AST'
+struct P { x: i32 }
+fn main() -> i32 {
+    let p: P = P { 1 };
+    return p.zz;
+}
+AST
+if ./aster build-elf tmp-far-field.ast -o tmp-nohint3 >/dev/null 2>tmp-nohint3.err; then :; fi
+if grep -qF 'did you mean' tmp-nohint3.err; then
+    echo 'FAIL: a one-character field name must not be suggested for a two-letter typo' >&2; exit 1
+fi
 cat > tmp-far-var.ast <<'AST'
 fn main() -> i32 { return zzzz; }
 AST

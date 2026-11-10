@@ -1685,6 +1685,12 @@ functions:
 aster: b.ast:3:12: error: unknown variable: cuonter (did you mean 'counter'?) at 3:12
 ```
 
+A misspelt **field** answers the same way, with that struct's own field names as
+the candidates (`struct 'P' has no field named 'btea' (did you mean 'beta'?)`).
+The accept rule is shared by all three: an edit distance of at most two, and
+strictly less than the shorter of the two names — so a one-character field is
+never suggested for a two-letter typo.
+
 ## 11f. What is not in the language
 
 There is no gap left in the statement grammar: `static let` (11b) covers state
