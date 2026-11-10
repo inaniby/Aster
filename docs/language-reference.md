@@ -1677,6 +1677,14 @@ Nothing is appended when nothing is close (`missing` reads exactly as before),
 and an ambiguous prefix says nothing rather than guessing. The hint is the
 host's alone: the self-hosted stage's diagnostics are its own frozen contract.
 
+The same hint covers an unknown **variable**, with the candidates taken from the
+scopes live at that point (every enclosing block's bindings) plus the declared
+functions:
+
+```
+aster: b.ast:3:12: error: unknown variable: cuonter (did you mean 'counter'?) at 3:12
+```
+
 ## 11f. What is not in the language
 
 There is no gap left in the statement grammar: `static let` (11b) covers state

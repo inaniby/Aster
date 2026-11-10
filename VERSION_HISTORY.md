@@ -436,6 +436,13 @@ breaking this project's own `-Werror` build.
   prefix (`parse` → `parse_thing`), and the negative — a name nothing is close
   to gets no hint.
 
+  The same hint now covers an unknown **variable**: the candidates are the
+  bindings of every scope live at that point plus the declared functions, so
+  `cuonter` answers `(did you mean 'counter'?)` while `zzzz` stays silent. Two
+  new `tests/error-checks.sh` cases (one positive, one negative) pin it, and the
+  helper was split into a candidate-vector form (`nearestFrom`) that both
+  diagnostics share.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
