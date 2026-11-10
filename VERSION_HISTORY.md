@@ -265,6 +265,21 @@ breaking this project's own `-Werror` build.
   `INT64_MAX`, `.5`, `1.`, `1e2`, `-0.5`), the iterator's boundaries, the
   baseline and a mutation.
 
+* **The basic library, third slice** — 71 → **87 routines**: a `struct Map`
+  (string keys to pointer values, open addressing over a power-of-two table of
+  16-byte slots, growing by rehashing past a half load; the map never copies a
+  key) and a width-generic sort — `sort_bytes(base, count, width, cmp)` with C's
+  `qsort` comparator contract as a function pointer, capped at 256-byte elements,
+  with typed wrappers `sort_i32`/`sort_i64`/`sort_u8`/`sort_str`. `sort_i32`
+  keeps its name and contract and is now a wrapper over the general form.
+  `tests/stdlib-map-checks.sh` (eight layers) diffs a demo against a C twin with
+  its own table and C's `qsort` byte for byte, then covers 502 entries across six
+  rehashes with every key findable, the degenerate sort sizes, a refused width,
+  a reverse input with a duplicate, and a comparator-direction mutation.
+  Writing it surfaced a rule worth stating: **the address of an extern function
+  cannot be taken**, so a consumer supplies its own comparator rather than the
+  library's.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

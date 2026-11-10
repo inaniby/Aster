@@ -8,7 +8,7 @@
 #
 # Layers:
 #   [1] strict build of the compiler
-#   [2] the library object: 71 routines, 10 globals, 1 UND
+#   [2] the library object: 87 routines, 10 globals, 1 UND
 #   [3] the demo runs and prints its summary line (through `include` + link)
 #   [4] the C twin agrees byte for byte
 #   [5] files: round trip, size, a missing path answers 0
@@ -37,10 +37,10 @@ ok 'compiler built'
 printf '%s\n' '[2/9] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$OUT/std.o" >"$OUT/std.log" 2>&1 \
     || fail "the library did not build: $(head -3 "$OUT/std.log")"
-grep -q '71 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
+grep -q '87 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
 und=$(readelf -sW "$OUT/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-ok '71 routines, 10 globals, 1 UND entry'
+ok '87 routines, 10 globals, 1 UND entry'
 
 printf '%s\n' '[3/9] the demo runs'
 cp tests/stdlib-io-demo.ast "$OUT/demo.ast"

@@ -1702,6 +1702,11 @@ Two rules follow from the object model, both pinned by `tests/stdlib-io-checks.s
   message from bytes instead; the compiler-side fix (local symbols, or names
   derived from content) re-records the frozen byte baseline, so it is recorded
   as audit A-25 rather than done here.
+* **A comparator must be defined in the calling file.** The address of an
+  *extern* function cannot be taken ("its location is another object's
+  business"), so a consumer cannot hand the library's own `cmp_i32_asc` to
+  `sort_bytes`; the typed wrappers call it internally (legal: defined in the same
+  object), and a caller supplies its own comparator for the general form.
 * **An included array declaration keeps its shape.** The merge used to copy a
   declaration's name and type but drop its per-dimension lengths, so including
   any file that declares an array crashed the compiler; it now carries `dims`,
@@ -1731,7 +1736,8 @@ aster link-obj app.o std.o -o app
 | strings, second slice (v0.23.77-dev) | `streq`, `starts_with`, `ends_with`, `trim` (strips spaces **in place** and answers the first non-space byte — the argument must be writable), `next_line(line)` (terminates the line in place, strips a trailing `\r`, answers the next line or 0 — iterate `while (ln != 0) { …; ln = next_line(ln); }`), `str_dup` (a copy in the arena) |
 | format (v0.23.77-dev) | `fmt_i32(buf, v) -> i32`, `fmt_hex(buf, v, digits) -> i32` — fixed-arity writers returning the byte count, because there is no variadic call |
 | format (v0.23.77-dev) | `fmt_f64(buf, v, digits) -> i32`, `fmt_f32(buf, v, digits) -> i32` — a double in fixed point (0..9 digits, half-up, `nan`/`inf` like C), returning the byte count |
-| sort (v0.23.77-dev) | `sort_i32(a: ptr, n: i32) -> i32` — ascending insertion sort |
+| sort (v0.23.77-dev) | `sort_bytes(base, count, width, cmp)` — an insertion sort over `count` elements of `width` bytes, ordered by a comparator that takes two element addresses and answers <0 / 0 / >0 (C's `qsort` contract, with the comparator as a function pointer); `width` is capped at 256 (the scratch buffer the swap needs) and a count below 2 is a no-op. Typed wrappers: `sort_i32`, `sort_i64`, `sort_u8`, `sort_str` (elements are `ptr` to NUL-terminated strings) |
+| map (v0.23.77-dev) | `struct Map { ents: ptr, count: i32, cap: i32 }` — string keys (a pointer the caller owns; **the map never copies a key**) to pointer values, open addressing with linear probing over a power-of-two table of 16-byte slots, growing by rehashing when the load passes a half. `map_init(m, cap)`, `map_put(m, key, val) -> i32` (1 new, 0 replaced, -1 refused), `map_get(m, key) -> ptr` (0 when absent), `map_has`. There is no deletion — the arena cannot hand memory back | `sort_i32(a: ptr, n: i32) -> i32` — ascending insertion sort |
 | files (v0.23.77-dev) | `fd_open(path, flags, mode)`, `fd_read`, `fd_write`, `fd_close` (raw `openat`/`read`/`write`/`close`, -1 for failure), `write_all(fd, buf, n)` (a short write is legal, so it loops), `file_size(path) -> i64` (an `fstat`; `st_size` sits at byte 48 of the AArch64 `struct stat`), `slurp(path) -> ptr` (the whole file, NUL terminated, 0 on failure) and `slurp_bytes(path, out_len)` (the same, with the length written through a byte buffer) |
 | arena (v0.23.77-dev) | `alloc(n) -> ptr` — a **growable** bump arena: when the current mapping is full another is mapped and becomes current, nothing is returned to the kernel, so every earlier pointer stays valid; 0 for `n <= 0` or a request past 64 MiB. `ralloc(p, old_n, new_n)` copies into a fresh block. `malloc`/`free` keep their v0.23.42-dev contract (one 64 KiB mapping, 0 when exhausted) |
 | buffers (v0.23.77-dev) | `struct Buf { data: ptr, count: i32, cap: i32 }` with `buf_init`, `buf_free`, `buf_reserve`, `buf_append`, `buf_appends`, `buf_putc`, `buf_reset`, `buf_cstr`; `struct Vec32` and `struct VecPtr` with `init`/`push`/`get`/`set`/`free` each (two concrete types, because the language has no generics) |
