@@ -56,7 +56,7 @@ enum {
     S_Nop = 78,
 };
 
-/* The 6 structural kinds (§2.3). */
+/* The 7 structural kinds (§2.3). */
 enum {
     N_Program = 128,
     N_Function = 129,
@@ -64,6 +64,7 @@ enum {
     N_Param = 131,
     N_Block = 132,
     N_Case = 133,
+    N_IncDec = 134,
 };
 
 /* The 7 type tags (§2.4). */
@@ -141,7 +142,7 @@ static const char *const SK_NAMES[SK_COUNT] = {
     "Nop",
 };
 
-#define NK_COUNT 6
+#define NK_COUNT 7
 static const char *const NK_NAMES[NK_COUNT] = {
     "Program",
     "Function",
@@ -149,6 +150,7 @@ static const char *const NK_NAMES[NK_COUNT] = {
     "Param",
     "Block",
     "Case",
+    "IncDec",
 };
 
 #define TYT_COUNT 7

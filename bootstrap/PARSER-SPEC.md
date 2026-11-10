@@ -109,6 +109,15 @@ innermost-first (`lname[]`), so a label that names nothing is a **parse error**
 (`no such loop label: <name>`), not a run-time jump. Two writings of the same
 name are two different tokens, so the comparison is over the tokens' bytes.
 
+**`++`/`--` (v0.23.77-dev).** The statement form only: `x++;`, `++x;`, `x--;`,
+`--x;`. It is its own node — `IncDec` (**134**), a stage-only structural kind
+whose `tok` is the variable and whose `count` is +1 or -1 — because the stage
+cannot fabricate the literal `1` that a desugaring to `x = x + 1` would need (a
+node's value comes from a token's text). As an *expression* (`a[i++]`) the
+operator stays outside the subset; that is the honest boundary. In a `for` step
+the clause's closing `)` stands in for the `;`, as it does for `let` and
+assignment.
+
 **`for` (v0.23.77-dev).** `for (init; cond; step) body` joins the subset with one
 statement per clause — the init may be empty, the condition is required — and the
 step's `;` is stood in for by the closing `)`. An `S_For` node's children are

@@ -1283,9 +1283,21 @@ static int statement(void) {
         adv();
         return sw;
     }
-    if (k == TK_PlusPlus || k == TK_MinusMinus)
-        die_at("'++' and '--' are not in the bootstrap subset",
-               tok_line(p), tok_col(p));
+    if (k == TK_PlusPlus || k == TK_MinusMinus) {
+        int step2 = (k == TK_MinusMinus) ? -1 : 1;
+        adv();
+        if (cur() != TK_Ident)
+            die_at("expected a variable after '++'", tok_line(p), tok_col(p));
+        int nt2 = p;
+        adv();
+        if (cur() != TK_Semi) {
+            if (!clause_no_semi) die_at("expected ';' after '++'", tok_line(p), tok_col(p));
+        } else adv();
+        int s2 = newnode(N_IncDec, nt2);
+        nodes[s2].count = step2;
+        return s2;
+    }
+
     if (k == TK_Do) {
         adv();
         int b = parse_block();
@@ -1426,9 +1438,18 @@ static int statement(void) {
             die_at("'.' field access is not in the bootstrap subset",
                    tok_line(p + 1), tok_col(p + 1));
         if (ahead() == TK_LBracket) return index_assign_stmt();
-        if (ahead() == TK_PlusPlus || ahead() == TK_MinusMinus)
-            die_at("'++' and '--' are not in the bootstrap subset",
-                   tok_line(p + 1), tok_col(p + 1));
+        if (ahead() == TK_PlusPlus || ahead() == TK_MinusMinus) {
+            int nt = p;
+            int step = (ahead() == TK_MinusMinus) ? -1 : 1;
+            adv(); adv();
+            if (cur() != TK_Semi) {
+                if (!clause_no_semi) die_at("expected ';' after '++'", tok_line(p), tok_col(p));
+            } else adv();
+            int s = newnode(N_IncDec, nt);
+            nodes[s].count = step;
+            return s;
+        }
+
         if (ahead() == TK_Eq) return assign_stmt();
         if (is_compound(ahead()))
             die_at("compound assignment is not in the bootstrap subset",
@@ -2153,6 +2174,12 @@ static int sema_stmt(int s) {
         pop_scope();
         if (sema_block(stepb4) != 0) return 1;
         pop_scope();
+        return 0;
+    }
+    if (k == N_IncDec) {
+        if (sym_find_var(nodes[s].tok) == 0) { die_name_at("unknown variable: ", nodes[s].tok); return 1; }
+        if (rs_cnt > 1) { die_name_at("cannot increment an array: ", nodes[s].tok); return 1; }
+        if (rs_tag != TY_I32) { die_name_at("can only increment an i32: ", nodes[s].tok); return 1; }
         return 0;
     }
     if (k == S_Nop) return 0;
@@ -3076,6 +3103,31 @@ static int gen_stmt(int s){
         if (lab) tgt=lp_find(lab);
         if (tgt<0) return cg_die_at_node("continue target is not a live loop", s);
         if (emit_b(lp_cont[tgt])) return 1;
+        return 0;
+    }
+    if (k==N_IncDec){
+        int tok2=NT(s);
+        int is_sub = (nodes[s].count<0)?1:0;
+        int li2=cg_find_local(tok2);
+        if (li2>=0){
+            int ty2=cg_loc_ty[li2], v2=alloc_tmp(); if (v2<0) return 1;
+            if (emit_mem(0, mem_scale_t(ty_width_t(ty2)), v2, 31, cg_loc_slot[li2]*8)) return 1;
+            if (emit_addsub_imm(v2,v2,1,is_sub,0)) return 1;
+            if (emit_mem(1, mem_scale_t(ty_width_t(ty2)), v2, 31, cg_loc_slot[li2]*8)) return 1;
+            if (free_tmp(v2)) return 1;
+            return 0;
+        }
+        int gs2=cg_find_global(tok2);
+        if (gs2<0){ return cg_die_name_at("unknown variable: ", tok2); }
+        if (st_kind[gs2]==3){ return cg_die_name_at("cannot reference external global: ", tok2); }
+        int ty3=st_tag[gs2], a3=alloc_tmp(); if (a3<0) return 1;
+        if (emit_addr64(a3, g_addr[gs2])) return 1;
+        int v3=alloc_tmp(); if (v3<0) return 1;
+        if (emit_mem(0, mem_scale_t(ty_width_t(ty3)), v3, a3, 0)) return 1;
+        if (emit_addsub_imm(v3,v3,1,is_sub,0)) return 1;
+        if (emit_mem(1, mem_scale_t(ty_width_t(ty3)), v3, a3, 0)) return 1;
+        if (free_tmp(v3)) return 1;
+        if (free_tmp(a3)) return 1;
         return 0;
     }
     if (k==S_Nop) return 0;

@@ -405,6 +405,20 @@ breaking this project's own `-Werror` build.
   empty init, and a `for` nested in a `while` — makes the stage and the twin emit
   byte-identical ELFs; both images print `434`.
 
+* **`++`/`--` move into the bootstrap subset — and the subset's gap closes.**
+  Statement position only (`x++;`, `++x;`, and the two `--` spellings), and its
+  own node: `IncDec` (134), a stage-only structural kind whose `tok` is the
+  variable and whose `count` is +1 or -1. That shape is forced, not chosen — the
+  stage cannot fabricate the literal `1` a desugaring to `x = x + 1` would need,
+  because a node's value comes from a token's text. The lowering is load,
+  `ADD/SUB #1`, store, at the variable's width (locals inline on the frame,
+  globals through `ADRP/ADD` first). In a `for` step the clause's `)` stands in
+  for the `;`, exactly as it does for `let` and assignment. As an *expression*
+  (`a[i++]`) the operator stays outside the subset, which is documented as the
+  boundary. The new corpus fixture `tests/codegen-fixtures/incdec.ast` covers
+  both spellings on a local and a global and `i++` in a `for` step; the stage and
+  the twin emit byte-identical ELFs for it and both images print `513`.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

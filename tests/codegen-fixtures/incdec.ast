@@ -1,0 +1,23 @@
+// tests/codegen-fixtures/incdec.ast — the statement form of `++`/`--` through
+// the stage: prefix and postfix spellings, a local and a global, and both in a
+// `for` step. As an expression (`a[i++]`) the operator stays out of the subset.
+let out: u8[8] = 0;
+let g: i32 = 10;
+
+fn main() -> i32 {
+    let x: i32 = 5;
+    x++;                 // 6
+    ++x;                 // 7
+    x--;                 // 6
+    --x;                 // 5
+    g++;                 // 11
+    --g;                 // 10
+    let sum: i32 = 0;
+    for (let i: i32 = 0; i < 3; i++) { sum = sum + i; }   // 0 + 1 + 2
+    store_u8(out, 48 + x);          // 5
+    store_u8(out + 1, 48 + g / 10); // 1
+    store_u8(out + 2, 48 + sum);    // 3
+    store_u8(out + 3, 10);
+    write(1, out, 4);
+    return 0;
+}

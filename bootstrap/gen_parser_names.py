@@ -100,7 +100,12 @@ STMT_SUBSET = [
 STRUCT_BASE = 128
 # v0.23.77-dev: `Case` is structural kind of the stage own - the host
 # keeps its cases as vectors beside the AST, the stage needs nodes.
-STRUCT_KINDS = ["Program", "Function", "Global", "Param", "Block", "Case"]
+STRUCT_KINDS = ["Program", "Function", "Global", "Param", "Block", "Case", "IncDec"]
+# v0.23.77-dev: `IncDec` (134) is the statement form of `++`/`--`. The stage has
+# no way to fabricate a literal `1` node (a node's value comes from a token), so
+# the operator is its own node: `ntok` is the variable, `count` is +1 or -1.
+# Prefix and postfix are the same statement; as an expression `x++` stays out
+# of the subset, and that is the honest boundary.
 
 # The type tags (§2.4): the constant name and the spelling the dump prints.
 TYPE_TAGS = [
@@ -120,7 +125,7 @@ RECORD = 16
 
 EXPR_COUNT = len(EXPR_KINDS)          # 35 — entab's record count
 STMT_COUNT = len(STMT_KINDS)          # 15 — sntab's record count
-STRUCT_COUNT = len(STRUCT_KINDS)      # 6  — nntab's record count
+STRUCT_COUNT = len(STRUCT_KINDS)      # 7  — nntab's record count
 TYPE_COUNT = len(TYPE_TAGS)           # 7  — tytab's record count
 EXPR_SUBSET_COUNT = len(EXPR_SUBSET)  # 25 — the E_* constants
 STMT_SUBSET_COUNT = len(STMT_SUBSET)  # 13 — the S_* constants
@@ -155,8 +160,8 @@ def check_list():
     if STMT_SUBSET_COUNT != 13:
         die("expected 13 statement kinds in the subset, list has %d"
             % STMT_SUBSET_COUNT)
-    if STRUCT_COUNT != 6:
-        die("expected 6 structural kinds, list has %d" % STRUCT_COUNT)
+    if STRUCT_COUNT != 7:
+        die("expected 7 structural kinds, list has %d" % STRUCT_COUNT)
     if TYPE_COUNT != 7:
         die("expected 7 type tags, list has %d" % TYPE_COUNT)
     for label, names in (("expression", EXPR_KINDS),

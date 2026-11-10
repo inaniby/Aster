@@ -233,7 +233,7 @@ let S_Expr: i32 = 76;
 let S_DoWhile: i32 = 77;
 let S_Nop: i32 = 78;
 
-// The 6 structural kinds (§2.3) — no host counterpart; the
+// The 7 structural kinds (§2.3) — no host counterpart; the
 // dump makes the host's side vectors nodes so every line
 // has one shape.
 let N_Program: i32 = 128;
@@ -242,6 +242,7 @@ let N_Global: i32 = 130;
 let N_Param: i32 = 131;
 let N_Block: i32 = 132;
 let N_Case: i32 = 133;
+let N_IncDec: i32 = 134;
 
 // The 7 type tags (§2.4).
 let TY_I32: i32 = 1;
@@ -256,12 +257,12 @@ let TY_PTR_I64: i32 = 7;
 // record is the name's bytes, NUL-padded. entab is the
 // host's full Expr::Kind list (36 records, so a kind's
 // record sits at its own number); sntab is Stmt::Kind (15);
-// nntab the structural kinds (6); tytab the type spellings
+// nntab the structural kinds (7); tytab the type spellings
 // (7, tag 1 at record 0). The dump picks the table by the
 // kind's space (§9): < 64 entab, < 128 sntab, else nntab.
 let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0Cast\0\0\0\0\0\0\0\0\0\0\0\0";
 let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Switch\0\0\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0DoWhile\0\0\0\0\0\0\0\0\0Nop\0\0\0\0\0\0\0\0\0\0\0\0\0";
-let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0Case\0\0\0\0\0\0\0\0\0\0\0\0";
+let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0Case\0\0\0\0\0\0\0\0\0\0\0\0IncDec\0\0\0\0\0\0\0\0\0\0";
 let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0";
 // ---- END GENERATED: parser names ----
 
@@ -2546,9 +2547,32 @@ fn statement() -> i32 {
         advance();
         return sw;
     }
+    // v0.23.77-dev: `++x;` / `--x;` (and their postfix spelling) in statement
+    // position. As an *expression* `x++` stays out: a node's value comes from a
+    // token and the stage cannot fabricate the `1` that a desugaring needs, so
+    // the operator is its own node kind (N_IncDec, 134) carrying +1 or -1.
     if (k == K_PlusPlus || k == K_MinusMinus) {
-        die_at("'++' and '--' are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-        return 0;
+        let step2: i32 = 1;
+        if (k == K_MinusMinus) { step2 = 0 - 1; }
+        advance();
+        if (curk() != K_Ident) {
+            die_at("expected a variable after '++'", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        let nt2: i32 = ppos;
+        advance();
+        if (curk() != K_Semi) {
+            if (clause_no_semi == 0) {
+                die_at("expected ';' after '++'", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+        } else {
+            advance();
+        }
+        let s2: i32 = newnode(N_IncDec, nt2);
+        if (s2 == 0) { return 0; }
+        ncount[s2 - 1] = step2;
+        return s2;
     }
     // v0.23.77-dev: do { body } while (cond); — the body runs once and the
     // condition decides whether it runs again. The children are [body, cond],
@@ -2761,8 +2785,23 @@ fn statement() -> i32 {
         }
         if (nextk() == K_LBracket) { return index_assign_stmt(); }
         if (nextk() == K_PlusPlus || nextk() == K_MinusMinus) {
-            die_at("'++' and '--' are not in the bootstrap subset", tok_line(ppos + 1), tok_col(ppos + 1));
-            return 0;
+            let nt: i32 = ppos;
+            let step: i32 = 1;
+            if (nextk() == K_MinusMinus) { step = 0 - 1; }
+            advance();
+            advance();
+            if (curk() != K_Semi) {
+                if (clause_no_semi == 0) {
+                    die_at("expected ';' after '++'", tok_line(ppos), tok_col(ppos));
+                    return 0;
+                }
+            } else {
+                advance();
+            }
+            let s: i32 = newnode(N_IncDec, nt);
+            if (s == 0) { return 0; }
+            ncount[s - 1] = step;
+            return s;
         }
         if (nextk() == K_Eq) { return assign_stmt(); }
         if (is_compound(nextk()) == 1) {
@@ -3482,6 +3521,12 @@ fn sema_stmt(s: i32) -> i32 {
             }
         }
         if (add_local(ntok[s - 1], SK_LOCAL, nnty[s - 1], 1) != 0) { return 1; }
+        return 0;
+    }
+    if (k == N_IncDec) {
+        if (find_var(ntok[s - 1]) == 0) { die_name_at("unknown variable: ", ntok[s - 1]); return 1; }
+        if (rs_cnt > 1) { die_name_at("cannot increment an array: ", ntok[s - 1]); return 1; }
+        if (rs_tag != TY_I32) { die_name_at("can only increment an i32: ", ntok[s - 1]); return 1; }
         return 0;
     }
     if (k == S_Assign) {
@@ -5566,6 +5611,38 @@ fn gen_stmt(s: i32) -> i32 {
         if (emit_bcond(0, lexit) != 0) { return 1; }
         if (emit_b(lbody) != 0) { return 1; }
         if (place_label(lexit) != 0) { return 1; }
+        return 0;
+    }
+    // v0.23.77-dev: load the variable, ADD/SUB #1 in place, store it back.
+    if (k == N_IncDec) {
+        let tok2: i32 = ntok[s - 1];
+        let is_sub: i32 = 0;
+        if (ncount[s - 1] < 0) { is_sub = 1; }
+        let li2: i32 = cg_find_local(tok2);
+        if (li2 >= 0) {
+            let ty2: i32 = cg_loc_ty[li2];
+            let v2: i32 = alloc_tmp();
+            if (v2 < 0) { return 1; }
+            if (emit_mem(0, mem_scale(ty_width(ty2)), v2, 31, cg_loc_slot[li2] * 8) != 0) { return 1; }
+            if (emit_addsub_imm(v2, v2, 1, is_sub, 0) != 0) { return 1; }
+            if (emit_mem(1, mem_scale(ty_width(ty2)), v2, 31, cg_loc_slot[li2] * 8) != 0) { return 1; }
+            if (free_tmp(v2) != 0) { return 1; }
+            return 0;
+        }
+        let gs2: i32 = cg_find_global(tok2);
+        if (gs2 < 0) { if (cg_die_name_at("unknown variable: ", tok2) != 0) { return 1; } }
+        if (skind[gs2] == SK_EXTERN_LET) { if (cg_die_name_at("cannot reference external global: ", tok2) != 0) { return 1; } }
+        let ty3: i32 = stag[gs2];
+        let a3: i32 = alloc_tmp();
+        if (a3 < 0) { return 1; }
+        if (emit_addr64(a3, g_addr[gs2]) != 0) { return 1; }
+        let v3: i32 = alloc_tmp();
+        if (v3 < 0) { return 1; }
+        if (emit_mem(0, mem_scale(ty_width(ty3)), v3, a3, 0) != 0) { return 1; }
+        if (emit_addsub_imm(v3, v3, 1, is_sub, 0) != 0) { return 1; }
+        if (emit_mem(1, mem_scale(ty_width(ty3)), v3, a3, 0) != 0) { return 1; }
+        if (free_tmp(v3) != 0) { return 1; }
+        if (free_tmp(a3) != 0) { return 1; }
         return 0;
     }
     if (k == S_Break) {
