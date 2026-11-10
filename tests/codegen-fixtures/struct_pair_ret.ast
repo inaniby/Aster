@@ -1,0 +1,18 @@
+struct Q { x: i32, y: i32, z: i32 }
+
+let o: u8[8] = 0;
+
+fn mk(a: i32) -> Q {
+    let q: Q = Q { a, a + 1, a + 2 };
+    return q;
+}
+
+fn main() -> i32 {
+    let q: Q = mk(10);
+    store_u8(o, 48 + q.x / 10);
+    store_u8(o + 1, 48 + q.y / 10 % 10);
+    store_u8(o + 2, 48 + q.z / 10 % 10);
+    store_u8(o + 3, 10);
+    write(1, o, 4);
+    return 0;
+}

@@ -3171,6 +3171,7 @@ static int gen_call(int n,int want){
     pr=0; while (pr<parked_n){ if (emit_mem(0,3,tmp_free[pr],31,(900+pr)*8)) return -1; pr++; }
     tmp_top=parked_n;
     int d=alloc_tmp(); if (d<0) return -1;
+    if (ty_reg_slots(st_tag[fsym])==2){ if (emit_mem(1,3,1,31,1021*8)) return -1; }
     if (emit_mem(0, mem_scale_t(ty_width_t(st_tag[fsym])), d, 31, 1022*8)) return -1;
     if (st_tag[fsym]==1 && ty_is64_t(want)==1){ if (emit_sxtw(d,d)) return -1; }
     return d;
@@ -3195,11 +3196,17 @@ static int gen_stmt(int s){
         int init3=nodes[s].first;
         if (init3 >= 0){
             if (nodes[init3].kind != E_StructLit){
-                if (struct_size_s(si3) > 8)
-                    die_name_at("a struct larger than 8 bytes cannot be passed by value in the bootstrap subset: ", nodes[init3].tok);
+                if (struct_size_s(si3) > 16)
+                    die_name_at("a struct larger than 16 bytes cannot be passed by value in the bootstrap subset: ", nodes[init3].tok);
                 int vc=gen_expr(init3, tyst); if (vc<0) return 1;
                 if (emit_mem(1,3,vc,31,slotst*8)) return 1;
                 if (free_tmp(vc)) return 1;
+                if (struct_size_s(si3) > 8){
+                    int vh=alloc_tmp(); if (vh<0) return 1;
+                    if (emit_mem(0,3,vh,31,1021*8)) return 1;
+                    if (emit_mem(1,3,vh,31,slotst*8+8)) return 1;
+                    if (free_tmp(vh)) return 1;
+                }
                 return 0;
             }
             int fi3=0;
@@ -3253,9 +3260,40 @@ static int gen_stmt(int s){
         return 0;
     }
     if (k==S_Return){
-        if (ty_is_struct(cg_ret_ty) && struct_size_s(cg_ret_ty-TY_STRUCT_BASE) > 8){
-            cg_die_at_node("a struct larger than 8 bytes cannot be returned in the bootstrap subset", s);
+        if (ty_is_struct(cg_ret_ty) && struct_size_s(cg_ret_ty-TY_STRUCT_BASE) > 16){
+            cg_die_at_node("a struct larger than 16 bytes cannot be returned in the bootstrap subset", s);
             return 1;
+        }
+        if (ty_is_struct(cg_ret_ty) && struct_size_s(cg_ret_ty-TY_STRUCT_BASE) > 8){
+            int rex=nodes[s].first;
+            if (nodes[rex].kind != E_Var){
+                cg_die_at_node("a 9-16-byte struct return must be a variable in the bootstrap subset", rex);
+                return 1;
+            }
+            int vtok2=nodes[rex].tok, li3=cg_find_local(vtok2);
+            int d1=alloc_tmp(); if (d1<0) return 1;
+            int d2=alloc_tmp(); if (d2<0) return 1;
+            int a4=alloc_tmp(); if (a4<0) return 1;
+            if (li3>=0){ if (emit_frame_addr(a4, cg_loc_slot[li3]*8)) return 1; }
+            else {
+                int gs3=cg_find_global(vtok2);
+                if (gs3<0) return cg_die_name_at("unknown variable: ", vtok2);
+                if (emit_addr64(a4, g_addr[gs3])) return 1;
+            }
+            if (emit_mem(0,3,0,a4,0)) return 1;
+            if (emit_mem(0,3,1,a4,8)) return 1;
+            if (free_tmp(a4)) return 1;
+            if (free_tmp(d2)) return 1;
+            if (free_tmp(d1)) return 1;
+            if (cg_is_main==1){
+                if (emit_movz(8,93,0,1)) return 1;
+                if (emit_svc()) return 1;
+                return 0;
+            }
+            if (emit_mem(0,3,30,31,1023*8)) return 1;
+            if (emit_addsub_imm(31,31,8192,0,1)) return 1;
+            if (emit_ret()) return 1;
+            return 0;
         }
         int v=gen_expr(NF(s), cg_ret_ty); if (v<0) return 1;
         int is64 = (ty_is64_t(cg_ret_ty)||ty_is_struct(cg_ret_ty))?1:0;

@@ -5416,6 +5416,7 @@ fn gen_intrinsic(n: i32, want: i32) -> i32 {
     // cannot clobber it, then reads back at the intrinsic's result width —
     // a byte count as i32, mmap/brk's address at full pointer width.
     if (emit_mem(1, 3, 0, 31, 1022 * 8) != 0) { return -1; }
+
     pr = 0;
     while (pr < parked_n) {
         if (emit_mem(0, 3, tmp_free[pr], 31, (900 + pr) * 8) != 0) { return -1; }
@@ -5579,6 +5580,7 @@ fn gen_call(n: i32, want: i32) -> i32 {
     // The result rides through slot 1022 so restoring the parked temporaries
     // cannot clobber it.
     if (emit_mem(1, 3, 0, 31, 1022 * 8) != 0) { return -1; }
+
     pr = 0;
     while (pr < parked_n) {
         if (emit_mem(0, 3, tmp_free[pr], 31, (900 + pr) * 8) != 0) { return -1; }
@@ -5587,6 +5589,11 @@ fn gen_call(n: i32, want: i32) -> i32 {
     tmp_top = parked_n;
     let d: i32 = alloc_tmp();
     if (d < 0) { return -1; }
+    // v0.23.77-dev: a 9..16-byte struct return also puts its second half in X1,
+    // which waits in the neighbouring slot while the parked temporaries come back.
+    if (ty_reg_slots(stag[fsym]) == 2) {
+        if (emit_mem(1, 3, 1, 31, 1021 * 8) != 0) { return -1; }
+    }
     if (emit_mem(0, mem_scale(ty_width(stag[fsym])), d, 31, 1022 * 8) != 0) { return -1; }
     if (stag[fsym] == TY_I32 && ty_is64(want) == 1) {
         if (emit_sxtw(d, d) != 0) { return -1; }
@@ -5824,13 +5831,20 @@ fn gen_stmt(s: i32) -> i32 {
             if (nkind[init3 - 1] != E_StructLit) {
                 // A call returning the struct: the 8 bytes arrive in a temp and
                 // are stored into the local's slot whole.
-                if (struct_size(si3) > 8) {
-                    die_name_at("a struct larger than 8 bytes cannot be passed by value in the bootstrap subset: ", ntok[init3 - 1]); return 1;
+                if (struct_size(si3) > 16) {
+                    die_name_at("a struct larger than 16 bytes cannot be passed by value in the bootstrap subset: ", ntok[init3 - 1]); return 1;
                 }
                 let vc: i32 = gen_expr(init3, tyst);
                 if (vc < 0) { return 1; }
                 if (emit_mem(1, 3, vc, 31, slotst * 8) != 0) { return 1; }
                 if (free_tmp(vc) != 0) { return 1; }
+                if (struct_size(si3) > 8) {
+                    let vh: i32 = alloc_tmp();
+                    if (vh < 0) { return 1; }
+                    if (emit_mem(0, 3, vh, 31, 1021 * 8) != 0) { return 1; }
+                    if (emit_mem(1, 3, vh, 31, slotst * 8 + 8) != 0) { return 1; }
+                    if (free_tmp(vh) != 0) { return 1; }
+                }
                 return 0;
             }
             let fi3: i32 = 0;
@@ -5907,9 +5921,48 @@ fn gen_stmt(s: i32) -> i32 {
     if (k == S_Return) {
         // v0.23.77-dev: a struct of at most 8 bytes is returned in X0, so the
         // move has to be a 64-bit one - a 32-bit MOV would drop the second field.
-        if (ty_is_struct(cg_ret_ty) == 1 && struct_size(cg_ret_ty - TY_STRUCT_BASE) > 8) {
-            cg_die_at_node("a struct larger than 8 bytes cannot be returned in the bootstrap subset", s);
+        if (ty_is_struct(cg_ret_ty) == 1 && struct_size(cg_ret_ty - TY_STRUCT_BASE) > 16) {
+            cg_die_at_node("a struct larger than 16 bytes cannot be returned in the bootstrap subset", s);
             return 1;
+        }
+        if (ty_is_struct(cg_ret_ty) == 1 && struct_size(cg_ret_ty - TY_STRUCT_BASE) > 8) {
+            let rex: i32 = nfirst[s - 1];
+            if (nkind[rex - 1] != E_Var) {
+                cg_die_at_node("a 9-16-byte struct return must be a variable in the bootstrap subset", rex);
+                return 1;
+            }
+            let vtok2: i32 = ntok[rex - 1];
+            let li3: i32 = cg_find_local(vtok2);
+            // The address must not live in X0 or X1 - those are the two halves
+            // being loaded - so two placeholder temporaries take the low
+            // registers first.
+            let d1: i32 = alloc_tmp();
+            if (d1 < 0) { return 1; }
+            let d2: i32 = alloc_tmp();
+            if (d2 < 0) { return 1; }
+            let a4: i32 = alloc_tmp();
+            if (a4 < 0) { return 1; }
+            if (li3 >= 0) {
+                if (emit_frame_addr(a4, cg_loc_slot[li3] * 8) != 0) { return 1; }
+            } else {
+                let gs3: i32 = cg_find_global(vtok2);
+                if (gs3 < 0) { if (cg_die_name_at("unknown variable: ", vtok2) != 0) { return 1; } }
+                if (emit_addr64(a4, g_addr[gs3]) != 0) { return 1; }
+            }
+            if (emit_mem(0, 3, 0, a4, 0) != 0) { return 1; }
+            if (emit_mem(0, 3, 1, a4, 8) != 0) { return 1; }
+            if (free_tmp(a4) != 0) { return 1; }
+            if (free_tmp(d2) != 0) { return 1; }
+            if (free_tmp(d1) != 0) { return 1; }
+            if (cg_is_main == 1) {
+                if (emit_movz(8, 93, 0, 1) != 0) { return 1; }
+                if (emit_svc() != 0) { return 1; }
+                return 0;
+            }
+            if (emit_mem(0, 3, 30, 31, 1023 * 8) != 0) { return 1; }
+            if (emit_addsub_imm(31, 31, 8192, 0, 1) != 0) { return 1; }
+            if (emit_ret() != 0) { return 1; }
+            return 0;
         }
         let v: i32 = gen_expr(nfirst[s - 1], cg_ret_ty);
         if (v < 0) { return 1; }
