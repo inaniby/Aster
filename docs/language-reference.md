@@ -1662,6 +1662,21 @@ fn next_id() -> i32 {
 * Declaring the same name twice in one function is an error; an array declared
   static cannot be assigned as a whole, exactly as any other array.
 
+## 11e2. A misspelt callee gets a hint
+
+`call to undeclared function: NAME` keeps that exact prefix — every suite and
+script that greps for it still matches — and the compiler appends a suggestion
+when a declared function is within two edits of the name, or when the name is a
+unique prefix of one:
+
+```
+aster: p.ast:2:27: error: call to undeclared function: prnt (did you mean 'print'?) at 2:27
+```
+
+Nothing is appended when nothing is close (`missing` reads exactly as before),
+and an ambiguous prefix says nothing rather than guessing. The hint is the
+host's alone: the self-hosted stage's diagnostics are its own frozen contract.
+
 ## 11f. What is not in the language
 
 There is no gap left in the statement grammar: `static let` (11b) covers state

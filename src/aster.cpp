@@ -238,6 +238,46 @@ enum class TK { End, Ident, Number, String,
     CharType,            // v0.23.69-dev: the `char` type keyword (distinct from the `Char` literal token)
     Union,               // v0.23.70-dev: Union names a `union U { ... }` declaration
     Do };                // v0.23.77-dev: `do { ... } while (cond);` — the loop body first
+// v0.23.77-dev: a hint for a misspelt callee. The diagnostic keeps its exact
+// prefix ("call to undeclared function: NAME") so every suite that greps for it
+// still matches; the hint is appended, and only when a declared function is
+// within two edits or starts with the name (a unique prefix). Nothing is added
+// when nothing is close, so an unknown name reads exactly as it always did.
+static std::string nearestDeclared(const std::string& want,const std::map<std::string,size_t>& names){
+    auto edits=[&](const std::string& a,const std::string& b){
+        const size_t n=a.size(),m=b.size();
+        std::vector<size_t> prev(m+1),cur(m+1);
+        for(size_t j=0;j<=m;++j)prev[j]=j;
+        for(size_t i=1;i<=n;++i){
+            cur[0]=i;
+            for(size_t j=1;j<=m;++j){
+                const size_t sub=prev[j-1]+(a[i-1]==b[j-1]?0u:1u);
+                cur[j]=std::min(sub,std::min(prev[j]+1,cur[j-1]+1));
+            }
+            prev.swap(cur);
+        }
+        return prev[m];
+    };
+    std::string best;
+    size_t bestD=3;
+    for(const auto& kv:names){
+        const std::string& cand=kv.first;
+        if(cand==want)continue;
+        const size_t d=edits(want,cand);
+        if(d<bestD){bestD=d;best=cand;}
+    }
+    if(best.empty()&&want.size()>=2){
+        for(const auto& kv:names){
+            const std::string& cand=kv.first;
+            if(cand.size()>want.size()&&cand.compare(0,want.size(),want)==0){
+                if(!best.empty())return std::string();   // ambiguous: say nothing
+                best=cand;
+            }
+        }
+    }
+    return best;
+}
+
 struct Token { TK k; std::string s; unsigned line, col; };
 class Lexer {
     const std::string& s; size_t p=0; unsigned line=1, col=1;
@@ -4981,7 +5021,12 @@ struct Codegen {
                     // argument staging as a direct call, but the branch goes
                     // through a register (BLR) instead of a relocated BL.
                     if(!indirectCallee(e.name))
-                        throw Error(loc(e.line,e.col,"call to undeclared function: "+e.name));
+                        {
+                            std::string msg="call to undeclared function: "+e.name;
+                            const std::string near=nearestDeclared(e.name,functionArities);
+                            if(!near.empty())msg+=" (did you mean '"+near+"'?)";
+                            throw Error(loc(e.line,e.col,msg));
+                        }
                     // v0.23.37-dev: a typed fn-pointer stages its arguments by
                     // the signature and answers the signature's return type; a
                     // bare ptr keeps the legacy behaviour (all scalars at 64
@@ -8626,7 +8671,12 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 if(gt!=Ty::Ptr)
                     throw Error(loc(e.line,e.col,"cannot call through '"+e.name+"': expected a function pointer (ptr), got "+tyNameFull(gt)));
             } else {
-                throw Error(loc(e.line,e.col,"call to undeclared function: "+e.name));
+                {
+                    std::string msg="call to undeclared function: "+e.name;
+                    const std::string near=nearestDeclared(e.name,arities);
+                    if(!near.empty())msg+=" (did you mean '"+near+"'?)";
+                    throw Error(loc(e.line,e.col,msg));
+                }
             }
             // v0.23.37-dev: when the callee carries a function type, check the
             // call against that signature — argument count and each argument's

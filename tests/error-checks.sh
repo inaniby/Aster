@@ -38,6 +38,22 @@ cat > tmp-undeclared-call.ast <<'AST'
 fn main() -> i32 { return missing(1); }
 AST
 check_error tmp-undeclared-call.ast 'call to undeclared function: missing'
+# v0.23.77-dev: a misspelt callee gets a hint, and an unknown one does not.
+# The message keeps its exact prefix, so every older grep still matches.
+cat > tmp-typo-call.ast <<'AST'
+fn print(x: i32) -> i32 { return x; }
+fn main() -> i32 { return prnt(1); }
+AST
+check_error tmp-typo-call.ast "did you mean 'print'?"
+cat > tmp-prefix-call.ast <<'AST'
+fn parse_thing(x: i32) -> i32 { return x; }
+fn main() -> i32 { return parse(1); }
+AST
+check_error tmp-prefix-call.ast "did you mean 'parse_thing'?"
+if ./aster build-elf tmp-undeclared-call.ast -o tmp-nohint >/dev/null 2>tmp-nohint.err; then :; fi
+if grep -qF 'did you mean' tmp-nohint.err; then
+    echo 'FAIL: a name nothing is close to must not get a hint' >&2; exit 1
+fi
 cat > tmp-duplicate-param.ast <<'AST'
 fn main() -> i32 { return add(1, 2); }
 fn add(a: i32, a: i32) -> i32 { return a; }

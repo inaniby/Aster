@@ -426,6 +426,16 @@ breaking this project's own `-Werror` build.
   `tests/stdlib-str-checks.sh` [5/8] covers `7` in 3, `-12` in 4 and the
   over-wide case; the suites' shape assertions moved to 91.
 
+* **A misspelt callee gets a hint** — `call to undeclared function: prnt` now
+  reads `... (did you mean 'print'?)`. The diagnostic keeps its exact prefix, so
+  every older grep still matches, and nothing is appended when nothing is close
+  (`missing` is unchanged) — a two-edit Levenshtein match over the declared
+  functions, or a unique prefix. Applied at both throw sites (the semantic pass
+  and the code generator, which hold the arity maps under different names).
+  `tests/error-checks.sh` grew three cases: a typo (`prnt` → `print`), a unique
+  prefix (`parse` → `parse_thing`), and the negative — a name nothing is close
+  to gets no hint.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
