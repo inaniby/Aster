@@ -1045,6 +1045,8 @@ static int function_decl(int external) {
     allow_struct_type = 1;
     int rty = parse_type();
     allow_struct_type = 0;
+    if (ty_is_struct(rty) && struct_size_s(rty-TY_STRUCT_BASE) > 32)
+        die_at("a struct larger than 32 bytes cannot be returned in the bootstrap subset", tok_line(nt), tok_col(nt));
     if (cur() == TK_LBracket) {
         snprintf(msgbuf, sizeof msgbuf,
                  "a function cannot return an array: return ptr<%s>, or take "
@@ -3196,8 +3198,19 @@ static int gen_stmt(int s){
         int init3=nodes[s].first;
         if (init3 >= 0){
             if (nodes[init3].kind != E_StructLit){
-                if (struct_size_s(si3) > 16)
-                    die_name_at("a struct larger than 16 bytes cannot be passed by value in the bootstrap subset: ", nodes[init3].tok);
+                if (struct_size_s(si3) > 32)
+                    die_name_at("a struct larger than 32 bytes cannot be passed by value in the bootstrap subset: ", nodes[init3].tok);
+                if (struct_size_s(si3) > 16){
+                    if (nodes[init3].kind != E_Call)
+                        die_name_at("a struct larger than 16 bytes is initialised by a call in the bootstrap subset: ", nodes[init3].tok);
+                    int d8=alloc_tmp(); if (d8<0) return 1;
+                    if (emit_frame_addr(d8, slotst*8)) return 1;
+                    if (emit_mov_rr(8,d8,1)) return 1;
+                    if (free_tmp(d8)) return 1;
+                    int vcall=gen_expr(init3, tyst); if (vcall<0) return 1;
+                    if (free_tmp(vcall)) return 1;
+                    return 0;
+                }
                 int vc=gen_expr(init3, tyst); if (vc<0) return 1;
                 if (emit_mem(1,3,vc,31,slotst*8)) return 1;
                 if (free_tmp(vc)) return 1;
@@ -3261,8 +3274,40 @@ static int gen_stmt(int s){
     }
     if (k==S_Return){
         if (ty_is_struct(cg_ret_ty) && struct_size_s(cg_ret_ty-TY_STRUCT_BASE) > 16){
-            cg_die_at_node("a struct larger than 16 bytes cannot be returned in the bootstrap subset", s);
-            return 1;
+            int rex5=nodes[s].first;
+            if (nodes[rex5].kind != E_Var){
+                cg_die_at_node("a struct larger than 16 bytes must be returned as a variable in the bootstrap subset", rex5);
+                return 1;
+            }
+            int vtok5=nodes[rex5].tok, li5=cg_find_local(vtok5);
+            int t1=alloc_tmp(); if (t1<0) return 1;
+            int t2=alloc_tmp(); if (t2<0) return 1;
+            int src5=alloc_tmp(); if (src5<0) return 1;
+            if (li5>=0){ if (emit_frame_addr(src5, cg_loc_slot[li5]*8)) return 1; }
+            else {
+                int gs5=cg_find_global(vtok5);
+                if (gs5<0) return cg_die_name_at("unknown variable: ", vtok5);
+                if (emit_addr64(src5, g_addr[gs5])) return 1;
+            }
+            if (emit_mem(0,3,t2,31,1020*8)) return 1;
+            int sz5=struct_size_s(cg_ret_ty-TY_STRUCT_BASE);
+            for (int o5=0; o5<sz5; o5+=4){
+                if (emit_mem(0,2,t1,src5,o5)) return 1;
+                if (emit_mem(1,2,t1,t2,o5)) return 1;
+            }
+            if (emit_mov_rr(0,t2,1)) return 1;
+            if (free_tmp(src5)) return 1;
+            if (free_tmp(t2)) return 1;
+            if (free_tmp(t1)) return 1;
+            if (cg_is_main==1){
+                if (emit_movz(8,93,0,1)) return 1;
+                if (emit_svc()) return 1;
+                return 0;
+            }
+            if (emit_mem(0,3,30,31,1023*8)) return 1;
+            if (emit_addsub_imm(31,31,8192,0,1)) return 1;
+            if (emit_ret()) return 1;
+            return 0;
         }
         if (ty_is_struct(cg_ret_ty) && struct_size_s(cg_ret_ty-TY_STRUCT_BASE) > 8){
             int rex=nodes[s].first;
@@ -3554,6 +3599,9 @@ static int gen_function(int f){
     cg_ret_ty=NTY(f); cg_is_main=is_main; lp_depth=0;
     if (emit_addsub_imm(31,31,8192,1,1)) return 1;
     if (is_main==0){ if (emit_mem(1,3,30,31,1023*8)) return 1; }
+    if (ty_is_struct(cg_ret_ty) && struct_size_s(cg_ret_ty-TY_STRUCT_BASE) > 16){
+        if (emit_mem(1,3,8,31,1020*8)) return 1;
+    }
     int i=0; int p=NF(f);
     while (p!=0){
         if (NK(p)==N_Param){

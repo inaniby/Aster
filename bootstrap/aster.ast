@@ -2261,6 +2261,10 @@ fn function_decl(external: i32) -> i32 {
     let rty: i32 = parse_type();
     allow_struct_type = 0;
     if (perr != 0) { return 0; }
+    if (ty_is_struct(rty) == 1 && struct_size(rty - TY_STRUCT_BASE) > 32) {
+        die_at("a struct larger than 32 bytes cannot be returned in the bootstrap subset", tok_line(nt), tok_col(nt));
+        return 0;
+    }
     if (curk() == K_LBracket) {
         die_open();
         bputs("a function cannot return an array: return ptr<");
@@ -5831,8 +5835,24 @@ fn gen_stmt(s: i32) -> i32 {
             if (nkind[init3 - 1] != E_StructLit) {
                 // A call returning the struct: the 8 bytes arrive in a temp and
                 // are stored into the local's slot whole.
+                if (struct_size(si3) > 32) {
+                    die_name_at("a struct larger than 32 bytes cannot be passed by value in the bootstrap subset: ", ntok[init3 - 1]); return 1;
+                }
                 if (struct_size(si3) > 16) {
-                    die_name_at("a struct larger than 16 bytes cannot be passed by value in the bootstrap subset: ", ntok[init3 - 1]); return 1;
+                    // sret: hand the local's own address over in X8 and let the
+                    // callee write the value there; nothing is copied back.
+                    if (nkind[init3 - 1] != E_Call) {
+                        die_name_at("a struct larger than 16 bytes is initialised by a call in the bootstrap subset: ", ntok[init3 - 1]); return 1;
+                    }
+                    let d8: i32 = alloc_tmp();
+                    if (d8 < 0) { return 1; }
+                    if (emit_frame_addr(d8, slotst * 8) != 0) { return 1; }
+                    if (emit_mov_rr(8, d8, 1) != 0) { return 1; }
+                    if (free_tmp(d8) != 0) { return 1; }
+                    let vcall: i32 = gen_expr(init3, tyst);
+                    if (vcall < 0) { return 1; }
+                    if (free_tmp(vcall) != 0) { return 1; }
+                    return 0;
                 }
                 let vc: i32 = gen_expr(init3, tyst);
                 if (vc < 0) { return 1; }
@@ -5922,8 +5942,49 @@ fn gen_stmt(s: i32) -> i32 {
         // v0.23.77-dev: a struct of at most 8 bytes is returned in X0, so the
         // move has to be a 64-bit one - a 32-bit MOV would drop the second field.
         if (ty_is_struct(cg_ret_ty) == 1 && struct_size(cg_ret_ty - TY_STRUCT_BASE) > 16) {
-            cg_die_at_node("a struct larger than 16 bytes cannot be returned in the bootstrap subset", s);
-            return 1;
+            // sret: copy the value into the caller's buffer, then answer that
+            // buffer's address in X0 (the AAPCS64 hidden-pointer convention).
+            let rex5: i32 = nfirst[s - 1];
+            if (nkind[rex5 - 1] != E_Var) {
+                cg_die_at_node("a struct larger than 16 bytes must be returned as a variable in the bootstrap subset", rex5);
+                return 1;
+            }
+            let vtok5: i32 = ntok[rex5 - 1];
+            let li5: i32 = cg_find_local(vtok5);
+            let t1: i32 = alloc_tmp();
+            if (t1 < 0) { return 1; }
+            let t2: i32 = alloc_tmp();
+            if (t2 < 0) { return 1; }
+            let src5: i32 = alloc_tmp();
+            if (src5 < 0) { return 1; }
+            if (li5 >= 0) {
+                if (emit_frame_addr(src5, cg_loc_slot[li5] * 8) != 0) { return 1; }
+            } else {
+                let gs5: i32 = cg_find_global(vtok5);
+                if (gs5 < 0) { if (cg_die_name_at("unknown variable: ", vtok5) != 0) { return 1; } }
+                if (emit_addr64(src5, g_addr[gs5]) != 0) { return 1; }
+            }
+            if (emit_mem(0, 3, t2, 31, 1020 * 8) != 0) { return 1; }
+            let sz5: i32 = struct_size(cg_ret_ty - TY_STRUCT_BASE);
+            let o5: i32 = 0;
+            while (o5 < sz5) {
+                if (emit_mem(0, 2, t1, src5, o5) != 0) { return 1; }
+                if (emit_mem(1, 2, t1, t2, o5) != 0) { return 1; }
+                o5 = o5 + 4;
+            }
+            if (emit_mov_rr(0, t2, 1) != 0) { return 1; }
+            if (free_tmp(src5) != 0) { return 1; }
+            if (free_tmp(t2) != 0) { return 1; }
+            if (free_tmp(t1) != 0) { return 1; }
+            if (cg_is_main == 1) {
+                if (emit_movz(8, 93, 0, 1) != 0) { return 1; }
+                if (emit_svc() != 0) { return 1; }
+                return 0;
+            }
+            if (emit_mem(0, 3, 30, 31, 1023 * 8) != 0) { return 1; }
+            if (emit_addsub_imm(31, 31, 8192, 0, 1) != 0) { return 1; }
+            if (emit_ret() != 0) { return 1; }
+            return 0;
         }
         if (ty_is_struct(cg_ret_ty) == 1 && struct_size(cg_ret_ty - TY_STRUCT_BASE) > 8) {
             let rex: i32 = nfirst[s - 1];
@@ -6273,6 +6334,12 @@ fn gen_function(f: i32) -> i32 {
     if (emit_addsub_imm(31, 31, 8192, 1, 1) != 0) { return 1; }
     if (is_main == 0) {
         if (emit_mem(1, 3, 30, 31, 1023 * 8) != 0) { return 1; }
+    }
+    // v0.23.77-dev: a return larger than 16 bytes goes through the caller's
+    // buffer, whose address arrives in X8 - caller-saved scratch, so it is kept
+    // in slot 1020 for the whole function.
+    if (ty_is_struct(cg_ret_ty) == 1 && struct_size(cg_ret_ty - TY_STRUCT_BASE) > 16) {
+        if (emit_mem(1, 3, 8, 31, 1020 * 8) != 0) { return 1; }
     }
     // Parameters: one slot each (§6.3), the first eight from X0-X7, the rest
     // from the caller's stack area just above this frame.

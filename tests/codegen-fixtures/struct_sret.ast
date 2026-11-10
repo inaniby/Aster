@@ -1,0 +1,18 @@
+struct R { a: i32, b: i32, c: i32, d: i32, e: i32 }
+
+let o: u8[8] = 0;
+
+fn mk(x: i32) -> R {
+    let r: R = R { x, x + 1, x + 2, x + 3, x + 4 };
+    return r;
+}
+
+fn main() -> i32 {
+    let r: R = mk(10);
+    store_u8(o, 48 + r.a / 10);
+    store_u8(o + 1, 48 + r.c / 10 % 10);
+    store_u8(o + 2, 48 + r.e / 10 % 10);
+    store_u8(o + 3, 10);
+    write(1, o, 4);
+    return 0;
+}
