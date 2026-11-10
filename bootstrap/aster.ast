@@ -2092,8 +2092,16 @@ fn global_decl(external: i32) -> i32 {
         return 0;
     }
     advance();
+    // v0.23.77-dev: a struct may be a global's type (up to 32 bytes, its values
+    // stored into it by __aster_init).
+    allow_struct_type = 1;
     let ty: i32 = parse_type();
+    allow_struct_type = 0;
     if (perr != 0) { return 0; }
+    if (ty_is_struct(ty) == 1 && struct_size(ty - TY_STRUCT_BASE) > 32) {
+        die_at("a struct larger than 32 bytes cannot be a global in the bootstrap subset", tok_line(nt), tok_col(nt));
+        return 0;
+    }
     let g: i32 = newnode(N_Global, nt);
     if (g == 0) { return 0; }
     nnty[g - 1] = ty;
@@ -4555,6 +4563,7 @@ fn cg_globals(prog: i32) -> i32 {
             let init: i32 = nfirst[c - 1];
             if (init != 0) {
                 let w: i32 = ty_width(stag[s]);
+                if (ty_is_struct(stag[s]) == 1) { w = struct_size(stag[s] - TY_STRUCT_BASE); }
                 let total: i32 = w * scnt[s];
                 let sec: i32 = 0;   // 0 = .bss, 1 = .data
                 if (is_const(init) == 1) {
@@ -6455,6 +6464,32 @@ fn gen_init(prog: i32) -> i32 {
             if (init != 0 && is_const(init) == 0) {
                 let s: i32 = cg_find_global(ntok[c - 1]);
                 if (s < 0) { return cg_die("internal compiler error: global symbol mismatch"); }
+                if (ty_is_struct(stag[s]) == 1) {
+                    // v0.23.77-dev: a struct global's value is a literal whose
+                    // fields land at their offsets, the same shape a local's
+                    // initializer uses.
+                    if (nkind[init - 1] != E_StructLit) {
+                        die_name_at("a struct global is initialized by a struct literal: ", ntok[c - 1]);
+                        return 1;
+                    }
+                    let t9: i32 = alloc_tmp();
+                    if (t9 < 0) { return 1; }
+                    if (emit_addr64(t9, g_addr[s]) != 0) { return 1; }
+                    let sid9: i32 = stag[s] - TY_STRUCT_BASE;
+                    let fi9: i32 = 0;
+                    let vi9: i32 = nfirst[init - 1];
+                    while (vi9 != 0) {
+                        let vv9: i32 = gen_expr(vi9, TY_I32);
+                        if (vv9 < 0) { return 1; }
+                        if (emit_mem(1, 2, vv9, t9, stk_foff[sid9 * 8 + fi9]) != 0) { return 1; }
+                        if (free_tmp(vv9) != 0) { return 1; }
+                        fi9 = fi9 + 1;
+                        vi9 = nnext[vi9 - 1];
+                    }
+                    if (free_tmp(t9) != 0) { return 1; }
+                    c = nnext[c - 1];
+                    continue;
+                }
                 let v: i32 = gen_expr(init, stag[s]);
                 if (v < 0) { return 1; }
                 let t: i32 = alloc_tmp();

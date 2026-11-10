@@ -1,0 +1,16 @@
+struct P { a: i32, b: i32 }
+
+let g: P = P { 7, 8 };
+let o: u8[8] = 0;
+
+fn main() -> i32 {
+    store_u8(o, 48 + g.a);
+    store_u8(o + 1, 48 + g.b);
+    store_u8(o + 2, 10);
+    write(1, o, 3);
+    g.a = 5;
+    store_u8(o + 2, 48 + g.a);
+    store_u8(o + 3, 10);
+    write(1, o + 2, 2);
+    return 0;
+}

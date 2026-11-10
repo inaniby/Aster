@@ -931,7 +931,11 @@ static int global_decl(int external) {
     adv();
     if (cur() != TK_Colon) die_at("expected ':'", tok_line(p), tok_col(p));
     adv();
+    allow_struct_type = 1;
     int ty = parse_type();
+    allow_struct_type = 0;
+    if (ty_is_struct(ty) && struct_size_s(ty-TY_STRUCT_BASE) > 32)
+        die_at("a struct larger than 32 bytes cannot be a global in the bootstrap subset", tok_line(nt), tok_col(nt));
     int g = newnode(N_Global, nt);
     nodes[g].ty = ty;
     nodes[g].count = 1;
@@ -3670,6 +3674,21 @@ static int gen_init(int prog){
             int init=NF(c);
             if (init!=0 && is_const(init)==0){
                 int s=cg_find_global(NT(c)); if (s<0) return cg_die("internal compiler error: global symbol mismatch");
+                if (ty_is_struct(st_tag[s])){
+                    if (nodes[init].kind != E_StructLit)
+                        die_name_at("a struct global is initialized by a struct literal: ", NT(c));
+                    int t9=alloc_tmp(); if (t9<0) return 1;
+                    if (emit_addr64(t9, g_addr[s])) return 1;
+                    int sid9=st_tag[s]-TY_STRUCT_BASE, fi9=0;
+                    for (int vi9=nodes[init].first; vi9>=0; vi9=nodes[vi9].next){
+                        int vv9=gen_expr(vi9,1); if (vv9<0) return 1;
+                        if (emit_mem(1,2,vv9,t9,stk_foff[sid9*8+fi9])) return 1;
+                        if (free_tmp(vv9)) return 1;
+                        fi9++;
+                    }
+                    if (free_tmp(t9)) return 1;
+                    c=NN(c); continue;
+                }
                 int v=gen_expr(init, st_tag[s]); if (v<0) return 1;
                 int t=alloc_tmp(); if (t<0) return 1;
                 if (emit_addr64(t, g_addr[s])) return 1;
@@ -3752,7 +3771,9 @@ static int cg_globals(int prog){
             if (s>=nsym){ return cg_die("internal compiler error: global symbol mismatch"); }
             int init=NF(c);
             if (init!=0){
-                int w=ty_width_t(st_tag[s]), total=w*st_cnt[s], sec=0;
+                int w=ty_width_t(st_tag[s]), total=0, sec=0;
+                if (ty_is_struct(st_tag[s])) w=struct_size_s(st_tag[s]-TY_STRUCT_BASE);
+                total=w*st_cnt[s];
                 if (is_const(init)==1){
                     int64_t val=fold(init);
                     if (val!=0) sec=1;
