@@ -4028,7 +4028,8 @@ fn tc_combine(n: i32) -> i32 {
     // + - * / % & | ^ : result is the wider integer (i64 if either is i64, else
     // i32; u8 widens to i32). Non-integer operands fall back to i32 — no pinned
     // S-error fires for them (§6 lists none), so the program is accepted.
-    if (lt == TY_I64 || rt == TY_I64) { ex_ty[n - 1] = TY_I64; }
+    if (lt == TY_F64 || rt == TY_F64) { ex_ty[n - 1] = TY_F64; }
+    else if (lt == TY_I64 || rt == TY_I64) { ex_ty[n - 1] = TY_I64; }
     else if (lt == TY_I32 && rt == TY_I32) { ex_ty[n - 1] = TY_I32; }
     else { ex_ty[n - 1] = TY_I32; }
     ex_arr[n - 1] = 0;
@@ -5313,6 +5314,18 @@ fn gen_combine(n: i32, want: i32) -> i32 {
     let rt: i32 = ex_ty[r - 1];
     let a: i32 = gx_val[l - 1];
     let b: i32 = gx_val[r - 1];
+    if ((k == E_Add || k == E_Sub || k == E_Mul || k == E_Div) && (lt == TY_F64 || rt == TY_F64)) {
+        // v0.23.77-dev: the float file. The operands arrive as temps whose
+        // numbers are D registers, so only the opcode changes.
+        let kind: i32 = 0;
+        if (k == E_Sub) { kind = 1; }
+        if (k == E_Mul) { kind = 2; }
+        if (k == E_Div) { kind = 3; }
+        if (emit_fp2(a, a, b, kind) != 0) { return 1; }
+        if (free_tmp(b) != 0) { return 1; }
+        gx_val[n - 1] = a;
+        return 0;
+    }
     if (k == E_Add || k == E_Sub) {
         let lp: i32 = is_ptr_tag(lt);
         let rp: i32 = is_ptr_tag(rt);
