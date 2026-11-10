@@ -46,7 +46,7 @@ ok "$n routines, each byte-identical to the library's"
 printf '%s\n' '[3/6] the host builds it; a consumer prints the line'
 "$ASTER" build-obj stdlib/aster_core.ast -o "$OUT/core.o" >"$OUT/core.log" 2>&1 \
     || fail "the core did not compile: $(tail -2 "$OUT/core.log")"
-grep -q '18 functions, 0 globals' "$OUT/core.log" || fail "the core's shape changed: $(tail -1 "$OUT/core.log")"
+grep -q '20 functions, 0 globals' "$OUT/core.log" || fail "the core's shape changed: $(tail -1 "$OUT/core.log")"
 und=$(readelf -sW "$OUT/core.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the core imports $und symbols, expected only the ELF null"
 "$ASTER" build-obj tests/library-core-consumer.ast -o "$OUT/use.o" >/dev/null 2>&1 \
@@ -56,7 +56,7 @@ und=$(readelf -sW "$OUT/core.o" | awk '$7=="UND"' | wc -l)
 chmod +x "$OUT/use"
 (cd "$OUT" && ./use > use.out 2>&1) || fail "the consumer exited $?"
 grep -qxF '13|-42|8|9|101' "$OUT/use.out" || fail "the consumer printed '$(cat "$OUT/use.out")'"
-ok '18 routines, 1 UND; consumer prints 13|-42|8|9|101'
+ok '20 routines, 1 UND; consumer prints 13|-42|8|9|101'
 
 printf '%s\n' '[4/6] the self-hosted stage accepts the core'
 "$ASTER" build-obj bootstrap/aster.ast -o "$OUT/boot.o" >"$OUT/boot.log" 2>&1 \
