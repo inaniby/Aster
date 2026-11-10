@@ -58,6 +58,7 @@ EXPR_SUBSET = [
     "Num", "Var", "String", "Call", "Index",
     "Add", "Sub", "Mul", "Div", "Neg",
     "Eq", "Ne", "Lt", "Le", "Gt", "Ge", "And", "Or", "Not",
+    "Field",
     "Mod", "Shl", "Shr", "BitAnd", "BitOr", "BitXor",
 ]
 
@@ -79,7 +80,7 @@ STMT_KINDS = [
 # because Pascal-semantics switch is the one control-flow shape the bootstrap
 # subset does not cover.
 STMT_SUBSET = [
-    "Let", "Assign", "IndexAssign", "Return", "If", "While",
+    "Let", "Assign", "FieldAssign", "IndexAssign", "Return", "If", "While",
     # v0.23.77-dev: the three-clause loop, with `continue` landing on the step.
     "For",
     "Break", "Continue",
@@ -128,7 +129,7 @@ STMT_COUNT = len(STMT_KINDS)          # 15 — sntab's record count
 STRUCT_COUNT = len(STRUCT_KINDS)      # 7  — nntab's record count
 TYPE_COUNT = len(TYPE_TAGS)           # 7  — tytab's record count
 EXPR_SUBSET_COUNT = len(EXPR_SUBSET)  # 25 — the E_* constants
-STMT_SUBSET_COUNT = len(STMT_SUBSET)  # 13 — the S_* constants
+STMT_SUBSET_COUNT = len(STMT_SUBSET)  # 14 — the S_* constants
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -152,12 +153,12 @@ def die(msg):
 def check_list():
     if EXPR_COUNT != 36:
         die("expected 36 expression kinds, list has %d" % EXPR_COUNT)
-    if EXPR_SUBSET_COUNT != 25:
+    if EXPR_SUBSET_COUNT != 26:
         die("expected 25 expression kinds in the subset, list has %d"
             % EXPR_SUBSET_COUNT)
     if STMT_COUNT != 15:
         die("expected 15 statement kinds, list has %d" % STMT_COUNT)
-    if STMT_SUBSET_COUNT != 13:
+    if STMT_SUBSET_COUNT != 14:
         die("expected 13 statement kinds in the subset, list has %d"
             % STMT_SUBSET_COUNT)
     if STRUCT_COUNT != 7:

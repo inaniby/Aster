@@ -7,7 +7,7 @@
 #ifndef ASTER_PARSER_NAMES_H
 #define ASTER_PARSER_NAMES_H
 
-/* The 25 expression kinds the bootstrap parser builds
+/* The 26 expression kinds the bootstrap parser builds
  * (PARSER-SPEC.md §2.1), at the host's Expr::Kind numbers. The eleven
  * excluded host kinds get no constant here, exactly as on the Aster
  * side. */
@@ -31,6 +31,7 @@ enum {
     E_And = 17,
     E_Or = 18,
     E_Not = 19,
+    E_Field = 20,
     E_Mod = 24,
     E_Shl = 25,
     E_Shr = 26,
@@ -39,10 +40,11 @@ enum {
     E_BitXor = 29,
 };
 
-/* The 13 statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, DerefAssign, For and Switch are excluded (§12.2). */
+/* The 14 statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, DerefAssign, For and Switch are excluded (§12.2). */
 enum {
     S_Let = 64,
     S_Assign = 65,
+    S_FieldAssign = 66,
     S_IndexAssign = 67,
     S_Return = 69,
     S_If = 70,

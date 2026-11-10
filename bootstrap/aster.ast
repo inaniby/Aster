@@ -183,7 +183,7 @@ fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
 // ---- END GENERATED: lexer names ----
 
 // ---- BEGIN GENERATED: parser names (bootstrap/gen_parser_names.py) ----
-// The 25 expression node kinds this parser builds
+// The 26 expression node kinds this parser builds
 // (PARSER-SPEC.md §2.1), at the host's `enum Kind` numbers
 // inside struct Expr: the subset keeps the numbering, the
 // eleven excluded kinds (§12.2) are simply absent, so a kind's
@@ -209,6 +209,7 @@ let E_Ge: i32 = 16;
 let E_And: i32 = 17;
 let E_Or: i32 = 18;
 let E_Not: i32 = 19;
+let E_Field: i32 = 20;
 let E_Mod: i32 = 24;
 let E_Shl: i32 = 25;
 let E_Shr: i32 = 26;
@@ -216,11 +217,12 @@ let E_BitAnd: i32 = 27;
 let E_BitOr: i32 = 28;
 let E_BitXor: i32 = 29;
 
-// The 13 statement kinds (§2.2), the host's Stmt::Kind
+// The 14 statement kinds (§2.2), the host's Stmt::Kind
 // numbers + 64; FieldAssign, DerefAssign, For and Switch are
 // excluded (§12.2), their numbers skipped.
 let S_Let: i32 = 64;
 let S_Assign: i32 = 65;
+let S_FieldAssign: i32 = 66;
 let S_IndexAssign: i32 = 67;
 let S_Return: i32 = 69;
 let S_If: i32 = 70;
@@ -1662,6 +1664,26 @@ fn parse_expr() -> i32 {
                     if (push_marker(3, nt) != 0) { return 0; }
                     continue;
                 }
+                if (nxt == K_Dot) {
+                    // v0.23.77-dev: `p.f` - a leaf whose child is the base
+                    // variable, its own token the field name.
+                    advance();
+                    advance();
+                    if (curk() != K_Ident) {
+                        die_at("expected a field name after '.'", tok_line(ppos), tok_col(ppos));
+                        return 0;
+                    }
+                    let ftk2: i32 = ppos;
+                    advance();
+                    let bv2: i32 = newnode(E_Var, nt);
+                    if (bv2 == 0) { return 0; }
+                    let fld: i32 = newnode(E_Field, ftk2);
+                    if (fld == 0) { return 0; }
+                    append(fld, bv2);
+                    if (vpush(fld) != 0) { return 0; }
+                    state = 1;
+                    continue;
+                }
                 advance();
                 let v: i32 = newnode(E_Var, nt);
                 if (v == 0) { return 0; }
@@ -1930,12 +1952,63 @@ fn ptr_type() -> i32 {
     die_close(tok_line(idt), tok_col(idt));
     return 0;
 }
+// ---------------------------------------------------------------------------
+// v0.23.77-dev: structs. Slice 1 of the subset's struct support - i32 fields
+// (at most 8 per struct, at most 64 structs), and an *instance* may only live in
+// a local: a global needs a struct literal, which the subset has no syntax for.
+// The tag space is dynamic: 32 + struct index.
+// ---------------------------------------------------------------------------
+let TY_STRUCT_BASE: i32 = 32;
+let stk_name: i32[64] = 0;
+let stk_cnt: i32[64] = 0;
+let stk_fname: i32[512] = 0;      // field f of struct s lives at s*8+f
+let stk_foff: i32[512] = 0;
+let stk_nst: i32 = 0;
+let allow_struct_type: i32 = 0;   // set only while a local declaration reads its type
+
+fn struct_find(nm: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < stk_nst) {
+        if (name_eq(stk_name[i], nm) == 1) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+fn ty_is_struct(t: i32) -> i32 {
+    if (t >= TY_STRUCT_BASE) { return 1; }
+    return 0;
+}
+fn struct_size(si: i32) -> i32 { return stk_cnt[si] * 4; }
+fn struct_field(si: i32, ft: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < stk_cnt[si]) {
+        if (name_eq(stk_fname[si * 8 + i], ft) == 1) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+fn ty_slots(t: i32) -> i32 {
+    if (ty_is_struct(t) == 1) { return (struct_size(t - TY_STRUCT_BASE) + 7) / 8; }
+    return 1;
+}
+
 fn parse_type() -> i32 {
     let k: i32 = curk();
     if (k == K_I32) { advance(); return TY_I32; }
     if (k == K_I64) { advance(); return TY_I64; }
     if (k == K_U8) { advance(); return TY_U8; }
     if (k == K_Ptr) { return ptr_type(); }
+    if (k == K_Ident) {
+        let si2: i32 = struct_find(ppos);
+        if (si2 >= 0) {
+            if (allow_struct_type == 0) {
+                die_at("a struct type is only allowed on a local in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            advance();
+            return TY_STRUCT_BASE + si2;
+        }
+    }
     if (bad_type_spelling(k) == 1) { return 0; }
     die_at("expected i32, i64, u8, u16, u32, ptr, ptr<S>, bool, or a struct name", tok_line(ppos), tok_col(ppos));
     return 0;
@@ -2309,8 +2382,23 @@ fn let_stmt() -> i32 {
         return 0;
     }
     advance();
+    allow_struct_type = 1;
     let ty: i32 = parse_type();
+    allow_struct_type = 0;
     if (perr != 0) { return 0; }
+    if (ty_is_struct(ty) == 1) {
+        // v0.23.77-dev: a struct local is declared *without* an initializer and
+        // zero-filled; the subset has no struct-literal syntax.
+        if (curk() != K_Semi) {
+            die_at("a struct local is zero-filled; a struct literal is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let ss: i32 = newnode(S_Let, nt);
+        if (ss == 0) { return 0; }
+        nnty[ss - 1] = ty;
+        return ss;
+    }
     if (curk() == K_LBracket) {
         die_at("local arrays are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
         return 0;
@@ -2780,8 +2868,36 @@ fn statement() -> i32 {
             return 0;
         }
         if (nextk() == K_Dot) {
-            die_at("'.' field access is not in the bootstrap subset", tok_line(ppos + 1), tok_col(ppos + 1));
-            return 0;
+            // v0.23.77-dev: `p.f = v` - children [E_Var(base), rhs], the node's
+            // own token is the field name.
+            let bt: i32 = ppos;
+            advance();
+            advance();
+            if (curk() != K_Ident) {
+                die_at("expected a field name after '.'", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            let ftk: i32 = ppos;
+            advance();
+            if (curk() != K_Eq) {
+                die_at("expected '=' after a field name", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            advance();
+            let fe: i32 = parse_expr();
+            if (perr != 0) { return 0; }
+            if (curk() != K_Semi) {
+                die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            advance();
+            let fsx: i32 = newnode(S_FieldAssign, ftk);
+            if (fsx == 0) { return 0; }
+            let bvx: i32 = newnode(E_Var, bt);
+            if (bvx == 0) { return 0; }
+            append(fsx, bvx);
+            append(fsx, fe);
+            return fsx;
         }
         if (nextk() == K_LBracket) { return index_assign_stmt(); }
         if (nextk() == K_PlusPlus || nextk() == K_MinusMinus) {
@@ -2819,6 +2935,71 @@ fn statement() -> i32 {
 // would enter them — at the top of an item, so `extern struct` reports P1
 // the way the host does, not B2.
 // ---------------------------------------------------------------------------
+// `struct Name { f: i32, f: i32 }` - i32 fields only, at most 8, duplicate
+// names refused. Offsets are 4 * field index, so the struct's size is 4 * count.
+fn struct_decl() -> i32 {
+    advance();                                   // the 'struct'
+    if (curk() != K_Ident) {
+        die_at("expected a struct name", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    let nm: i32 = ppos;
+    advance();
+    if (struct_find(nm) >= 0) {
+        die_name_np("duplicate struct type: ", nm);
+        return 0;
+    }
+    if (stk_nst >= 64) {
+        die_at("too many struct types (limit 64)", tok_line(nm), tok_col(nm));
+        return 0;
+    }
+    if (curk() != K_LBrace) {
+        die_at("expected '{' after a struct name", tok_line(ppos), tok_col(ppos));
+        return 0;
+    }
+    advance();
+    let si: i32 = stk_nst;
+    stk_name[si] = nm;
+    stk_cnt[si] = 0;
+    stk_nst = stk_nst + 1;
+    while (curk() != K_RBrace) {
+        if (curk() != K_Ident) {
+            die_at("expected a field name", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        let ft: i32 = ppos;
+        advance();
+        if (curk() != K_Colon) {
+            die_at("expected ':' after a field name", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        if (curk() != K_I32) {
+            die_at("only i32 fields are in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        if (struct_field(si, ft) >= 0) {
+            die_name_np("duplicate field name: ", ft);
+            return 0;
+        }
+        if (stk_cnt[si] >= 8) {
+            die_at("a struct may have at most 8 fields in the bootstrap subset", tok_line(ft), tok_col(ft));
+            return 0;
+        }
+        stk_fname[si * 8 + stk_cnt[si]] = ft;
+        stk_foff[si * 8 + stk_cnt[si]] = stk_cnt[si] * 4;
+        stk_cnt[si] = stk_cnt[si] + 1;
+        if (curk() == K_Comma) { advance(); }
+        else if (curk() != K_RBrace) {
+            die_at("expected ',' or '}' after a field", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+    }
+    advance();                                   // the '}'
+    return 1;
+}
+
 fn parse_program() -> i32 {
     let pt: i32 = 0;
     if (ntoks == 0) { pt = 0 - 1; }
@@ -2832,8 +3013,9 @@ fn parse_program() -> i32 {
             return 0;
         }
         if (k == K_Struct) {
-            die_at("struct declarations are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-            return 0;
+            if (struct_decl() == 0) { return 0; }
+            if (perr != 0) { return 0; }
+            continue;
         }
         if (k == K_Let) {
             advance();
@@ -3382,6 +3564,15 @@ fn tc_combine(n: i32) -> i32 {
         return 0;
     }
     if (k == E_String) { ex_ty[n - 1] = TY_PTR_U8; ex_arr[n - 1] = 0; return 0; }
+    if (k == E_Field) {
+        let bf: i32 = nfirst[n - 1];
+        if (find_var(ntok[bf - 1]) == 0) { die_name_at("unknown variable: ", ntok[bf - 1]); return 1; }
+        if (ty_is_struct(rs_tag) == 0) { die_name_at("'.' field access on a non-struct: ", ntok[bf - 1]); return 1; }
+        if (struct_field(rs_tag - TY_STRUCT_BASE, ntok[n - 1]) < 0) { die_name_at("no such field: ", ntok[n - 1]); return 1; }
+        ex_ty[n - 1] = TY_I32;
+        ex_arr[n - 1] = 0;
+        return 0;
+    }
     if (k == E_Var) {
         if (find_var(ntok[n - 1]) == 0) { die_name_at("unknown variable: ", ntok[n - 1]); return 1; }
         if (rs_cnt > 1) {
@@ -3527,6 +3718,18 @@ fn sema_stmt(s: i32) -> i32 {
         if (find_var(ntok[s - 1]) == 0) { die_name_at("unknown variable: ", ntok[s - 1]); return 1; }
         if (rs_cnt > 1) { die_name_at("cannot increment an array: ", ntok[s - 1]); return 1; }
         if (rs_tag != TY_I32) { die_name_at("can only increment an i32: ", ntok[s - 1]); return 1; }
+        return 0;
+    }
+    if (k == S_FieldAssign) {
+        let bfa: i32 = nfirst[s - 1];
+        if (find_var(ntok[bfa - 1]) == 0) { die_name_at("unknown variable: ", ntok[bfa - 1]); return 1; }
+        if (ty_is_struct(rs_tag) == 0) { die_name_at("'.' field access on a non-struct: ", ntok[bfa - 1]); return 1; }
+        if (struct_field(rs_tag - TY_STRUCT_BASE, ntok[s - 1]) < 0) { die_name_at("no such field: ", ntok[s - 1]); return 1; }
+        let rfa: i32 = nnext[bfa - 1];
+        if (tc_expr(rfa) != 0) { return 1; }
+        if (assign_ok(TY_I32, ex_ty[rfa - 1], ex_arr[rfa - 1], rfa) == 0) {
+            die_name_at("type mismatch assigning field: ", ntok[s - 1]); return 1;
+        }
         return 0;
     }
     if (k == S_Assign) {
@@ -4438,7 +4641,7 @@ fn cg_add_local(tok: i32, ty: i32, cnt: i32) -> i32 {
     cg_loc_ty[cg_nlocs] = ty;
     cg_loc_cnt[cg_nlocs] = cnt;
     cg_nlocs = cg_nlocs + 1;
-    cg_next_slot = cg_next_slot + 1;
+    cg_next_slot = cg_next_slot + ty_slots(ty);   // v0.23.77-dev: a struct needs several
     return cg_loc_slot[cg_nlocs - 1];
 }
 // The visible local entry for a name token (latest first, so an inner shadow
@@ -4583,6 +4786,43 @@ fn gx_dispatch(n: i32, wt: i32) -> i32 {
     return gx_push_bin(n, ow, ow, wt);
 }
 
+// v0.23.77-dev: the address of `base.field` in a temporary - the frame slot (or
+// ADRP/ADD for a global) plus the field's own offset.
+fn gen_field_addr(btok: i32, ftok: i32) -> i32 {
+    let tag: i32 = 0;
+    let li: i32 = cg_find_local(btok);
+    let gs: i32 = 0 - 1;
+    if (li >= 0) { tag = cg_loc_ty[li]; }
+    else {
+        gs = cg_find_global(btok);
+        if (gs < 0) { if (cg_die_name_at("unknown variable: ", btok) != 0) { return 0 - 1; } }
+        if (skind[gs] == SK_EXTERN_LET) { if (cg_die_name_at("cannot reference external global: ", btok) != 0) { return 0 - 1; } }
+        tag = stag[gs];
+    }
+    if (ty_is_struct(tag) == 0) { if (cg_die_name_at("'.' field access on a non-struct: ", btok) != 0) { return 0 - 1; } }
+    let si: i32 = tag - TY_STRUCT_BASE;
+    let fi: i32 = struct_field(si, ftok);
+    if (fi < 0) { if (cg_die_name_at("no such field: ", ftok) != 0) { return 0 - 1; } }
+    let off: i32 = stk_foff[si * 8 + fi];
+    let t: i32 = alloc_tmp();
+    if (t < 0) { return 0 - 1; }
+    if (li >= 0) {
+        if (emit_frame_addr(t, cg_loc_slot[li] * 8) != 0) { return 0 - 1; }
+    } else {
+        if (emit_addr64(t, g_addr[gs]) != 0) { return 0 - 1; }
+    }
+    if (emit_addsub_imm(t, t, off, 0, 1) != 0) { return 0 - 1; }   // 64-bit: the address is an X register
+    return t;
+}
+// The value: load the field at 32-bit width into the address register itself.
+fn gen_field_load(n: i32) -> i32 {
+    let b: i32 = nfirst[n - 1];
+    let a: i32 = gen_field_addr(ntok[b - 1], ntok[n - 1]);
+    if (a < 0) { return 0 - 1; }
+    if (emit_mem(0, 2, a, a, 0) != 0) { return 0 - 1; }
+    return a;
+}
+
 fn gen_expr(h: i32, want: i32) -> i32 {
     return gen_expr_at(h, want, 0);
 }
@@ -4609,6 +4849,12 @@ fn gen_expr_at(h: i32, want: i32, base: i32) -> i32 {
             continue;
         }
         let k: i32 = nkind[n - 1];
+        if (k == E_Field) {
+            let rf2: i32 = gen_field_load(n);
+            if (rf2 < 0) { return -1; }
+            gx_val[n - 1] = rf2;
+            continue;
+        }
         if (k == E_Num || k == E_String || k == E_Var) {
             let r: i32 = gen_leaf(n, wt);
             if (r < 0) { return -1; }
@@ -5448,6 +5694,18 @@ fn gen_index_addr(tok: i32, idxexpr: i32) -> i32 {
 
 fn gen_stmt(s: i32) -> i32 {
     let k: i32 = nkind[s - 1];
+    if (k == S_Let && ty_is_struct(nnty[s - 1]) == 1) {
+        let tyst: i32 = nnty[s - 1];
+        let slotst: i32 = cg_add_local(ntok[s - 1], tyst, 1);
+        if (slotst < 0) { return 1; }
+        let nsl: i32 = ty_slots(tyst);
+        let isl: i32 = 0;
+        while (isl < nsl) {
+            if (emit_mem(1, 3, 31, 31, (slotst + isl) * 8) != 0) { return 1; }
+            isl = isl + 1;
+        }
+        return 0;
+    }
     if (k == S_Let) {
         // A local is always a scalar here (the parser refuses local arrays),
         // so one slot, and the initializer stores at the declared width.
@@ -5643,6 +5901,18 @@ fn gen_stmt(s: i32) -> i32 {
         if (emit_mem(1, mem_scale(ty_width(ty3)), v3, a3, 0) != 0) { return 1; }
         if (free_tmp(v3) != 0) { return 1; }
         if (free_tmp(a3) != 0) { return 1; }
+        return 0;
+    }
+    if (k == S_FieldAssign) {
+        let bfx: i32 = nfirst[s - 1];
+        let rfx: i32 = nnext[bfx - 1];
+        let vfx: i32 = gen_expr(rfx, TY_I32);
+        if (vfx < 0) { return 1; }
+        let afx: i32 = gen_field_addr(ntok[bfx - 1], ntok[s - 1]);
+        if (afx < 0) { return 1; }
+        if (emit_mem(1, 2, vfx, afx, 0) != 0) { return 1; }
+        if (free_tmp(afx) != 0) { return 1; }
+        if (free_tmp(vfx) != 0) { return 1; }
         return 0;
     }
     if (k == S_Break) {

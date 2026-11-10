@@ -579,6 +579,18 @@ static int primary(void) {
             append(z, e);
             return z;
         }
+        if (ahead() == TK_Dot) {
+            adv();                       /* the name */
+            adv();                       /* the '.' */
+            if (cur() != TK_Ident)
+                die_at("expected a field name after '.'", tok_line(p), tok_col(p));
+            int ftk2 = p;
+            adv();
+            int bv2 = newnode(E_Var, nt);
+            int fld = newnode(E_Field, ftk2);
+            append(fld, bv2);
+            return fld;
+        }
         adv();
         return newnode(E_Var, nt);
     }
@@ -837,6 +849,16 @@ static int ptr_type(void) {
     die_at(msgbuf, tok_line(idt), tok_col(idt));
     return 0;                            /* unreachable */
 }
+/* v0.23.77-dev: structs - i32 fields, at most 8 per struct, 64 structs, and an
+ * instance only in a local. The tag space is dynamic: 32 + struct index. */
+#define TY_STRUCT_BASE 32
+static int stk_name[64], stk_cnt[64], stk_fname[512], stk_foff[512], stk_nst;
+static int allow_struct_type;
+static int struct_find(int nm){ for (int i=0;i<stk_nst;i++) if (name_eq(stk_name[i],nm)) return i; return -1; }
+static int ty_is_struct(int t){ return t>=TY_STRUCT_BASE; }
+static int struct_size_s(int si){ return stk_cnt[si]*4; }
+static int struct_field(int si,int ft){ for (int i=0;i<stk_cnt[si];i++) if (name_eq(stk_fname[si*8+i],ft)) return i; return -1; }
+static int ty_slots(int t){ return ty_is_struct(t) ? (struct_size_s(t-TY_STRUCT_BASE)+7)/8 : 1; }
 static int parse_type(void) {
     int k = cur();
     if (k == TK_I32) { adv(); return TY_I32; }
@@ -844,6 +866,16 @@ static int parse_type(void) {
     if (k == TK_U8)  { adv(); return TY_U8; }
     if (k == TK_Ptr) return ptr_type();
     bad_type_spelling(k);
+    if (k == TK_Ident) {
+        int si2 = struct_find(p);
+        if (si2 >= 0) {
+            if (!allow_struct_type)
+                die_at("a struct type is only allowed on a local in the bootstrap subset",
+                       tok_line(p), tok_col(p));
+            adv();
+            return TY_STRUCT_BASE + si2;
+        }
+    }
     die_at("expected i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name",
            tok_line(p), tok_col(p));
     return 0;                            /* unreachable */
@@ -1088,7 +1120,18 @@ static int let_stmt(void) {
     adv();
     if (cur() != TK_Colon) die_at("expected ':'", tok_line(p), tok_col(p));
     adv();
+    allow_struct_type = 1;
     int ty = parse_type();
+    allow_struct_type = 0;
+    if (ty_is_struct(ty)) {
+        if (cur() != TK_Semi)
+            die_at("a struct local is zero-filled; a struct literal is not in the bootstrap subset",
+                   tok_line(p), tok_col(p));
+        adv();
+        int ss = newnode(S_Let, nt);
+        nodes[ss].ty = ty;
+        return ss;
+    }
     if (cur() == TK_LBracket)
         die_at("local arrays are not in the bootstrap subset",
                tok_line(p), tok_col(p));
@@ -1434,9 +1477,25 @@ static int statement(void) {
         if (dot != 0)
             die_at("'.' field access is not in the bootstrap subset",
                    tok_line(dot), tok_col(dot));
-        if (ahead() == TK_Dot)
-            die_at("'.' field access is not in the bootstrap subset",
-                   tok_line(p + 1), tok_col(p + 1));
+        if (ahead() == TK_Dot) {
+            int bt = p;
+            adv(); adv();
+            if (cur() != TK_Ident)
+                die_at("expected a field name after '.'", tok_line(p), tok_col(p));
+            int ftk = p;
+            adv();
+            if (cur() != TK_Eq)
+                die_at("expected '=' after a field name", tok_line(p), tok_col(p));
+            adv();
+            int fe = expr();
+            if (cur() != TK_Semi) die_at("expected ';'", tok_line(p), tok_col(p));
+            adv();
+            int fsx = newnode(S_FieldAssign, ftk);
+            int bvx = newnode(E_Var, bt);
+            append(fsx, bvx);
+            append(fsx, fe);
+            return fsx;
+        }
         if (ahead() == TK_LBracket) return index_assign_stmt();
         if (ahead() == TK_PlusPlus || ahead() == TK_MinusMinus) {
             int nt = p;
@@ -1461,6 +1520,37 @@ static int statement(void) {
 }
 
 /* ----------------------------------------------------------- program (§4.1) */
+static int struct_decl(void) {
+    adv();
+    if (cur() != TK_Ident) die_at("expected a struct name", tok_line(p), tok_col(p));
+    int nm = p;
+    adv();
+    if (struct_find(nm) >= 0) die_name_np("duplicate struct type: ", nm);
+    if (stk_nst >= 64) die_at("too many struct types (limit 64)", tok_line(nm), tok_col(nm));
+    if (cur() != TK_LBrace) die_at("expected '{' after a struct name", tok_line(p), tok_col(p));
+    adv();
+    int si = stk_nst;
+    stk_name[si] = nm; stk_cnt[si] = 0; stk_nst++;
+    while (cur() != TK_RBrace) {
+        if (cur() != TK_Ident) die_at("expected a field name", tok_line(p), tok_col(p));
+        int ft = p;
+        adv();
+        if (cur() != TK_Colon) die_at("expected ':' after a field name", tok_line(p), tok_col(p));
+        adv();
+        if (cur() != TK_I32) die_at("only i32 fields are in the bootstrap subset", tok_line(p), tok_col(p));
+        adv();
+        if (struct_field(si, ft) >= 0) die_name_np("duplicate field name: ", ft);
+        if (stk_cnt[si] >= 8)
+            die_at("a struct may have at most 8 fields in the bootstrap subset", tok_line(ft), tok_col(ft));
+        stk_fname[si*8+stk_cnt[si]] = ft;
+        stk_foff[si*8+stk_cnt[si]] = stk_cnt[si]*4;
+        stk_cnt[si]++;
+        if (cur() == TK_Comma) adv();
+        else if (cur() != TK_RBrace) die_at("expected ',' or '}' after a field", tok_line(p), tok_col(p));
+    }
+    adv();
+    return 1;
+}
 static int parse_program(void) {
     int prog = newnode(N_Program, ntok == 0 ? -1 : 0);
     prog_node = prog;
@@ -1469,9 +1559,7 @@ static int parse_program(void) {
         if (k == TK_Include)
             die_at("include is not in the bootstrap subset",
                    tok_line(p), tok_col(p));
-        if (k == TK_Struct)
-            die_at("struct declarations are not in the bootstrap subset",
-                   tok_line(p), tok_col(p));
+        if (k == TK_Struct) { if (!struct_decl()) return 0; continue; }
         if (k == TK_Let) {
             adv();
             int g = global_decl(0);
@@ -1896,6 +1984,18 @@ static int tc_combine(int n) {
         return 0;
     }
     if (k == E_String) { ety[n] = TY_PTR_U8; earr[n] = 0; return 0; }
+    if (k == E_Field) {
+        int bf = nodes[n].first;
+        if (!sym_find_var(nodes[bf].tok))
+            die_name_at("unknown variable: ", nodes[bf].tok);
+        if (!ty_is_struct(rs_tag))
+            die_name_at("'.' field access on a non-struct: ", nodes[bf].tok);
+        if (struct_field(rs_tag - TY_STRUCT_BASE, nodes[n].tok) < 0)
+            die_name_at("no such field: ", nodes[n].tok);
+        ety[n] = TY_I32;
+        earr[n] = 0;
+        return 0;
+    }
     if (k == E_Var) {
         int t = nodes[n].tok;
         if (sym_find_var(t) == 0) die_name_at("unknown variable: ", t);
@@ -2018,6 +2118,20 @@ static int sema_stmt(int s) {
                 die_name_at("type mismatch assigning variable: ", nodes[s].tok);
         }
         add_local(nodes[s].tok, 1, nodes[s].ty, 1);
+        return 0;
+    }
+    if (k == S_FieldAssign) {
+        int bfa = nodes[s].first;
+        if (!sym_find_var(nodes[bfa].tok))
+            die_name_at("unknown variable: ", nodes[bfa].tok);
+        if (!ty_is_struct(rs_tag))
+            die_name_at("'.' field access on a non-struct: ", nodes[bfa].tok);
+        if (struct_field(rs_tag - TY_STRUCT_BASE, nodes[s].tok) < 0)
+            die_name_at("no such field: ", nodes[s].tok);
+        int rfa = nodes[bfa].next;
+        if (tc_expr(rfa) != 0) return 1;
+        if (!assign_ok(TY_I32, ety[rfa], earr[rfa], rfa))
+            die_name_at("type mismatch assigning field: ", nodes[s].tok);
         return 0;
     }
     if (k == S_Assign) {
@@ -2499,7 +2613,7 @@ static int cg_add_local(int tok,int ty,int cnt){
         if (cg_die("too many local declarations (limit 500, including parameters)")) return -1;
     }
     cg_loc_tok[cg_nlocs]=tok; cg_loc_slot[cg_nlocs]=cg_next_slot; cg_loc_ty[cg_nlocs]=ty; cg_loc_cnt[cg_nlocs]=cnt;
-    cg_nlocs++; cg_next_slot++; return cg_loc_slot[cg_nlocs-1];
+    cg_nlocs++; cg_next_slot += ty_slots(ty); return cg_loc_slot[cg_nlocs-1];
 }
 static int cg_find_local(int tok){
     for (int i=cg_nlocs-1;i>=0;i--) if (name_eq(cg_loc_tok[i],tok)==1) return i;
@@ -2632,6 +2746,30 @@ static int gen_stmt(int s);
 static int gen_index_addr(int tok,int idxexpr);
 static int expr_yields_ptr(int h);
 static int gen_logical(int n,int want);
+static int gen_field_addr(int btok,int ftok){
+    int tag, li=cg_find_local(btok), gs=-1;
+    if (li>=0) tag=cg_loc_ty[li];
+    else {
+        gs=cg_find_global(btok);
+        if (gs<0) return cg_die_name_at("unknown variable: ", btok);
+        if (st_kind[gs]==3) return cg_die_name_at("cannot reference external global: ", btok);
+        tag=st_tag[gs];
+    }
+    if (!ty_is_struct(tag)) return cg_die_name_at("'.' field access on a non-struct: ", btok);
+    int si=tag-TY_STRUCT_BASE, fi=struct_field(si, ftok);
+    if (fi<0) return cg_die_name_at("no such field: ", ftok);
+    int off=stk_foff[si*8+fi], t=alloc_tmp(); if (t<0) return -1;
+    if (li>=0) { if (emit_frame_addr(t, cg_loc_slot[li]*8)) return -1; }
+    else { if (emit_addr64(t, g_addr[gs])) return -1; }
+    if (emit_addsub_imm(t,t,off,0,1)) return -1;   /* 64-bit: an X register */
+    return t;
+}
+static int gen_field_load(int n){
+    int b=nodes[n].first;
+    int a=gen_field_addr(nodes[b].tok, nodes[n].tok); if (a<0) return -1;
+    if (emit_mem(0,2,a,a,0)) return -1;
+    return a;
+}
 static int gen_expr_at(int h,int want,int base){
     gx_node[base]=h; gx_state[base]=0; gx_want[base]=want; gx_top=base+1;
     while (gx_top>base){
@@ -2640,6 +2778,7 @@ static int gen_expr_at(int h,int want,int base){
         if (st==1){ if (gen_combine(n,wt)) return -1; continue; }
         if (st==2){ if (gen_logical(n,wt)) return -1; continue; }
         int k=NK(n);
+        if (k==E_Field){ int rf2=gen_field_load(n); if (rf2<0) return -1; gx_val[n]=rf2; continue; }
         if (k==E_Num||k==E_String||k==E_Var){
             int r=0;
             if (k==E_Num){
@@ -2971,6 +3110,14 @@ static int gen_block(int b){
 }
 static int gen_stmt(int s){
     int k=NK(s);
+    if (k==S_Let && ty_is_struct(nodes[s].ty)){
+        int tyst=nodes[s].ty;
+        int slotst=cg_add_local(NT(s), tyst, 1); if (slotst<0) return 1;
+        int nsl=ty_slots(tyst);
+        for (int isl=0; isl<nsl; isl++)
+            if (emit_mem(1,3,31,31,(slotst+isl)*8)) return 1;
+        return 0;
+    }
     if (k==S_Let){
         int slot=cg_add_local(NT(s), NTY(s), 1); if (slot<0) return 1;
         int v=gen_expr(NF(s), NTY(s)); if (v<0) return 1;
@@ -3128,6 +3275,24 @@ static int gen_stmt(int s){
         if (emit_mem(1, mem_scale_t(ty_width_t(ty3)), v3, a3, 0)) return 1;
         if (free_tmp(v3)) return 1;
         if (free_tmp(a3)) return 1;
+        return 0;
+    }
+    if (k==S_Let && ty_is_struct(nodes[s].ty)){
+        fprintf(stderr, "DBG structlet ty=%d slots=%d nst=%d cnt0=%d\\n", nodes[s].ty, ty_slots(nodes[s].ty), stk_nst, stk_cnt[0]);
+        int tyst=nodes[s].ty;
+        int slotst=cg_add_local(nodes[s].tok, tyst, 1); if (slotst<0) return 1;
+        int nsl=ty_slots(tyst);
+        for (int isl=0; isl<nsl; isl++)
+            if (emit_mem(1,3,31,31,(slotst+isl)*8)) return 1;
+        return 0;
+    }
+    if (k==S_FieldAssign){
+        int bfx=nodes[s].first, rfx=nodes[bfx].next;
+        int vfx=gen_expr(rfx,1); if (vfx<0) return 1;
+        int afx=gen_field_addr(nodes[bfx].tok, nodes[s].tok); if (afx<0) return 1;
+        if (emit_mem(1,2,vfx,afx,0)) return 1;
+        if (free_tmp(afx)) return 1;
+        if (free_tmp(vfx)) return 1;
         return 0;
     }
     if (k==S_Nop) return 0;
