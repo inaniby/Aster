@@ -1630,15 +1630,42 @@ otherwise too).
 A `-g` build is per-object: each `build-obj -g` carries its own unit and line
 program, and `link-obj` merges them (§11).
 
-## 11b. What is not in the language
+## 11b. `static` locals
 
-`static` locals are the one gap left in the statement grammar: a function's
-locals live in its frame and are rebuilt on every call, so state that outlives a
-call belongs in a file-scope `let` (a file is a translation unit, and `include`
-brings declarations only). The differential harness in `tests/difftest/` is what
-guards the rest: it emits the same program in Aster and in C and compares the
-two outputs, so an operator whose code generation drifts is caught by the
-machine rather than by a reader.
+```aster
+fn next_id() -> i32 {
+    static let n: i32 = 0;      // one copy, for the program's whole life
+    n = n + 1;
+    return n;
+}
+```
+
+* **Storage is a global**, not a frame slot: the declaration becomes an object
+  in `.data` (or `.bss` when its initializer is all zero) under a mangled
+  symbol, and the function's frame does not grow by a byte.
+* **The name is private to the function.** Two functions may each declare
+  `static let n` and they are two different objects; a file-scope global of the
+  same name is shadowed inside the body, not replaced.
+* **Every global rule applies unchanged**, because the declaration is parsed by
+  the global path: any declared type (integer widths, `ptr`, `bool`, `f64`, a
+  struct or an array), a constant initializer folded into the image, and an
+  initializer that needs code runs **once at program start**, before `main` —
+  not on each call.
+* `static` is a **context keyword** (like `tls`), used only as `static let …`
+  at the start of a statement; it is not one of the reserved words, so a
+  variable may still be called `static`.
+* Declaring the same name twice in one function is an error; an array declared
+  static cannot be assigned as a whole, exactly as any other array.
+
+## 11c. What is not in the language
+
+There is no gap left in the statement grammar: `static let` (11b) covers state
+that outlives a call. What the language still does not offer is deliberate —
+floating-point literals in exponent form, variadic *definitions*, closures,
+generics, and a module system beyond `include`. The differential harness in
+`tests/difftest/` guards the code generator: it emits the same program in Aster
+and in C and compares the two outputs, so an operator whose lowering drifts is
+caught by the machine rather than by a reader.
 
 ## 12. The standard library (v0.23.42-dev)
 

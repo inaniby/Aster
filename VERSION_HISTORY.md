@@ -198,6 +198,24 @@ breaking this project's own `-Werror` build.
   version solving), and `FEATURE_STATUS.md` gained a section listing this
   release's additions plus the one **known gap**: `static` locals.
 
+* **`static` locals** — `static let n: T = e;` in a function body gives a
+  binding whose storage is a global and whose name stays private to the
+  function. The declaration is parsed by the *global* path after the parser
+  rewrites the name to a unique mangled symbol, so every rule a global has —
+  any type, a constant initializer folded into `.data`/`.bss`, an array, a
+  struct, an `f64` fold — applies unchanged, and the function's frame does not
+  grow. Sema rebinds the source name and renames every reference (the indexed
+  read's name field included) so Codegen only ever sees the mangled global; the
+  two statement forms that take a name (assignment and indexed assignment)
+  resolve it through an alias. An initializer that needs code runs **once at
+  program start**, before `main`, exactly as a global's does. `static` is a
+  context keyword, so the reserved-word count stays 33.
+  `tests/static-checks.sh` (nine layers) covers a counter, two functions'
+  independent copies, shadowing a file-scope global, `u8`/`i64`/`f64`/an array
+  element/the address of one, once-only initialization, the symbol in
+  `.data`/`.bss`, two refusals, and a mutation that drops the sequence number
+  from the mangled name.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

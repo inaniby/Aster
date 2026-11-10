@@ -1071,7 +1071,11 @@ static Ty constExprType(const Expr& e){
     }
 }
 struct Stmt {
-    enum Kind { Let, Assign, FieldAssign, IndexAssign, DerefAssign, Return, If, While, For, Break, Continue, Switch, Expr, DoWhile } k; std::string name; unsigned line=0, col=0;   // P4.1: source location of this statement's leading token
+    enum Kind { Let, Assign, FieldAssign, IndexAssign, DerefAssign, Return, If, While, For, Break, Continue, Switch, Expr, DoWhile,
+                 // v0.23.77-dev: a `static` declaration is consumed by the parser
+                 // (it defines a global); the statement that stands in its place
+                 // generates nothing and binds nothing.
+                 Nop } k; std::string name; unsigned line=0, col=0;   // P4.1: source location of this statement's leading token
     E expr; E idx;
     Ty ty=Ty::I32;          // declared value type (v0.23.2-dev); isPtr/isBool mirror it
     bool isPtr=false; bool isBool=false;
@@ -1142,7 +1146,11 @@ struct Global { std::string name; bool external=false; int32_t init=0; uint64_t 
     // v0.23.13-dev (P3.4): arrived through `include`, so a definition in the
     // including file supersedes it rather than colliding with it.
     bool fromInclude=false; };
-struct Function { std::string name; std::vector<std::string> params; std::vector<bool> paramPtr; std::vector<bool> paramBool; std::vector<Ty> paramTypes; std::vector<std::vector<uint32_t>> paramDims; std::vector<FuncSig> paramFuncSig; std::vector<bool> paramIsFunc; Ty retType=Ty::I32; std::vector<Stmt> body; bool external=false; bool returnPtr=false; bool returnBool=false;
+struct Function { std::string name; std::vector<std::string> params;
+    // v0.23.77-dev: `static let n: T = e;` inside the body. The pair is the
+    // source name and the mangled global symbol that holds its storage; Sema
+    // resolves the first and renames every reference to the second.
+    std::vector<std::pair<std::string,std::string>> statics; std::vector<bool> paramPtr; std::vector<bool> paramBool; std::vector<Ty> paramTypes; std::vector<std::vector<uint32_t>> paramDims; std::vector<FuncSig> paramFuncSig; std::vector<bool> paramIsFunc; Ty retType=Ty::I32; std::vector<Stmt> body; bool external=false; bool returnPtr=false; bool returnBool=false;
     // v0.23.38-dev: a function may return a fn-pointer, and then the signature
     // travels beside the ptr return type exactly as it does beside a ptr
     // parameter. `return inc;` inside `fn get() -> fn(i32) -> i32` can be
@@ -2437,6 +2445,29 @@ class Parser {
     }
     Stmt statement(){
         DepthGuard depthGuard(stmtDepth,256,"statement");
+        // v0.23.77-dev: `static let n: T = e;` — a function-local binding with
+        // file-scope storage. `static` is a context keyword (like `tls`), so the
+        // reserved-word count does not move. The declaration itself is parsed by
+        // the *global* path: the name token is rewritten to a unique mangled
+        // symbol first, so every check a global gets — duplicate name,
+        // initializer fitting, array length, the f64 and struct rules — runs
+        // against the symbol that will really hold the bytes.
+        if(cur().k==TK::Ident&&cur().s=="static"&&p+1<t.size()&&t[p+1].k==TK::Let){
+            ++p;                                   // the context keyword
+            need(TK::Let,"expected let after static");
+            // `need` consumed `let`, so the name is the current token.
+            if(cur().k!=TK::Ident)
+                throw Error(loc(cur().line,cur().col,"expected a name after 'static let'"));
+            const std::string local=cur().s;
+            const std::string mangled="__aster_static_"+std::to_string(staticSeq++)+"_"+local;
+            t[p].s=mangled;                        // the global declaration reads this
+            const size_t before=globals.size();
+            globalDeclaration(false,false,false);
+            if(globals.size()==before)
+                throw Error(loc(cur().line,cur().col,"static declaration defined no storage: "+local));
+            pendingStatics.push_back({local,mangled});
+            return Stmt(Stmt::Nop);
+        }
         if(cur().k==TK::Star)return derefAssignStatement();
         if(eat(TK::Let))return letStatement();
         // v0.23.67-dev: `const x : T = e;` in a function body — the same
@@ -3096,6 +3127,9 @@ public:
                     const std::string& selfDir_="",IncludeState* inc=nullptr)
         :t(Lexer(s).run()),requireMain(requireEntry),includes(inc?inc:&ownIncludes),selfDir(selfDir_){}
     std::vector<Function> functions;
+    // v0.23.77-dev: the statics of the function currently being parsed.
+    std::vector<std::pair<std::string,std::string>> pendingStatics;
+    unsigned staticSeq=0;
     std::vector<Global> globals;
     // Recursive-descent parsers can be driven off the C stack by input such as
     // `((((((...1...))))))` or a hundred nested ifs. These counters make the
@@ -3319,7 +3353,7 @@ public:
             f.retType=rty;f.returnPtr=(rty==Ty::Ptr);f.returnBool=(rty==Ty::Bool);
             if(f.name=="main"&&rty!=Ty::I32)throw Error("main must return i32");
             if(f.external)need(TK::Semi,"expected ';' after extern function declaration");
-            else {f.body=block();if(f.body.empty())throw Error("function body cannot be empty: "+f.name);}
+            else {pendingStatics.clear();f.body=block();f.statics=pendingStatics;if(f.body.empty())throw Error("function body cannot be empty: "+f.name);}
         for(const auto& old:functions)if(old.name==f.name){
             if(!old.fromInclude)throw Error("duplicate function declaration: "+f.name);
             dropIncluded(f.name);break;   // this file's own definition wins
@@ -6370,6 +6404,17 @@ struct Codegen {
     // copies/returns an aggregate keeps none of the compiler scratch tail.
     std::vector<size_t> frameWords;
     std::vector<size_t> incomingBaseWords;
+    // v0.23.77-dev: statement targets are names, not expressions, so the rename
+    // annotateExpr does cannot reach them. A `static` local's source name is
+    // mapped here to the mangled global that holds it, and the two statement
+    // branches that take a name (assignment and indexed assignment) resolve
+    // through it before any lookup.
+    std::map<std::string,std::string> staticAlias;
+    std::string resolveName(const std::string& n) const {
+        auto it=staticAlias.find(n);
+        return it==staticAlias.end()?n:it->second;
+    }
+
     // v0.23.77-dev: a double that must survive a call on the *other* side of
     // one operator. It is parked in the four-slot gap between the locals and
     // the integer spill area (4000..4032), one slot per nesting level.
@@ -6668,9 +6713,10 @@ struct Codegen {
                     if(emitLineInfo)debugVars.push_back({s.name,s.ty,slot,false,false,{},s.line});
                 }
             } else if(s.k==Stmt::Assign){
-                int slot=lookup(s.name);
+                const std::string an=resolveName(s.name);   // v0.23.77-dev: static locals
+                int slot=lookup(an);
                 if(slot>=0){
-                    if(localArrayLength.count(slot))throw Error("cannot assign to an array as a whole: "+s.name);
+                    if(localArrayLength.count(slot))throw Error("cannot assign to an array as a whole: "+an);
                     if(tyIsStruct(slotType(slot))){
                         emit(addImm(kGlobalBase,31,(uint32_t)slot*8));
                         emitStructStore(*s.expr);
@@ -6679,32 +6725,32 @@ struct Codegen {
                         const bool isBool=boolSlots.count(slot)&&boolSlots.at(slot);
                         const bool actualPtr=exprIsPtr(*s.expr),actualBool=exprIsBool(*s.expr);
                         if(isBool){
-                            if(!actualBool&&!isBoolConstant(*s.expr))throw Error("type mismatch assigning variable: "+s.name+" (expected bool)");
+                            if(!actualBool&&!isBoolConstant(*s.expr))throw Error("type mismatch assigning variable: "+an+" (expected bool)");
                         } else if(isPtr){
                             // v0.23.26-dev: `p = 0;` clears a pointer.
-                            if(!actualPtr&&!isNullConstant(*s.expr))throw Error("type mismatch assigning variable: "+s.name);
+                            if(!actualPtr&&!isNullConstant(*s.expr))throw Error("type mismatch assigning variable: "+an);
                         } else {
-                            if(actualPtr||actualBool)throw Error("type mismatch assigning variable: "+s.name);
+                            if(actualPtr||actualBool)throw Error("type mismatch assigning variable: "+an);
                         }
                         int v=(isBool&&actualBool)?genBool(*s.expr):gen(*s.expr,slotType(slot));
                         emit(storeVarT(v,slot,slotType(slot)));releaseTemp(v);
                     }
                 }
-                else if(globals.count(s.name)){
-                    if(arrayGlobals.count(s.name))throw Error(loc(s.line,s.col,"cannot assign to an array as a whole: "+s.name));
-                    if(tyIsStruct(globalTypeOf(s.name))){
-                        emitGlobalAddress(s.name);
+                else if(globals.count(an)){
+                    if(arrayGlobals.count(an))throw Error(loc(s.line,s.col,"cannot assign to an array as a whole: "+an));
+                    if(tyIsStruct(globalTypeOf(an))){
+                        emitGlobalAddress(an);
                         emitStructStore(*s.expr);
                     } else {
-                        const bool isBool=boolGlobals.count(s.name)!=0;
+                        const bool isBool=boolGlobals.count(an)!=0;
                         const bool actualBool=exprIsBool(*s.expr);
-                        if(isBool&&!actualBool&&!isBoolConstant(*s.expr))throw Error("type mismatch assigning variable: "+s.name+" (expected bool)");
-                        if(!isBool&&actualBool)throw Error("type mismatch assigning variable: "+s.name+" (expected i32)");
-                        int v=(isBool&&actualBool)?genBool(*s.expr):gen(*s.expr,globalTypeOf(s.name));
-                        emitGlobalAddress(s.name);emit(storeGlobalT(v,globalTypeOf(s.name)));releaseTemp(v);
+                        if(isBool&&!actualBool&&!isBoolConstant(*s.expr))throw Error("type mismatch assigning variable: "+an+" (expected bool)");
+                        if(!isBool&&actualBool)throw Error("type mismatch assigning variable: "+an+" (expected i32)");
+                        int v=(isBool&&actualBool)?genBool(*s.expr):gen(*s.expr,globalTypeOf(an));
+                        emitGlobalAddress(an);emit(storeGlobalT(v,globalTypeOf(an)));releaseTemp(v);
                     }
                 }
-                else throw Error(loc(s.line,s.col,"assignment to unknown variable: "+s.name));
+                else throw Error(loc(s.line,s.col,"assignment to unknown variable: "+an));
             } else if(s.k==Stmt::FieldAssign){
                 // p.f = v : compute the value first (it may clobber x16), then
                 // the field's address, then store through it. A struct-typed
@@ -6720,6 +6766,7 @@ struct Codegen {
                     releaseTemp(v);
                 }
             } else if(s.k==Stmt::IndexAssign){
+                const std::string an=resolveName(s.name);   // v0.23.77-dev: static locals
                 // v0.23.34-dev: `p[i] = v` where p is a typed pointer (an array
                 // parameter, or a variable bound to `&arr`) is the localPtr
                 // path below: the base slot holds the address, elementTypeOf
@@ -6728,23 +6775,23 @@ struct Codegen {
                 //
                 // buf[i] = v : evaluate the index and the value first (either may clobber x16),
                 // then materialize the base, add the scaled index, and store.
-                const int slot=lookup(s.name);
+                const int slot=lookup(an);
                 const bool localArray=slot>=0&&localArrayLength.count(slot)!=0;
                 const bool localPtr=slot>=0&&!localArray&&pointerSlots.count(slot)&&pointerSlots.at(slot);
-                if(slot>=0&&!localArray&&!localPtr)throw Error("cannot index non-array variable: "+s.name);
+                if(slot>=0&&!localArray&&!localPtr)throw Error("cannot index non-array variable: "+an);
                 if(!localArray&&!localPtr){
-                    if(!globals.count(s.name))throw Error("assignment to unknown array: "+s.name);
-                    if(!arrayGlobals.count(s.name))throw Error("cannot index non-array global: "+s.name);
+                    if(!globals.count(an))throw Error("assignment to unknown array: "+an);
+                    if(!arrayGlobals.count(an))throw Error("cannot index non-array global: "+an);
                 }
-                checkArrayBounds(s.name,*s.idx);
+                checkArrayBounds(an,*s.idx);
                 if(exprIsPtr(*s.idx))throw Error("pointer indexing is not supported yet");
-                const Ty elem=elementTypeOf(s.name);
+                const Ty elem=elementTypeOf(an);
                 // v0.23.28-dev: the value is checked against the element type
                 // instead of being refused whenever it is an address. A ptr
                 // stores into a `ptr[N]` (which is the point of one), and a
                 // bool no longer lands in an i32 element as the integer 1.
                 if(exprIsPtr(*s.expr)&&elem.k!=Ty::Ptr)
-                    throw Error("type mismatch assigning array element of '"+s.name+"': expected "+tyNameFull(elem)+", got ptr");
+                    throw Error("type mismatch assigning array element of '"+an+"': expected "+tyNameFull(elem)+", got ptr");
                 // v0.23.31-dev: two or more subscripts — the target is the
                 // chain's own address, computed level by level, and the store
                 // goes through it exactly as a one-dimensional element's does.
@@ -6764,13 +6811,13 @@ struct Codegen {
                     return;
                 }
                 int r=gen(*s.idx);
-                emitBoundsCheck(s.name,*s.idx,r);
+                emitBoundsCheck(an,*s.idx,r);
                 // v0.23.36-dev: an array parameter remembers its length — mirror the
                 // check emitElemAddr does for reads. arrayLengthOf still returns 0 for
                 // a parameter (so AddrOf typing is untouched), hence the explicit
                 // paramArrayLength lookup here. The earlier emitBoundsCheck is a no-op
                 // for parameters and the second one does the real work.
-                if(!s.name.empty()){int aslot=lookup(s.name);
+                if(!an.empty()){int aslot=lookup(an);
                     if(aslot>=0&&paramArrayLength.count(aslot)){
                         checkArrayBounds(paramArrayLength[aslot],*s.idx);
                         emitBoundsCheck(paramArrayLength[aslot],*s.idx,r);
@@ -6781,7 +6828,7 @@ struct Codegen {
                 if(tyIsStruct(elem)){
                     if(localPtr)emit(loadVar64(kGlobalBase,slot)); // LDR X16, [SP, #slot*8]
                     else if(localArray)emit(0x91000000u|(uint32_t(slot*8)<<10)|(31u<<5)|uint32_t(kGlobalBase)); // ADD X16, SP, #slot*8 (sh = 0)
-                    else emitGlobalAddress(s.name);
+                    else emitGlobalAddress(an);
                     emitElemIndex(r,elem);
                     releaseTemp(r);
                     emitStructStore(*s.expr);
@@ -6790,7 +6837,7 @@ struct Codegen {
                 int v=gen(*s.expr,elem);
                 if(localPtr)emit(loadVar64(kGlobalBase,slot)); // LDR X16, [SP, #slot*8]
                 else if(localArray)emit(0x91000000u|(uint32_t(slot*8)<<10)|(31u<<5)|uint32_t(kGlobalBase)); // ADD X16, SP, #slot*8 (sh = 0)
-                else emitGlobalAddress(s.name);
+                else emitGlobalAddress(an);
                 emitElemIndex(r,elem);
                 emit(storeGlobalT(v,elem)); // STR <T>v, [X16]
                 releaseTemp(v);releaseTemp(r);
@@ -6908,10 +6955,15 @@ struct Codegen {
     }
     void block(const std::vector<Stmt>& ss, bool newScope=false){
         if(newScope)scopes.emplace_back();
-        for(const auto&s:ss)execStmt(s);
+        // v0.23.77-dev: a `static` declaration's storage was laid out by the
+        // parser and its name is a global before Codegen ever looks, so the
+        // statement that stands in its place generates nothing.
+        for(const auto&s:ss){ if(s.k==Stmt::Nop)continue; execStmt(s); }
         if(newScope)scopes.pop_back();
     }
     std::vector<uint32_t> run(const Function& f){
+        staticAlias.clear();
+        for(const auto& st:f.statics)staticAlias[st.first]=st.second;
         // v0.23.68-dev: a void function returns nothing, so it may fall off
         // the end of its body — there is no value to be missing. Only a
         // value-returning function must definitely return.
@@ -7478,7 +7530,11 @@ struct Sema {
         // refused. It rides in the binding because that is what a store site
         // actually has in hand: `find()` walks the scopes and hands back this
         // record, so the check is one field away at every one of them.
-        bool isConst=false; };
+        bool isConst=false;
+        // v0.23.77-dev: a `static` local. The binding answers the source name
+        // while Sema runs; annotateExpr rewrites every reference to this symbol
+        // before Codegen looks, and Codegen's global path does the rest.
+        std::string staticGlobal; };
     unsigned typeDepth=0;
     const std::map<std::string,size_t>& arities;
     const std::set<std::string>& globalNames;
@@ -7993,6 +8049,19 @@ static bool semaTypeIsPlaceholder(const Expr& e){
     // child -- an Index's Field base and a StructLit's field values among
     // them.
     Ty annotateExpr(Expr& e){
+        // v0.23.77-dev: a reference to a `static` local becomes a reference to
+        // the mangled global that holds it. Done before typeOf, so the rest of
+        // Sema and all of Codegen see one name.
+        if(e.k==Expr::Var){
+            if(const Binding* b=find(e.name))
+                if(!b->staticGlobal.empty())e.name=b->staticGlobal;
+        }
+        // An indexed read carries its array's name as a field, not as a Var
+        // child: `a[i]` on a static array has to be renamed at the same point.
+        if(e.k==Expr::Index&&!e.name.empty()){
+            if(const Binding* b=find(e.name))
+                if(!b->staticGlobal.empty())e.name=b->staticGlobal;
+        }
         const Ty t=typeOf(e);
         e.type=t;
         if(e.a)annotateExpr(*e.a);
@@ -8592,6 +8661,9 @@ static bool semaTypeIsPlaceholder(const Expr& e){
     }
     void checkStmt(const Stmt& s){
         switch(s.k){
+            // v0.23.77-dev: a static declaration's storage is already a global;
+            // there is nothing to bind and nothing to check here.
+            case Stmt::Nop: return;
             case Stmt::Let: {
                 if(scopes.empty())scopes.emplace_back();
                 if(scopes.back().count(s.name))throw Error(loc(s.line,s.col,"duplicate variable in scope: "+s.name));
@@ -8643,7 +8715,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         if(!initializerFits(s.ty,*s.expr,v))
                             throw Error(loc(s.line,s.col,"local array initializer does not fit in "+tyNameFull(s.ty)+": "+s.name+" ("+std::to_string(v)+")"));
                     }
-                    scopes.back()[s.name]=Binding{Ty::Ptr,s.dims[0],s.ty,s.dims,{},false,s.isConst};   // name decays to the frame address
+                    scopes.back()[s.name]=Binding{Ty::Ptr,s.dims[0],s.ty,s.dims,{},false,s.isConst,{}};   // name decays to the frame address
                 } else {
                     // v0.23.29-dev: a struct local declared without an
                     // initializer — the only shape a struct that contains an
@@ -8652,7 +8724,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     // there is no expression to type-check. Register the
                     // binding and move on. (Only a struct local may omit `=`;
                     // every other kind is required to have one by the parser.)
-                    if(!s.expr){scopes.back()[s.name]=Binding{s.ty,0,Ty::I32,{},FuncSig(),false,s.isConst};return;}
+                    if(!s.expr){scopes.back()[s.name]=Binding{s.ty,0,Ty::I32,{},FuncSig(),false,s.isConst,{}};return;}
                     const Ty actual=annotateExpr(*s.expr);
                     if(tyIsStruct(s.ty)||tyIsStruct(actual))
                         checkValue(s.ty,*s.expr,actual,"type mismatch initializing '"+s.name+"'");
@@ -8733,7 +8805,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     // declared stride names, so Sema's `p[i]` and codegen's
                     // answer the same type (a u8 element compares unsigned in
                     // both passes, not signed in one and unsigned in the other).
-                    scopes.back()[s.name]=Binding{s.ty,0,tyIsPtrToElem(s.ty)?ptrElemType(s.ty):Ty::I32,{},s.funcSig,s.isFunc,s.isConst};
+                    scopes.back()[s.name]=Binding{s.ty,0,tyIsPtrToElem(s.ty)?ptrElemType(s.ty):Ty::I32,{},s.funcSig,s.isFunc,s.isConst,{}};
                 }
                 return;
             }
@@ -9070,7 +9142,25 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             const std::vector<uint32_t>& pd = i<f.paramDims.size()?f.paramDims[i]:kEmptyDims;
             const uint32_t plen = pd.empty()?0:(uint32_t)dimsProduct(pd);
             scopes.back()[f.params[i]]=Binding{pty, plen, tyIsPtrToElem(pty)?ptrElemType(pty):Ty::I32, pd,
-                i<f.paramFuncSig.size()?f.paramFuncSig[i]:FuncSig(), i<f.paramIsFunc.size()&&f.paramIsFunc[i], false};
+                i<f.paramFuncSig.size()?f.paramFuncSig[i]:FuncSig(), i<f.paramIsFunc.size()&&f.paramIsFunc[i], false, {}};
+        }
+        // v0.23.77-dev: a static local is a global the body refers to by its
+        // source name. The binding answers that name while Sema runs;
+        // annotateExpr rewrites every reference to the mangled symbol, which is
+        // the name Codegen can already resolve (type, width, array shape and
+        // load/store form all come from the global path).
+        for(const auto& st:f.statics){
+            if(scopes.back().count(st.first))
+                throw Error("duplicate static local in function "+f.name+": "+st.first);
+            Binding b;
+            auto gt=globalTypes.find(st.second);
+            b.ty=(gt!=globalTypes.end())?gt->second:Ty::I32;
+            auto al=arrayLengths.find(st.second);
+            if(al!=arrayLengths.end()){b.len=al->second;b.elem=b.ty;}
+            auto ad=arrayDims.find(st.second);
+            if(ad!=arrayDims.end())b.dims=ad->second;
+            b.staticGlobal=st.second;
+            scopes.back()[st.first]=b;
         }
         for(const auto& s:f.body)checkStmt(s);
     }
