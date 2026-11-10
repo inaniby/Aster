@@ -2681,10 +2681,6 @@ fn let_stmt() -> i32 {
     let ty: i32 = parse_type();
     allow_struct_type = 0;
     if (perr != 0) { return 0; }
-    if (ty == TY_F64) {
-        die_at("f64 values are not in the bootstrap subset yet: the literal converts to its exact bits, the code generator does not carry them", tok_line(nt), tok_col(nt));
-        return 0;
-    }
     if (ty_is_struct(ty) == 1) {
         // v0.23.77-dev: a struct local is declared *without* an initializer and
         // zero-filled; the subset has no struct-literal syntax.
@@ -4619,6 +4615,32 @@ fn emit_cmp_imm(rn: i32, imm: i32, is64: i32) -> i32 {
     return emit_word(base | ((imm << 10) | (rn << 5)));
 }
 // CSET Wd, cond = CSINC Wd, WZR, WZR, cond^1 — the inversion lives in bit 12.
+// ---- IEEE-754 double: a handful of encodings, all in the "V" file ----------
+// A temp is a register *number*: X(n) for integers and D(n) for floats, which
+// is why none of this needed a second pool.
+fn emit_str_d(rt: i32, rn: i32, off: i32) -> i32 {          // STR Dt,[Xn,#off]
+    return emit_word(0xfd000000 | ((off >> 3) << 10) | (rn << 5) | rt);
+}
+fn emit_ldr_d(rt: i32, rn: i32, off: i32) -> i32 {          // LDR Dt,[Xn,#off]
+    return emit_word(0xfd400000 | ((off >> 3) << 10) | (rn << 5) | rt);
+}
+fn emit_fmov_xd(rd: i32, rn: i32) -> i32 {                  // FMOV Dd,Xn
+    return emit_word(0x9e670000 | (rn << 5) | rd);
+}
+fn emit_fmov_dx(rd: i32, rn: i32) -> i32 {                  // FMOV Xd,Dn
+    return emit_word(0x9e660000 | (rn << 5) | rd);
+}
+// kind: 0 FADD, 1 FSUB, 2 FMUL, 3 FDIV
+fn emit_fp2(rd: i32, rn: i32, rm: i32, kind: i32) -> i32 {
+    let base: i64 = 0x1e602800;                             // FADD D
+    if (kind == 1) { base = 0x1e603800; }
+    if (kind == 2) { base = 0x1e600800; }
+    if (kind == 3) { base = 0x1e601800; }
+    return emit_word(base | (rm << 16) | (rn << 5) | rd);
+}
+fn emit_fcmp_d(rn: i32, rm: i32) -> i32 {                   // FCMP Dn,Dm
+    return emit_word(0x1e602000 | (rm << 16) | (rn << 5));
+}
 fn emit_cset(rd: i32, cond: i32) -> i32 {
     return emit_word(0x1a9f07e0 | (((cond ^ 1) << 12) | rd));
 }
@@ -5236,6 +5258,17 @@ fn param_type(fnode: i32, i: i32) -> i32 {
 // spelling when either side is u8 — the host's comparisonCond
 // (src/aster.cpp:2290). Returns the user-level condition code; emit_cset
 // applies CSET's own inversion.
+// FCMP orders the flags for floats: EQ/NE for equality, MI for "less", HI for
+// "greater", LS/HS for the or-equal forms. (The NaN cases answer "unordered",
+// which reads as false - the same answer C's < and > give.)
+fn fp_cond(k: i32) -> i32 {
+    if (k == E_Lt) { return 4; }    // MI
+    if (k == E_Le) { return 9; }    // LS
+    if (k == E_Gt) { return 8; }    // HI
+    if (k == E_Ge) { return 2; }    // HS
+    return 0;                       // EQ; NE is 1
+}
+
 fn cmp_cond(k: i32, lt: i32, rt: i32) -> i32 {
     let uns: i32 = 0;
     // v0.23.77-dev: any unsigned operand makes the comparison unsigned - u64
@@ -5377,12 +5410,16 @@ fn gen_combine(n: i32, want: i32) -> i32 {
     if (k == E_Eq || k == E_Ne || k == E_Lt || k == E_Le || k == E_Gt || k == E_Ge) {
         let is64: i32 = 0;
         if (ty_is64(lt) == 1 || ty_is64(rt) == 1) { is64 = 1; }
-        if (emit_cmp_rr(a, b, is64) != 0) { return 1; }
+        if (lt == TY_F64 || rt == TY_F64) {
+            if (emit_fcmp_d(a, b) != 0) { return 1; }
+        } else if (emit_cmp_rr(a, b, is64) != 0) { return 1; }
         if (free_tmp(b) != 0) { return 1; }
         if (free_tmp(a) != 0) { return 1; }
         let d: i32 = alloc_tmp();
         if (d < 0) { return -1; }
-        if (emit_cset(d, cmp_cond(k, lt, rt)) != 0) { return 1; }
+        let cond: i32 = cmp_cond(k, lt, rt);
+        if (lt == TY_F64 || rt == TY_F64) { cond = fp_cond(k); }
+        if (emit_cset(d, cond) != 0) { return 1; }
         gx_val[n - 1] = d;
         return 0;
     }
@@ -5926,9 +5963,14 @@ fn main() -> i32 {
 fn gen_leaf(n: i32, want: i32) -> i32 {
     let k: i32 = nkind[n - 1];
     if (k == E_Num && nflt[n - 1] == 1) {
-        // the value is exact and known; the generator has no F register to put
-        // it in, so it says so rather than emitting the integer path
-        if (cg_die_at_node("f64 values are not in the bootstrap subset yet: the literal converts to its exact bits, the code generator does not carry them", n) != 0) { return -1; }
+        // the exact bits are already in numf (the parser converted them); put
+        // them in an X temp and carry them across to the D file
+        convert_float(ntok[n - 1]);
+        let d: i32 = alloc_tmp();
+        if (d < 0) { return -1; }
+        if (emit_imm64(d, numf) != 0) { return -1; }
+        if (emit_fmov_xd(d, d) != 0) { return -1; }
+        return d;
     }
     if (k == E_Num) {
         convert_num(ntok[n - 1]);
@@ -5974,6 +6016,10 @@ fn gen_var(n: i32, want: i32) -> i32 {
         }
         let d: i32 = alloc_tmp();
         if (d < 0) { return -1; }
+        if (ty == TY_F64) {
+            if (emit_ldr_d(d, 31, slot * 8) != 0) { return -1; }
+            return d;
+        }
         if (emit_mem(0, mem_scale(ty_width(ty)), d, 31, slot * 8) != 0) { return -1; }
         if (ty == TY_I32 && ty_is64(want) == 1) {
             if (emit_sxtw(d, d) != 0) { return -1; }
@@ -6193,6 +6239,11 @@ fn gen_stmt(s: i32) -> i32 {
         if (slot < 0) { return 1; }
         let v: i32 = gen_expr(nfirst[s - 1], nnty[s - 1]);
         if (v < 0) { return 1; }
+        if (nnty[s - 1] == TY_F64) {
+            if (emit_str_d(v, 31, slot * 8) != 0) { return 1; }
+            if (free_tmp(v) != 0) { return 1; }
+            return 0;
+        }
         if (emit_mem(1, mem_scale(ty_width(nnty[s - 1])), v, 31, slot * 8) != 0) { return 1; }
         if (free_tmp(v) != 0) { return 1; }
         return 0;
