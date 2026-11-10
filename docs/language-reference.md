@@ -1630,6 +1630,16 @@ otherwise too).
 A `-g` build is per-object: each `build-obj -g` carries its own unit and line
 program, and `link-obj` merges them (§11).
 
+## 11b. What is not in the language
+
+`static` locals are the one gap left in the statement grammar: a function's
+locals live in its frame and are rebuilt on every call, so state that outlives a
+call belongs in a file-scope `let` (a file is a translation unit, and `include`
+brings declarations only). The differential harness in `tests/difftest/` is what
+guards the rest: it emits the same program in Aster and in C and compares the
+two outputs, so an operator whose code generation drifts is caught by the
+machine rather than by a reader.
+
 ## 12. The standard library (v0.23.42-dev)
 
 `stdlib/aster_std.ast` is the first slice of a library written in Aster

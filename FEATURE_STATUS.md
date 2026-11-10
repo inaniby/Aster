@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.76-dev.** One table per area. "Since" is the version that
+**As of v0.23.77-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -14,6 +14,21 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | `link-so` forwards the merged TLS alignment to `PT_TLS` and both headers | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [4/9], [8/9] |
 | `sh_addralign = 0` means "no requirement" for data/bss/TLS sections | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [3/9], [4/9], [8/9] |
 | `.tbss` symbol offsets are not double-counted | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [4/9] (16..16384 spectrum), [8/9], `tls-checks.sh` |
+
+## v0.23.77-dev additions
+
+| Feature | Status | Since | Coverage |
+| --- | --- | --- | --- |
+| `main(argc: i32, argv: ptr [, envp: ptr])` — the entry reads `argc` at `[sp]` and `argv` at `[sp+8]` of the process's initial stack, which the prologue captures in `x16` *before* it moves `sp`, so the form works under both frame layouts. `argv[i]` is `ptr(load_i64(argv + i * 8))`, and `envp` is the word after the last `argv` slot | shipped | v0.23.77-dev | `lang-completion-checks.sh` [6/9] (argc 1/3, `argv[1]`, `envp`, the refusal forms) |
+| `do { … } while ( … ) ;` — test-last loop, `continue` jumps to the condition, a label binds `break`/`continue` the same way `while` does, and the trailing `;` is required | shipped | v0.23.77-dev | `lang-completion-checks.sh` [2/9]–[5/9] (semantics, refusals, a mutation that must diverge) |
+| A **project** — `aster.proj` + `aster new/add/build/run/test/deps/doctor`: sources, objects, libraries, include dirs, flags and dependencies in one file; `deps` records each dependency's `sha256` so a changed header is visible, `doctor` checks the toolchain the project declares | shipped | v0.23.77-dev | `project-checks.sh` [1/16]–[16/16] |
+| `--compact-frames` — per-function frame sizing: locals + the call/syscall argument grid (moved down to just above them, every embedding instruction patched) + the saved return address. The default stays byte-identical at 8 KiB, so the frozen snapshot is untouched | shipped | v0.23.77-dev | `frame-size-checks.sh` [1/10]–[10/10] (default pinned, compact leaf 32 B, recursion depth 20000, a mutated recording falls back safely) |
+| `f64` — an IEEE-754 double: fractional literals, `+ - * /`, unary minus, the six relations, `f64(x)`/`i32(x)`/`i64(x)` conversions, storage in locals/fields/elements/globals (the global folds through a float constant folder) | shipped | v0.23.77-dev | `float-checks.sh` [2/9]–[6/9] |
+| The **FP calling convention** — `d0`–`d7` for parameters, allocated independently of `x0`–`x7`, the stack after the eighth, `d0` for a result; a double held across a call is parked in the frame gap | shipped | v0.23.77-dev | `float-checks.sh` [7/9] (nine doubles, mixed orders, nested calls) |
+| `f32` — the four-byte single beside it: `f32(x)`/`f64(x)` conversions, S-register arithmetic and relations, four-byte storage, `s0` for a result, a folding global | shipped | v0.23.77-dev | `float-checks.sh` [6/9] |
+| `fmt_f64` / `fmt_f32` — a double in fixed point (0..9 digits, half-up, zero-padded fraction, a carry into the integer part, `nan`/`inf` as a C printf spells them), answering the byte count like the integer writers | shipped | v0.23.77-dev | `stdlib3-checks.sh` [1/8]–[8/8] (C twin differential, clamps, the tie case) |
+| A **differential harness** — one traversal emits the same program in Aster and C syntax; both are compiled and run and their output compared, over three families (u32 expressions, i64 expressions, call shapes with a 12- and a 24-byte aggregate). Layers include a mutated compiler that must be caught | shipped | v0.23.77-dev | `difftest-checks.sh` [1/7]–[7/7] |
+| **Known gap:** `static` local variables are not implemented — `fn f() { static n: i32 = 0; … }` is a parse error, and a file-scope `let` is the current way to keep state across calls | gap | — | not covered; `examples/` uses file-scope state instead |
 
 ## Language core
 

@@ -1,6 +1,6 @@
 # Aster — Roadmap
 
-**Status as of v0.23.76-dev.** This roadmap is the forward-looking companion to
+**Status as of v0.23.77-dev.** This roadmap is the forward-looking companion to
 `VERSION_HISTORY.md` (what shipped) and `FEATURE_STATUS.md` (what exists today).
 Every version listed here is a plan, not a promise; the history file is the only
 record of what actually landed.
@@ -194,8 +194,12 @@ Ordered by product value, picked up as versions open up:
 - **A general-purpose optimizing backend.** Aster emits straight-line code per
   expression; the 8 KiB frame and the w0–w15 temporary pool are part of the
   documented contract, and programs are small by construction.
-- **A package manager or build system.** `link-obj` plus `extern` declarations
-  cover multi-object programs; anything larger belongs outside the compiler.
+- **A package manager.** A *build system* is no longer on this list: v0.23.77-dev
+  shipped `aster new/add/build/run/test/deps/doctor`, driven by an `aster.proj`
+  file with sources, objects, libraries, include dirs and recorded dependency
+  hashes (`tests/project-checks.sh`). What stays out is **fetching and version
+  solving** — a registry, a lockfile, a resolver for semantic versions. A
+  project lists where its dependencies *are*, not where they might be found.
 - **A managed heap / garbage collection.** Memory is the frame, globals, and
   the raw `mmap`/`brk` the kernel offers (shipped v0.23.41-dev — an allocator
   built on them is the program's own, as `examples/arena.ast` demonstrates,

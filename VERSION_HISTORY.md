@@ -179,6 +179,25 @@ breaking this project's own `-Werror` build.
   right after the call). The loop now skips an argument that took an FP
   register, and `tests/float-checks.sh`'s FP layer covers the shape.
 
+* **A differential harness** — `tests/difftest/gen.ast` emits the *same* program
+  in Aster and in C syntax from one traversal (differing only in the tokens the
+  two languages spell differently), and `tests/difftest-checks.sh` compiles and
+  runs both and compares output and exit status over 24 seeds in each of three
+  families: u32 expressions (wrapping arithmetic, shifts, bitwise, division and
+  remainder), i64 expressions, and call shapes (nine scalars so the ninth is a
+  stack argument, a 12-byte aggregate in registers, a 24-byte aggregate in
+  memory). The suite's last layer builds a compiler with `^` mutated to `|` and
+  requires the harness to catch it, so a green run is evidence rather than the
+  absence of a test. Writing the generator surfaced one more real defect: the
+  generated declarations are the only place the two languages' syntax differs,
+  which is exactly the property the comparison needs.
+* **Documentation calibration** — `ROADMAP.md` and `FEATURE_STATUS.md` are
+  stamped v0.23.77-dev; the roadmap no longer claims a build system is
+  "deliberately not planned" (it shipped this release as
+  `aster new/add/build/run/test/deps/doctor` — what stays out is fetching and
+  version solving), and `FEATURE_STATUS.md` gained a section listing this
+  release's additions plus the one **known gap**: `static` locals.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce
