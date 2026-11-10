@@ -117,7 +117,7 @@ static const char *const EK_NAMES[EK_COUNT] = {
     "Cast",
 };
 
-#define SK_COUNT 13
+#define SK_COUNT 15
 static const char *const SK_NAMES[SK_COUNT] = {
     "Let",
     "Assign",
@@ -132,6 +132,8 @@ static const char *const SK_NAMES[SK_COUNT] = {
     "Continue",
     "Switch",
     "Expr",
+    "DoWhile",
+    "Nop",
 };
 
 #define NK_COUNT 5

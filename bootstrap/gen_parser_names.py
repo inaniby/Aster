@@ -66,6 +66,12 @@ EXPR_SUBSET = [
 STMT_KINDS = [
     "Let", "Assign", "FieldAssign", "IndexAssign", "DerefAssign",
     "Return", "If", "While", "For", "Break", "Continue", "Switch", "Expr",
+    # v0.23.77-dev: `do { } while (c);` and the node a consumed `static let`
+    # leaves behind. Both are host kinds; the bootstrap's parser builds neither
+    # (the subset refuses `do` and `static let`), so they are not in
+    # STMT_SUBSET — their numbers are simply reserved, which is what keeps a
+    # surviving kind's number equal to the host's.
+    "DoWhile", "Nop",
 ]
 
 # The kinds the bootstrap parser builds: FieldAssign, DerefAssign, For and
@@ -100,7 +106,7 @@ TYPE_TAGS = [
 RECORD = 16
 
 EXPR_COUNT = len(EXPR_KINDS)          # 35 — entab's record count
-STMT_COUNT = len(STMT_KINDS)          # 12 — sntab's record count
+STMT_COUNT = len(STMT_KINDS)          # 15 — sntab's record count
 STRUCT_COUNT = len(STRUCT_KINDS)      # 5  — nntab's record count
 TYPE_COUNT = len(TYPE_TAGS)           # 7  — tytab's record count
 EXPR_SUBSET_COUNT = len(EXPR_SUBSET)  # 25 — the E_* constants
@@ -131,8 +137,8 @@ def check_list():
     if EXPR_SUBSET_COUNT != 25:
         die("expected 25 expression kinds in the subset, list has %d"
             % EXPR_SUBSET_COUNT)
-    if STMT_COUNT != 13:
-        die("expected 13 statement kinds, list has %d" % STMT_COUNT)
+    if STMT_COUNT != 15:
+        die("expected 15 statement kinds, list has %d" % STMT_COUNT)
     if STMT_SUBSET_COUNT != 9:
         die("expected 9 statement kinds in the subset, list has %d"
             % STMT_SUBSET_COUNT)

@@ -246,12 +246,12 @@ let TY_PTR_I64: i32 = 7;
 // The kind names, four packed tables of 16-byte records: a
 // record is the name's bytes, NUL-padded. entab is the
 // host's full Expr::Kind list (36 records, so a kind's
-// record sits at its own number); sntab is Stmt::Kind (13);
+// record sits at its own number); sntab is Stmt::Kind (15);
 // nntab the structural kinds (5); tytab the type spellings
 // (7, tag 1 at record 0). The dump picks the table by the
 // kind's space (§9): < 64 entab, < 128 sntab, else nntab.
 let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0Cast\0\0\0\0\0\0\0\0\0\0\0\0";
-let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Switch\0\0\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0";
+let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Switch\0\0\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0DoWhile\0\0\0\0\0\0\0\0\0Nop\0\0\0\0\0\0\0\0\0\0\0\0\0";
 let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0";
 let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0";
 // ---- END GENERATED: parser names ----
@@ -3755,6 +3755,7 @@ fn log2w(w: i32) -> i32 {
 // The emit_mem scale for a width: 1 -> byte, 4 -> word, 8 -> double.
 fn mem_scale(w: i32) -> i32 {
     if (w == 1) { return 0; }
+    if (w == 2) { return 1; }   // v0.23.77-dev (A-26): a 16-bit store needs it
     if (w == 4) { return 2; }
     return 3;
 }
@@ -4501,7 +4502,17 @@ fn gen_mem_intrinsic(n: i32, ic: i32, s: i32) -> i32 {
     if (v < 0) { return -1; }
     let a: i32 = gen_expr_at(a0, TY_I64, gx_top);
     if (a < 0) { return -1; }
-    if (emit_mem(1, mem_scale(ty_width(vty)), v, a, 0) != 0) { return -1; }
+    // v0.23.77-dev (A-26): a store's width is the *intrinsic's*, not the
+    // value expression's. `store_u8` takes an i32 value but writes one byte;
+    // sizing the store by `vty` made it a 32-bit STR, which stayed invisible
+    // only because the writes that depended on it were sequential and
+    // ascending (a later byte store overwrote the three zero bytes). A swap,
+    // or any store that does not walk upward, corrupted its neighbours.
+    let st_w: i32 = 8;
+    if (ic == IC_STORE_U8) { st_w = 1; }
+    else if (ic == IC_STORE_U16) { st_w = 2; }
+    let st_scale: i32 = mem_scale(st_w);
+    if (emit_mem(1, st_scale, v, a, 0) != 0) { return -1; }
     if (free_tmp(a) != 0) { return -1; }
     return v;
 }

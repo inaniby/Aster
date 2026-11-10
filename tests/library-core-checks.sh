@@ -13,7 +13,7 @@
 #   [2] the core is a verbatim extract of `stdlib/aster_std.ast`
 #   [3] the host compiles it, a consumer links against it and prints the line
 #   [4] the *self-hosted stage* accepts the core and emits a running image
-#   [5] A-26 gate: the stage's image against the host's
+#   [5] the stage's image against the host's (A-26, fixed: they must match)
 #   [6] no compiler change: the baseline reproduces 393 rows
 set -eu
 cd "$(dirname "$0")/.."
@@ -76,12 +76,13 @@ ok 'the stage compiles the core and emits an ELF'
 
 printf '%s\n' '[5/6] A-26 gate: the stage image against the host'
 (cd "$OUT" && ./combo.elf > stage.out 2>&1) || true
-if cmp -s "$OUT/use.out" "$OUT/stage.out"; then
-    ok 'the stage image matches the host (defect A-26 appears fixed — flip this layer)'
-else
-    grep -q . "$OUT/stage.out" || fail 'the stage image printed nothing at all'
-    ok "the stage prints '$(cat "$OUT/stage.out")' — known defect A-26, pinned"
-fi
+# A-26 was fixed in v0.23.77-dev: the store width now comes from the intrinsic
+# (STRB for store_u8), so the stage's image agrees with the host's byte for
+# byte. Before the fix this layer pinned the disagreement instead.
+cmp -s "$OUT/use.out" "$OUT/stage.out" \
+    || { diff -u "$OUT/use.out" "$OUT/stage.out" | head -10 >&2;
+         fail 'the stage image disagrees with the host (A-26 regressed)'; }
+ok 'the stage image matches the host byte for byte'
 
 printf '%s\n' '[6/6] no compiler change: the baseline reproduces'
 . tests/lib/baseline.sh

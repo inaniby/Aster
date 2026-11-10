@@ -1695,10 +1695,13 @@ core with the host and links a consumer against it, and then builds the *same*
 consumer with the self-hosted stage by concatenating the core's bodies with the
 consumer's (the stage has no linker, so its `extern fn` declarations are
 stripped first). That last layer is what proved the core is inside the stage's
-subset — and it found defect **A-26**: the stage's image prints `13|-42|8|9|11`
-where the host prints `13|-42|8|9|101`, so a zero digit is lost in `utoa`'s
-`48 + d`. The layer pins that difference so it cannot be forgotten; it says so
-when the defect is fixed.
+subset — and it found defect **A-26**: the stage's image printed
+`13|-42|8|9|11` where the host printed `13|-42|8|9|101`, a zero digit lost in
+`utoa`. The cause was the M3d codegen sizing a *store* by the value
+expression's type, so `store_u8` emitted a 32-bit `STR`; both the bootstrap and
+its C twin did it, which is why the differential could not see it. It is fixed
+(§4.5 of `bootstrap/CODEGEN-SPEC.md` now states the rule: the width is the
+intrinsic's), and the layer asserts the two images agree byte for byte.
 
 ### Taking the library
 

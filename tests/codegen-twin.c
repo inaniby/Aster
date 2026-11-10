@@ -2026,7 +2026,8 @@ static int ty_width_t(int t){
 static int ty_is64_t(int t){ return (t==2) || is_ptr_tag_t(t); }
 static int ty_is_uns_t(int t){ return (t==3); }
 static int log2w_t(int w){ if (w==1) return 0; if (w==4) return 2; return 3; }
-static int mem_scale_t(int w){ if (w==1) return 0; if (w==4) return 2; return 3; }
+static int mem_scale_t(int w){ if (w==1) return 0; if (w==2) return 1;   /* A-26 */
+    if (w==4) return 2; return 3; }
 
 /* ---- output channel (byte-identical to the bootstrap's write(1,...)) ---- */
 static unsigned char outbuf[16*1048576];
@@ -2630,7 +2631,9 @@ static int gen_mem_intrinsic(int n,int ic,int s){
     int a1=NN(a0), vty=ic_argty(s,1);
     int v=gen_expr_at(a1,vty,gx_top); if (v<0) return -1;
     int a=gen_expr_at(a0,2,gx_top); if (a<0) return -1;
-    if (emit_mem(1, mem_scale_t(ty_width_t(vty)), v, a, 0)) return -1;
+    /* A-26: the store's width is the intrinsic's, not the value's. */
+    int st_w=8; if (ic==IC_STORE_U8) st_w=1; else if (ic==IC_STORE_U16) st_w=2;
+    if (emit_mem(1, mem_scale_t(st_w), v, a, 0)) return -1;
     if (free_tmp(a)) return -1;
     return v;
 }
