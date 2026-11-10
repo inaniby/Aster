@@ -1206,6 +1206,100 @@ fn strrchr(s: ptr<u8>, c: i32) -> i32 {
     return last;
 }
 
+// f64_from_dec(digits, exp10): the IEEE-754 bit pattern of digits * 10^exp10,
+// for a non-negative value - the step a decimal literal like 3.14 needs. Like
+// f64_bits it is integer-only, because the bootstrap stage has no float type.
+//
+// The mantissa is kept in a u64 and renormalized after every power of ten, with
+// the bits that fall off OR-ed into `sticky`. Ten steps of headroom keep the
+// shift from overflowing: 10^2 < 2^7, so 2^54 * 10^2 still fits.
+//
+// Rounding is one decision at the end - round-half-to-even over
+// (kept, dropped, sticky) - rather than a rounding at every step, which is what
+// makes the result the nearest double instead of an accumulation of ties.
+fn f64_from_dec(digits: u64, exp10: i32) -> i64 {
+    if (digits == 0) { return 0; }
+    // The range is bounded on purpose. Each power of ten renormalizes the
+    // mantissa and folds what it dropped into one sticky bit, which is exact
+    // for a step or two but loses the *magnitude* of the dropped bits once a
+    // long chain multiplies them back up - 1e300 came out one ulp low. Within
+    // range below stays under the rounding cutoff, so this answers -1 outside
+    // it rather than a double that looks right and is not; a caller with a
+    // wider literal needs the big-integer path. The two sides are not
+    // symmetric: a multiplication keeps every bit until the mantissa fills, but
+    // a division drops up to three bits per step, so the verified range is
+    // +22 on the positive side and -9 on the negative one.
+    if (exp10 > 22) { return 0 - 1; }
+    if (exp10 < 0 - 9) { return 0 - 1; }
+    let mant: u64 = digits;
+    let k: i32 = 0;
+    let sticky: i32 = 0;
+    // bring the mantissa under 2^54 first, so 10^2 of headroom is available
+    while (mant > 18014398509481984) {
+        if ((mant & 1) == 1) { sticky = 1; }
+        mant = mant >> 1;
+        k = k + 1;
+    }
+    let p: i32 = exp10;
+    let step: i32 = 0;
+    while (step < p) {
+        // renormalize before multiplying: mant <= 2^54, times 10 is < 2^58
+        while (mant > 18014398509481984) {
+            if ((mant & 1) == 1) { sticky = 1; }
+            mant = mant >> 1;
+            k = k + 1;
+        }
+        mant = mant * 10;
+        step = step + 1;
+    }
+    while (step > p) {
+        // A division must not start from a small mantissa, or it would throw
+        // away the precision it is about to need: scale up into [2^60, 2^61)
+        // first, so the quotient still has 56 bits and the remainder - anything
+        // the division drops - is below its last bit, which is exactly what
+        // `sticky` records.
+        while (mant < 1152921504606846976) {
+            mant = mant << 1;
+            k = k - 1;
+        }
+        if ((mant - (mant / 10) * 10) != 0) { sticky = 1; }
+        mant = mant / 10;
+        step = step - 1;
+    }
+    // Final normalization: keep 53 bits and decide the rounding once, from the
+    // bits that fall off (the round bit plus everything below it, `sticky`
+    // standing in for what the powers of ten already dropped).
+    let topb: i32 = 0;
+    let probe2: u64 = mant;
+    while (probe2 > 1) {
+        probe2 = probe2 >> 1;
+        topb = topb + 1;
+    }
+    if (topb > 52) {
+        let drop2: i32 = topb - 52;
+        let kept: u64 = mant >> drop2;
+        let roundbit: u64 = (mant >> (drop2 - 1)) & 1;
+        let below: u64 = mant - ((kept << drop2) | (roundbit << (drop2 - 1)));
+        let any: i32 = sticky;
+        if (below != 0) { any = 1; }
+        mant = kept;
+        k = k + drop2;
+        if (roundbit == 1 && (any == 1 || (kept & 1) == 1)) { mant = mant + 1; }
+    }
+    while (mant < 4503599627370496) {
+        mant = mant << 1;
+        k = k - 1;
+    }
+    let e: i32 = 52 + k + 1023;
+    if (mant > 9007199254740991) {
+        mant = mant >> 1;
+        e = e + 1;
+    }
+    if (e >= 2047) { return 9218868437227405312; }
+    let bits: u64 = (u64(e) << 52) | (mant - 4503599627370496);
+    return i64(bits);
+}
+
 // f64_bits(m, k): the IEEE-754 binary64 bit pattern of the exact value
 // m * 2^k, as an i64 - the piece a decimal-literal converter will end on, and
 // useful on its own for hand-built floats. Only integer arithmetic is used,

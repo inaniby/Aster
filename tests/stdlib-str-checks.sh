@@ -4,7 +4,7 @@
 #
 # Layers:
 #   [1] strict build of the compiler
-#   [2] the library object: 102 routines, 10 globals, 1 UND
+#   [2] the library object: 103 routines, 10 globals, 1 UND
 #   [3] the demo runs and prints its summary line
 #   [4] the C twin agrees byte for byte (strtoll/strtod/snprintf are the oracle)
 #   [5] edges: INT64_MIN, base 0 auto-detection, consumed counts, ".5", "1.",
@@ -31,10 +31,10 @@ ok 'compiler built'
 printf '%s\n' '[2/9] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$OUT/std.o" >"$OUT/std.log" 2>&1 \
     || fail "the library did not build: $(head -3 "$OUT/std.log")"
-grep -q '102 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
+grep -q '103 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
 und=$(readelf -sW "$OUT/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-ok '102 routines, 10 globals, 1 UND entry'
+ok '103 routines, 10 globals, 1 UND entry'
 
 printf '%s\n' '[3/9] the demo runs'
 cp tests/stdlib-str-demo.ast "$OUT/demo.ast"
@@ -203,6 +203,23 @@ fn main() -> i32 {
     if (f64_bits(1, 10) != 4652218415073722368) { return 30; }        // 1024.0
     if (f64_bits(0 - 2, 0) != 0 - 4611686018427387904) { return 31; } // -2.0
     if (f64_bits(0, 0) != 0) { return 32; }                           // +0.0
+    // decimal literals: each pattern below came from a C program printing the
+    // bits of the literal, so the oracle is the same compiler the host uses
+    if (f64_from_dec(1, 0) != 4607182418800017408) { return 33; }      // 1.0
+    if (f64_from_dec(15, 0 - 1) != 4609434218613702656) { return 34; } // 1.5
+    if (f64_from_dec(1, 0 - 1) != 4591870180066957722) { return 35; }  // 0.1
+    if (f64_from_dec(2, 0 - 1) != 4596373779694328218) { return 36; }  // 0.2
+    if (f64_from_dec(314, 0 - 2) != 4614253070214989087) { return 37; }// 3.14
+    if (f64_from_dec(123456, 0 - 3) != 4638387860618067575) { return 38; } // 123.456
+    if (f64_from_dec(1, 10) != 4756540486875873280) { return 39; }    // 1e10
+    if (f64_from_dec(1, 0 - 3) != 4562254508917369340) { return 40; } // 1e-3
+    if (f64_from_dec(602, 21) != 4962930089146241889) { return 41; }   // 6.02e23
+    if (f64_from_dec(1953125, 0 - 9) != 4566650022153682944) { return 42; } // 0.001953125
+    if (f64_from_dec(1, 22) != 4936209963552724370) { return 43; }     // 1e22
+    if (f64_from_dec(1, 0 - 9) != 4472406533629990549) { return 44; }  // 1e-9, the edge
+    if (f64_from_dec(1, 21) != 4921056587992461136) { return 45; }    // 1e21
+    if (f64_from_dec(1, 23) != 0 - 1) { return 46; }                   // out of range: refused
+    if (f64_from_dec(1, 0 - 10) != 0 - 1) { return 47; }               // out of range: refused
     return 0;
 }
 AST
