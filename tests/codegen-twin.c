@@ -95,6 +95,7 @@ struct node {
     int next;      /* next sibling in the chain */
     int ty;        /* type tag (§2.4): Param, Global, Function, Let */
     int count;     /* a Global's array element count, 1 for a scalar */
+    int lab;       /* v0.23.77-dev: a loop's label, or a labeled jump's target */
 };
 
 static struct node nodes[NODEMAX];
@@ -111,6 +112,7 @@ static int nfuncs, nglobs, nparams;
 
 /* The parser's cursor and the two nesting counters the caps police. */
 static int p;                           /* index of the current token */
+static int lname[64], lname_depth;      /* v0.23.77-dev: loop labels being parsed */
 static int exdepth;                     /* C1 */
 static int sdepth;                      /* C2 */
 
@@ -198,6 +200,7 @@ static int newnode(int kind, int tok) {
     nodes[nnodes].next = -1;
     nodes[nnodes].ty = 0;
     nodes[nnodes].count = 0;
+    nodes[nnodes].lab = 0;
     return nnodes++;
 }
 static void append(int parent, int child) {
@@ -1173,6 +1176,20 @@ static int is_compound(int k) {
 
 static int statement(void) {
     int k = cur();
+    /* v0.23.77-dev: `name: while (...) { }` / `name: do { } while (...);` */
+    if (k == TK_Ident && p + 2 < ntok && toks[p + 1].kind == TK_Colon &&
+        (toks[p + 2].kind == TK_While || toks[p + 2].kind == TK_Do)) {
+        int nm = p;
+        adv(); adv();
+        if (lname_depth >= 64)
+            die_at("loops nested too deeply (limit 64)", tok_line(nm), tok_col(nm));
+        lname[lname_depth] = nm;
+        lname_depth++;
+        int lp = statement();
+        lname_depth--;
+        nodes[lp].lab = nm;
+        return lp;
+    }
     if (k == TK_Star)
         die_at("'*' dereference is not in the bootstrap subset",
                tok_line(p), tok_col(p));
@@ -1232,10 +1249,17 @@ static int statement(void) {
     if (k == TK_Break) {
         int bt = p;
         adv();
-        if (cur() == TK_Ident)
-            die_at("labeled break/continue is not in the bootstrap subset",
-                   tok_line(p), tok_col(p));
+        int lbl = 0;
+        if (cur() == TK_Ident) {
+            lbl = p;
+            adv();
+            int found = 0;
+            for (int d = lname_depth - 1; d >= 0; d--)
+                if (name_eq(lname[d], lbl)) { found = 1; break; }
+            if (!found) die_name_at("no such loop label: ", lbl);
+        }
         int s = newnode(S_Break, bt);
+        if (lbl) nodes[s].lab = lbl;
         if (cur() != TK_Semi)
             die_at("expected ';' after break", tok_line(p), tok_col(p));
         adv();
@@ -1244,10 +1268,17 @@ static int statement(void) {
     if (k == TK_Continue) {
         int ct = p;
         adv();
-        if (cur() == TK_Ident)
-            die_at("labeled break/continue is not in the bootstrap subset",
-                   tok_line(p), tok_col(p));
+        int lbl = 0;
+        if (cur() == TK_Ident) {
+            lbl = p;
+            adv();
+            int found = 0;
+            for (int d = lname_depth - 1; d >= 0; d--)
+                if (name_eq(lname[d], lbl)) { found = 1; break; }
+            if (!found) die_name_at("no such loop label: ", lbl);
+        }
         int s = newnode(S_Continue, ct);
+        if (lbl) nodes[s].lab = lbl;
         if (cur() != TK_Semi)
             die_at("expected ';' after continue", tok_line(p), tok_col(p));
         adv();
@@ -2737,7 +2768,9 @@ static int gen_call(int n,int want){
 }
 
 /* ---- §6.3 the loop label stack ---- */
-static int lp_exit[64], lp_cont[64], lp_depth;
+static int lp_exit[64], lp_cont[64], lp_name[64], lp_depth;
+/* v0.23.77-dev: the innermost live loop carrying this label, or -1 */
+static int lp_find(int nm){ for (int d=lp_depth-1; d>=0; d--) if (name_eq(lp_name[d],nm)) return d; return -1; }
 static int cg_ret_ty=0, cg_is_main=0;
 
 static int gen_block(int b){
@@ -2832,7 +2865,7 @@ static int gen_stmt(int s){
         if (free_tmp(r)) return 1;
         if (emit_bcond(0,lexit)) return 1;
         if (lp_depth>=64){ return cg_die_at_node("loops nested too deeply (limit 64)", s); }
-        lp_exit[lp_depth]=lexit; lp_cont[lp_depth]=lcond; lp_depth++;
+        lp_exit[lp_depth]=lexit; lp_cont[lp_depth]=lcond; lp_name[lp_depth]=nodes[s].lab; lp_depth++;
         if (cg_push_scope()) return 1;
         if (gen_block(NN(cond))) return 1;
         if (cg_pop_scope()) return 1;
@@ -2848,7 +2881,7 @@ static int gen_stmt(int s){
         int lexit=new_label(); if (lexit<0) return 1;
         if (place_label(lbody)) return 1;
         if (lp_depth>=64){ return cg_die_at_node("loops nested too deeply (limit 64)", s); }
-        lp_exit[lp_depth]=lexit; lp_cont[lp_depth]=ltest; lp_depth++;
+        lp_exit[lp_depth]=lexit; lp_cont[lp_depth]=ltest; lp_name[lp_depth]=nodes[s].lab; lp_depth++;
         if (cg_push_scope()) return 1;
         if (gen_block(b)) return 1;
         if (cg_pop_scope()) return 1;
@@ -2863,8 +2896,24 @@ static int gen_stmt(int s){
         if (place_label(lexit)) return 1;
         return 0;
     }
-    if (k==S_Break){ if (lp_depth==0) return cg_die_at_node("break used outside a loop", s); if (emit_b(lp_exit[lp_depth-1])) return 1; return 0; }
-    if (k==S_Continue){ if (lp_depth==0) return cg_die_at_node("continue used outside a loop", s); if (emit_b(lp_cont[lp_depth-1])) return 1; return 0; }
+    if (k==S_Break){
+        if (lp_depth==0) return cg_die_at_node("break used outside a loop", s);
+        int tgt=lp_depth-1;
+        int lab=nodes[s].lab;
+        if (lab) tgt=lp_find(lab);
+        if (tgt<0) return cg_die_at_node("break target is not a live loop", s);
+        if (emit_b(lp_exit[tgt])) return 1;
+        return 0;
+    }
+    if (k==S_Continue){
+        if (lp_depth==0) return cg_die_at_node("continue used outside a loop", s);
+        int tgt=lp_depth-1;
+        int lab=nodes[s].lab;
+        if (lab) tgt=lp_find(lab);
+        if (tgt<0) return cg_die_at_node("continue target is not a live loop", s);
+        if (emit_b(lp_cont[tgt])) return 1;
+        return 0;
+    }
     int v=gen_expr(NF(s),1); if (v<0) return 1;
     if (free_tmp(v)) return 1;
     return 0;

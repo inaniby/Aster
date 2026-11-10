@@ -309,6 +309,9 @@ let nlast: i32[65536] = 0;        // last child of that chain
 let nnext: i32[65536] = 0;        // next sibling in the chain
 let nnty: i32[65536] = 0;         // the type tag — Param, Global, Function (return), Let
 let ncount: i32[65536] = 0;       // a Global's array element count (1 for a scalar)
+// v0.23.77-dev: the label token of a labeled loop, or the target name a
+// labeled break/continue asks for (0 = unlabeled).
+let nlab: i32[65536] = 0;
 let nnodes: i32 = 0;              // nodes allocated (C3 caps this at 65536)
 
 // The expression machine's work stacks (§7): values, operators (token kind
@@ -341,6 +344,10 @@ let nfuncs: i32 = 0;
 let nglobs: i32 = 0;
 
 let ppos: i32 = 0;                // the parser's cursor: index of the current token
+// The label tokens of the loops being parsed, innermost last: a labeled
+// jump is resolved here, at parse time, exactly as the host does.
+let lname: i32[64] = 0;
+let lname_depth: i32 = 0;
 let perr: i32 = 0;                // the first-error flag; every die_* sets it
 let numval: i64 = 0;              // the converted number (§6.2)
 let numflag: i32 = 0;             // 0 fits, 1 too large (P52/P53), 2 saturated above i64max (P51)
@@ -2371,6 +2378,27 @@ fn assign_stmt() -> i32 {
 }
 fn statement() -> i32 {
     let k: i32 = curk();
+    // v0.23.77-dev: `name: while (...) { }` / `name: do { } while (...);` — the
+    // label is pushed before the body is parsed so a `break name` inside it
+    // resolves, and it is recorded on the loop node for the code generator.
+    if (k == K_Ident && ppos + 2 < ntoks && tkind[ppos + 1] == K_Colon &&
+        (tkind[ppos + 2] == K_While || tkind[ppos + 2] == K_Do)) {
+        let nm: i32 = ppos;
+        advance();
+        advance();
+        if (lname_depth >= 64) {
+            die_at("loops nested too deeply (limit 64)", tok_line(nm), tok_col(nm));
+            return 0;
+        }
+        lname[lname_depth] = nm;
+        lname_depth = lname_depth + 1;
+        let lp: i32 = statement();
+        lname_depth = lname_depth - 1;
+        if (perr != 0) { return 0; }
+        if (lp == 0) { return 0; }
+        nlab[lp - 1] = nm;
+        return lp;
+    }
     if (k == K_Star) {
         die_at("'*' dereference is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
         return 0;
@@ -2459,12 +2487,24 @@ fn statement() -> i32 {
     if (k == K_Break) {
         let bt: i32 = ppos;
         advance();
+        let lbl: i32 = 0;
         if (curk() == K_Ident) {
-            die_at("labeled break/continue is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-            return 0;
+            lbl = ppos;
+            advance();
+            let found: i32 = 0;
+            let d: i32 = lname_depth - 1;
+            while (d >= 0) {
+                if (name_eq(lname[d], lbl) == 1) { found = 1; break; }
+                d = d - 1;
+            }
+            if (found == 0) {
+                die_name_at("no such loop label: ", lbl);
+                return 0;
+            }
         }
         let s: i32 = newnode(S_Break, bt);
         if (s == 0) { return 0; }
+        if (lbl != 0) { nlab[s - 1] = lbl; }
         if (curk() != K_Semi) {
             die_at("expected ';' after break", tok_line(ppos), tok_col(ppos));
             return 0;
@@ -2475,12 +2515,24 @@ fn statement() -> i32 {
     if (k == K_Continue) {
         let ct: i32 = ppos;
         advance();
+        let lbl: i32 = 0;
         if (curk() == K_Ident) {
-            die_at("labeled break/continue is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-            return 0;
+            lbl = ppos;
+            advance();
+            let found: i32 = 0;
+            let d: i32 = lname_depth - 1;
+            while (d >= 0) {
+                if (name_eq(lname[d], lbl) == 1) { found = 1; break; }
+                d = d - 1;
+            }
+            if (found == 0) {
+                die_name_at("no such loop label: ", lbl);
+                return 0;
+            }
         }
         let s: i32 = newnode(S_Continue, ct);
         if (s == 0) { return 0; }
+        if (lbl != 0) { nlab[s - 1] = lbl; }
         if (curk() != K_Semi) {
             die_at("expected ';' after continue", tok_line(ppos), tok_col(ppos));
             return 0;
@@ -4996,6 +5048,19 @@ fn gen_var(n: i32, want: i32) -> i32 {
 let lp_exit: i32[64] = 0;
 let lp_cont: i32[64] = 0;
 let lp_depth: i32 = 0;
+let lp_name: i32[64] = 0;   // the loop's label token (0 = unlabeled)
+
+// lp_find: the innermost live loop carrying this label token, or -1. The
+// parser has already checked that one exists; the guard is for an internal
+// inconsistency rather than a user error.
+fn lp_find(nm: i32) -> i32 {
+    let d: i32 = lp_depth - 1;
+    while (d >= 0) {
+        if (name_eq(lp_name[d], nm) == 1) { return d; }
+        d = d - 1;
+    }
+    return 0 - 1;
+}
 
 // ---- §10 C3: does this statement provably return? ----
 // The host's definitelyReturns (src/aster.cpp:4562), statement for statement:
@@ -5208,6 +5273,7 @@ fn gen_stmt(s: i32) -> i32 {
         if (lp_depth >= 64) { return cg_die_at_node("loops nested too deeply (limit 64)", s); }
         lp_exit[lp_depth] = lexit;
         lp_cont[lp_depth] = lcond;
+        lp_name[lp_depth] = nlab[s - 1];
         lp_depth = lp_depth + 1;
         if (cg_push_scope() != 0) { return 1; }
         if (gen_block(nnext[cond - 1]) != 0) { return 1; }
@@ -5233,6 +5299,7 @@ fn gen_stmt(s: i32) -> i32 {
         if (lp_depth >= 64) { return cg_die_at_node("loops nested too deeply (limit 64)", s); }
         lp_exit[lp_depth] = lexit;
         lp_cont[lp_depth] = ltest;
+        lp_name[lp_depth] = nlab[s - 1];
         lp_depth = lp_depth + 1;
         if (cg_push_scope() != 0) { return 1; }
         if (gen_block(b) != 0) { return 1; }
@@ -5252,12 +5319,18 @@ fn gen_stmt(s: i32) -> i32 {
     }
     if (k == S_Break) {
         if (lp_depth == 0) { return cg_die_at_node("break used outside a loop", s); }
-        if (emit_b(lp_exit[lp_depth - 1]) != 0) { return 1; }
+        let tgt: i32 = lp_depth - 1;
+        if (nlab[s - 1] != 0) { tgt = lp_find(nlab[s - 1]); }
+        if (tgt < 0) { return cg_die_at_node("break target is not a live loop", s); }
+        if (emit_b(lp_exit[tgt]) != 0) { return 1; }
         return 0;
     }
     if (k == S_Continue) {
         if (lp_depth == 0) { return cg_die_at_node("continue used outside a loop", s); }
-        if (emit_b(lp_cont[lp_depth - 1]) != 0) { return 1; }
+        let tgt: i32 = lp_depth - 1;
+        if (nlab[s - 1] != 0) { tgt = lp_find(nlab[s - 1]); }
+        if (tgt < 0) { return cg_die_at_node("continue target is not a live loop", s); }
+        if (emit_b(lp_cont[tgt]) != 0) { return 1; }
         return 0;
     }
     // S_Expr: a discarded call — computed for its side effects, the result

@@ -1,0 +1,24 @@
+// tests/codegen-fixtures/labeled.ast — `name: while (...) { }` with a labeled
+// `break`/`continue` that names an *outer* loop through an inner one. The
+// buffers are at file scope: the bootstrap subset has no local arrays.
+let out: u8[8] = 0;
+
+fn main() -> i32 {
+    let i: i32 = 0;
+    let hits: i32 = 0;
+    outer: while (i < 4) {
+        i = i + 1;
+        let j: i32 = 0;
+        while (j < 4) {
+            j = j + 1;
+            if (j == 2) { continue outer; }   // re-tests the outer condition
+            hits = hits + 1;
+            if (i == 3) { break outer; }      // leaves both loops
+        }
+    }
+    store_u8(out, 48 + i);        // 3: the labeled break left at i == 3
+    store_u8(out + 1, 48 + hits); // 2: j == 1 twice (i = 1, 3), then the break
+    store_u8(out + 2, 10);
+    write(1, out, 3);
+    return 0;
+}

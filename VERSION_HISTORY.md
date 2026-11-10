@@ -324,6 +324,20 @@ breaking this project's own `-Werror` build.
   runs once against a false condition, the trailing `;`, `continue` re-testing):
   the stage and the twin agree byte for byte, and both images print `18`.
 
+* **Labeled loops move into the bootstrap subset** — `name: while (...) { }`,
+  `name: do { … } while (...);`, and `break name` / `continue name` that reach an
+  *outer* loop from within an inner one. The stage resolves a name at parse time,
+  innermost-first (`lname[]`), so a missing label is a parse error rather than a
+  run-time goto, and the code generator carries a parallel `lp_name[]` beside
+  `lp_exit`/`lp_cont` so a labeled jump emits the branch to *that* loop's target.
+  One trap, recorded: two writings of the same name are two different tokens, so
+  the resolution compares token *text* (`name_eq`), not indices — the first cut
+  compared indices and refused `break outer` outright. The twin carries the same
+  pieces with the same order (a new `lab` field on its node), the new corpus
+  fixture `tests/codegen-fixtures/labeled.ast` exercises an inner `continue
+  outer` and a `break outer` through two loops, and the stage and the twin emit
+  byte-identical ELFs for it; both images print `33`.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

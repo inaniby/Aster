@@ -102,6 +102,13 @@ children `[body, cond]`, the host's field order. `Nop` stays out — its number
 (78) is reserved — and a surviving kind still keeps the host's number, which is
 the contract the generator enforces against `src/aster.cpp`.
 
+**Labeled loops (v0.23.77-dev).** A loop may carry a name — `name: while (...)`
+or `name: do { … } while (...);` — and `break name` / `continue name` may reach an
+outer loop from inside an inner one. The name is resolved while parsing,
+innermost-first (`lname[]`), so a label that names nothing is a **parse error**
+(`no such loop label: <name>`), not a run-time jump. Two writings of the same
+name are two different tokens, so the comparison is over the tokens' bytes.
+
 ### 2.3 Structural kinds (5)
 
 No counterpart in `src/aster.cpp`: the host carries functions, globals,
