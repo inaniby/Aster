@@ -113,6 +113,7 @@ static int nfuncs, nglobs, nparams;
 /* The parser's cursor and the two nesting counters the caps police. */
 static int p;                           /* index of the current token */
 static int prog_node;                   /* v0.23.77-dev: for `static let` */
+static int clause_no_semi;              /* v0.23.77-dev: a for-clause stands in for ';' */
 static int64_t sema_cv[256];            /* v0.23.77-dev: switch case values */
 static int sema_cn;
 static int lname[64], lname_depth;      /* v0.23.77-dev: loop labels being parsed */
@@ -1098,8 +1099,11 @@ static int let_stmt(void) {
     int s = newnode(S_Let, nt);
     nodes[s].ty = ty;
     append(s, e);
-    if (cur() != TK_Semi) die_at("expected ';'", tok_line(p), tok_col(p));
-    adv();
+    if (cur() != TK_Semi) {
+        if (!clause_no_semi) die_at("expected ';'", tok_line(p), tok_col(p));
+    } else {
+        adv();
+    }
     return s;
 }
 
@@ -1130,8 +1134,11 @@ static int index_assign_stmt(void) {
     adv();
     int e = expr();
     append(s, e);
-    if (cur() != TK_Semi) die_at("expected ';'", tok_line(p), tok_col(p));
-    adv();
+    if (cur() != TK_Semi) {
+        if (!clause_no_semi) die_at("expected ';'", tok_line(p), tok_col(p));
+    } else {
+        adv();
+    }
     return s;
 }
 
@@ -1148,8 +1155,11 @@ static int assign_stmt(void) {
     int e = expr();
     int s = newnode(S_Assign, nt);
     append(s, e);
-    if (cur() != TK_Semi) die_at("expected ';'", tok_line(p), tok_col(p));
-    adv();
+    if (cur() != TK_Semi) {
+        if (!clause_no_semi) die_at("expected ';'", tok_line(p), tok_col(p));
+    } else {
+        adv();
+    }
     return s;
 }
 
@@ -1296,6 +1306,38 @@ static int statement(void) {
         append(ds, b);
         append(ds, e);
         return ds;
+    }
+    if (k == TK_For) {
+        adv();
+        if (cur() != TK_LParen)
+            die_at("expected '(' after for", tok_line(p), tok_col(p));
+        adv();
+        int initb = newnode(N_Block, p);
+        if (cur() == TK_Semi) { adv(); }
+        else append(initb, statement());
+        if (cur() == TK_Semi)
+            die_at("for condition cannot be empty", tok_line(p), tok_col(p));
+        int cond = expr();
+        if (cur() != TK_Semi)
+            die_at("expected ';' after for condition", tok_line(p), tok_col(p));
+        adv();
+        int stepb = newnode(N_Block, p);
+        if (cur() != TK_RParen) {
+            clause_no_semi = 1;
+            int s1 = statement();
+            clause_no_semi = 0;
+            append(stepb, s1);
+        }
+        if (cur() != TK_RParen)
+            die_at("expected ')' after for step", tok_line(p), tok_col(p));
+        adv();
+        int body = parse_block();
+        int fs = newnode(S_For, nodes[cond].tok);
+        append(fs, initb);
+        append(fs, cond);
+        append(fs, stepb);
+        append(fs, body);
+        return fs;
     }
     if (k == TK_While) {
         adv();
@@ -2093,6 +2135,24 @@ static int sema_stmt(int s) {
             if (sema_block(first) != 0) return 1;
             pop_scope();
         }
+        return 0;
+    }
+    if (k == S_For) {
+        int initb = nodes[s].first;
+        int cond4 = nodes[initb].next;
+        int stepb4 = nodes[cond4].next;
+        int body4 = nodes[stepb4].next;
+        push_scope();
+        if (sema_block(initb) != 0) return 1;
+        if (tc_expr(cond4) != 0) return 1;
+        if (cond_ok(cond4) == 0)
+            die_at("condition must be a comparison, a bool expression, or an integer",
+                   tok_line(nodes[s].tok), tok_col(nodes[s].tok));
+        push_scope();
+        if (sema_block(body4) != 0) return 1;
+        pop_scope();
+        if (sema_block(stepb4) != 0) return 1;
+        pop_scope();
         return 0;
     }
     if (k == S_Nop) return 0;
@@ -3019,6 +3079,32 @@ static int gen_stmt(int s){
         return 0;
     }
     if (k==S_Nop) return 0;
+    if (k==S_For){
+        int initb=NF(s), cond4=NN(initb), stepb4=NN(cond4), body4=NN(stepb4);
+        if (cg_push_scope()) return 1;
+        if (gen_block(initb)) return 1;
+        int lcond4=new_label(); if (lcond4<0) return 1;
+        int lstep4=new_label(); if (lstep4<0) return 1;
+        int lexit4=new_label(); if (lexit4<0) return 1;
+        if (place_label(lcond4)) return 1;
+        int r4=gen_expr(cond4,1); if (r4<0) return 1;
+        int is64f = ty_is64_t(ety[cond4])?1:0;
+        if (emit_cmp_imm(r4,0,is64f)) return 1;
+        if (free_tmp(r4)) return 1;
+        if (emit_bcond(0,lexit4)) return 1;
+        if (lp_depth>=64){ return cg_die_at_node("loops nested too deeply (limit 64)", s); }
+        lp_exit[lp_depth]=lexit4; lp_cont[lp_depth]=lstep4; lp_name[lp_depth]=nodes[s].lab; lp_depth++;
+        if (cg_push_scope()) return 1;
+        if (gen_block(body4)) return 1;
+        if (cg_pop_scope()) return 1;
+        lp_depth--;
+        if (place_label(lstep4)) return 1;
+        if (gen_block(stepb4)) return 1;
+        if (emit_b(lcond4)) return 1;
+        if (place_label(lexit4)) return 1;
+        if (cg_pop_scope()) return 1;
+        return 0;
+    }
     if (k==S_Switch){
         int sub=NF(s);
         int r=gen_expr(sub,1); if (r<0) return 1;

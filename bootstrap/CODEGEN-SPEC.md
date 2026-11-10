@@ -190,6 +190,13 @@
 | `SVC #0` | `0xd4000001` |
 
 ### 4.5 访存（imm12 为**缩放后**偏移：X/8、W/4、H/2、B 不缩放）
+### 4.4f `for`（v0.23.77-dev）
+
+四段：`init` 块（自带作用域，与 step 同域，所以 `for (let i = 0; …)` 拥有 i）→ `lcond` → 条件求值、
+`CMP #0`、`B.<cond==false> lexit` → 体（`continue` 落 `lstep`）→ `place_label(lstep)` → step 块 →
+`B lcond` → `place_label(lexit)`。标签分配顺序固定为 **lcond、lstep、lexit**，两侧一致。
+这里就是"不能把 for 脱糖成 while"的原因：脱糖会让 `continue` 落到条件而不是 step。
+
 ### 4.4e `switch`（v0.23.77-dev）
 
 一条比较链：主体只求值一次，存进一个**在整个 switch 期间保持占用**的临时寄存器（函数调用会把在用的临时量

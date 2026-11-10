@@ -392,6 +392,19 @@ breaking this project's own `-Werror` build.
   both halves: two objects with literals link into one image that prints both,
   and the `.so` path still `dlopen`s and finds its literal.
 
+* **`for` moves into the bootstrap subset** — the last loop shape, and the one
+  that cannot be desugared: `for (init; cond; step) body` lowers with four
+  parts (`init` block, `lcond`, the body, `lstep`, back to `lcond`, `lexit`) so a
+  `continue` lands on the **step**, which a plain `while` desugaring would get
+  wrong. One statement per clause (the init may be empty, the condition is
+  required) and the step's `;` is stood in for by the closing `)`, a flag the
+  parser sets while it parses that clause; `S_For` (72) joins the subset so the
+  dump and the code generator both know it. The twin mirrors the four parts with
+  the same label order, and the new corpus fixture
+  `tests/codegen-fixtures/for.ast` — a `continue` that must still advance, an
+  empty init, and a `for` nested in a `while` — makes the stage and the twin emit
+  byte-identical ELFs; both images print `434`.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

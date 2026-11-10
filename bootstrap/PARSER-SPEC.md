@@ -109,6 +109,13 @@ innermost-first (`lname[]`), so a label that names nothing is a **parse error**
 (`no such loop label: <name>`), not a run-time jump. Two writings of the same
 name are two different tokens, so the comparison is over the tokens' bytes.
 
+**`for` (v0.23.77-dev).** `for (init; cond; step) body` joins the subset with one
+statement per clause — the init may be empty, the condition is required — and the
+step's `;` is stood in for by the closing `)`. An `S_For` node's children are
+`[init-block, cond, step-block, body-block]`; the code generator gives the node
+the four-part lowering that makes `continue` land on the **step** rather than on
+the condition, which is what a plain `while` desugaring would get wrong.
+
 **`switch` (v0.23.77-dev).** The last control shape to join the subset, and the
 one with a node of its own: `struct Case` (kind **133**) is a *structural* kind
 the stage appends after the host-shaped five (128-132), so the frozen numbering

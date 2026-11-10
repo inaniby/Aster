@@ -216,7 +216,7 @@ let E_BitAnd: i32 = 27;
 let E_BitOr: i32 = 28;
 let E_BitXor: i32 = 29;
 
-// The 12 statement kinds (§2.2), the host's Stmt::Kind
+// The 13 statement kinds (§2.2), the host's Stmt::Kind
 // numbers + 64; FieldAssign, DerefAssign, For and Switch are
 // excluded (§12.2), their numbers skipped.
 let S_Let: i32 = 64;
@@ -225,6 +225,7 @@ let S_IndexAssign: i32 = 67;
 let S_Return: i32 = 69;
 let S_If: i32 = 70;
 let S_While: i32 = 71;
+let S_For: i32 = 72;
 let S_Break: i32 = 73;
 let S_Continue: i32 = 74;
 let S_Switch: i32 = 75;
@@ -350,6 +351,9 @@ let ppos: i32 = 0;                // the parser's cursor: index of the current t
 // v0.23.77-dev: the program node, so a `static let` written inside a body
 // can hand the global it declares to the top level.
 let prog_node: i32 = 0;
+// v0.23.77-dev: 1 while a for-clause is being parsed - the enclosing ')' stands
+// in for the ';' a let or assignment would otherwise demand.
+let clause_no_semi: i32 = 0;
 // v0.23.77-dev: the case values of the switch being checked (duplicates).
 let sema_cv: i64[256] = 0;
 let sema_cn: i32 = 0;
@@ -2326,10 +2330,13 @@ fn let_stmt() -> i32 {
     nnty[s - 1] = ty;
     append(s, e);
     if (curk() != K_Semi) {
-        die_at("expected ';'", tok_line(ppos), tok_col(ppos));
-        return 0;
+        if (clause_no_semi == 0) {
+            die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+    } else {
+        advance();
     }
-    advance();
     return s;
 }
 
@@ -2371,10 +2378,13 @@ fn index_assign_stmt() -> i32 {
     if (perr != 0) { return 0; }
     append(s, e);
     if (curk() != K_Semi) {
-        die_at("expected ';'", tok_line(ppos), tok_col(ppos));
-        return 0;
+        if (clause_no_semi == 0) {
+            die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+    } else {
+        advance();
     }
-    advance();
     return s;
 }
 
@@ -2396,10 +2406,13 @@ fn assign_stmt() -> i32 {
     if (s == 0) { return 0; }
     append(s, e);
     if (curk() != K_Semi) {
-        die_at("expected ';'", tok_line(ppos), tok_col(ppos));
-        return 0;
+        if (clause_no_semi == 0) {
+            die_at("expected ';'", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+    } else {
+        advance();
     }
-    advance();
     return s;
 }
 fn statement() -> i32 {
@@ -2571,6 +2584,60 @@ fn statement() -> i32 {
         append(ds, b);
         append(ds, e);
         return ds;
+    }
+    // v0.23.77-dev: `for (init; cond; step) body` - one statement per clause
+    // (the init may be empty), the condition required, and `continue` landing on
+    // the step, which is what the four-part node records. Children:
+    // [init-block, cond, step-block, body-block].
+    if (k == K_For) {
+        advance();
+        if (curk() != K_LParen) {
+            die_at("expected '(' after for", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let initb: i32 = newnode(N_Block, ppos);
+        if (initb == 0) { return 0; }
+        if (curk() == K_Semi) { advance(); }
+        else {
+            let s0: i32 = statement();
+            if (perr != 0) { return 0; }
+            append(initb, s0);
+        }
+        if (curk() == K_Semi) {
+            die_at("for condition cannot be empty", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        let cond: i32 = parse_expr();
+        if (perr != 0) { return 0; }
+        if (curk() != K_Semi) {
+            die_at("expected ';' after for condition", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let stepb: i32 = newnode(N_Block, ppos);
+        if (stepb == 0) { return 0; }
+        if (curk() != K_RParen) {
+            clause_no_semi = 1;
+            let s1: i32 = statement();
+            clause_no_semi = 0;
+            if (perr != 0) { return 0; }
+            append(stepb, s1);
+        }
+        if (curk() != K_RParen) {
+            die_at("expected ')' after for step", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let body: i32 = parse_block();
+        if (perr != 0) { return 0; }
+        let fs: i32 = newnode(S_For, ntok[cond - 1]);
+        if (fs == 0) { return 0; }
+        append(fs, initb);
+        append(fs, cond);
+        append(fs, stepb);
+        append(fs, body);
+        return fs;
     }
     if (k == K_While) {
         advance();
@@ -3586,6 +3653,26 @@ fn sema_stmt(s: i32) -> i32 {
             pop_scope();
             cs = nnext[cs - 1];
         }
+        return 0;
+    }
+    // v0.23.77-dev: the init and the step share one scope (a `for (let i = 0;
+    // ...)` owns i), the body gets its own.
+    if (k == S_For) {
+        let initb: i32 = nfirst[s - 1];
+        let cond4: i32 = nnext[initb - 1];
+        let stepb4: i32 = nnext[cond4 - 1];
+        let body4: i32 = nnext[stepb4 - 1];
+        push_scope();
+        if (sema_block(initb) != 0) { return 1; }
+        if (tc_expr(cond4) != 0) { return 1; }
+        if (cond_ok(cond4) == 0) {
+            die_at("condition must be a comparison, a bool expression, or an integer", tok_line(ntok[s - 1]), tok_col(ntok[s - 1])); return 1;
+        }
+        push_scope();
+        if (sema_block(body4) != 0) { return 1; }
+        pop_scope();
+        if (sema_block(stepb4) != 0) { return 1; }
+        pop_scope();
         return 0;
     }
     if (k == S_Nop) { return 0; }
@@ -5502,6 +5589,46 @@ fn gen_stmt(s: i32) -> i32 {
     // once into a temporary that stays live across the bodies (a call parks it),
     // then per case `CMP subject, value; B.NE skip; body; B end; skip:`, the
     // default body last, and `end` after everything. Pascal rule: no fallthrough.
+    // v0.23.77-dev: init; lcond: cond -> exit; body (continue -> lstep);
+    // lstep: step; B lcond; exit:. Labels are allocated lcond, lstep, lexit, the
+    // order the twin uses.
+    if (k == S_For) {
+        let initb: i32 = nfirst[s - 1];
+        let cond4: i32 = nnext[initb - 1];
+        let stepb4: i32 = nnext[cond4 - 1];
+        let body4: i32 = nnext[stepb4 - 1];
+        if (cg_push_scope() != 0) { return 1; }
+        if (gen_block(initb) != 0) { return 1; }
+        let lcond4: i32 = new_label();
+        if (lcond4 < 0) { return 1; }
+        let lstep4: i32 = new_label();
+        if (lstep4 < 0) { return 1; }
+        let lexit4: i32 = new_label();
+        if (lexit4 < 0) { return 1; }
+        if (place_label(lcond4) != 0) { return 1; }
+        let r4: i32 = gen_expr(cond4, TY_I32);
+        if (r4 < 0) { return 1; }
+        let is64f: i32 = 0;
+        if (ty_is64(ex_ty[cond4 - 1]) == 1) { is64f = 1; }
+        if (emit_cmp_imm(r4, 0, is64f) != 0) { return 1; }
+        if (free_tmp(r4) != 0) { return 1; }
+        if (emit_bcond(0, lexit4) != 0) { return 1; }
+        if (lp_depth >= 64) { return cg_die_at_node("loops nested too deeply (limit 64)", s); }
+        lp_exit[lp_depth] = lexit4;
+        lp_cont[lp_depth] = lstep4;
+        lp_name[lp_depth] = nlab[s - 1];
+        lp_depth = lp_depth + 1;
+        if (cg_push_scope() != 0) { return 1; }
+        if (gen_block(body4) != 0) { return 1; }
+        if (cg_pop_scope() != 0) { return 1; }
+        lp_depth = lp_depth - 1;
+        if (place_label(lstep4) != 0) { return 1; }
+        if (gen_block(stepb4) != 0) { return 1; }
+        if (emit_b(lcond4) != 0) { return 1; }
+        if (place_label(lexit4) != 0) { return 1; }
+        if (cg_pop_scope() != 0) { return 1; }
+        return 0;
+    }
     if (k == S_Switch) {
         let sub: i32 = nfirst[s - 1];
         let r: i32 = gen_expr(sub, TY_I32);
