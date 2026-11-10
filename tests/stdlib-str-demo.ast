@@ -1,0 +1,101 @@
+// tests/stdlib-str-demo.ast — the second slice of the basic library: 64-bit
+// formatting, the integer and double parsers, and the string helpers.
+//
+// The C twin (tests/aster-std-str-twin.c) computes the same fields with
+// strtoll/strtod/snprintf and prints the same line, so the two are compared
+// byte for byte.
+include "ailib.ast";
+
+fn main() -> i32 {
+    let ok: i32 = 0;
+    let b: u8[64] = 0;
+
+
+    // 1. i64 decimal, including the one value whose magnitude does not fit
+    let minv: i64 = (0 - 9223372036854775807l) - 1l;
+    if (fmt_i64(b, minv) == 20) { ok = ok + 1; }
+    let minlen: i32 = strlen(b);
+    if (fmt_i64(b, 1234567890123l) == 13) { ok = ok + 1; }
+    if (fmt_i64(b, 0) == 1) { ok = ok + 1; }
+    if (fmt_i64(b, 0 - 5l) == 2) { ok = ok + 1; }
+
+    // 2. sixteen-digit hex
+    if (fmt_hex64(b, 0 - 1l) == 16) { ok = ok + 1; }
+    let hexfirst: i32 = load_u8(b);              // 'f'
+    if (fmt_hex64(b, 72623859790382856l) == 16) { ok = ok + 1; }   // 0x0102030405060708
+    if (load_u8(b + 15) == 56) { ok = ok + 1; }  // '8'
+
+    // 3. strtoi
+    let v: i64[1] = 0;
+    let ov: ptr = ptr(&v);
+    if (strtoi("42", 0, ov) == 2 && v[0] == 42) { ok = ok + 1; }
+    if (strtoi("  -17", 0, ov) == 5 && v[0] == 0 - 17) { ok = ok + 1; }
+    if (strtoi("0x1f", 0, ov) == 4 && v[0] == 31) { ok = ok + 1; }
+    let parse_val: i32 = i32(v[0]);   // the 0x1f result, for the summary line
+    if (strtoi("0b1011", 0, ov) == 6 && v[0] == 11) { ok = ok + 1; }
+    if (strtoi("777", 8, ov) == 3 && v[0] == 511) { ok = ok + 1; }
+    if (strtoi("zz", 36, ov) == 2 && v[0] == 1295) { ok = ok + 1; }
+    if (strtoi("12abc", 10, ov) == 2 && v[0] == 12) { ok = ok + 1; }
+    if (strtoi("abc", 10, ov) == 0 - 1) { ok = ok + 1; }
+
+    // 4. atof, written through a typed pointer
+    let f: f64[1] = 0;
+    let of: ptr<f64> = ptr(&f);
+    if (atof("1.5", of) == 3) { ok = ok + 1; }
+    if (i32(f[0] * 10.0) == 15) { ok = ok + 1; }
+    if (atof("-2.5e-3", of) == 7) { ok = ok + 1; }
+    let atof_val: i32 = i32(f[0] * 1000.0);
+    if (atof("3.25e2", of) == 6) { ok = ok + 1; }
+    if (atof("junk", of) == 0 - 1) { ok = ok + 1; }
+
+    // 5. the string helpers
+    let t: u8[16] = 0;
+    memcpy(t, "  hi  ", 6);
+    let trimmed: ptr<u8> = trim(&t);
+    let trimlen: i32 = strlen(trimmed);
+    if (trimlen == 2) { ok = ok + 1; }
+    if (starts_with(trimmed, "hi") == 1) { ok = ok + 1; }
+    if (ends_with(trimmed, "hi") == 1) { ok = ok + 1; }
+    if (streq(trimmed, "hi") == 1) { ok = ok + 1; }
+    if (starts_with(trimmed, "ho") == 0) { ok = ok + 1; }
+
+    // 6. line iteration, CRLF included
+    let text: u8[64] = 0;
+    memcpy(text, "one\r\ntwo\nthree", 15);
+    let lines: i32 = 0;
+    let first: i32 = 0;
+    let ln: ptr<u8> = &text;
+    while (ln != 0) {
+        lines = lines + 1;
+        ln = next_line(ln);                  // terminates the line in place
+        if (lines == 1) { first = strlen(&text); }
+    }
+    if (lines == 3) { ok = ok + 1; }
+    if (first == 3) { ok = ok + 1; }             // "one", the CR stripped
+
+    // 7. a copy in the arena
+    let dup: ptr<u8> = str_dup("copy");
+    if (dup != 0 && streq(dup, "copy") == 1) { ok = ok + 1; }
+
+    // the summary line: ok|minlen|hexfirst|parse31|atofval|lines|trimlen
+    let out: u8[128] = 0;
+    let at: i32 = 0;
+    at = at + fmt_i32(out, ok);
+    out[at] = 124; at = at + 1;
+    at = at + fmt_i32(out + at, minlen);
+    out[at] = 124; at = at + 1;
+    at = at + fmt_i32(out + at, hexfirst);
+    out[at] = 124; at = at + 1;
+    at = at + fmt_i32(out + at, parse_val);
+    out[at] = 124; at = at + 1;
+    at = at + fmt_i32(out + at, atof_val);
+    out[at] = 124; at = at + 1;
+    at = at + fmt_i32(out + at, lines);
+    out[at] = 124; at = at + 1;
+    at = at + fmt_i32(out + at, trimlen);
+    write_all(1, out, at);
+    let nl: u8[2] = 0;
+    store_u8(nl, 10);
+    write_all(1, nl, 1);
+    return ok == 28 ? 0 : 1;
+}

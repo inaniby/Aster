@@ -251,6 +251,20 @@ breaking this project's own `-Werror` build.
   baseline, so it is recorded as audit A-25 and the library assembles its one
   message from bytes.
 
+* **The basic library, second slice** — 60 → **71 routines**: `fmt_i64`
+  (decimal, `INT64_MIN` through u64 arithmetic because its magnitude does not
+  fit an i64), `fmt_hex64` (sixteen digits), `strtoi(s, base, out)` (base 2–36
+  or 0 for `0x`/`0b`/decimal auto-detect, sign and leading spaces, the bytes
+  consumed as the answer, -1 when there is no digit), `atof(s, out)` (digits,
+  fraction and exponent, the double written through a `ptr<f64>` because the
+  language has no bit-reinterpretation), and the string helpers `streq`,
+  `starts_with`, `ends_with`, `trim` (in place), `next_line` (in place, CRLF
+  aware) and `str_dup` (in the arena). `tests/stdlib-str-checks.sh` (eight
+  layers) diffs a demo against a `strtoll`/`strtod`/`snprintf` twin byte for
+  byte, then pins the parser edges (prefixes, signs, out-of-range bases,
+  `INT64_MAX`, `.5`, `1.`, `1e2`, `-0.5`), the iterator's boundaries, the
+  baseline and a mutation.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

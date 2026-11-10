@@ -31,10 +31,10 @@ ok 'compiler built'
 printf '%s\n' '[2/8] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$OUT/std.o" >"$OUT/std.log" 2>&1 \
     || fail "stdlib did not build: $(head -1 "$OUT/std.log")"
-grep -q '60 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
+grep -q '71 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
 und=$(readelf -sW "$OUT/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-ok '60 functions, 10 globals, 1 UND entry'
+ok '71 functions, 10 globals, 1 UND entry'
 
 printf '%s\n' '[3/8] the demo prints the expected lines'
 "$ASTER" build-obj tests/stdlib3-demo.ast -o "$OUT/demo.o" >/dev/null 2>&1 || fail 'the demo did not compile'

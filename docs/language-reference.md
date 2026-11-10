@@ -1726,7 +1726,9 @@ aster link-obj app.o std.o -o app
 | --- | --- |
 | mem (v0.23.77-dev) | `memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` |
 | str (v0.23.77-dev) | `strncmp`, `strchr(s, c) -> i32` (an offset or -1), `strstr(h, n) -> i32`, `strcat` (returns the new length) |
-| parse (v0.23.77-dev) | `atoi(s) -> i32`, `is_digit` / `is_space` / `is_alpha` |
+| parse (v0.23.77-dev) | `atoi(s) -> i32`, `is_digit` / `is_space` / `is_alpha`; second slice: `strtoi(s, base, out) -> i32` (base 2..36 or 0 for `0x`/`0b`/decimal auto-detect, leading spaces and a sign, the value written through `out` as an i64, the answer is the bytes consumed or -1) and `atof(s, out) -> i32` (digits, an optional fraction and an optional exponent, the double written through a `ptr<f64>` — a double cannot go through a byte pointer without reinterpreting its bits, which the language does not do) |
+| format, second slice (v0.23.77-dev) | `fmt_i64(buf, v)` (decimal, with `INT64_MIN` producing its digits through u64 arithmetic because its magnitude does not fit an i64) and `fmt_hex64(buf, v)` (sixteen lowercase digits, two eight-digit halves) |
+| strings, second slice (v0.23.77-dev) | `streq`, `starts_with`, `ends_with`, `trim` (strips spaces **in place** and answers the first non-space byte — the argument must be writable), `next_line(line)` (terminates the line in place, strips a trailing `\r`, answers the next line or 0 — iterate `while (ln != 0) { …; ln = next_line(ln); }`), `str_dup` (a copy in the arena) |
 | format (v0.23.77-dev) | `fmt_i32(buf, v) -> i32`, `fmt_hex(buf, v, digits) -> i32` — fixed-arity writers returning the byte count, because there is no variadic call |
 | format (v0.23.77-dev) | `fmt_f64(buf, v, digits) -> i32`, `fmt_f32(buf, v, digits) -> i32` — a double in fixed point (0..9 digits, half-up, `nan`/`inf` like C), returning the byte count |
 | sort (v0.23.77-dev) | `sort_i32(a: ptr, n: i32) -> i32` — ascending insertion sort |
