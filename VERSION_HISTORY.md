@@ -368,6 +368,15 @@ breaking this project's own `-Werror` build.
   and `static let` already in, the bootstrap's control-flow subset now matches
   the host's.
 
+* **`map_del`** — the map can now give a key back. 87 → **90 routines**: a deleted
+  slot becomes a *tombstone* (`ptr(1)`, which no key can be) rather than an empty
+  one, because a probe run that passed through it has to keep going;
+  `map_find` is the read-only probe (stops at the first empty slot), `map_slot`
+  prefers the first tombstone on its run so a re-put reuses it, and
+  `map_put`'s "new" answer distinguishes a tombstone from a live key.
+  `tests/stdlib-map-checks.sh` [5/8] covers delete/re-delete/re-put with 500
+  neighbours still findable, and the suites' shape assertions moved to 90.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

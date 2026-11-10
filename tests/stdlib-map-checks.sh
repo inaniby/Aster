@@ -4,7 +4,7 @@
 #
 # Layers:
 #   [1] strict build of the compiler
-#   [2] the library object: 87 routines, 10 globals, 1 UND
+#   [2] the library object: 90 routines, 10 globals, 1 UND
 #   [3] the demo runs and prints its summary line
 #   [4] the C twin agrees byte for byte (its own table and C's qsort)
 #   [5] map edges: a grown table, replaced keys, an absent key, 500 keys
@@ -29,10 +29,10 @@ ok 'compiler built'
 printf '%s\n' '[2/8] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$OUT/std.o" >"$OUT/std.log" 2>&1 \
     || fail "the library did not build: $(head -3 "$OUT/std.log")"
-grep -q '87 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
+grep -q '90 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
 und=$(readelf -sW "$OUT/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-ok '87 routines, 10 globals, 1 UND entry'
+ok '90 routines, 10 globals, 1 UND entry'
 
 printf '%s\n' '[3/8] the demo runs'
 cp tests/stdlib-map-demo.ast "$OUT/demo.ast"
@@ -87,6 +87,22 @@ fn main() -> i32 {
     if (map_get(&m, "absent") != 0) { return 10; }
     if (map_has(&m, "absent") != 0) { return 11; }
     if (map_has(&m, "one") != 1) { return 12; }
+    // v0.23.77-dev: delete leaves a tombstone, so the probe runs that passed
+    // through the slot still work; a re-put reuses it.
+    if (map_del(&m, "one") != 1) { return 13; }
+    if (m.count != 500) { return 14; }
+    if (map_get(&m, "one") != 0) { return 15; }
+    if (map_del(&m, "one") != 0) { return 16; }       // already gone
+    i = 0;
+    while (i < 500) {
+        let k2: u8[16] = 0;
+        fmt_i32(k2, i);
+        if (map_get(&m, k2) != ptr(&cell[2])) { return 17; }
+        i = i + 1;
+    }
+    if (map_put(&m, "one", ptr(&cell[1])) != 1) { return 18; }
+    if (m.count != 501) { return 19; }
+    if (map_get(&m, "one") != ptr(&cell[1])) { return 20; }
     return 0;
 }
 AST

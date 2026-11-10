@@ -1142,6 +1142,11 @@ fn str_dup(s: ptr<u8>) -> ptr<u8> {
 
 struct Map { ents: ptr, count: i32, cap: i32 }
 
+// A deleted key's slot keeps this in place of the key: linear probing needs a
+// *occupied but free* marker, or a delete would break every probe run that
+// passed through the slot. `ptr(1)` is not an address any key can have.
+fn map_tomb() -> ptr { return ptr(1); }
+
 fn map_init(m: ptr<Map>, cap: i32) -> i32 {
     let want: i32 = cap < 8 ? 8 : cap;
     let p: i32 = 8;
@@ -1161,13 +1166,39 @@ fn map_val_at(m: ptr<Map>, i: i32) -> ptr {
 }
 
 // map_slot: the index holding `key`, or the first empty slot on its probe run.
+// map_slot: the index holding `key`, or the first slot a new key may occupy —
+// the first tombstone on the probe run when there is one, otherwise the first
+// empty slot. `map_find` is the read-only form: it stops at the first empty
+// slot and answers -1 for "absent".
 fn map_slot(m: ptr<Map>, key: ptr<u8>) -> i32 {
+    let mask: i32 = m.cap - 1;
+    let i: i32 = i32(hash_str(key) & i64(mask));
+    let tomb: i32 = 0 - 1;
+    while (1) {
+        let k: ptr<u8> = map_key_at(m, i);
+        if (k == 0) {
+            if (tomb >= 0) { return tomb; }
+            return i;
+        }
+        if (k == map_tomb()) {
+            if (tomb < 0) { tomb = i; }
+        } else if (streq(k, key) == 1) {
+            return i;
+        }
+        i = (i + 1) & mask;
+    }
+    return 0 - 1;
+}
+
+fn map_find(m: ptr<Map>, key: ptr<u8>) -> i32 {
     let mask: i32 = m.cap - 1;
     let i: i32 = i32(hash_str(key) & i64(mask));
     while (1) {
         let k: ptr<u8> = map_key_at(m, i);
-        if (k == 0) { return i; }
-        if (streq(k, key) == 1) { return i; }
+        if (k == 0) { return 0 - 1; }
+        if (k != map_tomb()) {
+            if (streq(k, key) == 1) { return i; }
+        }
         i = (i + 1) & mask;
     }
     return 0 - 1;
@@ -1209,7 +1240,7 @@ fn map_put(m: ptr<Map>, key: ptr<u8>, val: ptr) -> i32 {
     }
     let i: i32 = map_slot(m, key);
     let fresh: i32 = 1;
-    if (map_key_at(m, i) != 0) { fresh = 0; }
+    if (map_key_at(m, i) != 0 && map_key_at(m, i) != map_tomb()) { fresh = 0; }
     store_i64(m.ents + i * 16, i64(key));
     store_i64(m.ents + i * 16 + 8, i64(val));
     if (fresh == 1) { m.count = m.count + 1; }
@@ -1218,9 +1249,23 @@ fn map_put(m: ptr<Map>, key: ptr<u8>, val: ptr) -> i32 {
 
 fn map_get(m: ptr<Map>, key: ptr<u8>) -> ptr {
     if (m.ents == 0 || m.count == 0) { return 0; }
-    let i: i32 = map_slot(m, key);
-    if (map_key_at(m, i) == 0) { return 0; }
+    let i: i32 = map_find(m, key);
+    if (i < 0) { return 0; }
     return map_val_at(m, i);
+}
+
+// map_del(m, key): 1 when the key was there and is gone, 0 when it was not.
+// The slot becomes a tombstone - not empty, because a probe run that reached
+// this slot has to keep going past it - and the count drops by one. A later
+// map_put reuses the tombstone (map_slot prefers the first one on its run).
+fn map_del(m: ptr<Map>, key: ptr<u8>) -> i32 {
+    if (m.ents == 0 || m.count == 0) { return 0; }
+    let i: i32 = map_find(m, key);
+    if (i < 0) { return 0; }
+    store_i64(m.ents + i * 16, i64(map_tomb()));
+    store_i64(m.ents + i * 16 + 8, 0);
+    m.count = m.count - 1;
+    return 1;
 }
 
 fn map_has(m: ptr<Map>, key: ptr<u8>) -> i32 {

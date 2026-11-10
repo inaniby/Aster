@@ -4,7 +4,7 @@
 #
 # Layers:
 #   [1] strict build of the compiler
-#   [2] the library object: 87 routines, 10 globals, 1 UND
+#   [2] the library object: 90 routines, 10 globals, 1 UND
 #   [3] the demo runs and prints its summary line
 #   [4] the C twin agrees byte for byte (strtoll/strtod/snprintf are the oracle)
 #   [5] edges: INT64_MIN, base 0 auto-detection, consumed counts, ".5", "1.",
@@ -30,10 +30,10 @@ ok 'compiler built'
 printf '%s\n' '[2/8] the library object'
 "$ASTER" build-obj stdlib/aster_std.ast -o "$OUT/std.o" >"$OUT/std.log" 2>&1 \
     || fail "the library did not build: $(head -3 "$OUT/std.log")"
-grep -q '87 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
+grep -q '90 functions, 10 globals' "$OUT/std.log" || fail "the library's shape changed: $(tail -1 "$OUT/std.log")"
 und=$(readelf -sW "$OUT/std.o" | awk '$7=="UND"' | wc -l)
 [ "$und" = 1 ] || fail "the library imports $und symbols, expected only the ELF null"
-ok '87 routines, 10 globals, 1 UND entry'
+ok '90 routines, 10 globals, 1 UND entry'
 
 printf '%s\n' '[3/8] the demo runs'
 cp tests/stdlib-str-demo.ast "$OUT/demo.ast"
