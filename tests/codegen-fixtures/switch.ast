@@ -1,0 +1,40 @@
+// tests/codegen-fixtures/switch.ast — `switch` through the stage: Pascal cases
+// (no fallthrough), a `default` that sits in the middle, a case after it, and a
+// subject with a side effect that must be evaluated once.
+let out: u8[8] = 0;
+let hits: i32 = 0;
+
+fn next() -> i32 {
+    hits = hits + 1;
+    return hits;
+}
+
+fn main() -> i32 {
+    let i: i32 = 0;
+    let r: i32 = 0;
+    while (i < 3) {
+        i = i + 1;
+        switch (i) {
+            case 1:
+                r = r + 10;
+            default:
+                r = r + 1;
+            case 200:
+                r = r + 1000;
+        }
+    }
+    let j: i32 = 0;
+    switch (next()) {
+        case 1:
+            j = hits;
+        default:
+            j = 9;
+    }
+    store_u8(out, 48 + r / 100);
+    store_u8(out + 1, 48 + r / 10 % 10);
+    store_u8(out + 2, 48 + r % 10);
+    store_u8(out + 3, 48 + j);
+    store_u8(out + 4, 10);
+    write(1, out, 5);
+    return 0;
+}

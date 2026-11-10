@@ -113,6 +113,8 @@ static int nfuncs, nglobs, nparams;
 /* The parser's cursor and the two nesting counters the caps police. */
 static int p;                           /* index of the current token */
 static int prog_node;                   /* v0.23.77-dev: for `static let` */
+static int64_t sema_cv[256];            /* v0.23.77-dev: switch case values */
+static int sema_cn;
 static int lname[64], lname_depth;      /* v0.23.77-dev: loop labels being parsed */
 static int exdepth;                     /* C1 */
 static int sdepth;                      /* C2 */
@@ -1020,6 +1022,15 @@ static int function_decl(int external) {
 /* --------------------------------------------------------- statements (§5) */
 static int statement(void);
 
+/* v0.23.77-dev: a case body runs to the next case/default/brace. */
+static int case_body(void) {
+    int bt = p;
+    int b = newnode(N_Block, bt);
+    while (cur() != TK_Case && cur() != TK_Default && cur() != TK_RBrace && cur() != TK_End) {
+        append(b, statement());
+    }
+    return b;
+}
 static int parse_block(void) {
     if (cur() != TK_LBrace) die_at("expected '{'", tok_line(p), tok_col(p));
     if (sdepth >= BLOCKMAX) die_c2();
@@ -1213,6 +1224,55 @@ static int statement(void) {
         return s;
     }
     if (k == TK_If) { adv(); return if_stmt(); }
+    /* v0.23.77-dev: `switch (subject) { case V: ... default: ... }`, Pascal rule.
+     * Children: [subject, Case*]; a Case holds [value, body], the default a
+     * Case with count 1 and only a body. */
+    if (k == TK_Switch) {
+        adv();
+        if (cur() != TK_LParen)
+            die_at("expected '(' after switch", tok_line(p), tok_col(p));
+        adv();
+        int sub = expr();
+        if (cur() != TK_RParen)
+            die_at("expected ')' after switch subject", tok_line(p), tok_col(p));
+        adv();
+        if (cur() != TK_LBrace)
+            die_at("expected '{' after switch subject", tok_line(p), tok_col(p));
+        adv();
+        int sw = newnode(S_Switch, nodes[sub].tok);
+        append(sw, sub);
+        int hasdef = 0;
+        while (cur() == TK_Case || cur() == TK_Default) {
+            if (cur() == TK_Default) {
+                int dt = p;
+                if (hasdef)
+                    die_at("a second default case", tok_line(dt), tok_col(dt));
+                hasdef = 1;
+                adv();
+                if (cur() != TK_Colon)
+                    die_at("expected ':' after default", tok_line(p), tok_col(p));
+                adv();
+                int cs = newnode(N_Case, dt);
+                nodes[cs].count = 1;
+                append(sw, cs);
+                append(cs, case_body());
+            } else {
+                adv();
+                int v = expr();
+                if (cur() != TK_Colon)
+                    die_at("expected ':' after case value", tok_line(p), tok_col(p));
+                adv();
+                int cs = newnode(N_Case, nodes[v].tok);
+                append(sw, cs);
+                append(cs, v);
+                append(cs, case_body());
+            }
+        }
+        if (cur() != TK_RBrace)
+            die_at("expected '}' to close switch", tok_line(p), tok_col(p));
+        adv();
+        return sw;
+    }
     if (k == TK_PlusPlus || k == TK_MinusMinus)
         die_at("'++' and '--' are not in the bootstrap subset",
                tok_line(p), tok_col(p));
@@ -2000,6 +2060,39 @@ static int sema_stmt(int s) {
         if (cond_ok(cond) == 0)
             die_at("condition must be a comparison, a bool expression, or an integer",
                    tok_line(nodes[s].tok), tok_col(nodes[s].tok));
+        return 0;
+    }
+    if (k == S_Switch) {
+        int sub = nodes[s].first;
+        if (tc_expr(sub) != 0) return 1;
+        if (ety[sub] != TY_I32)
+            die_at("switch subject must be i32 in the bootstrap subset",
+                   tok_line(nodes[s].tok), tok_col(nodes[s].tok));
+        sema_cn = 0;
+        for (int cs = nodes[sub].next; cs >= 0; cs = nodes[cs].next) {
+            int first = nodes[cs].first;
+            if (nodes[cs].count == 0) {
+                if (!is_const(first))
+                    die_at("case value must be a compile-time constant",
+                           tok_line(nodes[first].tok), tok_col(nodes[first].tok));
+                int64_t cv = fold(first);
+                if (cv < -2147483647LL - 1 || cv > 2147483647LL)
+                    die_at("case value does not fit an i32 subject",
+                           tok_line(nodes[first].tok), tok_col(nodes[first].tok));
+                for (int di = 0; di < sema_cn; di++)
+                    if (sema_cv[di] == cv)
+                        die_at("duplicate case value",
+                               tok_line(nodes[first].tok), tok_col(nodes[first].tok));
+                if (sema_cn >= 256)
+                    die_at("too many cases (limit 256)",
+                           tok_line(nodes[first].tok), tok_col(nodes[first].tok));
+                sema_cv[sema_cn++] = cv;
+                first = nodes[first].next;
+            }
+            push_scope();
+            if (sema_block(first) != 0) return 1;
+            pop_scope();
+        }
         return 0;
     }
     if (k == S_Nop) return 0;
@@ -2926,6 +3019,36 @@ static int gen_stmt(int s){
         return 0;
     }
     if (k==S_Nop) return 0;
+    if (k==S_Switch){
+        int sub=NF(s);
+        int r=gen_expr(sub,1); if (r<0) return 1;
+        int lend=new_label(); if (lend<0) return 1;
+        int defcs=-1;
+        for (int cs=nodes[sub].next; cs>=0; cs=nodes[cs].next){
+            if (nodes[cs].count==1){ defcs=cs; }
+            else {
+                int v=nodes[cs].first;
+                int kt=gen_expr(v,1); if (kt<0) return 1;
+                if (emit_cmp_rr(r,kt,0)) return 1;
+                if (free_tmp(kt)) return 1;
+                int lskip=new_label(); if (lskip<0) return 1;
+                if (emit_bcond(1,lskip)) return 1;
+                if (cg_push_scope()) return 1;
+                if (gen_block(nodes[v].next)) return 1;
+                if (cg_pop_scope()) return 1;
+                if (emit_b(lend)) return 1;
+                if (place_label(lskip)) return 1;
+            }
+        }
+        if (defcs>=0){
+            if (cg_push_scope()) return 1;
+            if (gen_block(nodes[defcs].first)) return 1;
+            if (cg_pop_scope()) return 1;
+        }
+        if (place_label(lend)) return 1;
+        if (free_tmp(r)) return 1;
+        return 0;
+    }
     int v=gen_expr(NF(s),1); if (v<0) return 1;
     if (free_tmp(v)) return 1;
     return 0;

@@ -39,7 +39,7 @@ enum {
     E_BitXor = 29,
 };
 
-/* The 11 statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, DerefAssign, For and Switch are excluded (§12.2). */
+/* The 12 statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, DerefAssign, For and Switch are excluded (§12.2). */
 enum {
     S_Let = 64,
     S_Assign = 65,
@@ -49,18 +49,20 @@ enum {
     S_While = 71,
     S_Break = 73,
     S_Continue = 74,
+    S_Switch = 75,
     S_Expr = 76,
     S_DoWhile = 77,
     S_Nop = 78,
 };
 
-/* The 5 structural kinds (§2.3). */
+/* The 6 structural kinds (§2.3). */
 enum {
     N_Program = 128,
     N_Function = 129,
     N_Global = 130,
     N_Param = 131,
     N_Block = 132,
+    N_Case = 133,
 };
 
 /* The 7 type tags (§2.4). */
@@ -138,13 +140,14 @@ static const char *const SK_NAMES[SK_COUNT] = {
     "Nop",
 };
 
-#define NK_COUNT 5
+#define NK_COUNT 6
 static const char *const NK_NAMES[NK_COUNT] = {
     "Program",
     "Function",
     "Global",
     "Param",
     "Block",
+    "Case",
 };
 
 #define TYT_COUNT 7

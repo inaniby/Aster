@@ -216,7 +216,7 @@ let E_BitAnd: i32 = 27;
 let E_BitOr: i32 = 28;
 let E_BitXor: i32 = 29;
 
-// The 11 statement kinds (§2.2), the host's Stmt::Kind
+// The 12 statement kinds (§2.2), the host's Stmt::Kind
 // numbers + 64; FieldAssign, DerefAssign, For and Switch are
 // excluded (§12.2), their numbers skipped.
 let S_Let: i32 = 64;
@@ -227,11 +227,12 @@ let S_If: i32 = 70;
 let S_While: i32 = 71;
 let S_Break: i32 = 73;
 let S_Continue: i32 = 74;
+let S_Switch: i32 = 75;
 let S_Expr: i32 = 76;
 let S_DoWhile: i32 = 77;
 let S_Nop: i32 = 78;
 
-// The 5 structural kinds (§2.3) — no host counterpart; the
+// The 6 structural kinds (§2.3) — no host counterpart; the
 // dump makes the host's side vectors nodes so every line
 // has one shape.
 let N_Program: i32 = 128;
@@ -239,6 +240,7 @@ let N_Function: i32 = 129;
 let N_Global: i32 = 130;
 let N_Param: i32 = 131;
 let N_Block: i32 = 132;
+let N_Case: i32 = 133;
 
 // The 7 type tags (§2.4).
 let TY_I32: i32 = 1;
@@ -253,12 +255,12 @@ let TY_PTR_I64: i32 = 7;
 // record is the name's bytes, NUL-padded. entab is the
 // host's full Expr::Kind list (36 records, so a kind's
 // record sits at its own number); sntab is Stmt::Kind (15);
-// nntab the structural kinds (5); tytab the type spellings
+// nntab the structural kinds (6); tytab the type spellings
 // (7, tag 1 at record 0). The dump picks the table by the
 // kind's space (§9): < 64 entab, < 128 sntab, else nntab.
 let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0Cast\0\0\0\0\0\0\0\0\0\0\0\0";
 let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Switch\0\0\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0DoWhile\0\0\0\0\0\0\0\0\0Nop\0\0\0\0\0\0\0\0\0\0\0\0\0";
-let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0";
+let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0Case\0\0\0\0\0\0\0\0\0\0\0\0";
 let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0";
 // ---- END GENERATED: parser names ----
 
@@ -348,6 +350,9 @@ let ppos: i32 = 0;                // the parser's cursor: index of the current t
 // v0.23.77-dev: the program node, so a `static let` written inside a body
 // can hand the global it declares to the top level.
 let prog_node: i32 = 0;
+// v0.23.77-dev: the case values of the switch being checked (duplicates).
+let sema_cv: i64[256] = 0;
+let sema_cn: i32 = 0;
 // The label tokens of the loops being parsed, innermost last: a labeled
 // jump is resolved here, at parse time, exactly as the host does.
 let lname: i32[64] = 0;
@@ -2227,6 +2232,23 @@ fn parse_block() -> i32 {
     return b;
 }
 
+// v0.23.77-dev: a case or default body runs from its ':' to the next `case`,
+// the next `default`, or the switch's closing brace - there are no braces to
+// match, so the boundary is a lookahead over the keywords that can only end a
+// body. `End` stops the loop so a missing '}' surfaces as the switch's own
+// diagnostic instead of spinning here.
+fn case_body() -> i32 {
+    let bt: i32 = ppos;
+    let b: i32 = newnode(N_Block, bt);
+    if (b == 0) { return 0; }
+    while (curk() != K_Case && curk() != K_Default && curk() != K_RBrace && curk() != K_End) {
+        let s: i32 = statement();
+        if (perr != 0) { return 0; }
+        append(b, s);
+    }
+    return b;
+}
+
 // An if statement, and the else-if chain: `else if` desugars to a nested If
 // in the else position — not a Block (§9) — and each link holds one C2 level
 // while it is open.
@@ -2437,6 +2459,80 @@ fn statement() -> i32 {
         return s;
     }
     if (k == K_If) { advance(); return if_stmt(); }
+    // v0.23.77-dev: `switch (subject) { case V: ... default: ... }` with the
+    // Pascal rule - a case body ends at the next `case`/`default`, so a case
+    // never falls through and `break` is not how it exits. The subject is
+    // evaluated once. Children: [subject, Case*]; a Case holds [value, body]
+    // and the default is a Case with `ncount` 1 and no value child.
+    if (k == K_Switch) {
+        advance();
+        if (curk() != K_LParen) {
+            die_at("expected '(' after switch", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let sub: i32 = parse_expr();
+        if (perr != 0) { return 0; }
+        if (curk() != K_RParen) {
+            die_at("expected ')' after switch subject", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        if (curk() != K_LBrace) {
+            die_at("expected '{' after switch subject", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        let sw: i32 = newnode(S_Switch, ntok[sub - 1]);
+        if (sw == 0) { return 0; }
+        append(sw, sub);
+        let hasdef: i32 = 0;
+        while (curk() == K_Case || curk() == K_Default) {
+            if (curk() == K_Default) {
+                let dt: i32 = ppos;
+                if (hasdef == 1) {
+                    die_at("a second default case", tok_line(dt), tok_col(dt));
+                    return 0;
+                }
+                hasdef = 1;
+                advance();
+                if (curk() != K_Colon) {
+                    die_at("expected ':' after default", tok_line(ppos), tok_col(ppos));
+                    return 0;
+                }
+                advance();
+                let cs: i32 = newnode(N_Case, dt);
+                if (cs == 0) { return 0; }
+                ncount[cs - 1] = 1;
+                append(sw, cs);
+                let bd: i32 = case_body();
+                if (perr != 0) { return 0; }
+                append(cs, bd);
+            } else {
+                advance();
+                let v: i32 = parse_expr();
+                if (perr != 0) { return 0; }
+                if (curk() != K_Colon) {
+                    die_at("expected ':' after case value", tok_line(ppos), tok_col(ppos));
+                    return 0;
+                }
+                advance();
+                let cs: i32 = newnode(N_Case, ntok[v - 1]);
+                if (cs == 0) { return 0; }
+                append(sw, cs);
+                append(cs, v);
+                let bd: i32 = case_body();
+                if (perr != 0) { return 0; }
+                append(cs, bd);
+            }
+        }
+        if (curk() != K_RBrace) {
+            die_at("expected '}' to close switch", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        advance();
+        return sw;
+    }
     if (k == K_PlusPlus || k == K_MinusMinus) {
         die_at("'++' and '--' are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
         return 0;
@@ -3441,6 +3537,54 @@ fn sema_stmt(s: i32) -> i32 {
         if (tc_expr(cond) != 0) { return 1; }
         if (cond_ok(cond) == 0) {
             die_at("condition must be a comparison, a bool expression, or an integer", tok_line(ntok[s - 1]), tok_col(ntok[s - 1])); return 1;
+        }
+        return 0;
+    }
+    // v0.23.77-dev: a switch subject must be an i32 (the subset's integer
+    // comparison width), every case value must fold at compile time and fit it,
+    // and two cases may not carry the same value - the second would be
+    // unreachable, which is a mistake rather than a dialect.
+    if (k == S_Switch) {
+        let sub: i32 = nfirst[s - 1];
+        if (tc_expr(sub) != 0) { return 1; }
+        if (ex_ty[sub - 1] != TY_I32) {
+            die_at("switch subject must be i32 in the bootstrap subset", tok_line(ntok[s - 1]), tok_col(ntok[s - 1]));
+            return 1;
+        }
+        sema_cn = 0;
+        let cs: i32 = nnext[sub - 1];
+        while (cs != 0) {
+            let first: i32 = nfirst[cs - 1];
+            if (ncount[cs - 1] == 0) {
+                if (is_const(first) == 0) {
+                    die_at("case value must be a compile-time constant", tok_line(ntok[first - 1]), tok_col(ntok[first - 1]));
+                    return 1;
+                }
+                let cv: i64 = fold(first);
+                if (cv < 0 - 2147483647 - 1 || cv > 2147483647) {
+                    die_at("case value does not fit an i32 subject", tok_line(ntok[first - 1]), tok_col(ntok[first - 1]));
+                    return 1;
+                }
+                let di: i32 = 0;
+                while (di < sema_cn) {
+                    if (sema_cv[di] == cv) {
+                        die_at("duplicate case value", tok_line(ntok[first - 1]), tok_col(ntok[first - 1]));
+                        return 1;
+                    }
+                    di = di + 1;
+                }
+                if (sema_cn >= 256) {
+                    die_at("too many cases (limit 256)", tok_line(ntok[first - 1]), tok_col(ntok[first - 1]));
+                    return 1;
+                }
+                sema_cv[sema_cn] = cv;
+                sema_cn = sema_cn + 1;
+                first = nnext[first - 1];
+            }
+            push_scope();
+            if (sema_block(first) != 0) { return 1; }
+            pop_scope();
+            cs = nnext[cs - 1];
         }
         return 0;
     }
@@ -5354,6 +5498,49 @@ fn gen_stmt(s: i32) -> i32 {
         return 0;
     }
     if (k == S_Nop) { return 0; }
+    // v0.23.77-dev: switch lowers to a comparison chain - subject evaluated
+    // once into a temporary that stays live across the bodies (a call parks it),
+    // then per case `CMP subject, value; B.NE skip; body; B end; skip:`, the
+    // default body last, and `end` after everything. Pascal rule: no fallthrough.
+    if (k == S_Switch) {
+        let sub: i32 = nfirst[s - 1];
+        let r: i32 = gen_expr(sub, TY_I32);
+        if (r < 0) { return 1; }
+        let lend: i32 = new_label();
+        if (lend < 0) { return 1; }
+        let defcs: i32 = 0;
+        let cs: i32 = nnext[sub - 1];
+        while (cs != 0) {
+            if (ncount[cs - 1] == 1) { defcs = cs; }
+            else {
+                let v: i32 = nfirst[cs - 1];
+                // The case value is a constant expression, and gen_expr already
+                // knows how to materialise one into a temporary - no folding and
+                // no cast here, which also keeps the code inside the subset.
+                let kt: i32 = gen_expr(v, TY_I32);
+                if (kt < 0) { return 1; }
+                if (emit_cmp_rr(r, kt, 0) != 0) { return 1; }
+                if (free_tmp(kt) != 0) { return 1; }
+                let lskip: i32 = new_label();
+                if (lskip < 0) { return 1; }
+                if (emit_bcond(1, lskip) != 0) { return 1; }
+                if (cg_push_scope() != 0) { return 1; }
+                if (gen_block(nnext[v - 1]) != 0) { return 1; }
+                if (cg_pop_scope() != 0) { return 1; }
+                if (emit_b(lend) != 0) { return 1; }
+                if (place_label(lskip) != 0) { return 1; }
+            }
+            cs = nnext[cs - 1];
+        }
+        if (defcs != 0) {
+            if (cg_push_scope() != 0) { return 1; }
+            if (gen_block(nfirst[defcs - 1]) != 0) { return 1; }
+            if (cg_pop_scope() != 0) { return 1; }
+        }
+        if (place_label(lend) != 0) { return 1; }
+        if (free_tmp(r) != 0) { return 1; }
+        return 0;
+    }
     // S_Expr: a discarded call — computed for its side effects, the result
     // register released (the host's v0.23.39-dev path, :4858).
     let v: i32 = gen_expr(nfirst[s - 1], TY_I32);

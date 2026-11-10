@@ -351,6 +351,23 @@ breaking this project's own `-Werror` build.
   through one counter, and the stage and the twin emit byte-identical ELFs for
   it; both images print `3`.
 
+* **`switch` moves into the bootstrap subset — and with it the two-part
+  milestone closes.** The stage parses `switch (subject) { case V: … default: … }`
+  (a `Case` structural kind at 133, appended after the host-shaped five so the
+  frozen numbering does not move; a value case holds `[value, body]`, a default
+  is a Case with `count` 1 and only a body), checks it (i32 subject, case values
+  that fold, fit and differ) and lowers it to a comparison chain — subject into
+  one temporary that stays live across the bodies, then per case
+  `MOVZ/MOVK; CMP; B.NE skip; body; B end; skip:`, the default last. Pascal rule:
+  no fallthrough. The twin carries the same pieces — including the one thing that
+  caught the port out: an expression's type lives in the twin's `ety[]`, not in
+  `nodes[].ty`, so the subject check has to read `ety[sub]` — and the new corpus
+  fixture `tests/codegen-fixtures/switch.ast` (a `default` in the middle, a case
+  after it, a subject with a side effect) makes the stage and the twin emit
+  byte-identical ELFs; both images print `0121`. With `do-while`, labeled jumps
+  and `static let` already in, the bootstrap's control-flow subset now matches
+  the host's.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

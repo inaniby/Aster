@@ -109,6 +109,16 @@ innermost-first (`lname[]`), so a label that names nothing is a **parse error**
 (`no such loop label: <name>`), not a run-time jump. Two writings of the same
 name are two different tokens, so the comparison is over the tokens' bytes.
 
+**`switch` (v0.23.77-dev).** The last control shape to join the subset, and the
+one with a node of its own: `struct Case` (kind **133**) is a *structural* kind
+the stage appends after the host-shaped five (128-132), so the frozen numbering
+does not move. A `S_Switch` node's children are `[subject, Case*]`; a value case
+holds `[value, body]`, a `default` is a Case with `count` 1 and only a body. The
+body ends at the next `case`/`default`/`}` (Pascal: no fallthrough, so `break` is
+not how a case exits), the default may sit anywhere and a second one is refused.
+The subject must be an **i32** (the subset's comparison width), every case value
+must fold at compile time, fit that width and differ from the earlier ones.
+
 **`static let` (v0.23.77-dev).** At statement position, `static let name: T = init;`
 declares a **file-scope** global — the declaration is registered with `global_decl`
 and joined to the program's item list, so its initializer runs before `main` like

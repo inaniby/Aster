@@ -80,7 +80,10 @@ STMT_KINDS = [
 # subset does not cover.
 STMT_SUBSET = [
     "Let", "Assign", "IndexAssign", "Return", "If", "While",
-    "Break", "Continue", "Expr",
+    "Break", "Continue",
+    # v0.23.77-dev: the last of the host's control shapes to join the subset.
+    "Switch",
+    "Expr",
     # v0.23.77-dev: `do { … } while (cond);` — the first of the host's control
     # shapes to move into the subset after the ones the stage was born with.
     "DoWhile",
@@ -93,7 +96,9 @@ STMT_SUBSET = [
 # functions, globals, parameters and block bodies as vectors beside the AST.
 # Numbered from 128 so they never collide with a statement kind.
 STRUCT_BASE = 128
-STRUCT_KINDS = ["Program", "Function", "Global", "Param", "Block"]
+# v0.23.77-dev: `Case` is structural kind of the stage own - the host
+# keeps its cases as vectors beside the AST, the stage needs nodes.
+STRUCT_KINDS = ["Program", "Function", "Global", "Param", "Block", "Case"]
 
 # The type tags (§2.4): the constant name and the spelling the dump prints.
 TYPE_TAGS = [
@@ -113,10 +118,10 @@ RECORD = 16
 
 EXPR_COUNT = len(EXPR_KINDS)          # 35 — entab's record count
 STMT_COUNT = len(STMT_KINDS)          # 15 — sntab's record count
-STRUCT_COUNT = len(STRUCT_KINDS)      # 5  — nntab's record count
+STRUCT_COUNT = len(STRUCT_KINDS)      # 6  — nntab's record count
 TYPE_COUNT = len(TYPE_TAGS)           # 7  — tytab's record count
 EXPR_SUBSET_COUNT = len(EXPR_SUBSET)  # 25 — the E_* constants
-STMT_SUBSET_COUNT = len(STMT_SUBSET)  # 11 — the S_* constants
+STMT_SUBSET_COUNT = len(STMT_SUBSET)  # 12 — the S_* constants
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -145,11 +150,11 @@ def check_list():
             % EXPR_SUBSET_COUNT)
     if STMT_COUNT != 15:
         die("expected 15 statement kinds, list has %d" % STMT_COUNT)
-    if STMT_SUBSET_COUNT != 11:
-        die("expected 11 statement kinds in the subset, list has %d"
+    if STMT_SUBSET_COUNT != 12:
+        die("expected 12 statement kinds in the subset, list has %d"
             % STMT_SUBSET_COUNT)
-    if STRUCT_COUNT != 5:
-        die("expected 5 structural kinds, list has %d" % STRUCT_COUNT)
+    if STRUCT_COUNT != 6:
+        die("expected 6 structural kinds, list has %d" % STRUCT_COUNT)
     if TYPE_COUNT != 7:
         die("expected 7 type tags, list has %d" % TYPE_COUNT)
     for label, names in (("expression", EXPR_KINDS),
@@ -190,8 +195,11 @@ def check_list():
         if not all(name in it for name in sub):
             die("the %s subset is not a subsequence of the host's list, in "
                 "the host's order" % label)
-    if STRUCT_KINDS[0] != "Program" or STRUCT_KINDS[-1] != "Block":
-        die("the structural kinds must run Program .. Block")
+    # The first five are the host-shaped kinds (128..132), frozen by PARSER-SPEC
+    # §2.3. v0.23.77-dev allows the stage to append kinds of its own after them
+    # (133 = Case, which the host keeps as vectors beside its AST).
+    if STRUCT_KINDS[:5] != ["Program", "Function", "Global", "Param", "Block"]:
+        die("the structural kinds must run Program .. Block, in that order")
 
 
 # ---------------------------------------------------------------------------
