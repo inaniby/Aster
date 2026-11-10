@@ -123,6 +123,9 @@ static int sdepth;                      /* C2 */
 /* The converted number (§6.2): the value, why it is not exact (1 too large
  * for u64, 2 saturated above i64 max), and the array-length reading. */
 static int64_t numval;
+static int numf;                 /* v0.23.77-dev: the bits of a float literal */
+static int tflt[TOKMAX];         /* v0.23.77-dev: per token, 1 when it spelled a '.' */
+static void convert_float(int t);   /* v0.23.77-dev: defined with the converter */
 static int numflag;
 static int numcnt;
 
@@ -276,7 +279,17 @@ static int scan_one(void) {
                 die_at("hexadecimal literal has no digits", l, c);
             while (isxdigit((unsigned char)peek())) take();
         }
-        return push(TK_Number, start, pos - start, l, c);
+        {
+            int fl = 0;
+            if (peek() == '.' && isdigit(peek2())) {
+                take();
+                while (isdigit(peek())) take();
+                fl = 1;
+            }
+            if (push(TK_Number, start, pos - start, l, c)) return 1;
+            if (fl) tflt[ntok - 1] = 1;    /* v0.23.77-dev: a float literal */
+            return 0;
+        }
     }
     if (ch == '"') {
         int vstart = spool;
@@ -878,6 +891,10 @@ static int ty_slots(int t){ return ty_is_struct(t) ? (struct_size_s(t-TY_STRUCT_
 static int parse_type(void) {
     int k = cur();
     if (k == TK_U64) { adv(); return 8; }   /* v0.23.77-dev: u64 */
+    /* v0.23.77-dev: f64 is a spelling, not a keyword - the host recognises it
+     * the same way in its own type parser */
+    if (k == TK_Ident && toks[p].len == 3 &&
+        memcmp(srcbuf + toks[p].start, "f64", 3) == 0) { adv(); return 8 + 1; }
     if (k == TK_I32) { adv(); return TY_I32; }
     if (k == TK_I64) { adv(); return TY_I64; }
     if (k == TK_U8)  { adv(); return TY_U8; }
@@ -1153,6 +1170,13 @@ static int let_stmt(void) {
     allow_struct_type = 1;
     int ty = parse_type();
     allow_struct_type = 0;
+    /* v0.23.77-dev: the twin's f64 support is half-built (the literal converts,
+     * the storage and the FP ops are not mirrored yet). It refuses rather than
+     * answering wrongly - an oracle that silently disagrees is worse than one
+     * that says it cannot. */
+    if (ty == 9)
+        die_at("f64 is not mirrored in the twin yet (the stage supports it)",
+               tok_line(nt), tok_col(nt));
     if (ty_is_struct(ty)) {
         if (cur() == TK_Semi) {
             adv();
@@ -2015,6 +2039,11 @@ static int tc_expr(int h) {
  * rules (§7). Returns 1 on the first type error. */
 static int tc_combine(int n) {
     int k = nodes[n].kind;
+    if (k == E_Num && tflt[nodes[n].tok]) {
+        ety[n] = 9;   /* v0.23.77-dev: f64 - the tag the stage gives it (8 is u64) */
+        earr[n] = 0;
+        return 0;
+    }
     if (k == E_Num) {
         convert_num(nodes[n].tok);
         if (numval >= -2147483648LL && numval <= 2147483647LL) ety[n] = TY_I32;
@@ -2837,6 +2866,14 @@ static int gen_expr_at(int h,int want,int base){
         if (k==E_Field){ int rf2=gen_field_load(n); if (rf2<0) return -1; gx_val[n]=rf2; continue; }
         if (k==E_Num||k==E_String||k==E_Var){
             int r=0;
+            if (k==E_Num && tflt[NT(n)]){
+                /* v0.23.77-dev: a float literal - bits in X, then across */
+                convert_float(NT(n));
+                int d=alloc_tmp(); if (d<0) return -1;
+                if (emit_imm64(d,(int64_t)numf)) return -1;
+                if (emit_word(0x9e670000u | ((uint32_t)d<<5) | (uint32_t)d)) return -1;
+                gx_val[n]=d; continue;
+            }
             if (k==E_Num){
                 convert_num(NT(n));
                 int d=alloc_tmp(); if (d<0) return -1;
@@ -2865,6 +2902,74 @@ static int gen_expr_at(int h,int want,int base){
 }
 static int gen_expr(int h,int want){ return gen_expr_at(h,want,0); }
 
+/* v0.23.77-dev: a float literal's exact bits, through the same converter the
+ * library and the stage's core carry (128-bit window, round-half-even). */
+/* v0.23.77-dev: the digit value of one character, for the float literal's
+ * scan (the integer path has its own inline arithmetic). */
+static int digit_val(int c){
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+}
+static int64_t f64_from_dec(uint64_t digits, int exp10){
+    if (digits == 0) return 0;
+    if (exp10 > 22 || exp10 < -9) return -1;
+    uint64_t hi = 0, lo = digits;
+    int k = 0, sticky = 0;
+    while (hi < 0x8000000000000000ULL){
+        hi = (hi << 1) | (lo >> 63); lo <<= 1; k--;
+    }
+    int p = exp10, step = 0;
+    while (step < p){
+        while (hi >= 0x1000000000000000ULL){
+            if (lo & 1) sticky = 1;
+            lo = (lo >> 1) | ((hi & 1) << 63); hi >>= 1; k++;
+        }
+        uint64_t c3 = lo >> 61, c1 = lo >> 63, a = lo << 3, b = lo << 1, sl = a + b;
+        uint64_t ov = (sl < a) ? 1u : 0u;
+        lo = sl;
+        hi = hi * 10 + c3 + c1 + ov;
+        step++;
+    }
+    while (step > p){
+        uint64_t qhi = hi / 10, rem = hi - qhi * 10, qlo = 0;
+        for (int bit = 63; bit >= 0; bit--){
+            rem = rem * 2 + ((lo >> bit) & 1);
+            qlo <<= 1;
+            if (rem >= 10){ rem -= 10; qlo |= 1; }
+        }
+        if (rem != 0) sticky = 1;
+        hi = qhi; lo = qlo;
+        while (hi < 0x8000000000000000ULL){
+            hi = (hi << 1) | (lo >> 63); lo <<= 1; k--;
+        }
+        step--;
+    }
+    while (hi < 0x8000000000000000ULL){
+        hi = (hi << 1) | (lo >> 63); lo <<= 1; k--;
+    }
+    uint64_t kept = hi >> 11, roundbit = (hi >> 10) & 1;
+    int rest = sticky;
+    if (hi & 1023) rest = 1;
+    if (lo) rest = 1;
+    if (roundbit && (rest || (kept & 1))) kept++;
+    int e = 52 + k + 75 + 1023;
+    if (kept > 9007199254740991ULL){ kept >>= 1; e++; }
+    if (e >= 2047) return (int64_t)0x7ff0000000000000LL;
+    if (e <= 0) return 0;
+    return (int64_t)(((uint64_t)e << 52) | (kept - 4503599627370496ULL));
+}
+static void convert_float(int t){
+    int start = toks[t].start, n = toks[t].len, frac = 0, seen = 0;
+    uint64_t m = 0;
+    for (int i = 0; i < n; i++){
+        int ch = srcbuf[start + i];
+        if (ch == '.') seen = 1;
+        else { m = m * 10 + (uint64_t)digit_val(ch); if (seen) frac++; }
+    }
+    numf = (int)f64_from_dec(m, -frac);
+}
 static int param_type(int fnode,int i){
     int p=NF(fnode), pi=0;
     while (p!=0){
