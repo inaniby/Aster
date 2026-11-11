@@ -1719,6 +1719,32 @@ bytes), a function may pass and return one by value at any size up to that, and
 a 9-byte-or-larger struct argument must be a plain variable. A struct literal is
 an *initializer* - `let p: Point = Point { 1, 2 };` - never an ordinary value.
 
+## 11e4. Floating point
+
+`f64` is a real type in the subset: a literal, a local, a parameter, a return, a
+comparison and all four arithmetic operations work, and a call carries one across
+in the V register file.
+
+```aster
+fn half(x: f64) -> f64 { return x / 2.0; }
+
+fn main() -> i32 {
+    let a: f64 = 0.1 * 3.0;     // 0.30000000000000004, exactly as C computes it
+    let b: f64 = half(a);
+    if (b > 0.15 && b < 0.16) { return 1; }
+    return 0;
+}
+```
+
+A literal converts to its **exact** IEEE-754 bits when it is parsed - not at run
+time and not approximately: the converter is integer-only, because the compiler
+that reads the literal has no float of its own. Everything inside the binary64
+range is verified against the host's own bits, including `1e300` and `1e-22`;
+below the normal range a literal answers zero rather than a subnormal.
+
+Two things stay outside: `f32`, and comparing a float against an integer without
+writing the integer as a float (`x > 1` is a type error, `x > 1.0` is not).
+
 ## 11f. What is not in the language
 
 There is no gap left in the statement grammar: `static let` (11b) covers state

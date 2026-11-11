@@ -483,6 +483,35 @@ breaking this project's own `-Werror` build.
   eight layers all pass: 15+ guards, 13 refusals, 6 mutations noticed, 3 baseline
   rows reproduced.
 
+### f64, u64 and the twin (later slices of the same version)
+
+The slices below were taken after the audit round shipped and keep the version
+number: they are additions to the bootstrap subset, not a new product version.
+
+* **f64 reaches the subset** - a float literal converts to its exact bits during
+  parsing (`f64_from_dec`: integer-only, a 128-bit window, round-half-to-even, the
+  whole binary64 range verified against the host's own bits); a local stores and
+  loads through the D file; comparisons are FCMP with their own condition map;
+  `+ - * /` are FADD/FSUB/FMUL/FDIV; a double crosses a call in a V register and
+  returns in D0. **Seven fixtures** hold it to the twin, byte for byte.
+* **`u64` in the subset, with wide literals** - the converters need it, because
+  their window uses the top bit and a signed shift would fill it. `ty_is_uns` and
+  `ty_is64` learn the tag; UDIV, LSR and the unsigned condition codes follow. A
+  literal in (i64 max, 2^64-1] keeps its exact value instead of saturating.
+* **The converters live in the subset-safe core** - the stage compiles itself, so
+  the code that decodes a literal must be code it can compile. That meant removing
+  every cast expression, which the language does not have.
+* **A host defect found by having a second implementation: FCMP.** The constant the
+  host built its float compare from carried bit 16 - the first bit of the Rm field
+  - so it compared one register higher than intended. Writing the same comparison
+  twice exposed it; the stage, written from the encoding table, was right.
+  `tests/f64-short-circuit-checks.sh` pins it.
+* **The call result's register file is explicit** - the stage's float calls used to
+  work only because X0 and D0 happened to hold the same bits.
+* **Two desktop-only suites now run here** - a native-disassembler resolver for
+  `stride-scale-checks` and the shared `tests/lib/linkmode.sh` link-mode probe for
+  both it and `stack-arg-abi-checks`.
+
 ### Byte baseline
 
 `v0.23.77-dev` owns a fresh snapshot. Against it the 132 examples reproduce

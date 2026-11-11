@@ -2083,3 +2083,66 @@ pair return while the parked temporaries are restored, and `1022` holds `X0`.
 `tests/codegen-checks.sh` holds them all to the twin: for every fixture the
 stage's ELF and the twin's are byte-identical, and the seven mutation probes
 still diverge.
+
+## f64 in the bootstrap subset (v0.23.77-dev, slices D1 to D5)
+
+Floats are the one type the subset needed a *converter* for rather than a code
+path: the stage has no float type of its own, so a literal has to reach its
+IEEE-754 bits through integer arithmetic.
+
+### Two converters, both integer-only
+
+| routine | job |
+|---|---|
+| `f64_bits(m, k)` | the bits of `m * 2^k` exactly - normalize, round half to even, assemble |
+| `f64_from_dec(digits, exp10)` | the bits of `digits * 10^exp10`: one 128-bit window, renormalized after every power of ten, one rounding decision at the end |
+
+The 64-bit version of the second was *almost* right - it agreed with the host on
+`0.1`, `0.2`, `3.14`, `1e10` and came out one ulp low on `1e-22`, which is the
+signature of a window four bits too narrow. With a 128-bit window the per-step
+truncation is 2^-124 and even 300 steps cannot reach the rounding cutoff. Three
+bugs fell out of writing it: a shift-down that moved `hi` before reading its last
+bit into `lo`; a multiply carry that scaled bits which already counted whole
+2^64 blocks; and a missing final refill, which left only 49 of the 53 bits and
+underflowed the implicit-one subtraction (`1e300` came back negative).
+
+Both live in `stdlib/aster_core.ast`, because the stage is compiled by itself and
+must carry the code that decodes its own literals. That forced one rewrite: **the
+subset has no cast expressions**, so `u64(m)` became an assignment (bits kept),
+`u64(1) << k` became a declared `one: u64`, and the widening moved to declarations.
+
+### The type and the code
+
+`f64` is a **spelling, not a keyword** - the host recognises it in its type parser
+and has no token for it, and the generated keyword table cross-checks against the
+host's enum. A float literal is a **Number token with a dot**, marked in a side
+table, for the same reason: the token constants are generated too.
+
+A temp is a register *number*: X(n) for integers and D(n) for the same n in the
+float file, so the allocator, the frame slots and the register cursor ran
+unchanged. The pieces that did have to know:
+
+* a literal's bits go into an X temp (`movz`/`movk`) and cross with `FMOV Dd, Xn`;
+* a local is `STR Dt` / `LDR Dt` at the same slot every other local uses;
+* a comparison is `FCMP Dn, Dm` with its own condition map - MI for less, HI for
+  greater, LS/HS for the or-equal forms - because FCMP orders the flags for floats
+  and the NaN cases read as *false*, which is what C's `<` and `>` answer;
+* `+ - * /` are FADD/FSUB/FMUL/FDIV, and the arm has to run **before every integer
+  arm** or `*` and `/` silently take the integer path;
+* an argument stages with `STR D` into the argument grid, moves to its V register
+  with `LDR D`, and the prologue stores it with `STR D`; a return lands in D0, and
+  the result stash parks **D** or **X** depending on the declared return type.
+
+### Evidence
+
+Seven fixtures in `tests/codegen-fixtures/` - `f64_cmp`, `f64_locals`,
+`f64_arith`, `f64_call`, `f64_call_ops` and the two u64 ones - where the stage's
+image and the twin's are byte-identical, and `tests/f64-short-circuit-checks.sh`
+guarding the host's own FCMP.
+
+### One accident that is now written down
+
+Before the result-stash rule existed, a float call was correct only because the
+value sat in **both** X0 (the FMOV the return does) and D0 (where the callee put
+it), and the consuming store read the D one. Both hold the same bits, so nothing
+failed - and nothing said why it worked. It says why now.
