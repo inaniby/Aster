@@ -1,6 +1,6 @@
 # Aster — Architecture
 
-**As of v0.23.76-dev.** This document is a structural map of the compiler in
+**As of v0.23.77-dev.** This document is a structural map of the compiler in
 `src/aster.cpp` — a single translation unit, and since v0.23.4-dev one that
 carries **no signing key of its own**. It is descriptive, not a feature
 catalogue: `FEATURE_STATUS.md` is the authoritative inventory of what the
@@ -9,7 +9,7 @@ and this file is the bug.
 
 ## Shape of the system
 
-One C++17 translation unit, ~13k lines, zero dependencies beyond the standard
+One C++17 translation unit, ~16k lines, zero dependencies beyond the standard
 library. There is no intermediate representation, no assembler, no external
 linker: the parser's AST is consumed directly by a code generator that emits
 AArch64 instruction words, which an in-process ELF writer serializes. The APK
@@ -594,7 +594,7 @@ its own evidence.
   heap operator (the `mmap`/`brk` intrinsics are the surface), and no
   variadics, generics, closures or modules beyond `include`.
 - **One translation unit.** Lexer, parser, Sema, codegen, ELF writer, linker,
-  APK packager and crypto all live in `src/aster.cpp` (~13k lines). That keeps
+  APK packager and crypto all live in `src/aster.cpp` (~16k lines). That keeps
   the zero-dependency build honest and the whole compiler readable in one file,
   at the cost of a large edit surface; splitting it behind a unity build is a
   P2 item, not a shipped change.
