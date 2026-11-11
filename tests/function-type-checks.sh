@@ -65,7 +65,7 @@ grep -qF 'if(pendingFuncType){f.paramFuncSig.push_back(pendingFuncSig);f.paramIs
 # The Binding carries it (fn-pointer machinery + the new read-only bit).
 grep -qF 'FuncSig funcSig; bool isFunc=false;' src/aster.cpp \
     || { echo 'FAIL: Binding no longer carries a function signature' >&2; exit 1; }
-grep -qF 'bool isConst=false; };' src/aster.cpp \
+grep -qF 'bool isConst=false;' src/aster.cpp \
     || { echo 'FAIL: Binding no longer carries the read-only const bit' >&2; exit 1; }
 # The two resolvers.
 grep -qF 'const FuncSig* funcSigOf(const std::string& n) const {' src/aster.cpp \

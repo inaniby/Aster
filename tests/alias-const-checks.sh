@@ -107,7 +107,7 @@ guard '"type alias conflicts with a struct: "+id.s' 'the struct-name collision r
 guard 'if(eat(TK::Const)){globalDeclaration(false,false,true);continue;}' 'the file-scope const hook'
 guard 'if(eat(TK::Const))return letStatement(true);' 'the local const hook'
 guard 'Stmt letStatement(bool isConst=false){' 'the const flag on a let'
-guard 'bool isConst=false; };' 'the const flag in a Sema binding'
+guard 'bool isConst=false;' 'the const flag in a Sema binding'
 guard 'bool isConstName(const std::string& n) const {' 'the one read-only question'
 guard 'const std::set<std::string>& constGlobals;' 'the const globals reaching Sema'
 guard 'if(b->isConst)throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.name));' 'the refusal at an assignment'

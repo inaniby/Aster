@@ -73,7 +73,7 @@ for pat in \
   'if(actual!=Ty::Ptr&&!isNullConstant(*e.args[i]))throw Error("argument type mismatch calling "' \
   '} else if(isPtr!=currentReturnPtr&&!(currentReturnPtr&&isNullConstant(e)))' \
   'if(!actualPtr&&!isNullConstant(*s.expr))throw Error("type mismatch initializing '"'"'"' \
-  'if(!actualPtr&&!isNullConstant(*s.expr))throw Error("type mismatch assigning variable: "+s.name);' \
+  'if(!actualPtr&&!isNullConstant(*s.expr))throw Error("type mismatch assigning variable: "+an);' \
   'if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))' \
   'if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));' \
   'if(!(retPtr&&isNullConstant(*s.expr)))'

@@ -271,8 +271,8 @@ check_error build-pie tmp-pie-unresolved.ast "undefined function symbol 'helper'
 cat > tmp-main-args.ast <<'AST'
 fn main(a: i32) -> i32 { return a; }
 AST
-check_error build-pie tmp-main-args.ast 'main must not have parameters' tmp-x
-check_error build-elf tmp-main-args.ast 'main must not have parameters' tmp-x
+check_error build-pie tmp-main-args.ast 'main must take no parameters' tmp-x
+check_error build-elf tmp-main-args.ast 'main must take no parameters' tmp-x
 ./aster build-obj examples/pie_modular_helper.ast -o tmp-pie-helper.o
 check_error link-pie tmp-pie-helper.o 'no input object defines global _start' tmp-x
 

@@ -112,11 +112,11 @@ grep -q 'bool isComparisonOp' src/aster.cpp \
 # (4) The range check, in sema and in codegen, for a scalar and for an array.
 grep -qF 'if(!initializerFits(s.ty,*s.expr,v))' src/aster.cpp \
     || { echo 'FAIL: sema no longer range-checks a local array initializer' >&2; exit 1; }
-grep -qF 'if(constantInteger(*s.expr,v)&&!initializerFits(s.ty,*s.expr,v))' src/aster.cpp \
+grep -qF 'if(!initializerFits(s.ty,*s.expr,v))' src/aster.cpp \
     || { echo 'FAIL: sema no longer range-checks a local scalar initializer' >&2; exit 1; }
 grep -qF 'if(!initializerFits(elem,*s.expr,value))' src/aster.cpp \
     || { echo 'FAIL: codegen no longer range-checks a local array initializer' >&2; exit 1; }
-grep -qF 'if(constantInteger(*s.expr,cv)&&!initializerFits(s.ty,*s.expr,cv))' src/aster.cpp \
+grep -qF 'if(!initializerFits(s.ty,*s.expr,cv))' src/aster.cpp \
     || { echo 'FAIL: codegen no longer range-checks a local scalar initializer' >&2; exit 1; }
 # Each message appears twice — once per pass — because sema is the rule and
 # codegen is its defensive twin.
@@ -560,12 +560,12 @@ mutate 'm7: equality allows a chain' \
 # assignable width (i32 and u32 are one 32-bit representation) and out of range
 # for one reason only, which is what isolates the check under test.
 mutate 'm8: sema drops the scalar check' \
-    's/if(constantInteger(\*s.expr,v)&&!initializerFits(s.ty,\*s.expr,v))/if(false)/' \
+    '/foldAtExprType(constExprType(\*s.expr),s.ty,v);/,+2 s/if(!initializerFits(s.ty,\*s.expr,v))/if(false)/' \
     must_still_say 'local u32 = 0 - 1' 'local initializer does not fit in u32' 'fn main() -> i32 { let b: u32 = 0 - 1; return 0; }'
 # m9: both passes drop the scalar check — the bug the round closes comes back:
 # `let b: u32 = 0 - 1;` compiles again and stores 4294967295.
 mutate 'm9: both passes drop the scalar check' \
-    's/if(constantInteger(\*s.expr,v)&&!initializerFits(s.ty,\*s.expr,v))/if(false)/;s/if(constantInteger(\*s.expr,cv)&&!initializerFits(s.ty,\*s.expr,cv))/if(false)/' \
+    '/foldAtExprType(constExprType(\*s.expr),s.ty,v);/,+2 s/if(!initializerFits(s.ty,\*s.expr,v))/if(false)/;/foldAtExprType(constExprType(\*s.expr),s.ty,cv);/,+2 s/if(!initializerFits(s.ty,\*s.expr,cv))/if(false)/' \
     must_now_compile 'local u32 = 0 - 1' 'fn main() -> i32 { let b: u32 = 0 - 1; return 0; }'
 # m10: sema drops the array check; codegen's twin has to catch it.
 mutate 'm10: sema drops the array check' \
