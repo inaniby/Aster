@@ -125,6 +125,7 @@ static int sdepth;                      /* C2 */
 static int64_t numval;
 static int64_t numf;             /* v0.23.77-dev: the bits of a float literal (64 wide!) */
 static int tflt[TOKMAX];         /* v0.23.77-dev: per token, 1 when it spelled a '.' */
+static int nbool[NODEMAX];       /* v0.23.77-dev: per node, 1 false / 2 true */
 static void convert_float(int t);   /* v0.23.77-dev: defined with the converter */
 static int numflag;
 static int numcnt;
@@ -677,9 +678,14 @@ static int unary(void) {
     if (k == TK_At)
         die_at("@embed is not in the bootstrap subset",
                tok_line(p), tok_col(p));
-    if (k == TK_True || k == TK_False)
-        die_at("true/false are not in the bootstrap subset",
-               tok_line(p), tok_col(p));
+    if (k == TK_True || k == TK_False) {
+        int nt = p;
+        int tv = (k == TK_True) ? 2 : 1;
+        adv();
+        int v = newnode(E_Num, nt);
+        nbool[v] = tv;
+        return v;
+    }
     if (k == TK_Ident && (name_is("sizeof") || name_is("len")))
         die_at("sizeof/len are not in the bootstrap subset",
                tok_line(p), tok_col(p));
@@ -821,7 +827,7 @@ static int expr(void) {
 
 /* -------------------------------------------------------------- types (§4.2) */
 static int bad_type_spelling(int k) {
-    if (k == TK_Bool)
+    if (0)
         die_at("type bool is not in the bootstrap subset",
                tok_line(p), tok_col(p));
     if (k == TK_U16)
@@ -891,6 +897,7 @@ static int ty_slots(int t){ return ty_is_struct(t) ? (struct_size_s(t-TY_STRUCT_
 static int parse_type(void) {
     int k = cur();
     if (k == TK_U64) { adv(); return 8; }   /* v0.23.77-dev: u64 */
+    if (k == TK_Bool) { adv(); return 10; }   /* v0.23.77-dev: bool */
     /* v0.23.77-dev: f64 is a spelling, not a keyword - the host recognises it
      * the same way in its own type parser */
     if (k == TK_Ident && toks[p].len == 3 &&
@@ -1844,13 +1851,16 @@ static int assign_ok(int to_tag, int from_tag, int from_arr, int e) {
         return 0;
     }
     if (is_ptr_tag(from_tag)) return 0;
-    if (from_tag == -2) return 0;
+    /* v0.23.77-dev: a comparison answers -2 ("a bool expression"), which a bool
+     * local may hold - that is the whole point of the type. */
+    if (from_tag == -2) return (to_tag == 10) ? 1 : 0;
     return 1;
 }
 /* A condition is accepted iff it is integer-valued or bool-valued. */
 static int cond_ok(int c) {
     int t = ety[c];
     if (t == -2) return 1;
+    if (t == 10) return 1;   /* v0.23.77-dev: a bool is a condition */
     if (earr[c] == 1) return 0;
     if (is_int_tag(t)) return 1;
     return 0;
@@ -2032,6 +2042,11 @@ static int tc_expr(int h) {
  * rules (§7). Returns 1 on the first type error. */
 static int tc_combine(int n) {
     int k = nodes[n].kind;
+    if (k == E_Num && nbool[n]) {
+        ety[n] = 10;              /* v0.23.77-dev: bool */
+        earr[n] = 0;
+        return 0;
+    }
     if (k == E_Num && tflt[nodes[n].tok]) {
         ety[n] = 9;   /* v0.23.77-dev: f64 - the tag the stage gives it (8 is u64) */
         earr[n] = 0;
@@ -2464,6 +2479,7 @@ static int ptr_elem_t(int t){
     return 1;             /* bare ptr -> i32 */
 }
 static int ty_width_t(int t){
+    if (t==10) return 1;  /* v0.23.77-dev: bool, one byte */
     if (t==1) return 4;   /* i32 */
     if (t==2) return 8;   /* i64 */
     if (t==3) return 1;   /* u8  */
@@ -2894,6 +2910,11 @@ static int gen_expr_at(int h,int want,int base){
         if (k==E_Field){ int rf2=gen_field_load(n); if (rf2<0) return -1; gx_val[n]=rf2; continue; }
         if (k==E_Num||k==E_String||k==E_Var){
             int r=0;
+            if (k==E_Num && nbool[n]){
+                int db=alloc_tmp(); if (db<0) return -1;
+                if (emit_movz(db, nbool[n]==2?1:0, 0, 0)) return -1;
+                gx_val[n]=db; continue;
+            }
             if (k==E_Num && tflt[NT(n)]){
                 /* v0.23.77-dev: a float literal - bits in X, then across */
                 convert_float(NT(n));

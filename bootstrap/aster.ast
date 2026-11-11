@@ -247,7 +247,7 @@ let N_Block: i32 = 132;
 let N_Case: i32 = 133;
 let N_IncDec: i32 = 134;
 
-// The 9 type tags (§2.4).
+// The 10 type tags (§2.4).
 let TY_I32: i32 = 1;
 let TY_I64: i32 = 2;
 let TY_U8: i32 = 3;
@@ -257,18 +257,19 @@ let TY_PTR_I32: i32 = 6;
 let TY_PTR_I64: i32 = 7;
 let TY_U64: i32 = 8;
 let TY_F64: i32 = 9;
+let TY_BOOL: i32 = 10;
 
 // The kind names, four packed tables of 16-byte records: a
 // record is the name's bytes, NUL-padded. entab is the
 // host's full Expr::Kind list (36 records, so a kind's
 // record sits at its own number); sntab is Stmt::Kind (15);
 // nntab the structural kinds (7); tytab the type spellings
-// (9, tag 1 at record 0). The dump picks the table by the
+// (10, tag 1 at record 0). The dump picks the table by the
 // kind's space (§9): < 64 entab, < 128 sntab, else nntab.
 let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0Cast\0\0\0\0\0\0\0\0\0\0\0\0";
 let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Switch\0\0\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0DoWhile\0\0\0\0\0\0\0\0\0Nop\0\0\0\0\0\0\0\0\0\0\0\0\0";
 let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0Case\0\0\0\0\0\0\0\0\0\0\0\0IncDec\0\0\0\0\0\0\0\0\0\0";
-let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0u64\0\0\0\0\0\0\0\0\0\0\0\0\0f64\0\0\0\0\0\0\0\0\0\0\0\0\0";
+let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0u64\0\0\0\0\0\0\0\0\0\0\0\0\0f64\0\0\0\0\0\0\0\0\0\0\0\0\0bool\0\0\0\0\0\0\0\0\0\0\0\0";
 // ---- END GENERATED: parser names ----
 
 // ---------------------------------------------------------------------------
@@ -372,6 +373,7 @@ let numval: i64 = 0;              // the converted number (§6.2)
 let numu: u64 = 0;                // the same value, wide (§6.2, v0.23.77-dev)
 let numf: i64 = 0;                // the bits of a float literal (v0.23.77-dev)
 let nflt: i32[65536] = 0;         // per node: 1 when it is a float literal
+let nbool: i32[65536] = 0;        // per node: 0 no, 1 the literal 'false', 2 'true'
 let tflt: i32[131072] = 0;        // per token: 1 when the Number spelled a '.'
 let numflag: i32 = 0;             // 0 fits, 1 too large (P52/P53), 2 saturated above i64max (P51)
 let numcnt: i32 = 0;              // the same value as an i32 count, saturated at 1048577
@@ -1859,15 +1861,21 @@ fn parse_expr() -> i32 {
                 return 0;
             }
             if (k == K_True || k == K_False) {
-                die_at("true/false are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-                return 0;
+                // v0.23.77-dev: a bool literal is the integer 0 or 1 with the
+                // bool type - the same shape a comparison already answers.
+                let nt: i32 = ppos;
+                let tv: i32 = 0;
+                if (k == K_True) { tv = 1; }
+                advance();
+                let v: i32 = newnode(E_Num, nt);
+                if (v == 0) { return 0; }
+                nbool[v - 1] = tv + 1;       // 1 = false, 2 = true
+                if (vpush(v) != 0) { return 0; }
+                state = 1;
+                continue;
             }
             if (k == K_Ident && (name_is("sizeof") == 1 || name_is("len") == 1)) {
                 die_at("sizeof/len are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-                return 0;
-            }
-            if (k == K_Bool) {
-                die_at("type bool is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
                 return 0;
             }
             if (k == K_U16) {
@@ -2144,10 +2152,6 @@ fn parse_expr() -> i32 {
 // the subset, every remaining spelling is that case.
 // ---------------------------------------------------------------------------
 fn bad_type_spelling(k: i32) -> i32 {
-    if (k == K_Bool) {
-        die_at("type bool is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-        return 1;
-    }
     if (k == K_U16) {
         die_at("type u16 is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
         return 1;
@@ -2264,6 +2268,7 @@ fn parse_type() -> i32 {
     // v0.23.77-dev: u64 - the type the IEEE-754 converters need, because their
     // 128-bit window uses the top bit and a signed shift would fill it.
     if (k == K_U64) { advance(); return TY_U64; }
+    if (k == K_Bool) { advance(); return TY_BOOL; }
     if (k == K_Ptr) { return ptr_type(); }
     if (k == K_Ident) {
         // v0.23.77-dev: `f64` is not a keyword in this language - the host's
@@ -3706,7 +3711,12 @@ fn assign_ok(to_tag: i32, from_tag: i32, from_arr: i32, e: i32) -> i32 {
         return 0;
     }
     if (is_ptr_tag(from_tag) == 1) { return 0; }
-    if (from_tag == -2) { return 0; }
+    // v0.23.77-dev: a comparison answers -2 ("a bool expression"), which a bool
+    // local may hold - that is the whole point of the type.
+    if (from_tag == -2) {
+        if (to_tag == TY_BOOL) { return 1; }
+        return 0;
+    }
     return 1;
 }
 // A constant integer expression's value, for the narrow-slot fit test above.
@@ -3726,6 +3736,7 @@ fn expr_const_int(h: i32) -> i32 {
 fn cond_ok(c: i32) -> i32 {
     let t: i32 = ex_ty[c - 1];
     if (t == -2) { return 1; }
+    if (t == TY_BOOL) { return 1; }   // v0.23.77-dev: a bool is a condition
     if (ex_arr[c - 1] == 1) { return 0; }
     if (is_int_tag(t) == 1) { return 1; }
     return 0;
@@ -3866,6 +3877,11 @@ fn tc_expr(h: i32) -> i32 {
 // rules (§7). Returns 1 on the first type error.
 fn tc_combine(n: i32) -> i32 {
     let k: i32 = nkind[n - 1];
+    if (k == E_Num && nbool[n - 1] != 0) {
+        ex_ty[n - 1] = TY_BOOL;
+        ex_arr[n - 1] = 0;
+        return 0;
+    }
     if (k == E_Num && nflt[n - 1] == 1) {
         ex_ty[n - 1] = TY_F64;
         ex_arr[n - 1] = 0;
@@ -4717,6 +4733,7 @@ let sstk: i32[65536] = 0;       // the string walk's pending siblings
 let pstk: i32[65536] = 0;       // the ptr-yield walk's pending children
 
 fn ty_width(t: i32) -> i32 {
+    if (t == TY_BOOL) { return 1; }   // v0.23.77-dev: 0/1 in one byte
     if (t == TY_I32) { return 4; }
     if (t == TY_I64) { return 8; }
     if (t == TY_U8) { return 1; }
@@ -5993,6 +6010,14 @@ fn main() -> i32 {
 }
 fn gen_leaf(n: i32, want: i32) -> i32 {
     let k: i32 = nkind[n - 1];
+    if (k == E_Num && nbool[n - 1] != 0) {
+        let db: i32 = alloc_tmp();
+        if (db < 0) { return -1; }
+        let vb: i32 = 0;
+        if (nbool[n - 1] == 2) { vb = 1; }
+        if (emit_movz(db, vb, 0, 0) != 0) { return -1; }
+        return db;
+    }
     if (k == E_Num && nflt[n - 1] == 1) {
         // the exact bits are already in numf (the parser converted them); put
         // them in an X temp and carry them across to the D file

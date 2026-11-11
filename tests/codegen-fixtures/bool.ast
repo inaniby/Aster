@@ -1,0 +1,14 @@
+let o: u8[8] = 0;
+
+fn main() -> i32 {
+    let t: bool = true;
+    let f: bool = false;
+    if (t) { store_u8(o, 49); } else { store_u8(o, 48); }
+    if (f) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    let n: bool = 3 > 2;
+    if (n) { store_u8(o + 2, 49); } else { store_u8(o + 2, 48); }
+    if (t == true) { store_u8(o + 3, 49); } else { store_u8(o + 3, 48); }
+    store_u8(o + 4, 10);
+    write(1, o, 5);
+    return 0;
+}
