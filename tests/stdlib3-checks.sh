@@ -16,6 +16,14 @@
 #   [8] mutation: dropping the fraction padding must break the output
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/std3-aster"
@@ -40,7 +48,7 @@ printf '%s\n' '[3/8] the demo prints the expected lines'
 "$ASTER" build-obj tests/stdlib3-demo.ast -o "$OUT/demo.o" >/dev/null 2>&1 || fail 'the demo did not compile'
 "$ASTER" link-obj "$OUT/demo.o" "$OUT/std.o" -o "$OUT/demo" >/dev/null 2>&1 || fail 'the demo did not link'
 chmod +x "$OUT/demo"
-set +e; "$OUT/demo" > "$OUT/demo.out" 2>&1; rc=$?; set -e
+set +e; "$RUNNER" "$OUT/demo" > "$OUT/demo.out" 2>&1; rc=$?; set -e
 [ "$rc" = 0 ] || fail "the demo exited $rc"
 for line in '3.14' '-2.7' '3' '100.000' '0.5' '0.333333333' '0.125000000' '0.50' '0.333333' 'inf' 'nan' '-7 and 0.75' 'checks 10'; do
     grep -qxF -e "$line" "$OUT/demo.out" || fail "the demo output is missing '$line': $(cat "$OUT/demo.out")"
@@ -48,8 +56,13 @@ done
 ok 'thirteen lines, each pinned'
 
 printf '%s\n' '[4/8] the C twin agrees byte for byte'
-${CC:-cc} -O1 -w tests/aster-std3-twin.c -o "$OUT/twin" || fail 'the twin did not build'
-"$OUT/twin" > "$OUT/twin.out" 2>&1 || true
+# v0.23.77-dev (host adaptation): pin the printf twin to the same target
+# architecture as the demo. x86 glibc spells 0.0/0.0 as "-nan" while the
+# AArch64 libc — and Aster's fmt_f64 — spell it "nan", so an x86-built twin
+# disagrees on that one line and loses a check. HOSTCC + RUNNER make the byte
+# comparison identical on both hosts without weakening a single pinned line.
+${HOSTCC:-cc} -O1 -w tests/aster-std3-twin.c -o "$OUT/twin" || fail 'the twin did not build'
+"$RUNNER" "$OUT/twin" > "$OUT/twin.out" 2>&1 || true
 cmp -s "$OUT/demo.out" "$OUT/twin.out" || { diff -u "$OUT/twin.out" "$OUT/demo.out" | head -20 >&2; fail 'the demo and its C twin disagree'; }
 ok 'demo output == printf output'
 
@@ -85,7 +98,7 @@ AST
 "$ASTER" build-obj "$OUT/edge.ast" -o "$OUT/edge.o" >/dev/null 2>&1 || fail 'the edge fixture did not compile'
 "$ASTER" link-obj "$OUT/edge.o" "$OUT/std.o" -o "$OUT/edge" >/dev/null 2>&1 || fail 'the edge fixture did not link'
 chmod +x "$OUT/edge"
-set +e; "$OUT/edge"; edge=$?; set -e
+set +e; "$RUNNER" "$OUT/edge"; edge=$?; set -e
 [ "$edge" = 0 ] || fail "the edge fixture returned $edge (each code names its case)"
 ok 'clamps, whole values, negative zero, -inf, an exact single'
 
@@ -110,7 +123,7 @@ AST
 "$ASTER" build-obj "$OUT/round.ast" -o "$OUT/round.o" >/dev/null 2>&1 || fail 'the rounding fixture did not compile'
 "$ASTER" link-obj "$OUT/round.o" "$OUT/std.o" -o "$OUT/round" >/dev/null 2>&1 || fail 'the rounding fixture did not link'
 chmod +x "$OUT/round"
-set +e; "$OUT/round"; rrc=$?; set -e
+set +e; "$RUNNER" "$OUT/round"; rrc=$?; set -e
 [ "$rrc" = 0 ] || fail "the rounding fixture returned $rrc (half-up, just-under, and a carry)"
 ok 'half-up on a tie, down just below it, a carry into the integer part'
 
@@ -129,7 +142,7 @@ cmp -s stdlib/aster_std.ast "$OUT/mutant.ast" && fail 'the padding mutation stop
 "$ASTER" build-obj "$OUT/mutant.ast" -o "$OUT/mutant.o" >/dev/null 2>&1 || fail 'the mutant library did not build'
 "$ASTER" link-obj "$OUT/demo.o" "$OUT/mutant.o" -o "$OUT/mutdemo" >/dev/null 2>&1 || fail 'the mutant demo did not link'
 chmod +x "$OUT/mutdemo"
-set +e; "$OUT/mutdemo" > "$OUT/mut.out" 2>&1; set -e
+set +e; "$RUNNER" "$OUT/mutdemo" > "$OUT/mut.out" 2>&1; set -e
 cmp -s "$OUT/mut.out" "$OUT/demo.out" && fail 'the mutant produced identical output — layer [3] cannot see the padding'
 ok 'mutant diverges (fraction no longer padded)'
 

@@ -14,6 +14,14 @@
 #   [9] mutation: memmove's backward path removed must break the demo's line
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/std2-aster"
@@ -36,7 +44,7 @@ printf '%s\n' '[3/9] the demo prints the expected lines'
 "$ASTER" build-obj tests/stdlib2-demo.ast -o "$W/demo.o" >/dev/null 2>&1 || fail 'the demo did not compile'
 "$ASTER" link-obj "$W/demo.o" "$W/std.o" -o "$W/demo" >/dev/null 2>&1 || fail 'the demo did not link'
 chmod +x "$W/demo"
-set +e; "$W/demo" > "$W/demo.out" 2>&1; rc=$?; set -e
+set +e; "$RUNNER" "$W/demo" > "$W/demo.out" 2>&1; rc=$?; set -e
 [ "$rc" = 0 ] || fail "the demo exited $rc"
 for line in 'memmove 0' 'strncmp -1' 'strchr 2' 'strstr 6' 'strcat 4' 'atoi -123 7 0' \
             'fmt_i32 5' 'fmt_hex 4' 'sort 1 9' 'malloc 1 1 1 0' 'checks 12'; do
@@ -54,7 +62,7 @@ printf '%s\n' '[5/9] the edge fixture passes'
 "$ASTER" build-obj tests/stdlib2-edge.ast -o "$W/edge.o" >/dev/null 2>&1 || fail 'the edge fixture did not compile'
 "$ASTER" link-obj "$W/edge.o" "$W/std.o" -o "$W/edge" >/dev/null 2>&1 || fail 'the edge fixture did not link'
 chmod +x "$W/edge"
-set +e; "$W/edge"; edge=$?; set -e
+set +e; "$RUNNER" "$W/edge"; edge=$?; set -e
 [ "$edge" = 0 ] || fail "the edge fixture returned $edge (see its comments for the code)"
 printf '  %-40s %s\n' 'misses, clamps, INT32_MIN, exhaustion all pass' 'ok'
 
@@ -72,7 +80,7 @@ rows=$(wc -l < "$base")
 printf '  %-40s %s\n' "393 baseline rows unchanged" 'ok'
 
 printf '%s\n' '[8/9] the demo is deterministic'
-"$W/demo" > "$W/demo2.out" 2>&1 || true
+"$RUNNER" "$W/demo" > "$W/demo2.out" 2>&1 || true
 cmp -s "$W/demo.out" "$W/demo2.out" || fail 'two runs of the demo disagree'
 printf '  %-40s %s\n' 'two runs, identical bytes' 'ok'
 
@@ -83,7 +91,7 @@ grep -q 'if (1) {' "$W/mutant.ast" || fail 'the memmove mutation stopped applyin
 "$ASTER" build-obj "$W/mutant.ast" -o "$W/mutant.o" >/dev/null 2>&1 || fail 'the mutant library did not build'
 "$ASTER" link-obj "$W/demo.o" "$W/mutant.o" -o "$W/mutdemo" >/dev/null 2>&1 || fail 'the mutant demo did not link'
 chmod +x "$W/mutdemo"
-set +e; "$W/mutdemo" > "$W/mut.out" 2>&1; mut=$?; set -e
+set +e; "$RUNNER" "$W/mutdemo" > "$W/mut.out" 2>&1; mut=$?; set -e
 cmp -s "$W/mut.out" "$W/demo.out" && fail 'the memmove mutant produced identical output — layer [3] cannot see it'
 printf '  %-40s %s\n' 'mutant diverges (overlap copy broken)' 'ok'
 

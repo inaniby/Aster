@@ -2553,7 +2553,7 @@ static int ty_is_uns_t(int t){ return (t==3) || (t==8) || (t==11) || (t==12); } 
 
 static int log2w_t(int w){ if (w==1) return 0; if (w==4) return 2; return 3; }
 static int mem_scale_t(int w){ if (w==1) return 0; if (w==2) return 1;   /* A-26 */
-    if (w==4) return 2; return 3; }
+    if (w==4) { return 2; } return 3; }
 
 /* ---- output channel (byte-identical to the bootstrap's write(1,...)) ---- */
 static unsigned char outbuf[16*1048576];

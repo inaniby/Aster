@@ -483,7 +483,7 @@ AST
 for pair in "al_i32.o al_u64.o" "al_u64.o al_i32.o"; do
     set -- $pair
     "$A" link-so --soname libal.so "$OUT/$1" "$OUT/$2" -o "$OUT/al.so" >/dev/null
-    offs=$(readelf -r "$OUT/al.so" | grep -i tprel | sed 's/.*TLS_TPREL64 *//' | tr '\n' ' ')
+    offs=$("${AST_READELF:-readelf}" -rW "$OUT/al.so" | grep -i tprel | sed 's/.*TLS_TPREL64 *//' | tr '\n' ' ')
     [ -n "$offs" ] || fail "the $pair merge carries no TLS_TPREL64 relocation"
     for o in $offs; do
         # readelf prints those addends in hex ("10" is 16); compare in decimal.

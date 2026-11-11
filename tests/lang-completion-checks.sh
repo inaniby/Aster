@@ -15,6 +15,14 @@
 #       caught by layer [2]
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/lang-aster"
@@ -30,7 +38,7 @@ build_run(){ # <name> <source> [args...] ; echoes the exit status
         fail "$name did not compile: $(head -1 "$OUT/$name.err")"; }
     chmod +x "$OUT/$name.elf"
     set +e
-    "$OUT/$name.elf" "$@" >/dev/null 2>&1
+    "$RUNNER" "$OUT/$name.elf" "$@" >/dev/null 2>&1
     rc=$?
     set -e
     echo "$rc"
@@ -124,7 +132,7 @@ printf 'fn main() -> i32 { let i: i32 = 0; let s: i32 = 0; do { i = i + 1; if (i
 "$OUT/mutant" build-elf "$OUT/mut.ast" -o "$OUT/mut.elf" >/dev/null 2>&1 || fail 'the mutant refused the continue case'
 chmod +x "$OUT/mut.elf"
 set +e
-"$OUT/mut.elf" >/dev/null 2>&1
+"$RUNNER" "$OUT/mut.elf" >/dev/null 2>&1
 mut_rc=$?
 set -e
 [ "$mut_rc" != 23 ] || fail 'the continue-target mutant still answered 23 — layer [2] cannot see the bug'

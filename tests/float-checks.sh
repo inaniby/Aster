@@ -16,6 +16,14 @@
 #   [7] no compiler change: the baseline reproduces 393 rows
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/float-aster"
@@ -30,7 +38,7 @@ build_run(){
     "$ASTER" build-elf "$OUT/$name.ast" -o "$OUT/$name.elf" >"$OUT/$name.log" 2>&1 \
         || fail "$name did not compile: $(tail -1 "$OUT/$name.log")"
     chmod +x "$OUT/$name.elf"
-    set +e; "$OUT/$name.elf" "$@" >/dev/null 2>&1; got=$?; set -e
+    set +e; "$RUNNER" "$OUT/$name.elf" "$@" >/dev/null 2>&1; got=$?; set -e
     [ "$got" = "$want" ] || fail "$name returned $got, expected $want"
 }
 build_reject(){

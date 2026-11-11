@@ -53,10 +53,18 @@ check_exit pie-array-extern tmp-pie-array-extern 20
 ./aster link-obj tmp-ro-main.o tmp-ro-defs.o -o tmp-runtime-order
 chmod +x tmp-runtime-order
 check_exit runtime-order tmp-runtime-order 12
-# Provider object first: first is still zero when second reads it -> 11.
-./aster link-obj tmp-ro-defs.o tmp-ro-main.o -o tmp-runtime-order-rev
-chmod +x tmp-runtime-order-rev
-check_exit runtime-order-rev tmp-runtime-order-rev 11
+# v0.23.77-dev (A-21): the reader may no longer precede its provider.
+# Initializers run in link order, so the old "reads zero -> 11" outcome is
+# unreachable; the linker refuses the order outright. Assert that refusal
+# and its message instead of expecting a silently wrong result.
+if ./aster link-obj tmp-ro-defs.o tmp-ro-main.o -o tmp-runtime-order-rev \
+        >tmp-ro-rev.log 2>&1; then
+    echo 'FAIL: a reader initializer listed before its provider was accepted' >&2
+    exit 1
+fi
+grep -qF 'must be listed before' tmp-ro-rev.log \
+    || { echo 'FAIL: the initializer-order refusal lost its message' >&2; cat tmp-ro-rev.log >&2; exit 1; }
+rm -f tmp-ro-rev.log
 
 # --- shared object: DT_INIT_ARRAY runs the initializer at dlopen time ---------------
 ./aster build-so examples/runtime_init.ast -o tmp-so-rt-init.so

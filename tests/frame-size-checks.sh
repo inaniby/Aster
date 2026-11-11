@@ -18,6 +18,14 @@
 #   [9] mutation: dropping the call/aggregate guard must break the examples
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/frame-aster"
@@ -35,15 +43,16 @@ prologue(){ # <elf> <symbol> -> the leading SUB SP instructions (one, or a pair)
 }
 frame_of(){ # <elf> <symbol> -> SUM of the SUB immediates in bytes
     prologue "$1" "$2" | awk '
+        function hexval(h,   i,c,d,n){ n=0; for(i=1;i<=length(h);i++){ c=substr(h,i,1); d=index("0123456789abcdef",c)-1; if(d<0)break; n=n*16+d } return n }
         /#0x2, lsl #12/ { s += 8192; next }
         /#0x1, lsl #12/ { s += 4096; next }
         /lsr|lsl/ { next }
-        /#0x[0-9a-f]+/ { v=$0; sub(/.*#0x/,"",v); sub(/[^0-9a-f].*/,"",v); s += strtonum("0x" v) }
+        /#0x[0-9a-f]+/ { v=$0; sub(/.*#0x/,"",v); sub(/[^0-9a-f].*/,"",v); s += hexval(v) }
         END { print s }'
 }
 ra_off(){ # <elf> <symbol> -> the offset X30 is saved at, or empty
     llvm-objdump -d --no-show-raw-insn "$1" 2>/dev/null \
-        | awk -v sym="<$2>:" '$2==sym{f=1;next} f&&/str[ \t]+x30/{ v=$0; sub(/.*#0x/,"",v); sub(/[^0-9a-f].*/,"",v); print strtonum("0x" v); exit }'
+        | awk -v sym="<$2>:" 'function hexval(h,   i,c,d,n){ n=0; for(i=1;i<=length(h);i++){ c=substr(h,i,1); d=index("0123456789abcdef",c)-1; if(d<0)break; n=n*16+d } return n } $2==sym{f=1;next} f&&/str[ \t]+x30/{ v=$0; sub(/.*#0x/,"",v); sub(/[^0-9a-f].*/,"",v); print hexval(v); exit }'
 }
 
 printf '%s\n' '[1/10] Strictly build Aster compiler'
@@ -68,7 +77,7 @@ printf '%s\n' '[2/10] default: the historical frame is untouched'
 [ "$(frame_of "$OUT/def.elf" leaf)" = 8192 ] || fail "the default leaf frame is $(frame_of "$OUT/def.elf" leaf), expected 8192"
 [ "$(ra_off "$OUT/def.elf" leaf)" = 8184 ] || fail "the default RA slot is $(ra_off "$OUT/def.elf" leaf), expected 8184"
 chmod +x "$OUT/def.elf"
-set +e; "$OUT/def.elf"; defrc=$?; set -e
+set +e; "$RUNNER" "$OUT/def.elf"; defrc=$?; set -e
 [ "$defrc" = 42 ] || fail 'the default program returned the wrong value'
 printf '  %-40s %s\n' 'SUB #8192, X30 at 8184, exit 42' 'ok'
 
@@ -79,7 +88,7 @@ lf=$(frame_of "$OUT/cmp.elf" leaf)
 [ $(( lf % 16 )) = 0 ] || fail "the compact leaf frame ($lf) is not 16-byte aligned"
 [ "$(ra_off "$OUT/cmp.elf" leaf)" = $(( lf - 8 )) ] || fail "X30 is not at frame-8 ($(ra_off "$OUT/cmp.elf" leaf) vs $(( lf - 8 )))"
 chmod +x "$OUT/cmp.elf"
-set +e; "$OUT/cmp.elf"; cmprc=$?; set -e
+set +e; "$RUNNER" "$OUT/cmp.elf"; cmprc=$?; set -e
 [ "$cmprc" = 42 ] || fail 'the compact program returned the wrong value'
 printf '  %-40s %s\n' "leaf frame ${lf} bytes, 16-aligned, X30 at frame-8" 'ok'
 
@@ -108,8 +117,8 @@ for f in examples/arithmetic.ast examples/condition.ast examples/loops.ast examp
     "$ASTER" build-elf --compact-frames "$f" -o "$OUT/c-$b" >/dev/null 2>&1 || fail "the compact build of $b failed"
     chmod +x "$OUT/d-$b" "$OUT/c-$b"
     set +e
-    "$OUT/d-$b" >/dev/null 2>&1; a=$?
-    "$OUT/c-$b" >/dev/null 2>&1; b2=$?
+    "$RUNNER" "$OUT/d-$b" >/dev/null 2>&1; a=$?
+    "$RUNNER" "$OUT/c-$b" >/dev/null 2>&1; b2=$?
     set -e
     n=$((n+1))
     [ "$a" = "$b2" ] || { bad=$((bad+1)); echo "  $b: default=$a compact=$b2" >&2; }
@@ -119,7 +128,7 @@ printf '  %-40s %s\n' "$n examples: identical exit status" 'ok'
 
 printf '%s\n' '[6/10] compact: stack arguments still arrive'
 "$ASTER" build-elf --compact-frames examples/stack_arg_abi.ast -o "$OUT/sa" >/dev/null 2>&1 || fail 'stack_arg_abi did not build'
-chmod +x "$OUT/sa"; set +e; "$OUT/sa"; rc=$?; set -e
+chmod +x "$OUT/sa"; set +e; "$RUNNER" "$OUT/sa"; rc=$?; set -e
 [ "$rc" = 15 ] || fail "stack_arg_abi returned $rc under --compact-frames, expected 15"
 printf '  %-40s %s\n' 'nine-argument and aggregate-on-stack calls' 'ok'
 
@@ -138,7 +147,7 @@ printf '  %-40s %s\n' "FDE CFA list == prologue frame list ([$got])" 'ok'
 
 printf '%s\n' '[8/10] compact: main(argc, argv) still reads the initial stack'
 "$ASTER" build-elf --compact-frames "$OUT/args.ast" -o "$OUT/args.elf" >/dev/null 2>&1 || fail 'the compact args build failed'
-chmod +x "$OUT/args.elf"; set +e; "$OUT/args.elf" x y; rc=$?; set -e
+chmod +x "$OUT/args.elf"; set +e; "$RUNNER" "$OUT/args.elf" x y; rc=$?; set -e
 [ "$rc" = 3 ] || fail "the compact entry saw argc=$rc, expected 3"
 printf '  %-40s %s\n' 'argc = 3 with two arguments' 'ok'
 
@@ -150,7 +159,7 @@ $CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant no
 "$OUT/mutant" build-elf --compact-frames "$OUT/leaf.ast" -o "$OUT/mut" >/dev/null 2>&1 || fail 'the mutant refused the caller example'
 mf=$(frame_of "$OUT/mut" caller)
 [ "$mf" = 8192 ] || fail "with no fixups recorded the caller's frame is $mf — the grid move is not driven by the recording"
-set +e; "$OUT/mut" >/dev/null 2>&1; mrc=$?; set -e
+set +e; "$RUNNER" "$OUT/mut" >/dev/null 2>&1; mrc=$?; set -e
 [ "$mrc" = 42 ] || fail "the un-rebased mutant changed behaviour (exit $mrc) — the fallback must stay correct"
 printf '  %-40s %s\n' "mutant falls back to 8192 (frame ${mf}) and still returns 42" 'ok'
 
@@ -163,8 +172,8 @@ AST
 "$ASTER" build-elf --compact-frames "$OUT/deep.ast" -o "$OUT/deep-cmp.elf" >/dev/null 2>&1 || fail 'the compact deep build failed'
 chmod +x "$OUT/deep-def.elf" "$OUT/deep-cmp.elf"
 set +e
-"$OUT/deep-def.elf" >/dev/null 2>&1; def_deep=$?
-"$OUT/deep-cmp.elf" >/dev/null 2>&1; cmp_deep=$?
+"$RUNNER" "$OUT/deep-def.elf" >/dev/null 2>&1; def_deep=$?
+"$RUNNER" "$OUT/deep-cmp.elf" >/dev/null 2>&1; cmp_deep=$?
 set -e
 [ "$def_deep" = 139 ] || fail "the default layout survived depth 20000 (exit $def_deep) — the witness is not measuring the frame"
 [ "$cmp_deep" != 139 ] || fail 'the compact layout also overflowed at depth 20000'

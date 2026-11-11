@@ -15,6 +15,14 @@
 #   [9] mutation: the u64 magnitude path of fmt_i64 is load-bearing
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/str-aster"
@@ -43,7 +51,7 @@ cp tests/stdlib-str-demo.ast "$OUT/demo.ast"
 "$ASTER" link-obj "$OUT/demo.o" "$OUT/std.o" -o "$OUT/demo" >"$OUT/link.log" 2>&1 \
     || fail "the demo did not link: $(tail -2 "$OUT/link.log")"
 chmod +x "$OUT/demo"
-(cd "$OUT" && ./demo > demo.out 2>&1) || fail "the demo exited $?"
+(cd "$OUT" && "$RUNNER" ./demo > demo.out 2>&1) || fail "the demo exited $?"
 grep -qxF '28|20|102|31|-2|3|2' "$OUT/demo.out" \
     || fail "the demo printed '$(cat "$OUT/demo.out")', expected '28|20|102|31|-2|3|2'"
 ok 'include + link, one line: 28|20|102|31|-2|3|2'
@@ -104,7 +112,7 @@ AST
 "$ASTER" build-obj "$OUT/edge.ast" -o "$OUT/edge.o" >/dev/null 2>&1 || fail 'the edge fixture did not compile'
 "$ASTER" link-obj "$OUT/edge.o" "$OUT/std.o" -o "$OUT/edge" >/dev/null 2>&1 || fail 'the edge fixture did not link'
 chmod +x "$OUT/edge"
-set +e; (cd "$OUT" && ./edge); rc=$?; set -e
+set +e; (cd "$OUT" && "$RUNNER" ./edge); rc=$?; set -e
 [ "$rc" = 0 ] || fail "the edge fixture returned $rc (each code names its case)"
 ok 'prefixes, signs, bases, INT64_MAX, .5, 1., 1e2, -0.5'
 
@@ -139,7 +147,7 @@ AST
 "$ASTER" build-obj "$OUT/lines.ast" -o "$OUT/lines.o" >/dev/null 2>&1 || fail 'the lines fixture did not compile'
 "$ASTER" link-obj "$OUT/lines.o" "$OUT/std.o" -o "$OUT/lines" >/dev/null 2>&1 || fail 'the lines fixture did not link'
 chmod +x "$OUT/lines"
-set +e; (cd "$OUT" && ./lines); rc=$?; set -e
+set +e; (cd "$OUT" && "$RUNNER" ./lines); rc=$?; set -e
 [ "$rc" = 0 ] || fail "the lines fixture returned $rc"
 ok 'no newline, an empty line, a trailing CR, all-space, empty'
 
@@ -232,7 +240,7 @@ AST
 "$ASTER" link-obj "$OUT/case.o" "$OUT/std.o" -o "$OUT/case" >"$OUT/case.link.log" 2>&1 \
     || fail "the case program did not link: $(head -3 "$OUT/case.link.log")"
 chmod +x "$OUT/case"
-st=0; sh tests/run-aarch64.sh "$OUT/case" >/dev/null 2>&1 || st=$?
+st=0; "$RUNNER" "$OUT/case" >/dev/null 2>&1 || st=$?
 [ "$st" = 0 ] || fail "to_upper/to_lower/strrchr answered $st, expected 0"
 ok 'to_upper, to_lower and strrchr answer 0'
 
@@ -252,7 +260,7 @@ cp "$OUT/mutant_lib.ast" "$OUT/ailib.ast"
 "$ASTER" build-obj "$OUT/demo.ast" -o "$OUT/mdemo.o" >/dev/null 2>&1 || fail 'the mutated demo did not compile'
 "$ASTER" link-obj "$OUT/mdemo.o" "$OUT/mutant.o" -o "$OUT/mdemo" >/dev/null 2>&1 || fail 'the mutated demo did not link'
 chmod +x "$OUT/mdemo"
-set +e; (cd "$OUT" && ./mdemo > mut.out 2>&1); set -e
+set +e; (cd "$OUT" && "$RUNNER" ./mdemo > mut.out 2>&1); set -e
 cmp -s "$OUT/mut.out" "$OUT/demo.out" && fail 'the mutant produced the demo line — the u64 magnitude is not load-bearing'
 ok 'mutant diverges (a positive value takes the wrong magnitude)'
 

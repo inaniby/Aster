@@ -15,6 +15,14 @@
 #   [9] mutation: a cache entry whose meta has lost its `src` line is not reused
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 
 CXX=${CXX:-c++}
@@ -35,7 +43,7 @@ cd app
 "$ASTER" build > build.log 2>&1
 [ -x build/app ] || { echo 'FAIL: aster build produced no executable' >&2; cat build.log >&2; exit 1; }
 set +e
-./build/app
+"$RUNNER" ./build/app
 rc=$?
 set -e
 [ "$rc" = 0 ] || { echo "FAIL: the scaffolded program exited $rc, expected 0" >&2; exit 1; }
@@ -262,6 +270,15 @@ grep -q 'lists no `test` sources' test4.log || {
 printf '  %-40s %s\n' 'pass, fail with exit code, filter miss, no tests' 'ok'
 
 printf '%s\n' '[16/16] aster doctor checks the host and the project'
+# v0.23.77-dev (host adaptation): `aster doctor` walks up from cwd looking for
+# a .git/.aster to decide where a project's debug key lives. In an isolated CI
+# worktree that search can land on the *parent* checkout, whose
+# .aster/debug.key.pem may or may not exist depending on what was built there
+# earlier — so the "no project debug key yet" warning would depend on host
+# residue rather than on this project. Pin the key directory to a private,
+# empty one: the assertion stays exactly as strict on both kinds of machine.
+export ASTER_KEY_DIR="$WORK/doctor-key-dir"
+mkdir -p "$ASTER_KEY_DIR"
 cd "$WORK"
 "$ASTER" doctor > doctor1.log 2>&1 || {
     echo 'FAIL: aster doctor failed outside a project:' >&2; cat doctor1.log >&2; exit 1; }

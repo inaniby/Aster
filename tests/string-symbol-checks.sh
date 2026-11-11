@@ -15,6 +15,14 @@
 #   [4] the baseline does not move (393 rows, a single-file build reproduced)
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 . tests/lib/baseline.sh
 CXX=${CXX:-c++}
@@ -47,7 +55,7 @@ AST
 "$ASTER" link-obj "$OUT/main.o" "$OUT/lib.o" -o "$OUT/two" >"$OUT/link.log" 2>&1 \
     || fail "the two-literal link failed: $(tail -1 "$OUT/link.log")"
 chmod +x "$OUT/two"
-(cd "$OUT" && ./two > two.out 2>&1) || fail "the two-object program exited $?"
+(cd "$OUT" && "$RUNNER" ./two > two.out 2>&1) || fail "the two-object program exited $?"
 printf 'main says\nlib says\n' > "$OUT/want.out"
 cmp -s "$OUT/two.out" "$OUT/want.out" || { cat -A "$OUT/two.out" >&2; fail 'both literals did not print'; }
 ok 'A-25: two objects, two literals, one image'
@@ -72,9 +80,15 @@ int main(void){
 }
 CEOF
 "$ASTER" build-so "$OUT/so.ast" -o "$OUT/libstrsym.so" >/dev/null 2>&1 || fail 'the .so did not build'
-CC=${CC:-cc}
-"$CC" -O1 -w "$OUT/host.c" -o "$OUT/host" -ldl || fail 'the host did not build'
-(cd "$OUT" && LD_LIBRARY_PATH=. ./host > so.out 2>&1) || fail "the .so consumer exited $?"
+# v0.23.77-dev (host adaptation): dlopen() only accepts a shared object of the
+# *host's* architecture, so the consumer must be an AArch64 program too. An
+# x86-built host loading an AArch64 .so exits 1 with "cannot open shared object
+# file" — an architecture mismatch, not a broken .so. HOSTCC is the native
+# compiler on an AArch64/Termux host and the cross compiler on x86; RUNNER runs
+# the pair natively or under qemu on either machine.
+HOSTCC=${HOSTCC:-cc}
+"$HOSTCC" -O1 -w "$OUT/host.c" -o "$OUT/host" -ldl || fail 'the host did not build'
+(cd "$OUT" && LD_LIBRARY_PATH=. "$RUNNER" ./host > so.out 2>&1) || fail "the .so consumer exited $?"
 grep -qxF 'so says' "$OUT/so.out" || fail "the .so consumer printed '$(cat "$OUT/so.out")'"
 ok '.so: dlopen + dlsym + the literal'
 

@@ -18,6 +18,14 @@
 #   [8] mutation: dropping the sign must be caught
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/exp-aster"
@@ -31,7 +39,7 @@ build_run(){
     "$ASTER" build-elf "$OUT/$name.ast" -o "$OUT/$name.elf" >"$OUT/$name.log" 2>&1 \
         || fail "$name did not compile: $(tail -1 "$OUT/$name.log")"
     chmod +x "$OUT/$name.elf"
-    set +e; "$OUT/$name.elf" >/dev/null 2>&1; got=$?; set -e
+    set +e; "$RUNNER" "$OUT/$name.elf" >/dev/null 2>&1; got=$?; set -e
     [ "$got" = "$want" ] || fail "$name returned $got, expected $want"
 }
 build_reject(){
@@ -78,7 +86,7 @@ printf '%s\n' '[6/8] a global folds an exponent literal'
 printf 'let g: f64 = 1.5e3;\nfn main() -> i32 { return i32(g); }\n' > "$OUT/g.ast"
 "$ASTER" build-elf "$OUT/g.ast" -o "$OUT/g.elf" >/dev/null 2>&1 || fail 'the global did not compile'
 chmod +x "$OUT/g.elf"
-set +e; "$OUT/g.elf"; rc=$?; set -e
+set +e; "$RUNNER" "$OUT/g.elf"; rc=$?; set -e
 [ "$rc" = 220 ] || fail "the folded global returned $rc, expected 1500 & 255 = 220"
 data=$(readelf -x .data "$OUT/g.elf" 2>/dev/null | awk 'NR>2 {print $2 $3 $4 $5}' | tr -d '\n')
 case "$data" in
@@ -103,7 +111,7 @@ cmp -s src/aster.cpp "$OUT/mutant.cpp" && fail 'the sign mutation stopped applyi
 $CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant compiler did not build'
 set +e
 "$OUT/mutant" build-elf "$OUT/e_down.ast" -o "$OUT/mut.elf" >"$OUT/mut.log" 2>&1; mrc=$?
-if [ "$mrc" = 0 ]; then chmod +x "$OUT/mut.elf"; "$OUT/mut.elf" >/dev/null 2>&1; mrun=$?; else mrun=-1; fi
+if [ "$mrc" = 0 ]; then chmod +x "$OUT/mut.elf"; "$RUNNER" "$OUT/mut.elf" >/dev/null 2>&1; mrun=$?; else mrun=-1; fi
 set -e
 { [ "$mrc" != 0 ] || [ "$mrun" != 1 ]; } || fail 'the mutant still evaluated 1.5e-3 correctly'
 ok "mutant diverges (build rc=$mrc, run=$mrun; 1.5e-3 needs its sign)"

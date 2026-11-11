@@ -17,6 +17,14 @@
 #   [6] no compiler change: the baseline reproduces 393 rows
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/core-aster"
@@ -54,7 +62,7 @@ und=$(readelf -sW "$OUT/core.o" | awk '$7=="UND"' | wc -l)
 "$ASTER" link-obj "$OUT/use.o" "$OUT/core.o" -o "$OUT/use" >/dev/null 2>&1 \
     || fail 'the consumer did not link'
 chmod +x "$OUT/use"
-(cd "$OUT" && ./use > use.out 2>&1) || fail "the consumer exited $?"
+(cd "$OUT" && "$RUNNER" ./use > use.out 2>&1) || fail "the consumer exited $?"
 grep -qxF '13|-42|8|9|101' "$OUT/use.out" || fail "the consumer printed '$(cat "$OUT/use.out")'"
 ok '20 routines, 1 UND; consumer prints 13|-42|8|9|101'
 
@@ -67,7 +75,7 @@ chmod +x "$OUT/stage"
 # core's bodies are prepended
 grep -v '^extern fn' tests/library-core-consumer.ast > "$OUT/use_noext.ast"
 cat stdlib/aster_core.ast "$OUT/use_noext.ast" > "$OUT/combo.ast"
-(cd "$OUT" && ./stage < combo.ast > combo.elf 2>combo.err); rc=$?
+(cd "$OUT" && "$RUNNER" ./stage < combo.ast > combo.elf 2>combo.err); rc=$?
 [ "$rc" = 0 ] || fail "the stage refused the core: $(head -2 "$OUT/combo.err")"
 [ -s "$OUT/combo.elf" ] || fail 'the stage emitted no image'
 readelf -h "$OUT/combo.elf" >/dev/null 2>&1 || fail 'the stage image is not an ELF'
@@ -75,7 +83,7 @@ chmod +x "$OUT/combo.elf"
 ok 'the stage compiles the core and emits an ELF'
 
 printf '%s\n' '[5/6] A-26 gate: the stage image against the host'
-(cd "$OUT" && ./combo.elf > stage.out 2>&1) || true
+(cd "$OUT" && "$RUNNER" ./combo.elf > stage.out 2>&1) || true
 # A-26 was fixed in v0.23.77-dev: the store width now comes from the intrinsic
 # (STRB for store_u8), so the stage's image agrees with the host's byte for
 # byte. Before the fix this layer pinned the disagreement instead.

@@ -33,6 +33,13 @@
 # The loop now walks all eleven products and asserts the fixture set is
 # complete, so a missing reference fails loudly instead of shrinking coverage.
 #
+# v0.23.77-dev: A-16 deliberately stopped registering DT_VERNEED/DT_VERNEEDNUM
+# in shared objects, so the v0.23.71-dev frozen snapshot's .dynamic can no
+# longer match byte for byte. frozen_invariants() now compares that section
+# semantically -- every other tag and offset unchanged, the removed pair still
+# absent, and the freed slots zero DT_NULL padding -- and asserts the A-16
+# change instead of exempting the section. All other sections stay byte-exact.
+#
 # Reference images are produced by a real v0.16.0 compiler when ASTER_V16_DIR points at a v0.16.0
 # checkout (the directory that holds its src/aster.cpp). Without it the fixtures committed under
 # tests/baseline/v0.16.0 are used, so the script always runs. Regenerate the fixtures with:
@@ -173,6 +180,43 @@ EXPECTED_FILES = {
 }
 
 
+DT_VERNEED, DT_VERNEEDNUM, DT_NULL = 0x6ffffffe, 0x6fffffff, 0
+
+
+def dyn_entries(blob, sec):
+    off, size = sec[4], sec[5]
+    assert size % 16 == 0, ('.dynamic is not a whole number of Elf64_Dyn entries', size)
+    return [struct.unpack_from('<qQ', blob, off + j * 16)
+            for j in range(size // 16)]
+
+
+def dynamic_invariants(rel, ref, new, rs, ns):
+    """v0.23.77-dev: A-16 plus the deterministic .dynamic fix.
+
+    The v0.23.71-dev frozen snapshot still registers DT_VERNEED/DT_VERNEEDNUM
+    naming libc.so.6. This writer has no DT_NEEDED at all, and Android's bionic
+    refuses a library whose VERNEED cannot be matched, so A-16 deliberately
+    stopped registering the pair. Raw section bytes can no longer match, so
+    compare the semantic entry list instead: every other tag -- including every
+    section offset -- must still be exactly where the snapshot left it, the
+    removed tags must stay gone, and the freed slots must be zero DT_NULL
+    padding rather than uninitialised heap bytes. Those bytes used to leak an
+    ASLR pointer, which made two identical builds hash differently.
+    """
+    a, b = dyn_entries(ref, rs), dyn_entries(new, ns)
+    assert any(t == DT_VERNEED for t, _ in a), \
+        (rel, 'frozen snapshot no longer carries the historical VERNEED')
+    assert not any(t in (DT_VERNEED, DT_VERNEEDNUM) for t, _ in b), \
+        (rel, 'A-16 regressed: DT_VERNEED registered again')
+    a_sem = [(t, v) for t, v in a
+             if t not in (DT_VERNEED, DT_VERNEEDNUM, DT_NULL)]
+    b_sem = [(t, v) for t, v in b if t != DT_NULL]
+    assert a_sem == b_sem, (rel, '.dynamic semantic entries changed', a_sem, b_sem)
+    nulls = [(t, v) for t, v in b if t == DT_NULL]
+    assert nulls and all(v == 0 for _, v in nulls), \
+        (rel, '.dynamic padding is not zero DT_NULL entries', nulls)
+
+
 def frozen_invariants(rel, ref, new, er, en):
     """A same-version snapshot can only honestly promise section-level shape.
 
@@ -193,8 +237,12 @@ def frozen_invariants(rel, ref, new, er, en):
                (t[1], t[2], t[3], t[5], t[6], t[7], t[8], t[9]), \
             (rel, 'section header changed', name, s, t)
         if s[1] != 8:                                          # NOBITS has no file bytes
-            assert ref[s[4]:s[4] + s[5]] == new[t[4]:t[4] + t[5]], \
-                (rel, 'section content changed', name)
+            if name == '.dynamic':
+                # A-16 deliberately removed DT_VERNEED; see dynamic_invariants.
+                dynamic_invariants(rel, ref, new, s, t)
+            else:
+                assert ref[s[4]:s[4] + s[5]] == new[t[4]:t[4] + t[5]], \
+                    (rel, 'section content changed', name)
     assert '.symtab' in secs_n and '.strtab' in secs_n, \
         (rel, 'symbol table missing', sorted(secs_n))
     assert not any(n.startswith('.debug') for n in secs_n), (rel, 'unexpected debug section')

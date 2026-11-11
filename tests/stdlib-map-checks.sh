@@ -13,6 +13,14 @@
 #   [8] mutation: the i32 comparator's direction is load-bearing
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/map-aster"
@@ -41,7 +49,7 @@ cp tests/stdlib-map-demo.ast "$OUT/demo.ast"
 "$ASTER" link-obj "$OUT/demo.o" "$OUT/std.o" -o "$OUT/demo" >"$OUT/link.log" 2>&1 \
     || fail "the demo did not link: $(tail -2 "$OUT/link.log")"
 chmod +x "$OUT/demo"
-(cd "$OUT" && ./demo > demo.out 2>&1) || fail "the demo exited $?"
+(cd "$OUT" && "$RUNNER" ./demo > demo.out 2>&1) || fail "the demo exited $?"
 grep -qxF '16|202|-3|9|255|97|4' "$OUT/demo.out" \
     || fail "the demo printed '$(cat "$OUT/demo.out")', expected '16|202|-3|9|255|97|4'"
 ok 'include + link, one line: 16|202|-3|9|255|97|4'
@@ -109,7 +117,7 @@ AST
 "$ASTER" build-obj "$OUT/map.ast" -o "$OUT/map.o" >/dev/null 2>&1 || fail 'the map fixture did not compile'
 "$ASTER" link-obj "$OUT/map.o" "$OUT/std.o" -o "$OUT/map" >/dev/null 2>&1 || fail 'the map fixture did not link'
 chmod +x "$OUT/map"
-set +e; (cd "$OUT" && ./map); rc=$?; set -e
+set +e; (cd "$OUT" && "$RUNNER" ./map); rc=$?; set -e
 [ "$rc" = 0 ] || fail "the map fixture returned $rc (each code names its case)"
 ok '502 entries over six rehashes, every key findable'
 
@@ -155,7 +163,7 @@ AST
 "$ASTER" build-obj "$OUT/sorts.ast" -o "$OUT/sorts.o" >/dev/null 2>&1 || fail 'the sorts fixture did not compile'
 "$ASTER" link-obj "$OUT/sorts.o" "$OUT/std.o" -o "$OUT/sorts" >/dev/null 2>&1 || fail 'the sorts fixture did not link'
 chmod +x "$OUT/sorts"
-set +e; (cd "$OUT" && ./sorts); rc=$?; set -e
+set +e; (cd "$OUT" && "$RUNNER" ./sorts); rc=$?; set -e
 [ "$rc" = 0 ] || fail "the sorts fixture returned $rc"
 ok 'count 0/1, a refused width, reverse with a duplicate, u8, strings'
 
@@ -176,7 +184,7 @@ cp "$OUT/mutant_lib.ast" "$OUT/ailib.ast"
 "$ASTER" build-obj "$OUT/demo.ast" -o "$OUT/mdemo.o" >/dev/null 2>&1 || fail 'the mutated demo did not compile'
 "$ASTER" link-obj "$OUT/mdemo.o" "$OUT/mutant.o" -o "$OUT/mdemo" >/dev/null 2>&1 || fail 'the mutated demo did not link'
 chmod +x "$OUT/mdemo"
-set +e; (cd "$OUT" && ./mdemo > mut.out 2>&1); set -e
+set +e; (cd "$OUT" && "$RUNNER" ./mdemo > mut.out 2>&1); set -e
 cmp -s "$OUT/mut.out" "$OUT/demo.out" && fail 'the mutant produced the demo line — the comparator direction is not load-bearing'
 ok 'mutant diverges (the i32 comparator sorts the other way)'
 

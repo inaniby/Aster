@@ -20,6 +20,14 @@
 #       statics would share one symbol and the suite must notice
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/static-aster"
@@ -33,7 +41,7 @@ build_run(){
     "$ASTER" build-elf "$OUT/$name.ast" -o "$OUT/$name.elf" >"$OUT/$name.log" 2>&1 \
         || fail "$name did not compile: $(tail -1 "$OUT/$name.log")"
     chmod +x "$OUT/$name.elf"
-    set +e; "$OUT/$name.elf" >/dev/null 2>&1; got=$?; set -e
+    set +e; "$RUNNER" "$OUT/$name.elf" >/dev/null 2>&1; got=$?; set -e
     [ "$got" = "$want" ] || fail "$name returned $got, expected $want"
 }
 build_reject(){
@@ -124,7 +132,7 @@ $CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant co
 set +e
 "$OUT/mutant" build-elf "$OUT/twon.ast" -o "$OUT/mut.elf" >"$OUT/mut.log" 2>&1; mrc=$?
 if [ "$mrc" = 0 ]; then
-    chmod +x "$OUT/mut.elf"; "$OUT/mut.elf" >/dev/null 2>&1; mrun=$?
+    chmod +x "$OUT/mut.elf"; "$RUNNER" "$OUT/mut.elf" >/dev/null 2>&1; mrun=$?
 else
     mrun=-1
 fi

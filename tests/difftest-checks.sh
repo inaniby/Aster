@@ -17,6 +17,14 @@
 #   [7] no compiler change: the baseline reproduces 393 rows
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/diff-aster"
@@ -34,12 +42,12 @@ ok 'compiler built'
 printf '%s\n' '[2/7] the generator'
 "$ASTER" build-elf tests/difftest/gen.ast -o "$GEN" >/dev/null 2>&1 || fail 'the generator did not compile'
 chmod +x "$GEN"
-"$GEN" aster 7 0 > "$OUT/det1.ast"
-"$GEN" aster 7 0 > "$OUT/det2.ast"
+"$RUNNER" "$GEN" aster 7 0 > "$OUT/det1.ast"
+"$RUNNER" "$GEN" aster 7 0 > "$OUT/det2.ast"
 cmp -s "$OUT/det1.ast" "$OUT/det2.ast" || fail 'the generator is not deterministic for one seed'
-"$GEN" aster 8 0 > "$OUT/det3.ast"
+"$RUNNER" "$GEN" aster 8 0 > "$OUT/det3.ast"
 cmp -s "$OUT/det1.ast" "$OUT/det3.ast" && fail 'two seeds emitted the same program'
-"$GEN" c 7 0 > "$OUT/det1.c"
+"$RUNNER" "$GEN" c 7 0 > "$OUT/det1.c"
 [ -s "$OUT/det1.c" ] || fail 'the C side emitted nothing'
 ok 'deterministic per seed, different across seeds, both languages emitted'
 
@@ -48,14 +56,14 @@ run_family(){
     fam=$1; label=$2; agree=0
     seed=1
     while [ "$seed" -le "$SEEDS" ]; do
-        "$GEN" aster "$seed" "$fam" > "$OUT/p.ast"
-        "$GEN" c     "$seed" "$fam" > "$OUT/p.c"
+        "$RUNNER" "$GEN" aster "$seed" "$fam" > "$OUT/p.ast"
+        "$RUNNER" "$GEN" c     "$seed" "$fam" > "$OUT/p.c"
         "$ASTER" build-elf "$OUT/p.ast" -o "$OUT/p.elf" >"$OUT/build.log" 2>&1 \
             || fail "$label seed $seed: Aster refused the program: $(tail -1 "$OUT/build.log")"
         ${CC:-cc} -O0 -w "$OUT/p.c" -o "$OUT/p.cbin" || fail "$label seed $seed: the C twin did not build"
         chmod +x "$OUT/p.elf"
         set +e
-        "$OUT/p.elf" > "$OUT/a.out" 2>&1; arc=$?
+        "$RUNNER" "$OUT/p.elf" > "$OUT/a.out" 2>&1; arc=$?
         "$OUT/p.cbin" > "$OUT/c.out" 2>&1; crc=$?
         set -e
         if ! cmp -s "$OUT/a.out" "$OUT/c.out" || [ "$arc" != "$crc" ]; then
@@ -85,13 +93,13 @@ $CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant co
 caught=0
 seed=1
 while [ "$seed" -le 8 ]; do
-    "$GEN" aster "$seed" 0 > "$OUT/m.ast"
-    "$GEN" c     "$seed" 0 > "$OUT/m.c"
+    "$RUNNER" "$GEN" aster "$seed" 0 > "$OUT/m.ast"
+    "$RUNNER" "$GEN" c     "$seed" 0 > "$OUT/m.c"
     "$OUT/mutant" build-elf "$OUT/m.ast" -o "$OUT/m.elf" >/dev/null 2>&1 || { seed=$((seed+1)); continue; }
     ${CC:-cc} -O0 -w "$OUT/m.c" -o "$OUT/m.cbin" || { seed=$((seed+1)); continue; }
     chmod +x "$OUT/m.elf"
     set +e
-    "$OUT/m.elf" > "$OUT/ma.out" 2>&1
+    "$RUNNER" "$OUT/m.elf" > "$OUT/ma.out" 2>&1
     "$OUT/m.cbin" > "$OUT/mc.out" 2>&1
     set -e
     cmp -s "$OUT/ma.out" "$OUT/mc.out" || caught=$((caught+1))

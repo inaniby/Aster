@@ -19,6 +19,14 @@
 #   [9] mutation: a buffer that does not grow must be caught
 set -eu
 cd "$(dirname "$0")/.."
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 . tests/lib/tmpdir.sh
 CXX=${CXX:-c++}
 ASTER="$TMPD/io-aster"
@@ -49,7 +57,7 @@ cp tests/stdlib-io-demo.ast "$OUT/demo.ast"
 "$ASTER" link-obj "$OUT/demo.o" "$OUT/std.o" -o "$OUT/demo" >"$OUT/link.log" 2>&1 \
     || fail "the demo did not link: $(tail -2 "$OUT/link.log")"
 chmod +x "$OUT/demo"
-(cd "$OUT" && ./demo > demo.out 2>&1) || fail "the demo exited $?"
+(cd "$OUT" && "$RUNNER" ./demo > demo.out 2>&1) || fail "the demo exited $?"
 grep -qxF '12|15|9|297' "$OUT/demo.out" || fail "the demo printed '$(cat "$OUT/demo.out")', expected '12|15|9|297'"
 ok 'include + link, one line: 12|15|9|297'
 
@@ -81,7 +89,7 @@ cp "$OUT/files.ast" "$OUT/files2.ast"
 "$ASTER" build-obj "$OUT/files.ast" -o "$OUT/files.o" >/dev/null 2>&1 || fail 'files.ast did not compile'
 "$ASTER" link-obj "$OUT/files.o" "$OUT/std.o" -o "$OUT/files" >/dev/null 2>&1 || fail 'files.ast did not link'
 chmod +x "$OUT/files"
-set +e; (cd "$OUT" && ./files >/dev/null 2>&1); rc=$?; set -e
+set +e; (cd "$OUT" && "$RUNNER" ./files >/dev/null 2>&1); rc=$?; set -e
 [ "$rc" = 0 ] || fail "the files fixture returned $rc"
 ok 'round trip, size, a missing path, the raw bytes'
 
@@ -110,7 +118,7 @@ AST
 "$ASTER" build-obj "$OUT/arena.ast" -o "$OUT/arena.o" >/dev/null 2>&1 || fail 'arena.ast did not compile'
 "$ASTER" link-obj "$OUT/arena.o" "$OUT/std.o" -o "$OUT/arena" >/dev/null 2>&1 || fail 'arena.ast did not link'
 chmod +x "$OUT/arena"
-set +e; (cd "$OUT" && ./arena); rc=$?; set -e
+set +e; (cd "$OUT" && "$RUNNER" ./arena); rc=$?; set -e
 [ "$rc" = 0 ] || fail "the arena fixture returned $rc"
 ok 'two 100 KB blocks, a copy that keeps its bytes, alloc(0) = 0'
 
@@ -140,7 +148,7 @@ AST
 "$ASTER" link-obj "$OUT/usehdr.o" "$OUT/hdr.o" -o "$OUT/usehdr" >"$OUT/usehdr.link" 2>&1 \
     || fail "the included declarations did not link: $(tail -2 "$OUT/usehdr.link")"
 chmod +x "$OUT/usehdr"
-set +e; "$OUT/usehdr"; rc=$?; set -e
+set +e; "$RUNNER" "$OUT/usehdr"; rc=$?; set -e
 [ "$rc" = 0 ] || fail "the include fixture returned $rc (array/const/fn declarations across include)"
 ok 'array globals, a const and a prototype cross include intact'
 
@@ -160,7 +168,7 @@ cp "$OUT/mutant_lib.ast" "$OUT/aiolib.ast"
 "$ASTER" build-obj "$OUT/demo.ast" -o "$OUT/mdemo.o" >/dev/null 2>&1 || fail 'the mutated demo did not compile'
 "$ASTER" link-obj "$OUT/mdemo.o" "$OUT/mutant.o" -o "$OUT/mdemo" >/dev/null 2>&1 || fail 'the mutated demo did not link'
 chmod +x "$OUT/mdemo"
-set +e; (cd "$OUT" && ./mdemo > mut.out 2>&1); set -e
+set +e; (cd "$OUT" && "$RUNNER" ./mdemo > mut.out 2>&1); set -e
 cmp -s "$OUT/mut.out" "$OUT/demo.out" && fail 'the mutant produced the demo line — the terminator is not load-bearing'
 ok 'mutant diverges (slurp no longer terminates its buffer)'
 

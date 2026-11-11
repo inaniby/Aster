@@ -2,6 +2,14 @@
 # Verify ET_REL parsing/linking, output equivalence, and malformed-input rejection.
 set -eu
 . tests/lib/tmpdir.sh
+# v0.23.77-dev (host adaptation): run AArch64 products through the shared
+# runner. It executes them natively on an AArch64/Termux host and under qemu
+# elsewhere, so the very same suite is valid on both kinds of machine.
+RUNNER=${RUNNER:-tests/run-aarch64.sh}
+case "$RUNNER" in
+    /*) ;;
+    *) if [ -f "$RUNNER" ]; then RUNNER="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"; fi ;;
+esac
 [ -x ./aster ] || { echo "build ./aster first" >&2; exit 2; }
 names='hello arithmetic negative_division if_less if_greater_equal if_equal if_not_equal_false if_less_equal if_greater_false assignment while_count nested_while scope_shadow nested_if many_locals long_expression if_return while_break while_continue nested_loop_break'
 for name in $names; do
@@ -169,7 +177,7 @@ AST
 ./aster build-obj "$TMPD/init-m.ast" -o "$TMPD/init-m.o"
 ./aster link-obj "$TMPD/init-a.o" "$TMPD/init-b.o" -o "$TMPD/init-ok"
 set +e
-"$TMPD/init-ok"
+"$RUNNER" "$TMPD/init-ok"
 init_rc=$?
 set -e
 [ "$init_rc" = 22 ] || { echo "FAIL: the well-ordered initializer chain exited $init_rc, expected 22" >&2; exit 1; }
@@ -197,20 +205,20 @@ fn main() -> i32 { return add2(total); }
 AST
 ./aster build-elf "$TMPD/ms-main.ast" "$TMPD/ms-defs.ast" -o "$TMPD/ms.elf" >/dev/null
 set +e
-"$TMPD/ms.elf"
+"$RUNNER" "$TMPD/ms.elf"
 ms_rc=$?
 set -e
 [ "$ms_rc" = 6 ] || { echo "FAIL: build-elf with two sources exited $ms_rc, expected 6" >&2; exit 1; }
 ./aster build-pie "$TMPD/ms-main.ast" "$TMPD/ms-defs.ast" -o "$TMPD/ms.pie" >/dev/null
 set +e
-"$TMPD/ms.pie"
+"$RUNNER" "$TMPD/ms.pie"
 ms_rc=$?
 set -e
 [ "$ms_rc" = 6 ] || { echo "FAIL: build-pie with two sources exited $ms_rc, expected 6" >&2; exit 1; }
 ./aster build-obj "$TMPD/ms-defs.ast" -o "$TMPD/ms-defs.o" >/dev/null
 ./aster build-elf "$TMPD/ms-main.ast" "$TMPD/ms-defs.o" -o "$TMPD/ms-mixed.elf" >/dev/null
 set +e
-"$TMPD/ms-mixed.elf"
+"$RUNNER" "$TMPD/ms-mixed.elf"
 ms_rc=$?
 set -e
 [ "$ms_rc" = 6 ] || { echo "FAIL: build-elf with a source and a prebuilt object exited $ms_rc, expected 6" >&2; exit 1; }

@@ -8,8 +8,10 @@
 # floor. The corpus is intentionally broad and cheap: every example through
 # build-elf/build-pie/build-obj/build-obj --pic/build-so, the three link verbs,
 # keygen plus build-apk/verify-apk, the -g / --bounds-check / --page-size
-# paths, and the top-level error paths. It takes well under a minute because
-# the instrumented compiler is built once and each CLI call is milliseconds.
+# paths, the top-level error paths, and the v0.23.77-dev project CLI
+# (new/add/deps/build/run/test/doctor) plus the wider DWARF and APK paths.
+# It takes well under a minute because the instrumented compiler is built once
+# and each CLI call is milliseconds.
 #
 # The floor is a ratchet, not a target: when the corpus grows, raise it. A
 # lower floor is a reviewed source change. Coverage is compiler-version
@@ -67,6 +69,35 @@ done
 "$A" verify-apk "$W/app.apk" >/dev/null 2>&1 || :
 "$A" >/dev/null 2>&1 || :
 "$A" nope >/dev/null 2>&1 || :
+
+# v0.23.77-dev: the audit round added a project CLI, DWARF validation and a
+# wider set of link/page-size/bounds paths. Drive them as well, so the ratchet
+# measures the compiler as it is now instead of the subset that existed when
+# this corpus was first written. ABS_A survives the subshell cd's below.
+ABS_A=$(cd "$(dirname "$A")" && pwd)/$(basename "$A")
+mkdir -p "$W/proj"
+"$ABS_A" new "$W/proj/app" >/dev/null 2>&1 || :
+"$ABS_A" new --apk "$W/proj/apk" >/dev/null 2>&1 || :
+if [ -d "$W/proj/app" ]; then
+    (cd "$W/proj/app" && "$ABS_A" deps src/main.ast >/dev/null 2>&1) || :
+    (cd "$W/proj/app" && "$ABS_A" add src/util.ast >/dev/null 2>&1) || :
+    (cd "$W/proj/app" && "$ABS_A" build >/dev/null 2>&1) || :
+    (cd "$W/proj/app" && "$ABS_A" run >/dev/null 2>&1) || :
+    (cd "$W/proj/app" && "$ABS_A" test >/dev/null 2>&1) || :
+    (cd "$W/proj/app" && "$ABS_A" doctor >/dev/null 2>&1) || :
+    (cd "$W/proj/app" && "$ABS_A" doctor --strict >/dev/null 2>&1) || :
+    (cd "$W/proj/app" && "$ABS_A" build --no-cache -g >/dev/null 2>&1) || :
+fi
+"$A" build-elf -g examples/structs.ast -o "$W/debug2.elf" >/dev/null 2>&1 || :
+"$A" build-so -g examples/runtime_init.ast -o "$W/debugso.so" >/dev/null 2>&1 || :
+"$A" build-elf --page-size 16384 --bounds-check examples/array_rw.ast \
+    -o "$W/page16.elf" >/dev/null 2>&1 || :
+"$A" build-obj -g --pic examples/tls_demo.ast -o "$W/tlsg.o" >/dev/null 2>&1 || :
+"$A" link-so --soname libmix.so --needed libc.so.6 "$W/r42.o" \
+    -o "$W/libmix.so" >/dev/null 2>&1 || :
+"$A" build-apk examples/native_touch.ast -o "$W/touch.apk" \
+    --package com.example.touch --keystore-dir "$OUT/keys" >/dev/null 2>&1 || :
+"$A" verify-apk "$W/touch.apk" >/dev/null 2>&1 || :
 
 printf '%s\n' '[3/3] gcov line coverage of src/aster.cpp'
 if ! (cd "$OUT" && "$GCOV" -b -c aster.gcno) >"$OUT/gcov.log" 2>&1; then
