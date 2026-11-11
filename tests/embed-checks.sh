@@ -37,6 +37,26 @@ ASTER=${ASTER:-$OUT/aster}
 ASSETS="$OUT/assets"
 mkdir -p "$ASSETS"
 
+# The checksum probe is a source file: the mutation layer compiles it, and
+# only the running of it needs qemu, so it is created here rather than
+# inside the qemu branch below.
+cat > "$ASSETS/sum.ast" <<'AST'
+let blob: ptr = @embed("bin.bin");
+let n: i32 = @embed_len("bin.bin");
+fn main() -> i32 {
+    let i: i32 = 0;
+    let s: i32 = 0;
+    while (i < n) {
+        s = s + load_u8(blob + i);
+        i = i + 1;
+    }
+    while (s > 250) {
+        s = s - 251;
+    }
+    return s;
+}
+AST
+
 printf '%s\n' '[1/6] Strictly build Aster compiler'
 ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o "$ASTER"
 
@@ -243,23 +263,7 @@ else
     # A checksum the program computes and python recomputes. Exit statuses are
     # eight bits wide, so it is reduced into 0..250 by subtraction — Aster has
     # no remainder operator.
-    cat > "$ASSETS/sum.ast" <<'AST'
-let blob: ptr = @embed("bin.bin");
-let n: i32 = @embed_len("bin.bin");
-fn main() -> i32 {
-    let i: i32 = 0;
-    let s: i32 = 0;
-    while (i < n) {
-        s = s + load_u8(blob + i);
-        i = i + 1;
-    }
-    while (s > 250) {
-        s = s - 251;
-    }
-    return s;
-}
-AST
-    "$ASTER" build-elf "$ASSETS/sum.ast" -o "$OUT/sum" > /dev/null
+        "$ASTER" build-elf "$ASSETS/sum.ast" -o "$OUT/sum" > /dev/null
     run_qemu "$OUT/sum"; got=$QEMU_EXIT
     want=$(python3 -c "
 import sys
@@ -339,6 +343,18 @@ AST
     printf '%s\n' 'PASS: an asset travels inside the shared object'
 fi
 
+# The mutation layer is behavioural: every one of the four mutants is judged by
+# the checksum its program returns, so it needs a way to run the binary. On a
+# host without qemu (an Android phone, for instance; there the binaries run
+# natively but the layer still reads run_qemu/$want, which the qemu branch
+# sets) the layer is skipped and said so, instead of dying inside a function
+# that was never defined.
+if ! command -v qemu-aarch64 > /dev/null 2>&1; then
+    printf '%s\n' '[6/6] Compiler mutations covered by the byte-level layer above'
+    printf '%s\n' 'SKIP: the mutation layer judges checksums and needs qemu-aarch64'
+    printf '%s\n' 'ALL EMBED CHECKS PASSED'
+    exit 0
+fi
 printf '%s\n' '[6/6] Compiler mutations: four ways to get the bytes wrong'
 python3 - "$OUT" <<'PY'
 import os, sys

@@ -193,7 +193,7 @@ AST
 if ! ./aster build-elf tmp-local-array.ast -o tmp-local-array 2>tmp-local-array.err; then
   echo 'FAIL: compiler rejected a local array declaration' >&2; cat tmp-local-array.err >&2; exit 1
 fi
-./tests/run-aarch64.sh tmp-local-array
+./tests/run-aarch64.sh ./tmp-local-array
 echo 'PASS: local i32[4] array accepted, indexed, and executed correctly (v0.22.49)'
 
 # --- shared object: DT_INIT_ARRAY is added only when an initializer exists -----------
