@@ -82,7 +82,8 @@ STMT_KINDS = [
 # because Pascal-semantics switch is the one control-flow shape the bootstrap
 # subset does not cover.
 STMT_SUBSET = [
-    "Let", "Assign", "FieldAssign", "IndexAssign", "Return", "If", "While",
+    "Let", "Assign", "FieldAssign", "IndexAssign", "DerefAssign",   # v0.23.77-dev: *p = v
+    "Return", "If", "While",
     # v0.23.77-dev: the three-clause loop, with `continue` landing on the step.
     "For",
     "Break", "Continue",
@@ -170,7 +171,7 @@ def check_list():
             % EXPR_SUBSET_COUNT)
     if STMT_COUNT != 15:
         die("expected 15 statement kinds, list has %d" % STMT_COUNT)
-    if STMT_SUBSET_COUNT != 14:
+    if STMT_SUBSET_COUNT != 15:
         die("expected 13 statement kinds in the subset, list has %d"
             % STMT_SUBSET_COUNT)
     if STRUCT_COUNT != 7:

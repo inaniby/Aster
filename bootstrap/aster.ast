@@ -220,13 +220,14 @@ let E_BitAnd: i32 = 27;
 let E_BitOr: i32 = 28;
 let E_BitXor: i32 = 29;
 
-// The 14 statement kinds (§2.2), the host's Stmt::Kind
+// The 15 statement kinds (§2.2), the host's Stmt::Kind
 // numbers + 64; FieldAssign, DerefAssign, For and Switch are
 // excluded (§12.2), their numbers skipped.
 let S_Let: i32 = 64;
 let S_Assign: i32 = 65;
 let S_FieldAssign: i32 = 66;
 let S_IndexAssign: i32 = 67;
+let S_DerefAssign: i32 = 68;
 let S_Return: i32 = 69;
 let S_If: i32 = 70;
 let S_While: i32 = 71;
@@ -2863,10 +2864,22 @@ fn statement() -> i32 {
         return lp;
     }
     if (k == K_Star) {
-        die_at("'*' dereference is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-        return 0;
-    }
-    if (k == K_Let) { advance(); return let_stmt(); }
+        // v0.23.77-dev: `*p = v;` - a write through a pointer
+        advance();
+        if (curk() != K_Ident) { die_at("expected a variable after *", tok_line(ppos), tok_col(ppos)); return 0; }
+        let ptok2: i32 = ppos;
+        advance();
+        if (curk() != K_Eq) { die_at("expected = in a write through a pointer", tok_line(ppos), tok_col(ppos)); return 0; }
+        advance();
+        let rhs2: i32 = parse_expr();
+        if (perr != 0) { return 0; }
+        if (curk() != K_Semi) { die_at("expected ;", tok_line(ppos), tok_col(ppos)); return 0; }
+        advance();
+        let st2: i32 = newnode(S_DerefAssign, ptok2);
+        if (st2 == 0) { return 0; }
+        append(st2, rhs2);
+        return st2;
+    }    if (k == K_Let) { advance(); return let_stmt(); }
     if (k == K_Return) {
         advance();
         let e: i32 = parse_expr();
@@ -4120,8 +4133,11 @@ fn sema_stmt(s: i32) -> i32 {
     if (k == S_FieldAssign) {
         let bfa: i32 = nfirst[s - 1];
         if (find_var(ntok[bfa - 1]) == 0) { die_name_at("unknown variable: ", ntok[bfa - 1]); return 1; }
-        if (ty_is_struct(rs_tag) == 0) { die_name_at("'.' field access on a non-struct: ", ntok[bfa - 1]); return 1; }
-        if (struct_field(rs_tag - TY_STRUCT_BASE, ntok[s - 1]) < 0) { die_name_at("no such field: ", ntok[s - 1]); return 1; }
+        // v0.23.77-dev: `p.f = v` where p is a ptr<S>
+        let sb2: i32 = rs_tag;
+        if (rs_tag >= TY_PTR_STRUCT_BASE) { sb2 = TY_STRUCT_BASE + (rs_tag - TY_PTR_STRUCT_BASE); }
+        if (ty_is_struct(sb2) == 0) { die_name_at("'.' field access on a non-struct: ", ntok[bfa - 1]); return 1; }
+        if (struct_field(sb2 - TY_STRUCT_BASE, ntok[s - 1]) < 0) { die_name_at("no such field: ", ntok[s - 1]); return 1; }
         let rfa: i32 = nnext[bfa - 1];
         if (tc_expr(rfa) != 0) { return 1; }
         if (assign_ok(TY_I32, ex_ty[rfa - 1], ex_arr[rfa - 1], rfa) == 0) {
@@ -4141,6 +4157,19 @@ fn sema_stmt(s: i32) -> i32 {
         if (tc_expr(e) != 0) { return 1; }
         if (assign_ok(vtag, ex_ty[e - 1], ex_arr[e - 1], e) == 0) {
             die_name_at("type mismatch assigning variable: ", ntok[s - 1]); return 1;
+        }
+        return 0;
+    }
+    if (k == S_DerefAssign) {
+        // v0.23.77-dev: *p = v - p must name a ptr<T>, v must fit T
+        let tok2: i32 = ntok[s - 1];
+        if (find_var(tok2) == 0) { die_name_at("unknown variable: ", tok2); return 1; }
+        if (is_ptr_tag(rs_tag) == 0) { die_name_at("a write through * needs a pointer variable: ", tok2); return 1; }
+        let et: i32 = ptr_elem(rs_tag);
+        let rhs0: i32 = nfirst[s - 1];
+        if (tc_expr(rhs0) != 0) { return 1; }
+        if (assign_ok(et, ex_ty[rhs0 - 1], ex_arr[rhs0 - 1], rhs0) == 0) {
+            die_name_at("type mismatch writing through a pointer: ", tok2); return 1;
         }
         return 0;
     }
@@ -6415,7 +6444,35 @@ fn gen_stmt(s: i32) -> i32 {
         if (free_tmp(v) != 0) { return 1; }
         return 0;
     }
-    if (k == S_IndexAssign) {
+        if (k == S_DerefAssign) {
+        // v0.23.77-dev: the address comes out of the pointer slot, then the
+        // value is stored at the pointee width
+        let tok3: i32 = ntok[s - 1];
+        let li3: i32 = cg_find_local(tok3);
+        let pt3: i32 = TY_I32;
+        let a3: i32 = alloc_tmp();
+        if (a3 < 0) { return 1; }
+        if (li3 >= 0) {
+            pt3 = ptr_elem(cg_loc_ty[li3]);
+            if (emit_mem(0, 3, a3, 31, cg_loc_slot[li3] * 8) != 0) { return 1; }
+        } else {
+            let gs3: i32 = cg_find_global(tok3);
+            if (gs3 < 0) { if (cg_die_name_at("unknown variable: ", tok3) != 0) { return 1; } }
+            pt3 = ptr_elem(stag[gs3]);
+            let t3: i32 = alloc_tmp();
+            if (t3 < 0) { return 1; }
+            if (emit_addr64(t3, g_addr[gs3]) != 0) { return 1; }
+            if (emit_mem(0, 3, a3, t3, 0) != 0) { return 1; }
+            if (free_tmp(t3) != 0) { return 1; }
+        }
+        let v3: i32 = gen_expr(nfirst[s - 1], pt3);
+        if (v3 < 0) { return 1; }
+        if (emit_mem(1, mem_scale(ty_width(pt3)), v3, a3, 0) != 0) { return 1; }
+        if (free_tmp(v3) != 0) { return 1; }
+        if (free_tmp(a3) != 0) { return 1; }
+        return 0;
+    }
+if (k == S_IndexAssign) {
         // Child 0 is the E_Index (name + subscript), child 1 the value.
         let inode: i32 = nfirst[s - 1];
         let rhs: i32 = nnext[inode - 1];

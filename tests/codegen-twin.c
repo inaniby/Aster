@@ -1330,9 +1330,23 @@ static int statement(void) {
         nodes[lp].lab = nm;
         return lp;
     }
-    if (k == TK_Star)
-        die_at("'*' dereference is not in the bootstrap subset",
-               tok_line(p), tok_col(p));
+    if (k == TK_Star) {
+        /* v0.23.77-dev: *p = v; - a write through a pointer */
+        adv();
+        if (cur() != TK_Ident)
+            die_at("expected a variable after *", tok_line(p), tok_col(p));
+        int ptok = p;
+        adv();
+        if (cur() != TK_Eq)
+            die_at("expected = in a write through a pointer", tok_line(p), tok_col(p));
+        adv();
+        int rhs = expr();
+        if (cur() != TK_Semi) die_at("expected ;", tok_line(p), tok_col(p));
+        adv();
+        int st = newnode(S_DerefAssign, ptok);
+        append(st, rhs);
+        return st;
+    }
     if (k == TK_Let) { adv(); return let_stmt(); }
     if (k == TK_Return) {
         adv();
@@ -2242,13 +2256,27 @@ static int sema_stmt(int s) {
         add_local(nodes[s].tok, 1, nodes[s].ty, 1);
         return 0;
     }
+    if (k == S_DerefAssign) {
+        /* v0.23.77-dev: *p = v - p names a ptr<T>, v must fit T */
+        int tok2 = nodes[s].tok;
+        if (!sym_find_var(tok2)) die_name_at("unknown variable: ", tok2);
+        if (!is_ptr_tag(rs_tag)) die_name_at("a write through * needs a pointer variable: ", tok2);
+        int et = ptr_elem(rs_tag), rhs0 = nodes[s].first;
+        if (tc_expr(rhs0) != 0) return 1;
+        if (!assign_ok(et, ety[rhs0], earr[rhs0], rhs0))
+            die_name_at("type mismatch writing through a pointer: ", tok2);
+        return 0;
+    }
     if (k == S_FieldAssign) {
         int bfa = nodes[s].first;
         if (!sym_find_var(nodes[bfa].tok))
             die_name_at("unknown variable: ", nodes[bfa].tok);
-        if (!ty_is_struct(rs_tag))
+        /* v0.23.77-dev: p.f = v where p is a ptr<S> */
+        int sb2 = rs_tag;
+        if (rs_tag >= TY_PTR_STRUCT_BASE) sb2 = TY_STRUCT_BASE + (rs_tag - TY_PTR_STRUCT_BASE);
+        if (!ty_is_struct(sb2))
             die_name_at("'.' field access on a non-struct: ", nodes[bfa].tok);
-        if (struct_field(rs_tag - TY_STRUCT_BASE, nodes[s].tok) < 0)
+        if (struct_field(sb2 - TY_STRUCT_BASE, nodes[s].tok) < 0)
             die_name_at("no such field: ", nodes[s].tok);
         int rfa = nodes[bfa].next;
         if (tc_expr(rfa) != 0) return 1;
@@ -3533,6 +3561,28 @@ static int gen_stmt(int s){
         if (emit_mem(1, mem_scale_t(ty_width_t(ty)), v, t, 0)) return 1;
         if (free_tmp(t)) return 1;
         if (free_tmp(v)) return 1;
+        return 0;
+    }
+    if (k==S_DerefAssign){
+        /* v0.23.77-dev: the address comes out of the pointer slot */
+        int tok3 = nodes[s].tok, li3 = cg_find_local(tok3), pt3 = 1;
+        int a3 = alloc_tmp(); if (a3 < 0) return 1;
+        if (li3 >= 0){
+            pt3 = ptr_elem(cg_loc_ty[li3]);
+            if (emit_mem(0,3,a3,31,cg_loc_slot[li3]*8)) return 1;
+        } else {
+            int gs3 = cg_find_global(tok3);
+            if (gs3 < 0) return cg_die_name_at("unknown variable: ", tok3);
+            pt3 = ptr_elem(st_tag[gs3]);
+            int t3 = alloc_tmp(); if (t3 < 0) return 1;
+            if (emit_addr64(t3, g_addr[gs3])) return 1;
+            if (emit_mem(0,3,a3,t3,0)) return 1;
+            if (free_tmp(t3)) return 1;
+        }
+        int v3 = gen_expr(nodes[s].first, pt3); if (v3 < 0) return 1;
+        if (emit_mem(1, mem_scale_t(ty_width_t(pt3)), v3, a3, 0)) return 1;
+        if (free_tmp(v3)) return 1;
+        if (free_tmp(a3)) return 1;
         return 0;
     }
     if (k==S_IndexAssign){

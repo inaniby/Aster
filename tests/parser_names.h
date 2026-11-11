@@ -43,12 +43,13 @@ enum {
     E_BitXor = 29,
 };
 
-/* The 14 statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, DerefAssign, For and Switch are excluded (§12.2). */
+/* The 15 statement kinds (§2.2), Stmt::Kind + 64; FieldAssign, DerefAssign, For and Switch are excluded (§12.2). */
 enum {
     S_Let = 64,
     S_Assign = 65,
     S_FieldAssign = 66,
     S_IndexAssign = 67,
+    S_DerefAssign = 68,
     S_Return = 69,
     S_If = 70,
     S_While = 71,
