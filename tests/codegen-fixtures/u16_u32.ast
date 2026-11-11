@@ -1,0 +1,13 @@
+let o: u8[8] = 0;
+
+fn main() -> i32 {
+    let a: u16 = 65535;
+    let b: u32 = 4294967295;
+    if (a > 1) { store_u8(o, 49); } else { store_u8(o, 48); }
+    if (b > 1) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    if (a == 65535) { store_u8(o + 2, 49); } else { store_u8(o + 2, 48); }
+    if (b == 4294967295) { store_u8(o + 3, 49); } else { store_u8(o + 3, 48); }
+    store_u8(o + 4, 10);
+    write(1, o, 5);
+    return 0;
+}

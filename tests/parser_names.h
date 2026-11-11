@@ -70,7 +70,7 @@ enum {
     N_IncDec = 134,
 };
 
-/* The 10 type tags (§2.4). */
+/* The 12 type tags (§2.4). */
 enum {
     TY_I32 = 1,
     TY_I64 = 2,
@@ -82,6 +82,8 @@ enum {
     TY_U64 = 8,
     TY_F64 = 9,
     TY_BOOL = 10,
+    TY_U16 = 11,
+    TY_U32 = 12,
 };
 
 /* The name tables, the C shape of the Aster side's packed
@@ -159,7 +161,7 @@ static const char *const NK_NAMES[NK_COUNT] = {
     "IncDec",
 };
 
-#define TYT_COUNT 10
+#define TYT_COUNT 12
 static const char *const TY_NAMES[TYT_COUNT] = {
     "i32",
     "i64",
@@ -171,6 +173,8 @@ static const char *const TY_NAMES[TYT_COUNT] = {
     "u64",
     "f64",
     "bool",
+    "u16",
+    "u32",
 };
 
 #endif /* ASTER_PARSER_NAMES_H */

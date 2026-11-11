@@ -898,6 +898,8 @@ static int parse_type(void) {
     int k = cur();
     if (k == TK_U64) { adv(); return 8; }   /* v0.23.77-dev: u64 */
     if (k == TK_Bool) { adv(); return 10; }   /* v0.23.77-dev: bool */
+    if (k == TK_U16) { adv(); return 11; }    /* v0.23.77-dev: u16 */
+    if (k == TK_U32) { adv(); return 12; }    /* v0.23.77-dev: u32 */
     /* v0.23.77-dev: f64 is a spelling, not a keyword - the host recognises it
      * the same way in its own type parser */
     if (k == TK_Ident && toks[p].len == 3 &&
@@ -2480,13 +2482,15 @@ static int ptr_elem_t(int t){
 }
 static int ty_width_t(int t){
     if (t==10) return 1;  /* v0.23.77-dev: bool, one byte */
+    if (t==11) return 2;  /* v0.23.77-dev: u16 */
+    if (t==12) return 4;  /* v0.23.77-dev: u32 */
     if (t==1) return 4;   /* i32 */
     if (t==2) return 8;   /* i64 */
     if (t==3) return 1;   /* u8  */
     return 8;             /* every pointer is 8 bytes */
 }
 static int ty_is64_t(int t){ return (t==2) || (t==8) || is_ptr_tag_t(t); }  /* 8 = u64 */
-static int ty_is_uns_t(int t){ return (t==3) || (t==8); }  /* 8 = u64 */
+static int ty_is_uns_t(int t){ return (t==3) || (t==8) || (t==11) || (t==12); }  /* u8,u64,u16,u32 */
 
 
 static int log2w_t(int w){ if (w==1) return 0; if (w==4) return 2; return 3; }
