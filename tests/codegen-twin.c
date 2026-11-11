@@ -657,21 +657,18 @@ static int primary(void) {
 
 static int unary(void) {
     int k = cur();
-    if (k == TK_Minus || k == TK_Not || k == TK_Amp) {   /* v0.23.77-dev: &x */
+    if (k == TK_Minus || k == TK_Not || k == TK_Amp || k == TK_Star) {   /* v0.23.77-dev: &x, *p */
         adv();
         if (exdepth >= NESTMAX) die_c1();
         exdepth++;
         int a = unary();
         exdepth--;
-        int z = newnode(k == TK_Minus ? E_Neg : (k == TK_Amp ? E_AddrOf : E_Not), nodes[a].tok);
+        int z = newnode(k == TK_Minus ? E_Neg : (k == TK_Amp ? E_AddrOf : (k == TK_Star ? E_Deref : E_Not)), nodes[a].tok);
         append(z, a);
         return z;
     }
     if (k == TK_Tilde)
         die_at("'~' is not in the bootstrap subset", tok_line(p), tok_col(p));
-    if (k == TK_Star)
-        die_at("'*' dereference is not in the bootstrap subset",
-               tok_line(p), tok_col(p));
     if (k == TK_Amp)
         die_at("'&' address-of is not in the bootstrap subset",
                tok_line(p), tok_col(p));
@@ -1673,7 +1670,7 @@ static int is_const(int h) {
     int k = nodes[h].kind;
     if (k == E_Num) return 1;
     if (k == E_Neg) return is_const(nodes[h].first);
-    if (k == E_AddrOf) return 0;   /* v0.23.77-dev: never a constant */
+    if (k == E_AddrOf || k == E_Deref) return 0;   /* v0.23.77-dev: never a constant */
     if (is_fold_binary(k))
         return is_const(nodes[h].first)
             && is_const(nodes[nodes[h].first].next);
@@ -1737,7 +1734,7 @@ static int64_t fold(int h) {
         return numval;
     }
     if (k == E_Neg) return -fold(nodes[h].first);
-    if (k == E_AddrOf) return 0;   /* v0.23.77-dev: not foldable */
+    if (k == E_AddrOf || k == E_Deref) return 0;   /* v0.23.77-dev: not foldable */
     return fold_bin(k, fold(nodes[h].first),
                     fold(nodes[nodes[h].first].next), h);
 }
@@ -2168,6 +2165,16 @@ static int tc_combine(int n) {
             die_at("'!' requires a bool operand",
                    tok_line(nodes[n].tok), tok_col(nodes[n].tok));
         ety[n] = -2; earr[n] = 0; return 0;
+    }
+    if (k == E_Deref) {
+        /* v0.23.77-dev: *p is the pointee's type */
+        int op = nodes[n].first, pt = ety[op];
+        if (pt == TY_PTR_U8) ety[n] = 3;
+        else if (pt == TY_PTR_I64) ety[n] = 2;
+        else if (pt == TY_PTR_I32) ety[n] = 1;
+        else die_name_at("'*' needs a typed pointer (ptr<T>) in the bootstrap subset: ", nodes[n].tok);
+        earr[n] = 0;
+        return 0;
     }
     if (k == E_AddrOf) {
         /* v0.23.77-dev: a pointer to the variable's type */
@@ -2856,7 +2863,7 @@ static int gx_push_logical(int n,int wt){
 static int gx_dispatch(int n,int wt){
     int k=NK(n);
     if (k==E_Index) return gx_push_un(n,1,wt);
-    if (k==E_Neg||k==E_Not||k==E_AddrOf) return gx_push_un(n,wt,wt);   /* v0.23.77-dev: &x */
+    if (k==E_Neg||k==E_Not||k==E_AddrOf||k==E_Deref) return gx_push_un(n,wt,wt);   /* v0.23.77-dev: &x, *p */
     int l=NF(n), r=NN(l), lt=ETY(l), rt=ETY(r);
     if (k==E_Shl||k==E_Shr){
         int ow=wt; if (ty_is64_t(wt)||ty_is64_t(lt)) ow=2;
@@ -3056,6 +3063,14 @@ static int cmp_cond(int k,int lt,int rt){
 static int gen_combine(int n,int want){
     int k=NK(n);
     if (k==E_Index) return gen_index(n,want);
+    if (k==E_Deref){
+        /* v0.23.77-dev: the child's temp holds the address; the load overwrites
+         * it, so a unary node still owns exactly one temporary */
+        int ch=NF(n), d=gx_val[ch];
+        int pt=ety[n];
+        if (emit_mem(0, mem_scale_t(ty_width_t(pt)), d, d, 0)) return 1;
+        gx_val[n]=d; return 0;
+    }
     if (k==E_AddrOf){
         /* v0.23.77-dev: the child's temp is reused for the address - a second
          * one leaked it, because the pool is LIFO and a unary node owns one */

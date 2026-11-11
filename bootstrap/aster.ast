@@ -183,7 +183,7 @@ fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
 // ---- END GENERATED: lexer names ----
 
 // ---- BEGIN GENERATED: parser names (bootstrap/gen_parser_names.py) ----
-// The 28 expression node kinds this parser builds
+// The 29 expression node kinds this parser builds
 // (PARSER-SPEC.md §2.1), at the host's `enum Kind` numbers
 // inside struct Expr: the subset keeps the numbering, the
 // eleven excluded kinds (§12.2) are simply absent, so a kind's
@@ -195,6 +195,7 @@ let E_Var: i32 = 1;
 let E_String: i32 = 2;
 let E_Call: i32 = 3;
 let E_Index: i32 = 4;
+let E_Deref: i32 = 5;
 let E_Add: i32 = 6;
 let E_Sub: i32 = 7;
 let E_Mul: i32 = 8;
@@ -1797,6 +1798,7 @@ fn reduce_one() -> i32 {
         let nk: i32 = E_Neg;
         if (k == K_Not) { nk = E_Not; }
         if (k == K_Amp) { nk = E_AddrOf; }   // v0.23.77-dev
+        if (k == K_Star) { nk = E_Deref; }   // v0.23.77-dev
         let z: i32 = newnode(nk, ntok[a - 1]);
         if (z == 0) { return 1; }
         append(z, a);
@@ -1843,7 +1845,7 @@ fn parse_expr() -> i32 {
         if (state == 0) {
             // ---------------- expect-operand ----------------
             let k: i32 = curk();
-            if (k == K_Minus || k == K_Not || k == K_Amp) {
+            if (k == K_Minus || k == K_Not || k == K_Amp || k == K_Star) {
                 // v0.23.77-dev: `&x` takes the operand as its child, exactly as
                 // unary minus does - the reduce knows which node to build.
                 advance();
@@ -1852,10 +1854,6 @@ fn parse_expr() -> i32 {
             }
             if (k == K_Tilde) {
                 die_at("'~' is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-                return 0;
-            }
-            if (k == K_Star) {
-                die_at("'*' dereference is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
                 return 0;
             }
             if (k == K_At) {
@@ -3389,7 +3387,7 @@ fn is_const(h: i32) -> i32 {
         let n: i32 = wstk[sp];
         let k: i32 = nkind[n - 1];
         if (k == E_Num) { continue; }
-        if (k == E_Neg || k == E_AddrOf) {
+        if (k == E_Neg || k == E_AddrOf || k == E_Deref) {
             // v0.23.77-dev: a prefix node walks only its operand - without
             // address-of here the walk treated it as binary and read a child
             // that does not exist.
@@ -3476,7 +3474,7 @@ fn fold(h: i32) -> i64 {
                 wval[vp - 1] = 0 - wval[vp - 1];
                 continue;
             }
-            if (k == E_AddrOf) {
+            if (k == E_AddrOf || k == E_Deref) {
                 // v0.23.77-dev: not a constant. The child's value is on the
                 // stack; leave a zero in its place so the count still balances.
                 continue;
@@ -3500,7 +3498,7 @@ fn fold(h: i32) -> i64 {
             vp = vp + 1;
             continue;
         }
-        if (k == E_Neg || k == E_AddrOf) {
+        if (k == E_Neg || k == E_AddrOf || k == E_Deref) {
             if (sp + 2 > 65536) { die_np("internal: walk stack overflow"); return 0; }
             wstk[sp] = n; wmark[sp] = 1; sp = sp + 1;
             wstk[sp] = nfirst[n - 1]; wmark[sp] = 0; sp = sp + 1;
@@ -4028,6 +4026,17 @@ fn tc_combine(n: i32) -> i32 {
         let op: i32 = nfirst[n - 1];
         if (ex_ty[op - 1] != -2) { die_at("'!' requires a bool operand", tok_line(ntok[n - 1]), tok_col(ntok[n - 1])); return 1; }
         ex_ty[n - 1] = -2; ex_arr[n - 1] = 0; return 0;
+    }
+    if (k == E_Deref) {
+        // v0.23.77-dev: `*p` is the pointee's type; a bare ptr has none
+        let op: i32 = nfirst[n - 1];
+        let pt: i32 = ex_ty[op - 1];
+        if (pt == TY_PTR_U8) { ex_ty[n - 1] = TY_U8; }
+        else if (pt == TY_PTR_I64) { ex_ty[n - 1] = TY_I64; }
+        else if (pt == TY_PTR_I32) { ex_ty[n - 1] = TY_I32; }
+        else { die_name_at("'*' needs a typed pointer (ptr<T>) in the bootstrap subset: ", ntok[n - 1]); return 1; }
+        ex_arr[n - 1] = 0;
+        return 0;
     }
     if (k == E_AddrOf) {
         // v0.23.77-dev: `&x` is a pointer to x's type, and x must be a variable
@@ -5160,7 +5169,7 @@ fn gx_dispatch(n: i32, wt: i32) -> i32 {
     // then ex_ty[-1] — an out-of-bounds crash. Dispatch them before any binary
     // field is touched.
     if (k == E_Index) { return gx_push_un(n, TY_I32, wt); }
-    if (k == E_Neg || k == E_Not || k == E_AddrOf) { return gx_push_un(n, wt, wt); }
+    if (k == E_Neg || k == E_Not || k == E_AddrOf || k == E_Deref) { return gx_push_un(n, wt, wt); }
     let l: i32 = nfirst[n - 1];
     let r: i32 = nnext[l - 1];
     let lt: i32 = ex_ty[l - 1];
@@ -5334,6 +5343,16 @@ fn cmp_cond(k: i32, lt: i32, rt: i32) -> i32 {
 // ---- §6.1 combine: children are done, emit the node's own instructions ----
 fn gen_combine(n: i32, want: i32) -> i32 {
     let k: i32 = nkind[n - 1];
+    if (k == E_Deref) {
+        // v0.23.77-dev: the child's temporary holds the address; the load
+        // overwrites it, so the pool stays balanced (one temp per unary node).
+        let ch: i32 = nfirst[n - 1];
+        let d: i32 = gx_val[ch - 1];
+        let pt: i32 = ex_ty[n - 1];
+        if (emit_mem(0, mem_scale(ty_width(pt)), d, d, 0) != 0) { return -1; }
+        gx_val[n - 1] = d;
+        return 0;
+    }
     if (k == E_AddrOf) {
         // v0.23.77-dev: a prefix node has one child, so it must be answered
         // before the two-child reads below. The child's temporary is *reused*

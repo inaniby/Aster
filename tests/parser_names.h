@@ -7,7 +7,7 @@
 #ifndef ASTER_PARSER_NAMES_H
 #define ASTER_PARSER_NAMES_H
 
-/* The 28 expression kinds the bootstrap parser builds
+/* The 29 expression kinds the bootstrap parser builds
  * (PARSER-SPEC.md §2.1), at the host's Expr::Kind numbers. The eleven
  * excluded host kinds get no constant here, exactly as on the Aster
  * side. */
@@ -17,6 +17,7 @@ enum {
     E_String = 2,
     E_Call = 3,
     E_Index = 4,
+    E_Deref = 5,
     E_Add = 6,
     E_Sub = 7,
     E_Mul = 8,

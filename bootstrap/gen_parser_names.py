@@ -55,7 +55,7 @@ EXPR_KINDS = [
 # EXPR_KINDS. The eleven excluded kinds (§2.1, replaced per §12.2) keep their
 # numbers unused, so a surviving kind's number is the host's.
 EXPR_SUBSET = [
-    "Num", "Var", "String", "Call", "Index",
+    "Num", "Var", "String", "Call", "Index", "Deref",   # v0.23.77-dev: *p
     "Add", "Sub", "Mul", "Div", "Neg",
     "Eq", "Ne", "Lt", "Le", "Gt", "Ge", "And", "Or", "Not",
     "Field",
@@ -165,7 +165,7 @@ def die(msg):
 def check_list():
     if EXPR_COUNT != 36:
         die("expected 36 expression kinds, list has %d" % EXPR_COUNT)
-    if EXPR_SUBSET_COUNT != 28:
+    if EXPR_SUBSET_COUNT != 29:
         die("expected 25 expression kinds in the subset, list has %d"
             % EXPR_SUBSET_COUNT)
     if STMT_COUNT != 15:
