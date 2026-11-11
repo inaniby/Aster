@@ -1,0 +1,12 @@
+struct P { a: i32, b: i32 }
+let o: u8[8] = 0;
+
+fn main() -> i32 {
+    let s: P = P { 3, 4 };
+    let p: ptr<P> = &s;
+    if (p.a == 3) { store_u8(o, 49); } else { store_u8(o, 48); }
+    if (p.b == 4) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    store_u8(o + 2, 10);
+    write(1, o, 3);
+    return 0;
+}

@@ -2204,6 +2204,9 @@ fn ptr_type() -> i32 {
         return 0;
     }
     advance();
+    // v0.23.77-dev: a known struct name makes this a pointer to that struct
+    let psi: i32 = struct_find(idt);
+    if (psi >= 0) { return TY_PTR_STRUCT_BASE + psi; }
     die_open();
     bputs("unknown struct type in ptr<");
     bputname(idt);
@@ -2218,6 +2221,7 @@ fn ptr_type() -> i32 {
 // The tag space is dynamic: 32 + struct index.
 // ---------------------------------------------------------------------------
 let TY_STRUCT_BASE: i32 = 32;
+let TY_PTR_STRUCT_BASE: i32 = 64;   // v0.23.77-dev: pointers to structs
 let stk_name: i32[64] = 0;
 let stk_cnt: i32[64] = 0;
 let stk_fname: i32[512] = 0;      // field f of struct s lives at s*8+f
@@ -3645,6 +3649,7 @@ fn is_int_tag(t: i32) -> i32 {
 }
 fn is_ptr_tag(t: i32) -> i32 {
     if (t == TY_PTR || t == TY_PTR_U8 || t == TY_PTR_I32 || t == TY_PTR_I64) { return 1; }
+    if (t >= TY_PTR_STRUCT_BASE) { return 1; }   // v0.23.77-dev: ptr<S>
     return 0;
 }
 // The pointer to an element type — what an array decays to when it is used as
@@ -3929,8 +3934,11 @@ fn tc_combine(n: i32) -> i32 {
     if (k == E_Field) {
         let bf: i32 = nfirst[n - 1];
         if (find_var(ntok[bf - 1]) == 0) { die_name_at("unknown variable: ", ntok[bf - 1]); return 1; }
-        if (ty_is_struct(rs_tag) == 0) { die_name_at("'.' field access on a non-struct: ", ntok[bf - 1]); return 1; }
-        if (struct_field(rs_tag - TY_STRUCT_BASE, ntok[n - 1]) < 0) { die_name_at("no such field: ", ntok[n - 1]); return 1; }
+        // v0.23.77-dev: `p.f` - a ptr<S> base is dereferenced implicitly
+        let sbase: i32 = rs_tag;
+        if (rs_tag >= TY_PTR_STRUCT_BASE) { sbase = TY_STRUCT_BASE + (rs_tag - TY_PTR_STRUCT_BASE); }
+        if (ty_is_struct(sbase) == 0) { die_name_at("'.' field access on a non-struct: ", ntok[bf - 1]); return 1; }
+        if (struct_field(sbase - TY_STRUCT_BASE, ntok[n - 1]) < 0) { die_name_at("no such field: ", ntok[n - 1]); return 1; }
         ex_ty[n - 1] = TY_I32;
         ex_arr[n - 1] = 0;
         return 0;
@@ -4046,6 +4054,7 @@ fn tc_combine(n: i32) -> i32 {
         }
         if (find_var(ntok[op - 1]) == 0) { die_name_at("unknown variable: ", ntok[op - 1]); return 1; }
         let ot: i32 = ex_ty[op - 1];
+        if (ty_is_struct(ot) == 1) { ex_ty[n - 1] = TY_PTR_STRUCT_BASE + (ot - TY_STRUCT_BASE); }
         if (ot == TY_I64) { ex_ty[n - 1] = TY_PTR_I64; }
         else if (ot == TY_U8) { ex_ty[n - 1] = TY_PTR_U8; }
         else { ex_ty[n - 1] = TY_PTR_I32; }
@@ -5220,8 +5229,11 @@ fn gen_field_addr(btok: i32, ftok: i32) -> i32 {
         if (skind[gs] == SK_EXTERN_LET) { if (cg_die_name_at("cannot reference external global: ", btok) != 0) { return 0 - 1; } }
         tag = stag[gs];
     }
-    if (ty_is_struct(tag) == 0) { if (cg_die_name_at("'.' field access on a non-struct: ", btok) != 0) { return 0 - 1; } }
+    let is_pp: i32 = 0;
+    if (tag >= TY_PTR_STRUCT_BASE) { is_pp = 1; }   // v0.23.77-dev: ptr<S>
+    if (is_pp == 0 && ty_is_struct(tag) == 0) { if (cg_die_name_at("'.' field access on a non-struct: ", btok) != 0) { return 0 - 1; } }
     let si: i32 = tag - TY_STRUCT_BASE;
+    if (is_pp == 1) { si = tag - TY_PTR_STRUCT_BASE; }
     let fi: i32 = struct_field(si, ftok);
     if (fi < 0) { if (cg_die_name_at("no such field: ", ftok) != 0) { return 0 - 1; } }
     let off: i32 = stk_foff[si * 8 + fi];
@@ -5231,6 +5243,10 @@ fn gen_field_addr(btok: i32, ftok: i32) -> i32 {
         if (emit_frame_addr(t, cg_loc_slot[li] * 8) != 0) { return 0 - 1; }
     } else {
         if (emit_addr64(t, g_addr[gs]) != 0) { return 0 - 1; }
+    }
+    if (is_pp == 1) {
+        // the slot holds the pointer: load it, then index the struct
+        if (emit_mem(0, 3, t, t, 0) != 0) { return 0 - 1; }
     }
     if (emit_addsub_imm(t, t, off, 0, 1) != 0) { return 0 - 1; }   // 64-bit: the address is an X register
     return t;

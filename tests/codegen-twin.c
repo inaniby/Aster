@@ -57,6 +57,7 @@
 #include "lexer_names.h"   /* generated: TK_* codes, TK_NAMES, KEYWORDS */
 #include "parser_names.h"  /* generated: E_/S_/N_ codes, the name tables */
 
+#define TY_PTR_STRUCT_BASE 64   /* v0.23.77-dev: ptr<S> */
 #define SRCMAX 1048576
 #define TOKMAX 65536
 #define NODEMAX 65536
@@ -875,6 +876,10 @@ static int ptr_type(void) {
         die_at("expected '>' after the struct name in a ptr<...> type",
                tok_line(p), tok_col(p));
     adv();
+    {
+        int psi = struct_find(idt);
+        if (psi >= 0) return TY_PTR_STRUCT_BASE + psi;   /* v0.23.77-dev: ptr<S> */
+    }
     snprintf(msgbuf, sizeof msgbuf, "unknown struct type in ptr<%.*s>",
              toks[idt].len, srcbuf + toks[idt].start);
     die_at(msgbuf, tok_line(idt), tok_col(idt));
@@ -1772,6 +1777,7 @@ static int sema_block(int b);
 /* --- type helpers (§2.4) --- */
 static int is_int_tag(int t)  { return (t == TY_I32 || t == TY_I64 || t == TY_U8); }
 static int is_ptr_tag(int t) {
+    if (t >= TY_PTR_STRUCT_BASE) return 1;   /* v0.23.77-dev: ptr<S> */
     return (t == TY_PTR || t == TY_PTR_U8 || t == TY_PTR_I32 || t == TY_PTR_I64);
 }
 static int ptr_to(int elem) {
@@ -2081,9 +2087,12 @@ static int tc_combine(int n) {
         int bf = nodes[n].first;
         if (!sym_find_var(nodes[bf].tok))
             die_name_at("unknown variable: ", nodes[bf].tok);
-        if (!ty_is_struct(rs_tag))
+        /* v0.23.77-dev: p.f - a ptr<S> base is dereferenced implicitly */
+        int sbase = rs_tag;
+        if (rs_tag >= TY_PTR_STRUCT_BASE) sbase = TY_STRUCT_BASE + (rs_tag - TY_PTR_STRUCT_BASE);
+        if (!ty_is_struct(sbase))
             die_name_at("'.' field access on a non-struct: ", nodes[bf].tok);
-        if (struct_field(rs_tag - TY_STRUCT_BASE, nodes[n].tok) < 0)
+        if (struct_field(sbase - TY_STRUCT_BASE, nodes[n].tok) < 0)
             die_name_at("no such field: ", nodes[n].tok);
         ety[n] = TY_I32;
         earr[n] = 0;
@@ -2499,6 +2508,7 @@ static int ptr_elem_t(int t){
     if (t==5) return 3;   /* u8  */
     return 1;             /* bare ptr -> i32 */
 }
+/* v0.23.77-dev: pointers to structs live above the struct values */
 static int ty_width_t(int t){
     if (t==10) return 1;  /* v0.23.77-dev: bool, one byte */
     if (t==11) return 2;  /* v0.23.77-dev: u16 */
@@ -2906,12 +2916,16 @@ static int gen_field_addr(int btok,int ftok){
         if (st_kind[gs]==3) return cg_die_name_at("cannot reference external global: ", btok);
         tag=st_tag[gs];
     }
-    if (!ty_is_struct(tag)) return cg_die_name_at("'.' field access on a non-struct: ", btok);
-    int si=tag-TY_STRUCT_BASE, fi=struct_field(si, ftok);
+    /* v0.23.77-dev: `p.f` where p is a ptr<S> - the base holds the address */
+    int is_pp = (tag >= TY_PTR_STRUCT_BASE) ? 1 : 0;
+    if (!is_pp && !ty_is_struct(tag)) return cg_die_name_at("'.' field access on a non-struct: ", btok);
+    int si = is_pp ? tag-TY_PTR_STRUCT_BASE : tag-TY_STRUCT_BASE;
+    int fi=struct_field(si, ftok);
     if (fi<0) return cg_die_name_at("no such field: ", ftok);
     int off=stk_foff[si*8+fi], t=alloc_tmp(); if (t<0) return -1;
     if (li>=0) { if (emit_frame_addr(t, cg_loc_slot[li]*8)) return -1; }
     else { if (emit_addr64(t, g_addr[gs])) return -1; }
+    if (is_pp) { if (emit_mem(0,3,t,t,0)) return -1; }   /* the pointer itself */
     if (emit_addsub_imm(t,t,off,0,1)) return -1;   /* 64-bit: an X register */
     return t;
 }
