@@ -1170,10 +1170,11 @@ static int let_stmt(void) {
     allow_struct_type = 1;
     int ty = parse_type();
     allow_struct_type = 0;
-    /* v0.23.77-dev: the twin's f64 support is half-built (the literal converts,
-     * the storage and the FP ops are not mirrored yet). It refuses rather than
-     * answering wrongly - an oracle that silently disagrees is worse than one
-     * that says it cannot. */
+    /* v0.23.77-dev: the twin reads f64 (literal, type, local storage, FCMP) but
+     * does not yet agree with the stage on a whole program - it answers 1001
+     * where the stage answers 1111 on tests/-level fixtures. Until that is
+     * diagnosed it refuses, because an oracle that silently disagrees is worse
+     * than one that says it cannot. */
     if (ty == 9)
         die_at("f64 is not mirrored in the twin yet (the stage supports it)",
                tok_line(nt), tok_col(nt));
@@ -2478,6 +2479,8 @@ static int ty_width_t(int t){
 }
 static int ty_is64_t(int t){ return (t==2) || (t==8) || is_ptr_tag_t(t); }  /* 8 = u64 */
 static int ty_is_uns_t(int t){ return (t==3) || (t==8); }  /* 8 = u64 */
+
+
 static int log2w_t(int w){ if (w==1) return 0; if (w==4) return 2; return 3; }
 static int mem_scale_t(int w){ if (w==1) return 0; if (w==2) return 1;   /* A-26 */
     if (w==4) return 2; return 3; }
@@ -2640,6 +2643,34 @@ static int emit_addsub_ext(int rd,int rn,int rm,int is_sub,int option,int sh){
     return emit_word(base | (((int64_t)rm<<16) | ((int64_t)option<<13) | ((int64_t)sh<<10) | ((int64_t)rn<<5) | rd));
 }
 /* ---- §4.4 compare / condition / branch ---- */
+/* v0.23.77-dev: the double file, the same encodings the stage emits. A temp is
+ * a register *number*: X(n) for integers, D(n) for the same n here. */
+static int emit_str_d(int rt,int rn,int off){ return emit_word(0xfd000000u|((uint32_t)(off>>3)<<10)|((uint32_t)rn<<5)|(uint32_t)rt); }
+static int emit_ldr_d(int rt,int rn,int off){ return emit_word(0xfd400000u|((uint32_t)(off>>3)<<10)|((uint32_t)rn<<5)|(uint32_t)rt); }
+static int emit_fmov_xd(int rd,int rn){ return emit_word(0x9e670000u|((uint32_t)rn<<5)|(uint32_t)rd); }
+static int emit_fmov_dx(int rd,int rn){ return emit_word(0x9e660000u|((uint32_t)rn<<5)|(uint32_t)rd); }
+static int emit_fp2(int rd,int rn,int rm,int kind){
+    uint32_t base = 0x1e602800u;                 /* FADD D */
+    if (kind==1) base = 0x1e603800u;
+    if (kind==2) base = 0x1e600800u;
+    if (kind==3) base = 0x1e601800u;
+    return emit_word(base|((uint32_t)rm<<16)|((uint32_t)rn<<5)|(uint32_t)rd);
+}
+/* The three below are wired but not yet reached: a float return, a float
+ * argument and float arithmetic wait on the rest of the mirror. Naming them in
+ * one place keeps -Werror honest without inventing a use, and the attribute is
+ * the file's own way of saying "kept for the next slice". */
+__attribute__((unused)) static void twin_f64_pending(void){
+    (void)emit_fmov_xd; (void)emit_fmov_dx; (void)emit_fp2;
+}
+static int emit_fcmp_d(int rn,int rm){ return emit_word(0x1e602000u|((uint32_t)rm<<16)|((uint32_t)rn<<5)); }
+static int fp_cond(int k){
+    if (k==E_Lt) return 4;      /* MI */
+    if (k==E_Le) return 9;      /* LS */
+    if (k==E_Gt) return 8;      /* HI */
+    if (k==E_Ge) return 2;      /* HS */
+    return 0;                   /* EQ */
+}
 static int emit_cmp_rr(int rn,int rm,int is64){
     int64_t base=0x6b00001fLL; if (is64==1) base=0xeb00001fLL;
     return emit_word(base | (((int64_t)rm<<16) | ((int64_t)rn<<5)));
@@ -2816,6 +2847,10 @@ static int gx_dispatch(int n,int wt){
     }
     if (k==E_Eq||k==E_Ne||k==E_Lt||k==E_Le||k==E_Gt||k==E_Ge){
         int cw=1; if (ty_is64_t(lt)||ty_is64_t(rt)) cw=2;
+        /* v0.23.77-dev: an f64 comparison generates its operands at the double
+         * width, which is what the float bank reads */
+        if (lt==9||rt==9) cw=2;
+        if (lt==9||rt==9) return gx_push_bin(n,9,cw,wt);
         return gx_push_bin(n,cw,cw,wt);
     }
     if (k==E_And||k==E_Or) return gx_push_logical(n,wt);
@@ -3057,11 +3092,14 @@ static int gen_combine(int n,int want){
     }
     if (k==E_Eq||k==E_Ne||k==E_Lt||k==E_Le||k==E_Gt||k==E_Ge){
         int is64=0; if (ty_is64_t(lt)||ty_is64_t(rt)) is64=1;
-        if (emit_cmp_rr(a,b,is64)) return 1;
+        /* v0.23.77-dev: a float comparison is FCMP, and its own condition map */
+        int isflt = (lt==9||rt==9);
+        if (isflt){ if (emit_fcmp_d(a,b)) return 1; }
+        else if (emit_cmp_rr(a,b,is64)) return 1;
         if (free_tmp(b)) return 1;
         if (free_tmp(a)) return 1;
         int d=alloc_tmp(); if (d<0) return -1;
-        if (emit_cset(d,cmp_cond(k,lt,rt))) return 1;
+        if (emit_cset(d,(isflt?fp_cond(k):cmp_cond(k,lt,rt)))) return 1;
         gx_val[n]=d; return 0;
     }
     // E_And / E_Or never reach here: gx_dispatch routes them through
@@ -3104,6 +3142,10 @@ static int gen_var(int n,int want){
             return d;
         }
         int d=alloc_tmp(); if (d<0) return -1;
+        if (ty==9){
+            if (emit_ldr_d(d,31,cg_loc_slot[e]*8)) return -1;
+            return d;
+        }
         if (emit_mem(0, mem_scale_t(ty_width_t(ty)), d, 31, cg_loc_slot[e]*8)) return -1;
         if (ty==1 && ty_is64_t(want)==1){ if (emit_sxtw(d,d)) return -1; }
         return d;
@@ -3373,6 +3415,11 @@ static int gen_stmt(int s){
     if (k==S_Let){
         int slot=cg_add_local(NT(s), NTY(s), 1); if (slot<0) return 1;
         int v=gen_expr(NF(s), NTY(s)); if (v<0) return 1;
+        if (NTY(s)==9){
+            if (emit_str_d(v,31,slot*8)) return 1;
+            if (free_tmp(v)) return 1;
+            return 0;
+        }
         if (emit_mem(1, mem_scale_t(ty_width_t(NTY(s))), v, 31, slot*8)) return 1;
         if (free_tmp(v)) return 1;
         return 0;
