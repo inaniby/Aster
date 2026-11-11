@@ -1,0 +1,18 @@
+let o: u8[8] = 0;
+
+fn half(x: f64) -> f64 { return x / 2.0; }
+fn scale(x: f64, k: f64) -> f64 { return x * k; }
+
+fn main() -> i32 {
+    // awkward values: the bit patterns are not nice round numbers
+    let a: f64 = scale(0.1, 3.0);      // 0.30000000000000004
+    let b: f64 = half(a);              // ~0.15000000000000002
+    if (b > 0.15 && b < 0.16) { store_u8(o, 49); } else { store_u8(o, 48); }
+    let c: f64 = half(b);              // ~0.075
+    if (c > 0.07 && c < 0.08) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    let d: f64 = scale(c, 8.0);        // ~0.6
+    if (d > 0.59 && d < 0.61) { store_u8(o + 2, 49); } else { store_u8(o + 2, 48); }
+    store_u8(o + 3, 10);
+    write(1, o, 4);
+    return 0;
+}

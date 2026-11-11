@@ -1,0 +1,21 @@
+let o: u8[8] = 0;
+
+fn twice(x: f64) -> f64 {
+    return x + x;
+}
+
+fn addmul(a: f64, b: f64) -> f64 {
+    return a * b + a;
+}
+
+fn main() -> i32 {
+    let r: f64 = twice(1.5);          // 3.0
+    if (r > 2.9 && r < 3.1) { store_u8(o, 49); } else { store_u8(o, 48); }
+    let s: f64 = addmul(2.0, 3.0);    // 6 + 2 = 8
+    if (s > 7.9 && s < 8.1) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    let t: f64 = twice(s);            // 16
+    if (t > 15.9 && t < 16.1) { store_u8(o + 2, 49); } else { store_u8(o + 2, 48); }
+    store_u8(o + 3, 10);
+    write(1, o, 4);
+    return 0;
+}

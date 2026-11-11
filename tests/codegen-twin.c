@@ -3335,7 +3335,9 @@ static int gen_call(int n,int want){
             }
         } else {
             int v=gen_expr_at(arg,pty,gx_top); if (v<0) return -1;
-            if (emit_mem(1, mem_scale_t(ty_width_t(pty)), v, 31, (800+base+reg)*8)) return -1;
+            if (pty==9){
+                if (emit_str_d(v,31,(800+base+reg)*8)) return -1;   /* the double file */
+            } else if (emit_mem(1, mem_scale_t(ty_width_t(pty)), v, 31, (800+base+reg)*8)) return -1;
             if (free_tmp(v)) return -1;
         }
         i++;
@@ -3350,12 +3352,16 @@ static int gen_call(int n,int want){
     }
     while (j2<reg){ if (emit_mem(0,3,9,31,(800+base+j2)*8)) return -1; if (emit_mem(1,3,9,31,(j2-8)*8)) return -1; j2++; }
     if (emit_bl(fn_lab[fsym])) return -1;
-    if (emit_mem(1,3,0,31,1022*8)) return -1;
+    /* v0.23.77-dev: the result's register file, decided once - a float leaves
+     * D0 and is parked as D, everything else leaves X0 and is parked as X */
+    if (st_tag[fsym]==9){ if (emit_str_d(0,31,1022*8)) return -1; }
+    else if (emit_mem(1,3,0,31,1022*8)) return -1;
     pr=0; while (pr<parked_n){ if (emit_mem(0,3,tmp_free[pr],31,(900+pr)*8)) return -1; pr++; }
     tmp_top=parked_n;
     int d=alloc_tmp(); if (d<0) return -1;
     if (ty_reg_slots(st_tag[fsym])==2){ if (emit_mem(1,3,1,31,1021*8)) return -1; }
-    if (emit_mem(0, mem_scale_t(ty_width_t(st_tag[fsym])), d, 31, 1022*8)) return -1;
+    if (st_tag[fsym]==9){ if (emit_ldr_d(d,31,1022*8)) return -1; }
+    else if (emit_mem(0, mem_scale_t(ty_width_t(st_tag[fsym])), d, 31, 1022*8)) return -1;
     if (st_tag[fsym]==1 && ty_is64_t(want)==1){ if (emit_sxtw(d,d)) return -1; }
     return d;
 }
