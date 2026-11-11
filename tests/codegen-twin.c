@@ -2849,8 +2849,7 @@ static int gx_dispatch(int n,int wt){
         int cw=1; if (ty_is64_t(lt)||ty_is64_t(rt)) cw=2;
         /* v0.23.77-dev: an f64 comparison generates its operands at the double
          * width, which is what the float bank reads */
-        if (lt==9||rt==9) cw=2;
-        if (lt==9||rt==9) return gx_push_bin(n,9,cw,wt);
+        if (lt==9||rt==9) return gx_push_bin(n,9,9,wt);   /* both sides at double width */
         return gx_push_bin(n,cw,cw,wt);
     }
     if (k==E_And||k==E_Or) return gx_push_logical(n,wt);
