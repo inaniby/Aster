@@ -425,10 +425,10 @@ fi
 
 # --- 9. the suite can still fail --------------------------------------------------
 printf '%s\n' '[9/9] the suite can still fail'
-# A test that cannot fail is decoration. Halve the CFA offset and require the
-# checks above to notice; if the mutation ever stops applying, this step fails
-# so the guard gets fixed instead of quietly passing.
-sed 's|body.push_back(0x0e);ehUleb(body,8192);|body.push_back(0x0e);ehUleb(body,4096);|' \
+# A test that cannot fail is decoration. The CFA offset is the function's own
+# frame size; forcing a constant 4096 makes every FDE describe the wrong frame,
+# and the checks above have to notice. If the mutation ever stops applying,
+sed 's|body.push_back(0x0e);ehUleb(body,frame);|body.push_back(0x0e);ehUleb(body,4096);|' \
     src/aster.cpp > "$OUT/mutant.cpp"
 grep -q 'ehUleb(body,4096)' "$OUT/mutant.cpp" \
     || fail "the halved-CFA mutation no longer applies to src/aster.cpp"
