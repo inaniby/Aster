@@ -1,0 +1,9 @@
+let o: u8[8] = 0;
+fn main() -> i32 {
+    if (1.5 > 0.5) { store_u8(o, 49); } else { store_u8(o, 48); }
+    if (0.5 < 1.5) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    if (1.5 == 1.5) { store_u8(o + 2, 49); } else { store_u8(o + 2, 48); }
+    store_u8(o + 3, 10);
+    write(1, o, 4);
+    return 0;
+}

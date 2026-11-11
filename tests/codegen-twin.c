@@ -123,7 +123,7 @@ static int sdepth;                      /* C2 */
 /* The converted number (§6.2): the value, why it is not exact (1 too large
  * for u64, 2 saturated above i64 max), and the array-length reading. */
 static int64_t numval;
-static int numf;                 /* v0.23.77-dev: the bits of a float literal */
+static int64_t numf;             /* v0.23.77-dev: the bits of a float literal (64 wide!) */
 static int tflt[TOKMAX];         /* v0.23.77-dev: per token, 1 when it spelled a '.' */
 static void convert_float(int t);   /* v0.23.77-dev: defined with the converter */
 static int numflag;
@@ -1170,14 +1170,6 @@ static int let_stmt(void) {
     allow_struct_type = 1;
     int ty = parse_type();
     allow_struct_type = 0;
-    /* v0.23.77-dev: the twin reads f64 (literal, type, local storage, FCMP) but
-     * does not yet agree with the stage on a whole program - it answers 1001
-     * where the stage answers 1111 on tests/-level fixtures. Until that is
-     * diagnosed it refuses, because an oracle that silently disagrees is worse
-     * than one that says it cannot. */
-    if (ty == 9)
-        die_at("f64 is not mirrored in the twin yet (the stage supports it)",
-               tok_line(nt), tok_col(nt));
     if (ty_is_struct(ty)) {
         if (cur() == TK_Semi) {
             adv();
@@ -2838,6 +2830,8 @@ static int gx_dispatch(int n,int wt){
         int ow=wt; if (ty_is64_t(wt)||ty_is64_t(lt)) ow=2;
         return gx_push_bin(n,ow,1,wt);
     }
+    if ((k==E_Add||k==E_Sub||k==E_Mul||k==E_Div) && (lt==9||rt==9))
+        return gx_push_bin(n,9,9,wt);          /* v0.23.77-dev: the double file */
     if (k==E_Add||k==E_Sub){
         int lp=is_ptr_tag_t(lt), rp=is_ptr_tag_t(rt);
         if (lp==1 && rp==0) return gx_push_bin(n,2,1,wt);
@@ -3002,7 +2996,7 @@ static void convert_float(int t){
         if (ch == '.') seen = 1;
         else { m = m * 10 + (uint64_t)digit_val(ch); if (seen) frac++; }
     }
-    numf = (int)f64_from_dec(m, -frac);
+    numf = f64_from_dec(m, -frac);
 }
 static int param_type(int fnode,int i){
     int p=NF(fnode), pi=0;
@@ -3037,6 +3031,14 @@ static int gen_combine(int n,int want){
         gx_val[n]=a; return 0;
     }
     int l=NF(n), r=NN(l), lt=ETY(l), rt=ETY(r), a=gx_val[l], b=gx_val[r];
+    /* v0.23.77-dev: the double file, decided before every integer arm */
+    if ((k==E_Add||k==E_Sub||k==E_Mul||k==E_Div) && (lt==9||rt==9)){
+        int fk=0;
+        if (k==E_Sub) fk=1; else if (k==E_Mul) fk=2; else if (k==E_Div) fk=3;
+        if (emit_fp2(a,a,b,fk)) return 1;
+        if (free_tmp(b)) return 1;
+        gx_val[n]=a; return 0;
+    }
     if (k==E_Add||k==E_Sub){
         int lp=is_ptr_tag_t(lt), rp=is_ptr_tag_t(rt);
         if (k==E_Add && lp==1 && rp==1){ return cg_die_at_node("invalid pointer arithmetic: expected ptr +/- i32 or i32 + ptr", n); }

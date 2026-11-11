@@ -1,0 +1,13 @@
+let o: u8[16] = 0;
+
+fn main() -> i32 {
+    let x: f64 = 1.5;
+    let y: f64 = 0.5;
+    if (x == 1.5) { store_u8(o, 49); } else { store_u8(o, 48); }
+    if (x > y) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    if (y < x) { store_u8(o + 2, 49); } else { store_u8(o + 2, 48); }
+    if (y == 0.5) { store_u8(o + 3, 49); } else { store_u8(o + 3, 48); }
+    store_u8(o + 4, 10);
+    write(1, o, 5);
+    return 0;
+}
