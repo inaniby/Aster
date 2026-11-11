@@ -4045,7 +4045,8 @@ fn tc_combine(n: i32) -> i32 {
     }
     if (k == E_Not) {
         let op: i32 = nfirst[n - 1];
-        if (ex_ty[op - 1] != -2) { die_at("'!' requires a bool operand", tok_line(ntok[n - 1]), tok_col(ntok[n - 1])); return 1; }
+        // v0.23.77-dev: a comparison (-2) or a bool *variable* (TY_BOOL)
+        if (ex_ty[op - 1] != -2 && ex_ty[op - 1] != TY_BOOL) { die_at("'!' requires a bool operand", tok_line(ntok[n - 1]), tok_col(ntok[n - 1])); return 1; }
         ex_ty[n - 1] = -2; ex_arr[n - 1] = 0; return 0;
     }
     if (k == E_Deref) {
@@ -4087,6 +4088,11 @@ fn tc_combine(n: i32) -> i32 {
         ex_ty[n - 1] = -2; ex_arr[n - 1] = 0; return 0;
     }
     if (k == E_And || k == E_Or) {
+        // v0.23.77-dev: both operands must be bool, as the host demands - a
+        // comparison or a bool variable. The stage used to let anything through.
+        if ((lt != -2 && lt != TY_BOOL) || (rt != -2 && rt != TY_BOOL)) {
+            die_name_at("&& and || require bool operands: ", ntok[n - 1]); return 1;
+        }
         ex_ty[n - 1] = -2; ex_arr[n - 1] = 0; return 0;
     }
     if (k == E_Shl || k == E_Shr) {

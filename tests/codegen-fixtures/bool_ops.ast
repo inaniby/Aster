@@ -1,0 +1,10 @@
+fn main() -> i32 {
+    let on: bool = true;
+    let off: bool = 3 < 2;
+    if (on && !off) { return 1; }
+
+    let small: u16 = 65535;
+    let big: u32 = 4294967295;
+    if (small > 1 && big > 1) { return 1; }
+    return 0;
+}

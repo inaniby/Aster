@@ -2184,7 +2184,8 @@ static int tc_combine(int n) {
     }
     if (k == E_Not) {
         int op = nodes[n].first;
-        if (ety[op] != -2)
+        /* v0.23.77-dev: a comparison (-2) or a bool variable (10) */
+        if (ety[op] != -2 && ety[op] != 10)
             die_at("'!' requires a bool operand",
                    tok_line(nodes[n].tok), tok_col(nodes[n].tok));
         ety[n] = -2; earr[n] = 0; return 0;

@@ -508,6 +508,26 @@ number: they are additions to the bootstrap subset, not a new product version.
   `tests/f64-short-circuit-checks.sh` pins it.
 * **The call result's register file is explicit** - the stage's float calls used to
   work only because X0 and D0 happened to hold the same bits.
+* **`bool`, `u16` and `u32`** - the three types the host has always had and the
+  subset refused by name. `bool` is one byte with `true`/`false` literals, is a
+  condition, and may hold a comparison (which is the type's whole purpose);
+  `u16` and `u32` are two and four bytes with unsigned division and comparisons.
+  None of them needed new machinery - the width table, the unsigned flag and the
+  store/load scaling already handled those sizes - so each was five small edits.
+* **Pointers to anything** (four slices) - `&x` takes the address of a local or a
+  global, `*p` reads through it at the pointee's width, `ptr<S>` is a type whose
+  fields are reached directly (`p.f` implies the dereference), and `*p = v` /
+  `p.f = v` write through one. Pointers to structs get their own tag range above
+  the struct values, so no predicate ever has to guess which sort of number it
+  was handed. Three fixtures hold it to the twin.
+* **A note on where a new node kind has to be registered.** Every prefix node
+  needs the same five places: the parser's prefix path, a semantic arm, a code
+  generator arm that reuses the child's temporary (a unary node owns exactly one),
+  the two tree walks that must not read a second child, and the dispatcher that
+  decides unary from binary. Missing the walks segfaults the compiler; missing the
+  dispatcher produced a silent failure; returning a register number where the
+  caller wanted a status produced "temporary register leak". All three happened
+  while landing `&`, and all three are now written down in the spec.
 * **Two desktop-only suites now run here** - a native-disassembler resolver for
   `stride-scale-checks` and the shared `tests/lib/linkmode.sh` link-mode probe for
   both it and `stack-arg-abi-checks`.

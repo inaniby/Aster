@@ -1745,6 +1745,47 @@ below the normal range a literal answers zero rather than a subnormal.
 Two things stay outside: `f32`, and comparing a float against an integer without
 writing the integer as a float (`x > 1` is a type error, `x > 1.0` is not).
 
+## 11e5. More scalar types: `bool`, `u16`, `u32`
+
+```aster
+let on: bool = true;
+let off: bool = 3 < 2;      // false - a bool may hold a comparison
+if (on && !off) { return 1; }
+
+let small: u16 = 65535;
+let big: u32 = 4294967295;
+if (small > 1 && big > 1) { return 1; }   // unsigned, so both are true
+```
+
+`bool` is one byte and holds 0 or 1; `true` and `false` are its literals, and a
+bool variable is a condition on its own. `u16` and `u32` are two and four bytes
+with unsigned division, shifts and comparisons.
+
+## 11e6. Pointers
+
+`&` takes an address, `*` reads through one, and a pointer to a struct reaches its
+fields directly:
+
+```aster
+struct P { a: i32, b: i32 }
+
+fn main() -> i32 {
+    let n: i32 = 5;
+    let q: ptr<i32> = &n;
+    *q = 9;                       // n is 9 now
+
+    let s: P = P { 1, 2 };
+    let p: ptr<P> = &s;
+    p.a = 7;                      // the dereference is implicit
+    if (s.a == 7 && p.b == 2) { return 1; }
+    return 0;
+}
+```
+
+Two rules to remember: `*p` needs a **typed** pointer to know how many bytes to
+read (`ptr` alone has no pointee and is refused), and the value written through a
+pointer must fit the pointee's type.
+
 ## 11f. What is not in the language
 
 There is no gap left in the statement grammar: `static let` (11b) covers state

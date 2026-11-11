@@ -2146,3 +2146,78 @@ Before the result-stash rule existed, a float call was correct only because the
 value sat in **both** X0 (the FMOV the return does) and D0 (where the callee put
 it), and the consuming store read the D one. Both hold the same bits, so nothing
 failed - and nothing said why it worked. It says why now.
+
+## Pointers and the newer scalar types (v0.23.77-dev, slices E1 to E4)
+
+### The tag layout, and why it has two ranges
+
+Three families of tag coexist: the plain scalars (1..10), the struct *values*
+(32 + index) and, since this round, the pointers **to** structs (64 + index).
+Splitting the last two matters: `is_ptr_tag` and the field resolver both see
+numbers above 31, and with one shared range every predicate would have to ask the
+struct table whether a given 32-plus number is a value or a pointer. With two
+ranges `t >= 64` is the whole question, in both the stage and the twin.
+
+### `&x` (E_AddrOf)
+
+The parser reaches it through the same prefix path as unary minus and `!`, and the
+reduce builds `E_AddrOf` for it. Semantically the operand must be a **variable** -
+its type becomes a pointer to that variable's type, so `&s` of a struct local is a
+`ptr<S>`, not a `ptr<i32>`. The code generator emits a frame address for a local
+and `ADRP`/`ADD` for a global.
+
+### `*p` (E_Deref)
+
+The pointee's type comes from the pointer. A bare `ptr` has no pointee and is
+refused by name ("'*' needs a typed pointer (ptr<T>)"), which is the same
+distinction the host's `ptr` makes everywhere else. The load overwrites the
+child's temporary, so a unary node still owns exactly one register from the pool.
+
+### `ptr<S>` and `p.f`
+
+`ptr_type` answers `64 + index` when the name after `ptr<` is a known struct, and
+`is_ptr_tag` accepts the range - which is what lets such a pointer be declared,
+assigned, compared and passed with the existing pointer rules. A field reached
+through one is dereferenced implicitly: the semantic arm maps the pointer tag back
+to the struct it points at, and the address computation loads the pointer out of
+the variable's own slot before adding the field offset. `p.f = v` needs one more
+line than `p.f` - the same base-type mapping in the statement's arm.
+
+### `*p = v` (S_DerefAssign)
+
+The fifteenth statement kind the subset carries, and the one that completes
+`ptr<S>`: an address taken, read through, and written through. Statement position
+is not expression position - the statement dispatcher parses it and returns its
+node; borrowing the expression state machine's "push a value and continue" loop
+produced "assignment to unknown variable: state", which is the parser saying it is
+not in that loop.
+
+### The five places a prefix node needs, and the three ways to get them wrong
+
+| place | what happens without it |
+|---|---|
+| the parser's prefix path | the operator is refused by name |
+| a semantic arm | the node has no type and the statement is rejected |
+| a code-generator arm | the dispatcher pushes it as a binary node |
+| the two tree walks and the constant fold | **the compiler segfaults**, reading a second child that does not exist |
+| the dispatcher's unary rule | the expression loop fails with a bare status |
+
+Beyond the placement, two conventions are easy to break. A code-generator arm
+answers a **status**, not a register number - the value goes into the node's
+`gx_val` slot; returning the temporary made the caller read a register number as a
+failure code. And a unary node must **reuse its child's temporary** rather than
+allocate a second one: the pool is strictly LIFO, so an extra allocation is
+reported as "internal compiler error: temporary register leak".
+
+### The generated kind lists are a subsequence check
+
+`STMT_SUBSET` and `EXPR_SUBSET` are subsequences of the host's lists in host
+order. That is what makes a mistake loud: an edit that rewrote a shared line and
+dropped three statement names was caught immediately with "expected 14 statement
+kinds, list has 12" instead of silently renumbering every kind after them.
+
+### Evidence
+
+`tests/codegen-fixtures/` carries `bool.ast`, `u16_u32.ast`, `address_of.ast`,
+`deref.ast`, `ptr_struct.ast` and `ptr_write.ast`; the stage's image and the
+twin's are byte-identical for each.
