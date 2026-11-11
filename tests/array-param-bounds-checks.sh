@@ -58,7 +58,7 @@ grep -qF 'paramArrayLength[slot]=(uint32_t)dimsProduct(f.paramDims[i]);' src/ast
 grep -qF 'if(paramArrayLength.count(slot)){' src/aster.cpp \
     || { echo 'FAIL: array-parameter read is not bounds-checked' >&2; exit 1; }
 # The write-side check mirrors it.
-grep -qF 'if(!s.name.empty()){int aslot=lookup(s.name);' src/aster.cpp \
+grep -qF 'if(!an.empty()){int aslot=lookup(an);' src/aster.cpp \
     || { echo 'FAIL: array-parameter write is not bounds-checked' >&2; exit 1; }
 # arrayLengthOf must still consult localArrayLength first: changing it would
 # retype `&a` on a parameter (AddrOf at the arrayLengthOf call site) and move

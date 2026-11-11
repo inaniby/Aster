@@ -78,7 +78,7 @@ grep -qF 'if(cur().k==TK::True||cur().k==TK::False){' src/aster.cpp \
 # every bool-literal path now carries its own type check, so this is defence in
 # depth rather than the only door — it stays pinned here, and m4 targets the
 # 0/1-constant rule that is the other half of the same "bool is not int" story.)
-grep -qF 'case Expr::Num: if(e.boolLit)return false; out=static_cast<int64_t>(e.n); return true;' src/aster.cpp \
+grep -qF 'case Expr::Num: if(e.boolLit||e.isFloat)return false; out=static_cast<int64_t>(e.n); return true;' src/aster.cpp \
     || { echo 'FAIL: constantInteger must not fold a bool literal' >&2; exit 1; }
 # genBool: the literal itself, and the two bool-valued shapes that used to die
 # in its fallthrough (a struct field and a ?: selection).

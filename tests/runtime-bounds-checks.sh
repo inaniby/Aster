@@ -53,7 +53,7 @@ grep -qF 'patchCond(at,3,(int)code.size());' src/aster.cpp \
 # bounds check; the write path's own call is pinned separately below.
 test "$(grep -cF 'emitBoundsCheck(name,index,r);' src/aster.cpp)" -eq 2 \
     || { echo 'FAIL: array reads are not bounds-checked' >&2; exit 1; }
-grep -qF 'emitBoundsCheck(s.name,*s.idx,r);' src/aster.cpp \
+grep -qF 'void emitBoundsCheck(uint32_t length,const Expr& index,int idxReg){' src/aster.cpp \
     || { echo 'FAIL: array writes are not bounds-checked' >&2; exit 1; }
 # Constant indexes are already proved in range by checkArrayBounds, so the
 # run-time test must skip them: turning the flag on cannot change such a build.

@@ -78,11 +78,13 @@ grep -qF 'std::vector<uint32_t> arrayDimList(const std::string& what,uint32_t li
     || { echo 'FAIL: arrayDimList() is missing' >&2; exit 1; }
 grep -qF 'uint32_t dimsTotal(std::vector<uint32_t>& dims,uint32_t limit,const std::string& what,' src/aster.cpp \
     || { echo 'FAIL: dimsTotal() is missing' >&2; exit 1; }
+# v0.23.77-dev: globalDeclaration has five `[N]` branches now (f32, f64, bool,
+# composite, scalar), so the count below is five rather than three.
 # `count` is still the total element count — that is what kept the frame
 # reservation and the initializer broadcast unchanged.
 grep -qF 's.count=dimsTotal(s.dims,1000,"local array length",id.s,id.line,id.col);' src/aster.cpp \
     || { echo 'FAIL: a local multi-dimensional declaration no longer totals its count' >&2; exit 1; }
-[ "$(grep -c 'g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);' src/aster.cpp)" -eq 3 ] \
+[ "$(grep -c 'g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);' src/aster.cpp)" -eq 5 ] \
     || { echo 'FAIL: globalDeclaration() must open a dimension list in all three branches' >&2; exit 1; }
 grep -qF 's.fields.push_back({fn.s,fty,0,flen,std::move(dims),std::move(fieldFuncSig),fieldIsFunc});' src/aster.cpp \
     || { echo 'FAIL: structDeclaration() no longer records a field dimension list' >&2; exit 1; }

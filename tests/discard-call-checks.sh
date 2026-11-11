@@ -49,7 +49,7 @@ ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OU
 printf '%s\n' '[2/8] Source guards: the discarded-call machinery is pinned'
 # The new statement kind. v0.23.49-dev inserted Switch between Continue and
 # Expr (Round B); Expr still closes the enum as the discarded-call kind.
-grep -qF 'Continue, Switch, Expr } k;' src/aster.cpp \
+grep -qF 'Continue, Switch, Expr, DoWhile,' src/aster.cpp \
     || { echo 'FAIL: Stmt no longer carries the Expr (discarded call) kind' >&2; exit 1; }
 # The peek that tells a discarded call from a field store.
 grep -qF 'bool isCallStatement() const {' src/aster.cpp \

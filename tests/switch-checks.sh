@@ -68,8 +68,9 @@ grep -qF 'Stmt switchStatement(){' src/aster.cpp \
     || { echo 'FAIL: switchStatement() is missing' >&2; exit 1; }
 grep -qF 'std::vector<Stmt> caseBody(){' src/aster.cpp \
     || { echo 'FAIL: caseBody() is missing' >&2; exit 1; }
-# The label dispatch: only a while or a for may carry one.
-grep -qF 'only a while or for loop may be labeled: ' src/aster.cpp \
+# The label dispatch: a while, a for or a do may carry one (the `do` form
+# joined them in the do-while round, which is why this text says all three).
+grep -qF 'only a while, for or do loop may be labeled: ' src/aster.cpp \
     || { echo 'FAIL: the label dispatch is missing' >&2; exit 1; }
 # A labeled break/continue reads the following identifier as its target.
 grep -qF 'if(cur().k==TK::Ident){s.label=cur().s;++p;}' src/aster.cpp \
@@ -251,7 +252,7 @@ reject 'break outside a loop'     "break used outside a loop" \
     'fn main() -> i32 { let x: i32 = 1; switch (x) { case 1: break; } return 0; }'
 reject 'continue outside a loop'   "continue used outside a loop" \
     'fn main() -> i32 { let x: i32 = 1; switch (x) { case 1: continue; } return 0; }'
-reject 'label on a non-loop'      "only a while or for loop may be labeled" \
+reject 'label on a non-loop'      "only a while, for or do loop may be labeled" \
     'fn main() -> i32 { let x: i32 = 0; foo: if (x < 2) { x = x + 1; } return x; }'
 reject 'break to a missing label'  "no such loop label: outer" \
     'fn main() -> i32 { let r: i32 = 0; while (r < 2) { break outer; } return r; }'

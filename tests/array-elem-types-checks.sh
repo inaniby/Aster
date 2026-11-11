@@ -95,11 +95,12 @@ grep -qF 'v0.23.28-dev: `let flags : bool [ 4 ] = true;`' src/aster.cpp \
     || { echo 'FAIL: the Bool global branch is no longer marked' >&2; exit 1; }
 grep -qF 'v0.23.28-dev: `let pts : Point [ 4 ] = Point { 0, 0 };`' src/aster.cpp \
     || { echo 'FAIL: the Struct global branch is no longer marked' >&2; exit 1; }
-# Three `[N]` parsers in globalDeclaration: Bool, Struct, and the scalar one.
-# v0.23.31-dev: each branch now reads a whole dimension list through
-# arrayDimList() and totals it with dimsTotal() — still three branches, one
-# line each, so the count below still pins all three.
-[ "$(grep -c 'g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);' src/aster.cpp)" -eq 3 ] \
+# Five `[N]` parsers in globalDeclaration: the f32 and f64 float branches, the
+# Bool one, the composite (struct/union) one, and the scalar one. It was three
+# when this guard was written; the float globals joined in v0.23.77-dev, so the
+# count moved with them — what the guard pins is that *every* branch that opens a
+# `[` totals its dimension list through dimsTotal().
+[ "$(grep -c 'g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);' src/aster.cpp)" -eq 5 ] \
     || { echo 'FAIL: globalDeclaration() must open [N] in all three branches' >&2; exit 1; }
 # And the struct image is repeated once per element when it is an array.
 grep -qF '            const uint64_t n=g.isArray?g.count:1;' src/aster.cpp \
@@ -108,6 +109,9 @@ grep -qF '            const uint64_t n=g.isArray?g.count:1;' src/aster.cpp \
 # (3) typeOf(Index) answers the element type, read from the binding.
 grep -qF '                return arrayElemTypeOf(e.name);' src/aster.cpp \
     || { echo 'FAIL: typeOf(Expr::Index) no longer answers the element type' >&2; exit 1; }
+# ...and it must not go back to naming the element type itself, which is the
+# shape this guard forbids. (A negative pin: the string must be *absent*, so a
+# missing match here is the good outcome.)
 grep -qF 'case Ty::I32: return arrayElemTypeOf' src/aster.cpp \
     && { echo 'FAIL: typeOf(Expr::Index) is back to a hardcoded i32' >&2; exit 1; }
 
@@ -701,14 +705,18 @@ mutate 'm10: local arrays, integers only' \
 # -- hole (2): the global declarations ----------------------------------------
 # m11: the Bool branch stops counting — `bool[2]` declares one element, so the
 # second index is out of bounds. v0.23.31-dev: the same line, spelled through
-# dimsTotal() now.
+# dimsTotal() now. v0.23.77-dev: addressed by the branch's own marker rather
+# than by "the first such line" — the f32 and f64 global branches joined ahead of
+# it, so position no longer names the Bool branch, and a mutant that cripples
+# another branch proves nothing about this one.
 mutate 'm11: a bool global is never an array' \
-    '0,/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/s/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/' \
+    '/`let flags : bool \[ 4 \] = true;`/,/g.isArray=true;g.count=dimsTotal/s/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/' \
     must_not_compile 'global bool[2]' 'let f: bool[2] = true;
 fn main() -> i32 { if (f[1]) { return 1; } return 0; }'
-# m12: the same for the Struct branch — the second of the three identical lines.
+# m12: the same for the Struct branch — addressed by its marker too, for the
+# same reason as m11 (it used to be "the second of the three identical lines").
 mutate 'm12: a struct global is never an array' \
-    '0,/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/s/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/ZZMUTZZ;/;0,/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/s/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/;0,/ZZMUTZZ/s/ZZMUTZZ/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/' \
+    '/`let pts : Point \[ 4 \] = Point { 0, 0 };`/,/g.isArray=true;g.count=dimsTotal/s/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/' \
     must_not_compile 'global Point[2]' 'struct Point { x: i32, y: i32 }
 let p: Point[2] = Point { 1, 2 };
 fn main() -> i32 { return p[1].x; }'
