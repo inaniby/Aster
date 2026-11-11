@@ -3343,7 +3343,11 @@ static int gen_call(int n,int want){
         arg=NN(arg);
     }
     cg_grid_hi=base;
-    int j2=0; while (j2<reg && j2<8){ if (emit_mem(0,3,j2,31,(800+base+j2)*8)) return -1; j2++; }
+    int j2=0; while (j2<reg && j2<8){
+        if (param_type(fnode,j2)==9){ if (emit_ldr_d(j2,31,(800+base+j2)*8)) return -1; }
+        else if (emit_mem(0,3,j2,31,(800+base+j2)*8)) return -1;
+        j2++;
+    }
     while (j2<reg){ if (emit_mem(0,3,9,31,(800+base+j2)*8)) return -1; if (emit_mem(1,3,9,31,(j2-8)*8)) return -1; j2++; }
     if (emit_bl(fn_lab[fsym])) return -1;
     if (emit_mem(1,3,0,31,1022*8)) return -1;
@@ -3524,7 +3528,8 @@ static int gen_stmt(int s){
         }
         int v=gen_expr(NF(s), cg_ret_ty); if (v<0) return 1;
         int is64 = (ty_is64_t(cg_ret_ty)||ty_is_struct(cg_ret_ty))?1:0;
-        if (emit_mov_rr(0,v,is64)) return 1;
+        if (cg_ret_ty==9){ if (emit_fmov_dx(0,v)) return 1; }
+        else if (emit_mov_rr(0,v,is64)) return 1;
         if (free_tmp(v)) return 1;
         if (cg_is_main==1){
             if (emit_movz(8,93,0,1)) return 1;
@@ -3801,6 +3806,7 @@ static int gen_function(int f){
                 if (free_tmp(tp)) return 1;
             } else if (i+rsl<=8){
                 if (rsl==2){ if (emit_mem(1,3,i,31,slot*8)) return 1; if (emit_mem(1,3,i+1,31,slot*8+8)) return 1; }
+                else if (pty0==9){ if (emit_str_d(i,31,slot*8)) return 1; }
                 else { if (emit_mem(1, mem_scale_t(ty_width_t(pty0)), i, 31, slot*8)) return 1; }
             } else {
                 if (rsl==2) return cg_die_name_at("a 9-16-byte struct after eight register arguments is not in the bootstrap subset: ", NT(p));
