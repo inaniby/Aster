@@ -557,6 +557,26 @@ touches shared objects.
   defaults to `$HOME/tmp` on Termux (`tests/lib/tmpdir.sh`), so `apk-checks.sh`
   and the rest run on the phone.
 
+### Cross-host CI adaptation (this checkout)
+
+`origin/main` was synced at `4d94ddb` and the full gate was run on an x86_64
+box with the AArch64 cross toolchain and qemu-user, without
+`CI_ALLOW_MISSING` or `CI_SKIP_APK_GATE`. The first run reported 47 red suites
+out of 150. The Termux run recorded in `VALIDATION-v0.23.77-dev.md` had a
+*different* set of environment-bound failures, so the repair adapts to both
+hosts rather than relaxing an assertion for either one:
+
+| Class | Cause | Repair |
+| --- | --- | --- |
+| A | Suites executed AArch64 ELFs directly (`Exec format error`), plus generator and second-run calls and `dlopen()` consumers hidden inside otherwise-fixed suites. | Every execution goes through `tests/run-aarch64.sh`, resolved to an absolute path before any `cd`; C hosts are built with `$HOSTCC` so the loader and the `.so` share an architecture. |
+| B | Frozen-baseline suites: `writeSharedObject()` reserved 15 `.dynamic` slots but A-16 left only 13 registered, so 32 bytes of uninitialised heap (ASLR pointers) landed in every single-source `build-so` image. | Pad the vector with `DT_NULL` to `kDynEntries` and guard `dyn.size()>kDynEntries`; same offsets, deterministic bytes, no baseline re-pin. |
+| C–H | mawk's missing `strtonum()`, `readelf -r` truncation, a stale mutation anchor, one C twin's `-Werror` indentation, the coverage corpus, and the A-21 initialiser-order case. | POSIX `hexval()`, `readelf -rW`, refreshed anchors, a larger coverage corpus with `FLOOR=80` unchanged, and a test that now asserts the refusal. |
+| Product | `aster run` / `aster test` `execv()` an AArch64 image directly; `aster doctor` walked up to a parent checkout's `.aster` to decide a project's debug-key warning. | `execAarch64Image()` retries the same image under qemu only when the kernel returns `ENOEXEC`; the doctor layer pins `ASTER_KEY_DIR` to a private directory. |
+
+On a native AArch64/Termux host `execv()` succeeds directly and the runner
+execs natively, so none of the qemu paths run: the device behaviour is
+unchanged. Full-gate evidence is in `VALIDATION-v0.23.77-dev.md`.
+
 ## v0.23.76-dev — Audit round: literal typing, constant folding, switch labels, and `-g` DWARF
 
 An audit round on top of v0.23.76-dev (see `AUDIT-v0.23.76-dev.md`). It finds and

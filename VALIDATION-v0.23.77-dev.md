@@ -157,6 +157,105 @@ rather than by trusting the green suites*:
   example means re-pinning the snapshot and the twenty suites that pin its row
   count. Deferred deliberately to a release round.
 
+## 8. Cross-host CI adaptation (this checkout)
+
+§2 records a gate run on an Android/Termux phone with no cross toolchain and
+no qemu; 30 suites were red there for reasons tied to that host. This checkout
+synced `origin/main` at `4d94ddb` and ran the same 150 suites on an x86_64 box
+with `aarch64-linux-gnu-gcc`, qemu-user and the full binutils set, **without**
+`CI_ALLOW_MISSING` or `CI_SKIP_APK_GATE`. The first run reported a *different*
+set of 47 red suites. The instruction for this round was explicit: adapt to the
+environment so both hosts are unaffected — do not relax an assertion to make
+one host green and do not break the other.
+
+### Root causes, all fixed
+
+1. **Architecture mismatch at execution time.** Suites invoked the AArch64
+   images they had just built directly, so on x86 the kernel answered
+   `Exec format error`. This also hid inside suites whose *outer* call had
+   already been fixed: `difftest-checks.sh`'s generator inside `run_family()`,
+   `stdlib2-checks.sh`'s second demo run, and the `dlopen()` consumer in
+   `string-symbol-checks.sh` (an x86 host cannot load an AArch64 `.so`). Every
+   execution now goes through `tests/run-aarch64.sh`, resolved to an absolute
+   path before any `cd`, and C hosts are built with `$HOSTCC` so the loader and
+   the shared object share an architecture.
+2. **A real compiler defect behind the byte baselines.** The 27 frozen-baseline
+   failures were not stale rows: `writeSharedObject()` laid out 15 `.dynamic`
+   slots but A-16 stopped registering two of them, so it wrote 240 bytes from a
+   208-byte vector — 32 bytes of uninitialised heap, i.e. ASLR pointers and
+   string fragments, landed in every single-source `build-so` image and two
+   identical runs produced different hashes. The vector is now padded with
+   `DT_NULL` to `kDynEntries` and `dyn.size()>kDynEntries` is refused. No
+   offset moved, so the 393-row snapshot needed no re-pin.
+3. **Tool-output and corpus differences.** mawk has no `strtonum()` (replaced
+   by a POSIX `hexval()`), `readelf -r` truncated on one TLS line (now `-rW`),
+   one mutation anchor had gone stale, one C twin had a `-Werror` indentation
+   warning, coverage needed a larger corpus, and the A-21 initializer-order
+   case had to assert the new refusal instead of reading a zero value.
+4. **Product commands.** `aster run` and `aster test` `execv()` an AArch64 image
+   directly. Both now share `execAarch64Image()`, which retries the *same*
+   binary under `qemu-aarch64` only when the kernel returns `ENOEXEC`. On a
+   native AArch64 host `execv()` succeeds and the fallback is never entered.
+5. **Host residue.** `aster doctor` walks up from cwd to find a `.git`/`.aster`,
+   and in an isolated CI worktree that search lands on the *parent* checkout —
+   whose `.aster/debug.key.pem` may or may not exist depending on what was built
+   there earlier. The doctor layer now pins `ASTER_KEY_DIR` to a private empty
+   directory, so "no project debug key yet" is about the project, not the host.
+
+### Why both hosts stay valid
+
+| | native AArch64 / Termux | x86_64 + qemu (this box) |
+| --- | --- | --- |
+| `tests/run-aarch64.sh` | `exec "$bin"` | `qemu-aarch64 -L /usr/aarch64-linux-gnu "$bin"` |
+| `$HOSTCC` for C twins/hosts | native `cc`/`clang` | `aarch64-linux-gnu-gcc` |
+| C twin's NaN line (`stdlib3`) | `nan` (bionic) | `nan` (AArch64 glibc under qemu) |
+| `aster run` / `aster test` | `execv()` succeeds | `ENOEXEC` → qemu retry |
+| `dlopen()` consumer | target-arch host, target-arch `.so` | target-arch host under qemu, target-arch `.so` |
+
+Nothing in the qemu path executes on a native host, and nothing in the runner
+relaxes a check. The one difference the adaptation removes is real: x86 glibc
+spells `0.0/0.0` as `-nan` while the AArch64 libc and Aster's `fmt_f64` spell
+it `nan`, so an x86-built C twin used to disagree with the AArch64 demo by one
+line and one check. Pinning the twin to the target architecture makes the
+byte-for-byte comparison identical on both machines.
+
+### What was not relaxed
+
+- The 393-row `tests/baseline/v0.23.77-dev/example-hashes.txt` snapshot is
+  untouched; no row was re-pinned and no example was added.
+- `coverage-checks.sh`'s `FLOOR=80` is unchanged — the corpus grew, the floor
+  did not move.
+- No `-Werror` flag was dropped; the C twin was fixed instead.
+- No pinned output line, refusal diagnostic or mutation anchor was weakened.
+- The full gate ran with neither `CI_ALLOW_MISSING=1` nor
+  `CI_SKIP_APK_GATE=1`.
+
+### Full gate result
+
+```sh
+LC_ALL=C CXX=g++ HOSTCC=aarch64-linux-gnu-gcc CI_JOBS=3 bash tests/ci.sh
+```
+
+```
+BUILD OK: ci-artifacts/aster (043c3681d8554d189292acbf712182d4a85ecd17ba4362addc8084640b3a15e4)
+CI SUMMARY: 150 passed, 0 skipped, 0 failed (of 150 suites)
+APK GATES : 3 passed, 0 skipped, 0 failed
+CI_EXIT=0
+```
+
+The strict compiler build (`-std=c++17 -O2 -Wall -Wextra -pedantic -Werror`)
+passes, `struct-checks.sh` still reproduces all 393 frozen rows, and the three
+independent APK verification gates pass. No suite was skipped and no gate was
+exempted. A focused re-run of the five suites that were still red after the
+first adaptation pass (`difftest`, `stdlib2`, `stdlib3`, `string-symbol`,
+`project`) returned 5/5 PASS before the full gate above.
+
+§2 remains the historical record of the Termux host and is not re-classified
+here; this checkout cannot re-run that phone-side gate, so it is **not**
+claimed green. What is claimed is narrower: every repair in this section is
+conditioned on the host — the runner, `$HOSTCC`, the `ENOEXEC`-only qemu retry —
+so no native-AArch64 path changed.
+
 ## Appendix — how §2's classification was made
 
 ```sh
