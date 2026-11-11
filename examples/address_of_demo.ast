@@ -1,0 +1,17 @@
+let g: i32 = 7;
+let o: u8[8] = 0;
+
+fn main() -> i32 {
+    let x: i32 = 5;
+    let y: i32 = 6;
+    let p: ptr<i32> = &x;
+    let q: ptr<i32> = &y;
+    if (p == p) { store_u8(o, 49); } else { store_u8(o, 48); }
+    if (p == q) { store_u8(o + 1, 49); } else { store_u8(o + 1, 48); }
+    let r: ptr<i32> = &g;
+    if (r == &g) { store_u8(o + 2, 49); } else { store_u8(o + 2, 48); }
+    if (r == p) { store_u8(o + 3, 49); } else { store_u8(o + 3, 48); }
+    store_u8(o + 4, 10);
+    write(1, o, 5);
+    return 0;
+}

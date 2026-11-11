@@ -59,6 +59,7 @@ EXPR_SUBSET = [
     "Add", "Sub", "Mul", "Div", "Neg",
     "Eq", "Ne", "Lt", "Le", "Gt", "Ge", "And", "Or", "Not",
     "Field",
+    "AddrOf",          # v0.23.77-dev: `&x` - the first half of ptr<S>
     "StructLit",
     "Mod", "Shl", "Shr", "BitAnd", "BitOr", "BitXor",
 ]
@@ -164,7 +165,7 @@ def die(msg):
 def check_list():
     if EXPR_COUNT != 36:
         die("expected 36 expression kinds, list has %d" % EXPR_COUNT)
-    if EXPR_SUBSET_COUNT != 27:
+    if EXPR_SUBSET_COUNT != 28:
         die("expected 25 expression kinds in the subset, list has %d"
             % EXPR_SUBSET_COUNT)
     if STMT_COUNT != 15:

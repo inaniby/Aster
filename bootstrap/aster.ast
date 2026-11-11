@@ -183,7 +183,7 @@ fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {
 // ---- END GENERATED: lexer names ----
 
 // ---- BEGIN GENERATED: parser names (bootstrap/gen_parser_names.py) ----
-// The 27 expression node kinds this parser builds
+// The 28 expression node kinds this parser builds
 // (PARSER-SPEC.md §2.1), at the host's `enum Kind` numbers
 // inside struct Expr: the subset keeps the numbering, the
 // eleven excluded kinds (§12.2) are simply absent, so a kind's
@@ -210,6 +210,7 @@ let E_And: i32 = 17;
 let E_Or: i32 = 18;
 let E_Not: i32 = 19;
 let E_Field: i32 = 20;
+let E_AddrOf: i32 = 21;
 let E_StructLit: i32 = 22;
 let E_Mod: i32 = 24;
 let E_Shl: i32 = 25;
@@ -1795,6 +1796,7 @@ fn reduce_one() -> i32 {
         vsp = vsp - 1;
         let nk: i32 = E_Neg;
         if (k == K_Not) { nk = E_Not; }
+        if (k == K_Amp) { nk = E_AddrOf; }   // v0.23.77-dev
         let z: i32 = newnode(nk, ntok[a - 1]);
         if (z == 0) { return 1; }
         append(z, a);
@@ -1841,7 +1843,9 @@ fn parse_expr() -> i32 {
         if (state == 0) {
             // ---------------- expect-operand ----------------
             let k: i32 = curk();
-            if (k == K_Minus || k == K_Not) {
+            if (k == K_Minus || k == K_Not || k == K_Amp) {
+                // v0.23.77-dev: `&x` takes the operand as its child, exactly as
+                // unary minus does - the reduce knows which node to build.
                 advance();
                 if (push_prefix(k) != 0) { return 0; }
                 continue;
@@ -1852,10 +1856,6 @@ fn parse_expr() -> i32 {
             }
             if (k == K_Star) {
                 die_at("'*' dereference is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-                return 0;
-            }
-            if (k == K_Amp) {
-                die_at("'&' address-of is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
                 return 0;
             }
             if (k == K_At) {
@@ -3389,7 +3389,10 @@ fn is_const(h: i32) -> i32 {
         let n: i32 = wstk[sp];
         let k: i32 = nkind[n - 1];
         if (k == E_Num) { continue; }
-        if (k == E_Neg) {
+        if (k == E_Neg || k == E_AddrOf) {
+            // v0.23.77-dev: a prefix node walks only its operand - without
+            // address-of here the walk treated it as binary and read a child
+            // that does not exist.
             if (sp >= 65536) { die_np("internal: walk stack overflow"); return 0; }
             wstk[sp] = nfirst[n - 1];
             sp = sp + 1;
@@ -3473,6 +3476,11 @@ fn fold(h: i32) -> i64 {
                 wval[vp - 1] = 0 - wval[vp - 1];
                 continue;
             }
+            if (k == E_AddrOf) {
+                // v0.23.77-dev: not a constant. The child's value is on the
+                // stack; leave a zero in its place so the count still balances.
+                continue;
+            }
             let b: i64 = wval[vp - 1];
             let a: i64 = wval[vp - 2];
             vp = vp - 2;
@@ -3492,7 +3500,7 @@ fn fold(h: i32) -> i64 {
             vp = vp + 1;
             continue;
         }
-        if (k == E_Neg) {
+        if (k == E_Neg || k == E_AddrOf) {
             if (sp + 2 > 65536) { die_np("internal: walk stack overflow"); return 0; }
             wstk[sp] = n; wmark[sp] = 1; sp = sp + 1;
             wstk[sp] = nfirst[n - 1]; wmark[sp] = 0; sp = sp + 1;
@@ -4020,6 +4028,20 @@ fn tc_combine(n: i32) -> i32 {
         let op: i32 = nfirst[n - 1];
         if (ex_ty[op - 1] != -2) { die_at("'!' requires a bool operand", tok_line(ntok[n - 1]), tok_col(ntok[n - 1])); return 1; }
         ex_ty[n - 1] = -2; ex_arr[n - 1] = 0; return 0;
+    }
+    if (k == E_AddrOf) {
+        // v0.23.77-dev: `&x` is a pointer to x's type, and x must be a variable
+        let op: i32 = nfirst[n - 1];
+        if (nkind[op - 1] != E_Var) {
+            die_name_at("'&' takes a variable in the bootstrap subset: ", ntok[n - 1]); return 1;
+        }
+        if (find_var(ntok[op - 1]) == 0) { die_name_at("unknown variable: ", ntok[op - 1]); return 1; }
+        let ot: i32 = ex_ty[op - 1];
+        if (ot == TY_I64) { ex_ty[n - 1] = TY_PTR_I64; }
+        else if (ot == TY_U8) { ex_ty[n - 1] = TY_PTR_U8; }
+        else { ex_ty[n - 1] = TY_PTR_I32; }
+        ex_arr[n - 1] = 0;
+        return 0;
     }
     if (k == E_Neg) {
         let op: i32 = nfirst[n - 1];
@@ -5138,7 +5160,7 @@ fn gx_dispatch(n: i32, wt: i32) -> i32 {
     // then ex_ty[-1] — an out-of-bounds crash. Dispatch them before any binary
     // field is touched.
     if (k == E_Index) { return gx_push_un(n, TY_I32, wt); }
-    if (k == E_Neg || k == E_Not) { return gx_push_un(n, wt, wt); }
+    if (k == E_Neg || k == E_Not || k == E_AddrOf) { return gx_push_un(n, wt, wt); }
     let l: i32 = nfirst[n - 1];
     let r: i32 = nnext[l - 1];
     let lt: i32 = ex_ty[l - 1];
@@ -5312,6 +5334,26 @@ fn cmp_cond(k: i32, lt: i32, rt: i32) -> i32 {
 // ---- §6.1 combine: children are done, emit the node's own instructions ----
 fn gen_combine(n: i32, want: i32) -> i32 {
     let k: i32 = nkind[n - 1];
+    if (k == E_AddrOf) {
+        // v0.23.77-dev: a prefix node has one child, so it must be answered
+        // before the two-child reads below. The child's temporary is *reused*
+        // for the address - allocating a second one leaked it, because a
+        // unary node owns exactly one temp and the pool is LIFO.
+        let ch: i32 = nfirst[n - 1];
+        let ot: i32 = ntok[ch - 1];
+        let d: i32 = gx_val[ch - 1];
+        let li: i32 = cg_find_local(ot);
+        if (li >= 0) {
+            if (emit_frame_addr(d, cg_loc_slot[li] * 8) != 0) { return -1; }
+            gx_val[n - 1] = d;
+            return 0;
+        }
+        let gs: i32 = cg_find_global(ot);
+        if (gs < 0) { if (cg_die_name_at("unknown variable: ", ot) != 0) { return -1; } }
+        if (emit_addr64(d, g_addr[gs]) != 0) { return -1; }
+        gx_val[n - 1] = d;
+        return 0;
+    }
     if (k == E_Index) { return gen_index(n, want); }
     if (k == E_Neg) {
         let a: i32 = gx_val[nfirst[n - 1] - 1];

@@ -657,13 +657,13 @@ static int primary(void) {
 
 static int unary(void) {
     int k = cur();
-    if (k == TK_Minus || k == TK_Not) {
+    if (k == TK_Minus || k == TK_Not || k == TK_Amp) {   /* v0.23.77-dev: &x */
         adv();
         if (exdepth >= NESTMAX) die_c1();
         exdepth++;
         int a = unary();
         exdepth--;
-        int z = newnode(k == TK_Minus ? E_Neg : E_Not, nodes[a].tok);
+        int z = newnode(k == TK_Minus ? E_Neg : (k == TK_Amp ? E_AddrOf : E_Not), nodes[a].tok);
         append(z, a);
         return z;
     }
@@ -1673,6 +1673,7 @@ static int is_const(int h) {
     int k = nodes[h].kind;
     if (k == E_Num) return 1;
     if (k == E_Neg) return is_const(nodes[h].first);
+    if (k == E_AddrOf) return 0;   /* v0.23.77-dev: never a constant */
     if (is_fold_binary(k))
         return is_const(nodes[h].first)
             && is_const(nodes[nodes[h].first].next);
@@ -1736,6 +1737,7 @@ static int64_t fold(int h) {
         return numval;
     }
     if (k == E_Neg) return -fold(nodes[h].first);
+    if (k == E_AddrOf) return 0;   /* v0.23.77-dev: not foldable */
     return fold_bin(k, fold(nodes[h].first),
                     fold(nodes[nodes[h].first].next), h);
 }
@@ -2166,6 +2168,16 @@ static int tc_combine(int n) {
             die_at("'!' requires a bool operand",
                    tok_line(nodes[n].tok), tok_col(nodes[n].tok));
         ety[n] = -2; earr[n] = 0; return 0;
+    }
+    if (k == E_AddrOf) {
+        /* v0.23.77-dev: a pointer to the variable's type */
+        int op = nodes[n].first;
+        if (nodes[op].kind != E_Var)
+            die_name_at("'&' takes a variable in the bootstrap subset: ", nodes[n].tok);
+        int ot = ety[op];
+        ety[n] = (ot == 2) ? TY_PTR_I64 : (ot == 3) ? TY_PTR_U8 : TY_PTR_I32;
+        earr[n] = 0;
+        return 0;
     }
     if (k == E_Neg) {
         int op = nodes[n].first;
@@ -2844,7 +2856,7 @@ static int gx_push_logical(int n,int wt){
 static int gx_dispatch(int n,int wt){
     int k=NK(n);
     if (k==E_Index) return gx_push_un(n,1,wt);
-    if (k==E_Neg||k==E_Not) return gx_push_un(n,wt,wt);
+    if (k==E_Neg||k==E_Not||k==E_AddrOf) return gx_push_un(n,wt,wt);   /* v0.23.77-dev: &x */
     int l=NF(n), r=NN(l), lt=ETY(l), rt=ETY(r);
     if (k==E_Shl||k==E_Shr){
         int ow=wt; if (ty_is64_t(wt)||ty_is64_t(lt)) ow=2;
@@ -3044,6 +3056,20 @@ static int cmp_cond(int k,int lt,int rt){
 static int gen_combine(int n,int want){
     int k=NK(n);
     if (k==E_Index) return gen_index(n,want);
+    if (k==E_AddrOf){
+        /* v0.23.77-dev: the child's temp is reused for the address - a second
+         * one leaked it, because the pool is LIFO and a unary node owns one */
+        int ch=NF(n), ot=nodes[ch].tok, d=gx_val[ch];
+        int li=cg_find_local(ot);
+        if (li>=0){
+            if (emit_frame_addr(d, cg_loc_slot[li]*8)) return 1;
+            gx_val[n]=d; return 0;
+        }
+        int gs=cg_find_global(ot);
+        if (gs<0) return cg_die_name_at("unknown variable: ", ot);
+        if (emit_addr64(d, g_addr[gs])) return 1;
+        gx_val[n]=d; return 0;
+    }
     if (k==E_Neg){
         int a=gx_val[NF(n)], is64 = ty_is64_t(want)?1:0;
         if (emit_neg(a,a,is64)) return 1;
