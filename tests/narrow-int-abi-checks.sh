@@ -74,7 +74,9 @@ guard 'stackOffFits helper'            'static bool stackOffFits(uint32_t off,Ty
 guard 'U8/char unscaled 12-bit range'  'if(t==Ty::U8||t==Ty::Char) return off<=4095u;'  1
 guard 'U16 range, scaled by 2'         'if(t==Ty::U16)return off<=8190u&&(off&1u)==0u;' 1
 guard '64-bit range, scaled by 8'      'if(tyIs64(t)) return off<=32760u&&(off&7u)==0u;' 1
-guard '32-bit range, scaled by 4'      'return off<=16380u&&(off&3u)==0u;'             1
+# Two sites since v0.23.77-dev: the f32 arm spells this range out and the
+# default arm repeats it - the same predicate, reached from two types.
+guard '32-bit range, scaled by 4'      'return off<=16380u&&(off&3u)==0u;'             2
 guard 'load with fallback'             'void loadStackOff(int reg,uint32_t off,Ty t){' 1
 guard 'store with fallback'            'void storeStackOff(int reg,uint32_t off,Ty t){' 1
 guard 'load fallback via x16'          'emitAddOff(kGlobalBase,31,off);emit(loadGlobalT(reg,t));' 1
@@ -101,8 +103,11 @@ guard 'raw storeStackT emitted once'   'emit(storeStackT(reg,off,t));'          
 # back at full width through loadStackOff (+1), while spillTemps() saves them
 # through storeStackOff (+1) and the narrow struct return stores its first and
 # second eight-byte half through storeStackOff (+2). Nothing else moved.
-guard 'loadStackOff call sites'        'loadStackOff('                                 18
-guard 'storeStackOff call sites'       'storeStackOff('                                15
+# Two more since v0.23.77-dev: the f32 slice stages its loads through the same
+# helper, so the call-site count moved from 18 to 20.
+guard 'loadStackOff call sites'        'loadStackOff('                                 20
+# One more since v0.23.77-dev, for the same reason as the load side.
+guard 'storeStackOff call sites'       'storeStackOff('                                16
 printf '%s\n' 'PASS: per-width ranges, both fallbacks, and no raw encoding at a call site'
 
 # ---------------------------------------------------------------------------

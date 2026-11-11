@@ -200,9 +200,11 @@ PYEOF
 
 # m_memcpy_off: copy one byte to the right. MC loses its first byte and
 # writes one past the source window — the sum moves.
+# v0.23.77-dev: memmove has two more loops with the same store line, so the
+# mutation addresses memcpy's by naming the function it lives in.
 mutate_and_check m_memcpy_off '
-src = sub("store_u8(dst + i, load_u8(src + i));",
-          "store_u8(dst + i + 1, load_u8(src + i));", 1)
+src = sub("fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {\n    let i: i32 = 0;\n    while (i < n) {\n        store_u8(dst + i, load_u8(src + i));",
+          "fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {\n    let i: i32 = 0;\n    while (i < n) {\n        store_u8(dst + i + 1, load_u8(src + i));", 1)
 '
 # m_memset_zero: fill with the constant zero instead of c. MS collapses to 0.
 # (The anchor is memset's loop head — strncpy has the same store line one row
