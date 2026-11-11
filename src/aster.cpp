@@ -123,6 +123,36 @@ std::string readFile(const std::string& p) {
     return {std::istreambuf_iterator<char>(f), {}};
 }
 
+// v0.23.77-dev (host adaptation): every image this compiler writes is AArch64,
+// whatever the machine it was built on. On a native AArch64 host execv()
+// succeeds and the fallback is never entered; on an x86 CI/dev box the kernel
+// answers ENOEXEC, so the *same* image is retried under qemu-aarch64 user-mode
+// emulation. `aster run` and `aster test` share this helper so both commands
+// keep the same argv, exit code and binary on both kinds of host — no assertion
+// is relaxed and the cross-development path stays usable. Returns only on
+// failure, with errno set to the original exec error.
+static void execAarch64Image(const std::string& image,const std::vector<std::string>& args){
+    std::vector<char*> av;
+    av.push_back(const_cast<char*>(image.c_str()));
+    for(const auto& a:args)av.push_back(const_cast<char*>(a.c_str()));
+    av.push_back(nullptr);
+    ::execv(image.c_str(),av.data());
+    const int execErrno=errno;
+    if(execErrno==ENOEXEC){
+        std::vector<char*> qv;
+        qv.push_back(const_cast<char*>("qemu-aarch64"));
+        if(::access("/usr/aarch64-linux-gnu",F_OK)==0){
+            qv.push_back(const_cast<char*>("-L"));
+            qv.push_back(const_cast<char*>("/usr/aarch64-linux-gnu"));
+        }
+        qv.push_back(const_cast<char*>(image.c_str()));
+        for(const auto& a:args)qv.push_back(const_cast<char*>(a.c_str()));
+        qv.push_back(nullptr);
+        ::execvp("qemu-aarch64",qv.data());
+    }
+    errno=execErrno;
+}
+
 // Source-line cache so that diagnostics can show the offending line and a caret.
 // Every parser/lexer diagnostic ends its message with " at L:C"; the top-level
 // handler parses that suffix and renders the context. The AST compile entry
@@ -11004,6 +11034,19 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // only tolerates it because libc is loaded anyway.
     dyn.push_back({0x6ffffff0,(uint64_t)gnuVersionOff}); // DT_VERSYM -> .gnu.version
     dyn.push_back({0,0});                              // DT_NULL
+    // v0.23.77-dev (audit A-16 follow-up): the section is laid out for
+    // kDynEntries slots so every later offset stays put, but A-16 stopped
+    // registering DT_VERNEED/DT_VERNEEDNUM and left the vector two entries
+    // short. writeSharedObject() then wrote dynSize bytes from that shorter
+    // vector, reading 32 bytes past the heap allocation: an ASLR pointer and
+    // string fragments landed in .dynamic, so two identical build-so runs
+    // produced different hashes and no frozen baseline could ever reproduce.
+    // Pad with DT_NULL — loaders stop at the first one, so extra ones are
+    // legal — to make the bytes deterministic without moving a single offset.
+    // Guard the other direction too: a future tag must not silently overrun
+    // the reserved layout again.
+    if(dyn.size()>kDynEntries)throw Error("internal error: .dynamic needs more slots than its reserved layout");
+    dyn.resize(kDynEntries,Elf64Dyn{0,0});
     // Section headers (the string table and the header table itself are not loaded).
     std::string shstr(1,'\0');
     auto addShName=[&](const char* n){uint32_t o=(uint32_t)shstr.size();shstr+=n;shstr.push_back('\0');return o;};
@@ -15432,7 +15475,7 @@ int main(int argc,char**argv){
                 linkObjects(objs,exe,0x400000,2,ps);
                 pid_t pid=::fork();
                 if(pid<0){std::cerr<<"aster test: cannot fork\n";return 1;}
-                if(pid==0){::execl(exe.c_str(),exe.c_str(),(char*)nullptr);std::perror("aster test");::_exit(127);}
+                if(pid==0){execAarch64Image(exe,{});std::perror("aster test");::_exit(127);}
                 int st=0;
                 if(::waitpid(pid,&st,0)<0){std::cerr<<"aster test: waitpid failed\n";return 1;}
                 const int rc=WIFEXITED(st)?WEXITSTATUS(st):(WIFSIGNALED(st)?128+WTERMSIG(st):1);
@@ -15777,11 +15820,8 @@ int main(int argc,char**argv){
             linkObjects(objs,out,0x400000,2,filePage);
             std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n";
             if(isRun){
-                std::vector<char*> av; av.push_back(const_cast<char*>(out.c_str()));
-                for(auto& a:runArgs)av.push_back(const_cast<char*>(a.c_str()));
-                av.push_back(nullptr);
                 pid_t pid=::fork();
-                if(pid==0){::execv(out.c_str(),av.data());std::perror("aster run");::_exit(127);}
+                if(pid==0){execAarch64Image(out,runArgs);std::perror("aster run");::_exit(127);}
                 int st=0;
                 if(pid<0){std::cerr<<"aster run: cannot fork\n";return 1;}
                 if(::waitpid(pid,&st,0)<0){std::cerr<<"aster run: waitpid failed\n";return 1;}
