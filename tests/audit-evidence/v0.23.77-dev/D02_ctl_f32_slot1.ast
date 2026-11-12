@@ -1,0 +1,11 @@
+// D-02 control — the same shape with f32.  storeVarT's F32 branch uses
+// imm12 = slot*2 (STR S scales by 4), which is correct: expect 0, actual 0.
+fn main()->i32 {
+    let lead:i32 = 1;
+    let x:f32 = f32(2.5);
+    let p1:i32=0; let p2:i32=0; let p3:i32=0; let p4:i32=0;
+    let p5:i32=0; let p6:i32=0; let p7:i32=0;
+    p7 = 99;
+    if (x == f32(2.5)) { return 0; }
+    return 1;
+}

@@ -1,0 +1,9 @@
+// D-01 control — a large compact frame but no stack-passed argument.
+// No incomingBaseWords is emitted, so the bad patch never runs: expect 8, actual 8.
+fn g(n:i32)->i32 { return n; }
+fn f(a:i32,b:i32,c:i32,d:i32)->i32 {
+    let pad: i64[490] = 0;
+    let t: i32 = g(g(0));
+    return a + t;
+}
+fn main()->i32 { return f(7,2,3,4); }

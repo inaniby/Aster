@@ -1,0 +1,6 @@
+// D-03 (input 1) — defines that function and has its own run-time initializer.
+// link-so a.o b.o is refused with "reads 'helper' ... must be listed before",
+// although A reads none of B's state; link-so b.o a.o succeeds.
+fn helper() -> i32 { return 7; }
+fn seed() -> i32 { return 3; }
+let y: i32 = seed();

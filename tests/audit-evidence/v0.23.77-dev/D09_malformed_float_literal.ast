@@ -1,0 +1,11 @@
+// D-09 — malformed floating literals that gcc rejects but Aster accepts.
+// Build each expression separately; the lexer joins repeated fractional parts
+// and exponents into one token, strtod() then silently stops at the junk.
+//   let x: f64 = 1e2e3;    -> 100.0   (gcc: invalid suffix "e3" on floating constant)
+//   let x: f64 = 1.5e2e3;  -> 150.0   (gcc: invalid suffix "e3")
+//   let x: f64 = 1.5.2;    -> 1.5     (gcc: too many decimal points in number)
+//   let x: f64 = 1e2;      -> 100.0   (legal control)
+fn main() -> i32 {
+    let x: f64 = 1e2e3;
+    return i32(x);
+}

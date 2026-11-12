@@ -1,0 +1,4 @@
+// D-03 control — B defines helper but has no run-time initializer, so
+// checkInitOrder's initNameByInput.count(j) guard skips it and the link succeeds.
+fn helper() -> i32 { return 7; }
+let y: i32 = 3;

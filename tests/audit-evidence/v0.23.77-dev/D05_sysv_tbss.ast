@@ -1,0 +1,8 @@
+// D-05 — a .so with a 4-byte .tdata and a 16-byte .tbss.
+// build-so without --soname/--needed takes the SysV writer, whose .tbss
+// sh_offset (0x3004) differs from sh_addr (0x3010); the Dyn writer emits
+// 0x3010 for both.  PT_TLS p_align is hard-coded to 16 on the SysV path.
+tls let a: i32 = 10;
+tls let b: u64 = 0;
+tls let c: u64 = 0;
+fn touch() -> i32 { b = 5; a = a + 1; return i32(a); }

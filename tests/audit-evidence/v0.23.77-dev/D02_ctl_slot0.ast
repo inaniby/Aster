@@ -1,0 +1,10 @@
+// D-02 control — the f64 lives in slot 0, where slot*64 == slot*8 == 0.
+// Expect 0, actual 0: the damage needs a non-zero slot.
+fn main()->i32 {
+    let x:f64 = 2.5;
+    let p1:i64=0; let p2:i64=0; let p3:i64=0; let p4:i64=0;
+    let p5:i64=0; let p6:i64=0; let p7:i64=0;
+    p7 = 99;
+    if (x == 2.5) { return 0; }
+    return 1;
+}
