@@ -1,3 +1,17 @@
+## v0.23.79-dev — Link and project-config contract
+
+> **Status**: closes the three audit defects that v0.23.78-dev deliberately left open — D-03 (`checkInitOrder` false refusal of an `extern fn` call across objects), D-04 (a parsed `page-size` project key silently discarded), D-05 (SysV `.so` `.tbss` `sh_offset != sh_addr` and hard-coded `PT_TLS p_align=16`). Six source edits, a new 9-layer resident suite in `DEFAULT_SUITES` and `CRITICAL` (152 suites), and a byte-identical 393-row snapshot. See `VALIDATION-v0.23.79-dev.md`.
+
+### What this version adds
+
+| Area | Change |
+| --- | --- |
+| D-03 | `initRefs` skips a relocation target that is a function symbol (`.info & 0xf == STT_FUNC`) and, independently, a `CALL26`/`JUMP26` relocation type; both linkers' `checkInitOrder` mirrors the same filter, so a plain `extern fn` call no longer trips a false "initializers must run in link order" error. A genuine cross-object data read is still refused (A-21 kept). |
+| D-04 | `parseProjectFile` records an explicit `page-size` into `spec.pageSize`; `filePage` becomes `cliPageSet ? ps : (spec.pageSize ? spec.pageSize : ps)`, so the project key reaches `pageSize` for all four writers and the `PT_LOAD` alignment. An out-of-range value is still refused by `pageSizeOr`. |
+| D-05 | `layoutObject` derives `L.tlsAlign` from the declared `@align` of each TLS global; `writeSharedObject` maps `.tbss` at `sh_offset == sh_addr` and forwards `tlsAlign` to `PT_TLS p_align`; the static and `build-so` paths' headers now read `tdataAlign`/`tbssAlign` back from the section table, so every writer agrees. A 9-value TLS spectrum (16..16384) is covered. |
+| Version | `ASTER_VERSION_STRING` and the CMake project version move to `0.23.79-dev` / `0.23.79`; 21 hard version guards re-pinned; a byte-identical 393-row snapshot under `tests/baseline/v0.23.79-dev/`. |
+| Gate | `tests/link-project-contract-checks.sh`, a 9-layer resident suite registered in `DEFAULT_SUITES` **and** `CRITICAL` (151 → 152 suites). Source guards pin the two `initRefs` filters, the `filePage` derivation, the `L.tlsAlign` derivation, the `.tbss` identity map, and the `PT_TLS` alignment; a pure-Python ELF reader checks `.tbss off==addr` and the TLS section/program alignment across the 9-value spectrum and both writers; the behavioural matrix covers the D-03 order matrix, the D-04 project matrix (exe/apk/test, project vs CLI priority), and the D-05 writer matrix; GNU `ld` is the third-party witness; 34 invariants (floor 30); 6/6 mutations caught; all 393 frozen rows reproduced. |
+
 ## v0.23.78-dev — The audit repairs get a resident gate
 
 > **Status**: the three defects an external review reproduced (D-01, D-02, D-09 of `AUDIT-v0.23.77-dev.md` §3) were fixed upstream in three commits on the `v0.23.77-dev` line — `e9bb50d` (bootstrap `char`), `f6dc30a` (the three repairs), `a235ed2` (the touch-example comment). This round **changes no compiler behaviour**; it promotes those repairs to a numbered release and gives them the gate they lacked. See `VALIDATION-v0.23.78-dev.md`.

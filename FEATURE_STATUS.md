@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.78-dev.** One table per area. "Since" is the version that
+**As of v0.23.79-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -14,6 +14,17 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | `link-so` forwards the merged TLS alignment to `PT_TLS` and both headers | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [4/9], [8/9] |
 | `sh_addralign = 0` means "no requirement" for data/bss/TLS sections | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [3/9], [4/9], [8/9] |
 | `.tbss` symbol offsets are not double-counted | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [4/9] (16..16384 spectrum), [8/9], `tls-checks.sh` |
+
+## v0.23.79-dev additions
+
+| Feature | Status | Since | Coverage |
+| --- | --- | --- | --- |
+| A cross-object `extern fn` call does not trip `checkInitOrder` | shipped | v0.23.79-dev | `link-project-contract-checks.sh` [2/9], [4/9] (D-03 order matrix), [8/9] m1 |
+| A genuine cross-object data read is still refused (A-21 kept) | shipped | v0.23.79-dev | `linker-checks.sh`, `e2e-global-deep.sh` |
+| The `aster.proj` `page-size` key reaches the `PT_LOAD` alignment | shipped | v0.23.79-dev | `link-project-contract-checks.sh` [2/9], [4/9] (project matrix, CLI wins), [8/9] m2/m3 |
+| The TLS block alignment is derived from each TLS global's declared `@align` | shipped | v0.23.79-dev | `link-project-contract-checks.sh` [2/9], [3/9], [4/9], [8/9] m4 |
+| The SysV `.so` writer maps `.tbss` at `sh_offset == sh_addr` and forwards `tlsAlign` to `PT_TLS` | shipped | v0.23.79-dev | `link-project-contract-checks.sh` [2/9], [3/9] (off==addr), [8/9] m5/m6 |
+| The resident gate is in `CRITICAL`, so a `rc=77` skip cannot hide it (G-08) | shipped | v0.23.79-dev | `tests/ci.sh` `CRITICAL`, `ci-protocol-checks.sh` |
 
 ## v0.23.78-dev additions
 

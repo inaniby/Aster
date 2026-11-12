@@ -1,6 +1,6 @@
 # Aster Language Reference
 
-**Applies to: v0.23.78-dev** (single-file compiler, `src/aster.cpp`)
+**Applies to: v0.23.79-dev** (single-file compiler, `src/aster.cpp`)
 
 This is a *descriptive* reference: every rule below was read out of the compiler
 source and then **checked against the v0.23.51-dev binary**. Where a rule says a
