@@ -126,7 +126,9 @@ static int sdepth;                      /* C2 */
 static int64_t numval;
 static int64_t numf;             /* v0.23.77-dev: the bits of a float literal (64 wide!) */
 static int tflt[TOKMAX];         /* v0.23.77-dev: per token, 1 when it spelled a '.' */
+static int tchv[TOKMAX];         /* v0.23.77-dev: per token, a Char token's byte value */
 static int nbool[NODEMAX];       /* v0.23.77-dev: per node, 1 false / 2 true */
+static int nchv[NODEMAX];        /* v0.23.77-dev: per node, a char literal's value + 1 */
 static void convert_float(int t);   /* v0.23.77-dev: defined with the converter */
 static int numflag;
 static int numcnt;
@@ -324,14 +326,30 @@ static int scan_one(void) {
         if (!closed) die_at("unterminated string literal", l, c);
         return push(TK_String, vstart, spool - vstart, l, c);
     }
-    /* v0.23.50-dev: the host compiler (src/aster.cpp) now lexes character
-     * literals ('a'), but the bootstrap subset has no Char token — the
-     * reference compiler's own source never writes one — so the twin rejects
-     * it explicitly rather than letting it fall through to "unexpected
-     * character". The host and the twin disagree on accept/reject here by
-     * deliberate design; the differential only ever runs subset programs. */
+    /* v0.23.77-dev: a character literal is one byte - the character between the
+     * quotes, with the string escapes available between them. The value rides in
+     * tchv, as a float literal's lives in tflt, so the token text keeps pointing
+     * into the source. */
     if (ch == '\'') {
-        die_at("character literals are not in the bootstrap subset", l, c);
+        take();                                       /* the opening quote */
+        if (!peek() || peek() == '\n' || peek() == '\r')
+            die_at("unterminated character literal", l, c);
+        int cv = take();
+        if (cv == '\\') {                             /* a backslash escape */
+            int e = take();
+            if (e == 'n') cv = 10;
+            else if (e == 'r') cv = 13;
+            else if (e == 't') cv = 9;
+            else if (e == '0') cv = 0;
+            else if (e == '\\') cv = '\\';
+            else if (e == '\'') cv = '\'';
+            else die_at("unsupported character escape", l, c);
+        }
+        if (peek() != '\'') die_at("unterminated character literal", l, c);
+        take();                                       /* the closing quote */
+        if (push(TK_Char, pos - 1, 1, l, c)) return 1;
+        tchv[ntok - 1] = cv;
+        return 0;
     }
     if (ch > 127) die_e6(l, c);
 
@@ -625,6 +643,16 @@ static int primary(void) {
         adv();
         return newnode(E_Var, nt);
     }
+    if (k == TK_Char) {
+        /* v0.23.77-dev: a character literal is a Num node whose value rides in
+         * nchv (value + 1, so 0 means "not a character"), exactly as true and
+         * false ride in nbool. */
+        int nt = p;
+        adv();
+        int vc = newnode(E_Num, nt);
+        nchv[vc] = tchv[nt] + 1;
+        return vc;
+    }
     if (k == TK_Number) {
         int nt = p;
         adv();
@@ -909,6 +937,7 @@ static int parse_type(void) {
     if (k == TK_I32) { adv(); return TY_I32; }
     if (k == TK_I64) { adv(); return TY_I64; }
     if (k == TK_U8)  { adv(); return TY_U8; }
+    if (k == TK_CharType) { adv(); return TY_CHAR; }   /* v0.23.77-dev: 8-bit unsigned */
     if (k == TK_Ptr) return ptr_type();
     bad_type_spelling(k);
     if (k == TK_Ident) {
@@ -2068,6 +2097,11 @@ static int tc_combine(int n) {
         earr[n] = 0;
         return 0;
     }
+    if (k == E_Num && nchv[n]) {
+        ety[n] = TY_CHAR;         /* v0.23.77-dev: char */
+        earr[n] = 0;
+        return 0;
+    }
     if (k == E_Num && tflt[nodes[n].tok]) {
         ety[n] = 9;   /* v0.23.77-dev: f64 - the tag the stage gives it (8 is u64) */
         earr[n] = 0;
@@ -2538,8 +2572,10 @@ static int ptr_elem_t(int t){
     return 1;             /* bare ptr -> i32 */
 }
 /* v0.23.77-dev: pointers to structs live above the struct values */
+#define TY_CHAR 13   /* v0.23.77-dev: the character type, a byte like u8 */
 static int ty_width_t(int t){
     if (t==10) return 1;  /* v0.23.77-dev: bool, one byte */
+    if (t==13) return 1;  /* v0.23.77-dev: char */
     if (t==11) return 2;  /* v0.23.77-dev: u16 */
     if (t==12) return 4;  /* v0.23.77-dev: u32 */
     if (t==1) return 4;   /* i32 */
@@ -2548,7 +2584,7 @@ static int ty_width_t(int t){
     return 8;             /* every pointer is 8 bytes */
 }
 static int ty_is64_t(int t){ return (t==2) || (t==8) || is_ptr_tag_t(t); }  /* 8 = u64 */
-static int ty_is_uns_t(int t){ return (t==3) || (t==8) || (t==11) || (t==12); }  /* u8,u64,u16,u32 */
+static int ty_is_uns_t(int t){ return (t==3) || (t==8) || (t==11) || (t==12) || (t==13); }  /* u8,u64,u16,u32 */
 
 
 static int log2w_t(int w){ if (w==1) return 0; if (w==4) return 2; return 3; }
@@ -2980,6 +3016,12 @@ static int gen_expr_at(int h,int want,int base){
                 int db=alloc_tmp(); if (db<0) return -1;
                 if (emit_movz(db, nbool[n]==2?1:0, 0, 0)) return -1;
                 gx_val[n]=db; continue;
+            }
+            if (k==E_Num && nchv[n]){
+                /* v0.23.77-dev: the character's byte value */
+                int dc=alloc_tmp(); if (dc<0) return -1;
+                if (emit_movz(dc, nchv[n]-1, 0, 0)) return -1;
+                gx_val[n]=dc; continue;
             }
             if (k==E_Num && tflt[NT(n)]){
                 /* v0.23.77-dev: a float literal - bits in X, then across */

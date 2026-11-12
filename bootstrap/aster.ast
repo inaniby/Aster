@@ -250,7 +250,7 @@ let N_Block: i32 = 132;
 let N_Case: i32 = 133;
 let N_IncDec: i32 = 134;
 
-// The 12 type tags (§2.4).
+// The 13 type tags (§2.4).
 let TY_I32: i32 = 1;
 let TY_I64: i32 = 2;
 let TY_U8: i32 = 3;
@@ -263,18 +263,19 @@ let TY_F64: i32 = 9;
 let TY_BOOL: i32 = 10;
 let TY_U16: i32 = 11;
 let TY_U32: i32 = 12;
+let TY_CHAR: i32 = 13;
 
 // The kind names, four packed tables of 16-byte records: a
 // record is the name's bytes, NUL-padded. entab is the
 // host's full Expr::Kind list (36 records, so a kind's
 // record sits at its own number); sntab is Stmt::Kind (15);
 // nntab the structural kinds (7); tytab the type spellings
-// (12, tag 1 at record 0). The dump picks the table by the
+// (13, tag 1 at record 0). The dump picks the table by the
 // kind's space (§9): < 64 entab, < 128 sntab, else nntab.
 let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0Cast\0\0\0\0\0\0\0\0\0\0\0\0";
 let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Switch\0\0\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0DoWhile\0\0\0\0\0\0\0\0\0Nop\0\0\0\0\0\0\0\0\0\0\0\0\0";
 let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0Case\0\0\0\0\0\0\0\0\0\0\0\0IncDec\0\0\0\0\0\0\0\0\0\0";
-let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0u64\0\0\0\0\0\0\0\0\0\0\0\0\0f64\0\0\0\0\0\0\0\0\0\0\0\0\0bool\0\0\0\0\0\0\0\0\0\0\0\0u16\0\0\0\0\0\0\0\0\0\0\0\0\0u32\0\0\0\0\0\0\0\0\0\0\0\0\0";
+let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0u64\0\0\0\0\0\0\0\0\0\0\0\0\0f64\0\0\0\0\0\0\0\0\0\0\0\0\0bool\0\0\0\0\0\0\0\0\0\0\0\0u16\0\0\0\0\0\0\0\0\0\0\0\0\0u32\0\0\0\0\0\0\0\0\0\0\0\0\0char\0\0\0\0\0\0\0\0\0\0\0\0";
 // ---- END GENERATED: parser names ----
 
 // ---------------------------------------------------------------------------
@@ -378,6 +379,8 @@ let numval: i64 = 0;              // the converted number (§6.2)
 let numu: u64 = 0;                // the same value, wide (§6.2, v0.23.77-dev)
 let numf: i64 = 0;                // the bits of a float literal (v0.23.77-dev)
 let nflt: i32[65536] = 0;         // per node: 1 when it is a float literal
+let tchv: i32[131072] = 0;        // per token: the byte value of a Char token
+let nchv: i32[65536] = 0;         // per node: value + 1 when a character literal
 let nbool: i32[65536] = 0;        // per node: 0 no, 1 the literal 'false', 2 'true'
 let tflt: i32[131072] = 0;        // per token: 1 when the Number spelled a '.'
 let numflag: i32 = 0;             // 0 fits, 1 too large (P52/P53), 2 saturated above i64max (P51)
@@ -1206,8 +1209,31 @@ fn scan_one() -> i32 {
         // kind — this compiler's own source never writes one — so it is
         // rejected explicitly. The reference and the twin both reject it, so
         // they stay in agreement (both reject) on the differential corpus.
+        // v0.23.77-dev: a character literal is one byte - the character between
+        // the quotes - and the string escapes work between them. The value rides
+        // in tchv, the way a float literal's lives in tflt, so the token text
+        // keeps pointing into the source.
         if (ch == 39) {
-            return die_at("character literals are not in the bootstrap subset", l, c);
+            take();                                               // the opening quote
+            if (peek() == 0 || peek() == 10 || peek() == 13) {
+                return die_at("unterminated character literal", l, c);
+            }
+            let cv: i32 = take();
+            if (cv == 92) {                                       // a backslash escape
+                let e: i32 = take();
+                if (e == 110) { cv = 10; }
+                else if (e == 114) { cv = 13; }
+                else if (e == 116) { cv = 9; }
+                else if (e == 48) { cv = 0; }
+                else if (e == 92) { cv = 92; }
+                else if (e == 39) { cv = 39; }
+                else { return die_at("unsupported character escape", l, c); }
+            }
+            if (peek() != 39) { return die_at("unterminated character literal", l, c); }
+            take();                                               // the closing quote
+            if (push(K_Char, pos - 1, 1, l, c) != 0) { return 1; }
+            tchv[ntoks - 1] = cv;
+            return 0;
         }
         // --- anything above ASCII is refused before the operator table ---
         if (ch > 127) { return die_e6(l, c); }
@@ -1960,6 +1986,19 @@ fn parse_expr() -> i32 {
                 state = 1;
                 continue;
             }
+            if (k == K_Char) {
+                // v0.23.77-dev: a character literal is a Num node whose value
+                // rides in nchv (value + 1, so 0 means "not a character"),
+                // exactly as `true`/`false` ride in nbool.
+                let nt: i32 = ppos;
+                advance();
+                let vc: i32 = newnode(E_Num, nt);
+                if (vc == 0) { return 0; }
+                nchv[vc - 1] = tchv[nt] + 1;
+                if (vpush(vc) != 0) { return 0; }
+                state = 1;
+                continue;
+            }
             if (k == K_Number) {
                 let nt: i32 = ppos;
                 advance();
@@ -2276,6 +2315,7 @@ fn parse_type() -> i32 {
     if (k == K_Bool) { advance(); return TY_BOOL; }
     if (k == K_U16) { advance(); return TY_U16; }    // v0.23.77-dev
     if (k == K_U32) { advance(); return TY_U32; }
+    if (k == K_CharType) { advance(); return TY_CHAR; }   // v0.23.77-dev: 8-bit unsigned
     if (k == K_Ptr) { return ptr_type(); }
     if (k == K_Ident) {
         // v0.23.77-dev: `f64` is not a keyword in this language - the host's
@@ -3765,7 +3805,8 @@ fn expr_const_int(h: i32) -> i32 {
 fn cond_ok(c: i32) -> i32 {
     let t: i32 = ex_ty[c - 1];
     if (t == -2) { return 1; }
-    if (t == TY_BOOL) { return 1; }   // v0.23.77-dev: a bool is a condition
+    if (t == TY_BOOL) { return 1; }
+    if (t == TY_CHAR) { return 1; }   // v0.23.77-dev: unsigned 8-bit, like u8
     if (ex_arr[c - 1] == 1) { return 0; }
     if (is_int_tag(t) == 1) { return 1; }
     return 0;
@@ -3908,6 +3949,11 @@ fn tc_combine(n: i32) -> i32 {
     let k: i32 = nkind[n - 1];
     if (k == E_Num && nbool[n - 1] != 0) {
         ex_ty[n - 1] = TY_BOOL;
+        ex_arr[n - 1] = 0;
+        return 0;
+    }
+    if (k == E_Num && nchv[n - 1] != 0) {
+        ex_ty[n - 1] = TY_CHAR;   // v0.23.77-dev
         ex_arr[n - 1] = 0;
         return 0;
     }
@@ -4814,6 +4860,7 @@ let pstk: i32[65536] = 0;       // the ptr-yield walk's pending children
 
 fn ty_width(t: i32) -> i32 {
     if (t == TY_BOOL) { return 1; }
+    if (t == TY_CHAR) { return 1; }   // v0.23.77-dev: unsigned 8-bit, like u8
     if (t == TY_U16) { return 2; }    // v0.23.77-dev
     if (t == TY_U32) { return 4; }   // v0.23.77-dev: 0/1 in one byte
     if (t == TY_I32) { return 4; }
@@ -5036,6 +5083,7 @@ fn ty_is64(t: i32) -> i32 {
 }
 fn ty_is_uns(t: i32) -> i32 {
     if (t == TY_U8) { return 1; }
+    if (t == TY_CHAR) { return 1; }   // v0.23.77-dev
     if (t == TY_U16 || t == TY_U32) { return 1; }   // v0.23.77-dev
     if (t == TY_U64) { return 1; }
     return 0;
@@ -6137,6 +6185,13 @@ fn gen_leaf(n: i32, want: i32) -> i32 {
         if (nbool[n - 1] == 2) { vb = 1; }
         if (emit_movz(db, vb, 0, 0) != 0) { return -1; }
         return db;
+    }
+    if (k == E_Num && nchv[n - 1] != 0) {
+        // v0.23.77-dev: the character's byte value
+        let dc: i32 = alloc_tmp();
+        if (dc < 0) { return -1; }
+        if (emit_movz(dc, nchv[n - 1] - 1, 0, 0) != 0) { return -1; }
+        return dc;
     }
     if (k == E_Num && nflt[n - 1] == 1) {
         // the exact bits are already in numf (the parser converted them); put
