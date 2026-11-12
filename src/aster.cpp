@@ -440,6 +440,10 @@ public:
                     if(!okFirst)
                         throw Error(std::string(isBin?"binary":"hexadecimal")+" literal has no digits at "+std::to_string(l)+":"+std::to_string(c));
                 }
+                // v0.23.77-dev (audit): at most one fractional part and one
+                // exponent, so `1.5.2` and `1e2e3` stop being two numbers glued
+                // into one token.
+                bool seenDot=false, seenExp=false;
                 for(;;){
                     char q=peek();
                     if(q=='_'){ x+=take(); continue; }
@@ -449,7 +453,8 @@ public:
                     // v0.23.77-dev: a fractional part, `1.5`. The dot is taken
                     // only when a digit follows it, so `a.0`-shaped mistakes stay
                     // member-access errors, and hex/binary literals never grow one.
-                    if(!isHex&&!isBin&&q=='.'&&std::isdigit((unsigned char)peek(1))){
+                    if(!isHex&&!isBin&&!seenDot&&!seenExp&&q=='.'&&std::isdigit((unsigned char)peek(1))){
+                        seenDot=true;
                         x+=take();
                         while(std::isdigit((unsigned char)peek())) x+=take();
                         continue;
@@ -459,7 +464,8 @@ public:
                     // least one digit — so a letter that merely follows a number
                     // is still the next token, and a malformed `1e` is reported
                     // here instead of surfacing as "expected ';'" two tokens on.
-                    if(!isHex&&!isBin&&(q=='e'||q=='E')){
+                    if(!isHex&&!isBin&&!seenExp&&(q=='e'||q=='E')){
+                        seenExp=true;
                         const char n1=peek(1), n2=peek(2);
                         const bool digitAfter=std::isdigit((unsigned char)n1);
                         const bool signThenDigit=(n1=='+'||n1=='-')&&std::isdigit((unsigned char)n2);
@@ -4006,7 +4012,11 @@ struct Codegen {
         // v0.23.77-dev: a float slot is read into the FP bank — the integer bank's
         // LDR X would read a register the float never wrote.
         if(t==Ty::F32)return 0xbd4003e0u|(uint32_t(slot*2)<<10)|uint32_t(reg);   // LDR St, [SP, #slot*8] (imm = bytes/4)
-        if(t==Ty::F64)return 0xfd4003e0u|(uint32_t(slot*8)<<10)|uint32_t(reg);   // LDR Dt, [SP, #slot*8]
+        // v0.23.77-dev (audit): the imm12 field of LDR/STR D is already scaled
+        // by 8, so the field is the slot number itself. slot*8 scaled twice:
+        // slot 3 landed at byte 192, and slot 8 shared its address with the
+        // double in slot 1 - a later local could overwrite a double.
+        if(t==Ty::F64)return 0xfd4003e0u|(uint32_t(slot)<<10)|uint32_t(reg);   // LDR Dt, [SP, #slot*8]
         if(tyIs64(t))return loadVar64(reg,slot);
         if(t==Ty::U8||t==Ty::Char)return loadVar8(reg,slot);
         if(t==Ty::U16)return loadVar16(reg,slot);
@@ -4014,7 +4024,7 @@ struct Codegen {
     }
     static uint32_t storeVarT(int reg,int slot,Ty t){
         if(t==Ty::F32)return 0xbd0003e0u|(uint32_t(slot*2)<<10)|uint32_t(reg);   // STR St, [SP, #slot*8] (imm = bytes/4)
-        if(t==Ty::F64)return 0xfd0003e0u|(uint32_t(slot*8)<<10)|uint32_t(reg);   // STR Dt, [SP, #slot*8]
+        if(t==Ty::F64)return 0xfd0003e0u|(uint32_t(slot)<<10)|uint32_t(reg);   // STR Dt, [SP, #slot*8]
         if(tyIs64(t))return storeVar64(reg,slot);
         if(t==Ty::U8||t==Ty::Char)return storeVar8(reg,slot);
         if(t==Ty::U16)return storeVar16(reg,slot);
@@ -7315,6 +7325,12 @@ struct Codegen {
         const uint32_t localBase=(localsBytes+15u)&~15u;
         bool rebase=false;
         uint32_t frameBytes=8192u, raOff=8184u;
+        // v0.23.77-dev (audit): the incoming-argument base is patched with an
+        // *unscaled* ADD imm12, which holds 0..4095 only. A compact frame larger
+        // than that wrote the size into the Rn/Rd fields and corrupted the
+        // instruction - silently at exactly 4096, badly above it. A frame that
+        // big is not worth compacting, so the default 8192 frame is kept, which
+        // the unpatched ADD X16, SP, #8192 already describes.
         if(compact&&!usesStructScratch&&scratchHigh>4160u&&scratchFixable){
             // Validate the whole grid before touching a byte: every recorded
             // immediate must stay inside its own scaled range once moved.
@@ -7325,13 +7341,21 @@ struct Codegen {
             }
             if(ok){
                 const uint32_t end=localBase+(scratchHigh-4160u);
-                frameBytes=(end+8u+15u)&~15u;
-                raOff=frameBytes-8u;
-                rebase=(frameBytes<8192u);
+                const uint32_t want=(end+8u+15u)&~15u;
+                if(want<=4095u){
+                    frameBytes=want;
+                    raOff=frameBytes-8u;
+                    rebase=(frameBytes<8192u);
+                } else {
+                    ok=false;
+                }
             }
         } else if(compact&&!usesCallScratch&&!usesStructScratch){
-            frameBytes=(localsBytes+8u+15u)&~15u;
-            raOff=frameBytes-8u;
+            const uint32_t want=(localsBytes+8u+15u)&~15u;
+            if(want<=4095u){
+                frameBytes=want;
+                raOff=frameBytes-8u;
+            }
         }
         if(frameBytes>8192u)frameBytes=8192u;
         if(frameBytes==8192u)raOff=8184u;

@@ -80,6 +80,11 @@ printf '%s\n' '[5/8] what is refused'
 build_reject badsuf 'fn main() -> i32 { let x: f64 = 1e9u; return 0; }' 'cannot carry an integer suffix'
 build_reject badexp 'fn main() -> i32 { let x: f64 = 1e; return 0; }' 'malformed exponent'
 build_reject badsgn 'fn main() -> i32 { let x: f64 = 1.5e+; return 0; }' 'malformed exponent'
+# v0.23.77-dev (audit): the scanner used to take a fractional part and an
+# exponent any number of times, so these two glued themselves into one
+# token and compiled. One of each, at most.
+build_reject twodots 'fn main() -> i32 { let x: f64 = 1.5.2; return 0; }' '.'
+build_reject twoexps 'fn main() -> i32 { let x: f64 = 1e2e3; return 0; }' 'e3'
 ok 'a suffix, a bare e, a sign with no digits'
 
 printf '%s\n' '[6/8] a global folds an exponent literal'

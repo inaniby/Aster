@@ -163,6 +163,12 @@ set +e; "$RUNNER" "$OUT/mut" >/dev/null 2>&1; mrc=$?; set -e
 [ "$mrc" = 42 ] || fail "the un-rebased mutant changed behaviour (exit $mrc) — the fallback must stay correct"
 printf '  %-40s %s\n' "mutant falls back to 8192 (frame ${mf}) and still returns 42" 'ok'
 
+# v0.23.77-dev (audit): the incoming-argument base is patched with an unscaled
+# ADD imm12, which holds 0..4095. A compact frame larger than that used to write
+# the size into the Rn/Rd fields; it now stays at the default 8192 instead.
+grep -qF 'if(want<=4095u){' src/aster.cpp \
+    || fail 'the compact frame no longer checks that its size fits the ADD immediate'
+
 printf '%s\n' '[10/10] compact: recursion goes far deeper than the 8 KiB layout allows'
 cat > "$OUT/deep.ast" <<'AST'
 fn f(n: i32) -> i32 { if (n == 0) { return 0; } return 1 + f(n - 1); }
