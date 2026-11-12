@@ -41,7 +41,7 @@ fail(){ echo "FAIL: $*" >&2; exit 1; }
 printf '%s\n' '[1/9] Strictly build Aster compiler'
 $CXX -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 A=$OUT/aster
-grep -qF '#define ASTER_VERSION_STRING "0.23.78-dev"' src/aster.cpp \
+grep -qF '#define ASTER_VERSION_STRING "0.23.79-dev"' src/aster.cpp \
     || fail 'the version constant is not 0.23.77-dev'
 bump
 
@@ -74,7 +74,7 @@ guards = [
     ('the old reject-zero checks are gone',
      '!validSectionAlign(d.addralign)||d.addralign<4', 0),
     ('SoDynSpec carries tlsAlign',
-     'uint64_t tlsAlign=kTlsBlockAlign;', 1),
+     'uint64_t tlsAlign=kTlsBlockAlign;', 2),
     ('link-so forwards the merged maximum',
      '    spec.tlsAlign=maxTlsAlign;', 1),
     ('PT_TLS p_align follows the spec',

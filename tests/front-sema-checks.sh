@@ -43,7 +43,7 @@ bump(){ COVER=$((COVER + 1)); }
 printf '%s\n' '[1/9] Strictly build Aster compiler'
 $CXX -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 A=$OUT/aster
-grep -qF '#define ASTER_VERSION_STRING "0.23.78-dev"' src/aster.cpp \
+grep -qF '#define ASTER_VERSION_STRING "0.23.79-dev"' src/aster.cpp \
     || { echo 'FAIL: the version constant is not 0.23.77-dev' >&2; exit 1; }
 bump
 

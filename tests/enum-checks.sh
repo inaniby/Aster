@@ -60,7 +60,7 @@ fi
 # [2/9] Source guards. Each change is pinned where it was made.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/9] Source guards: enum'
-grep -qF '#define ASTER_VERSION_STRING "0.23.78-dev"' src/aster.cpp \
+grep -qF '#define ASTER_VERSION_STRING "0.23.79-dev"' src/aster.cpp \
     || { echo "FAIL: the version constant is not 0.23.77-dev" >&2; exit 1; }
 # the lexer recognises `enum` as a reserved word
 grep -qF 'else if(x=="enum")k=TK::Enum;' src/aster.cpp \
