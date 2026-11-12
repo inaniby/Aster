@@ -93,7 +93,7 @@ std::string dirNameOf(const std::string& p){size_t s=p.find_last_of('/');return 
 // them: the element type was never carried. It is now — in the local binding,
 // in `typeOf(a[i])`, and in the address computation, which reaches a struct
 // element whose size is not a power of two through MADD instead of a shift.
-#define ASTER_VERSION_STRING "0.23.78-dev"
+#define ASTER_VERSION_STRING "0.23.79-dev"
 
 // v0.23.77-dev: the content hash the build cache and `aster deps` are keyed on.
 // Declared at file scope because both the parser (inside the anonymous
@@ -9485,6 +9485,9 @@ struct ObjectLayout {
     // object byte-identical; writeObject emits it and parseObject/linkObjects
     // already carry it through to the linked image.
     uint64_t rodataAlign=1;
+    // v0.23.79-dev (D-05): the TLS block's alignment — the maximum @align of
+    // its members, never below kTlsBlockAlign. Both .so writers receive it.
+    uint64_t tlsAlign=kTlsBlockAlign;
     uint64_t bssSize=0;
     // v0.23.51-dev: the thread-local block, one copy per thread. `tls` globals
     // are laid out here and reached through TPIDR_EL0; the static image carries
@@ -9595,6 +9598,11 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
     }
     // ---- v0.23.52-dev: place the thread-local block ------------------------
     if(!tlsInit.empty()||!tlsZero.empty()){
+        // v0.23.79-dev (D-05): the block's declared alignment is the widest
+        // @align among its members. .tbss must start on that boundary too, so
+        // the writer's alignUp(..., tlsAlign) lands exactly on tbssBase.
+        for(const Global* g:tlsInit)L.tlsAlign=std::max(L.tlsAlign,std::max<uint64_t>(g->align,4));
+        for(const Global* g:tlsZero)L.tlsAlign=std::max(L.tlsAlign,std::max<uint64_t>(g->align,4));
         // The same 4-byte slot rule the ordinary globals follow: every object is
         // a multiple of 4 bytes so the object linker's invariants hold, and the
         // offset recorded is the block offset — which is what both access models
@@ -9632,7 +9640,7 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
         L.tlsSize=cur;
         // .tbss begins at the first block-aligned offset past .tdata. The gap is
         // part of the block — PT_TLS's memsz covers it — but it holds no bytes.
-        cur=alignUp(cur,kTlsBlockAlign);
+        cur=alignUp(cur,L.tlsAlign);
         const uint64_t tbssBase=cur;
         L.tbssBase=tbssBase;
         for(const Global* g:tlsZero)place(*g,5,cur);
@@ -10299,7 +10307,7 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     // section, block aligned; debug sections and the symbol table follow it.
     // v0.23.52-dev: .tbss owns no file bytes at all — it begins where .tdata
     // ends and its size lives only in the section header, exactly like .bss.
-    const uint64_t tdataOff=hasTdata?alignUp(afterLast,kTlsBlockAlign):0,tdataSize=L.tls.size();
+    const uint64_t tdataOff=hasTdata?alignUp(afterLast,L.tlsAlign):0,tdataSize=L.tls.size();
     const uint64_t afterTls=hasTdata?tdataOff+tdataSize:afterLast;
     const uint64_t debugLineOff=hasDebugLine?align8(afterTls):0,debugLineSize=debugLine.bytes.size();
     const uint64_t relaDebugLineOff=hasDebugLine?align8(debugLineOff+debugLineSize):0,relaDebugLineSize=relasDl.size()*sizeof(Rela);
@@ -10323,8 +10331,8 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     // both sections, read off this machine's own compiler output. .tdata is the
     // initializer template for one thread's block and .tbss is the zeroed tail
     // of it; neither is read-only in a running thread, which is what WRITE says.
-    if(hasTdata){sh[idxTdata].name=nameAt(".tdata");sh[idxTdata].type=1;sh[idxTdata].flags=0x1|0x2|0x400;sh[idxTdata].offset=tdataOff;sh[idxTdata].size=tdataSize;sh[idxTdata].addralign=kTlsBlockAlign;}
-    if(hasTbss){sh[idxTbss].name=nameAt(".tbss");sh[idxTbss].type=8;sh[idxTbss].flags=0x1|0x2|0x400;sh[idxTbss].offset=afterTls;sh[idxTbss].size=L.tbssSize;sh[idxTbss].addralign=kTlsBlockAlign;}
+    if(hasTdata){sh[idxTdata].name=nameAt(".tdata");sh[idxTdata].type=1;sh[idxTdata].flags=0x1|0x2|0x400;sh[idxTdata].offset=tdataOff;sh[idxTdata].size=tdataSize;sh[idxTdata].addralign=L.tlsAlign;}
+    if(hasTbss){sh[idxTbss].name=nameAt(".tbss");sh[idxTbss].type=8;sh[idxTbss].flags=0x1|0x2|0x400;sh[idxTbss].offset=hasTdata?tdataOff+L.tbssBase:afterTls;sh[idxTbss].size=L.tbssSize;sh[idxTbss].addralign=L.tlsAlign;}
     if(hasDebugLine){
         sh[idxDebugLine].name=nameAt(".debug_line");sh[idxDebugLine].type=1;sh[idxDebugLine].offset=debugLineOff;sh[idxDebugLine].size=debugLineSize;sh[idxDebugLine].addralign=1;
         Shdr& e0=sh[idxRelaDebugLine];e0.name=nameAt(".rela.debug_line");e0.type=4;e0.offset=relaDebugLineOff;e0.size=relaDebugLineSize;e0.link=idxSym;e0.info=idxDebugLine;e0.addralign=8;e0.entsize=sizeof(Rela);
@@ -10858,7 +10866,11 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
                        const std::vector<uint8_t>& tls={},uint64_t tbssSize=0,
                        // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
                        // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
-                       uint64_t pageSize=4096){
+                       uint64_t pageSize=4096,
+                       // v0.23.79-dev (D-05): the SysV writer used to hardcode
+                       // kTlsBlockAlign everywhere; it now receives the block's
+                       // real alignment, exactly as the Dyn writer does.
+                       uint64_t tlsAlign=kTlsBlockAlign){
     enum { S_NULL=0,S_TEXT=1,S_DYNSYM=2,S_DYNSTR=3,S_HASH=4,S_RELA=5,S_DATA=6,S_GOT=7,S_DYNAMIC=8,S_BSS=9,S_INIT_ARRAY=10,S_SYMTAB=11,S_STRTAB=12,S_SHSTR=13,S_NUM=14 };
     const bool hasInit=initOffset>=0;
     const bool hasDebugLine=!debugLine.bytes.empty();
@@ -10958,8 +10970,8 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // running thread writes its own. It goes directly after the RELRO page,
     // before .bss, so the writable PT_LOAD's file size stops at .tdata instead
     // of spanning a zero-filled .bss. Order: RELRO | .tdata | .tbss | .bss.
-    const uint64_t tdataVaddr=hasTls?alignUp(relroEnd,kTlsBlockAlign):0,tdataSize=tls.size();
-    const uint64_t tbssVaddr=hasTls?alignUp(tdataVaddr+tdataSize,kTlsBlockAlign):0;
+    const uint64_t tdataVaddr=hasTls?alignUp(relroEnd,tlsAlign):0,tdataSize=tls.size();
+    const uint64_t tbssVaddr=hasTls?alignUp(tdataVaddr+tdataSize,tlsAlign):0;
     const uint64_t tlsMemEnd=hasTbss?tbssVaddr+tbssSize:(hasTls?tdataVaddr+tdataSize:relroEnd);
     const uint64_t bssVaddr=hasTls?alignUp(tlsMemEnd,8):relroEnd;
     const uint64_t bssMemEnd=bssVaddr+bssSize;
@@ -11218,8 +11230,8 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // (SHF_WRITE|SHF_ALLOC|SHF_TLS) — the flags GNU ld gives them, read off this
     // machine's own compiler — and .tbss's file offset is where the file ends,
     // because it contributes no bytes.
-    if(hasTdata)setSh(kTdataIdx,nTdata,1,0x1|0x2|0x400,tdataVaddr,tdataVaddr,tdataSize,0,0,kTlsBlockAlign,0);
-    if(hasTbss) setSh(kTbssIdx,nTbss,8,0x1|0x2|0x400,tbssVaddr,tdataVaddr+tdataSize,tbssSize,0,0,kTlsBlockAlign,0);
+    if(hasTdata)setSh(kTdataIdx,nTdata,1,0x1|0x2|0x400,tdataVaddr,tdataVaddr,tdataSize,0,0,tlsAlign,0);
+    if(hasTbss) setSh(kTbssIdx,nTbss,8,0x1|0x2|0x400,tbssVaddr,tbssVaddr,tbssSize,0,0,tlsAlign,0);
     // v0.23.51-dev: the three GNU version sections. They ride in the read-only PT_LOAD
     // (addr == file offset, like every other loaded section here), so only the section
     // table grows. .gnu.version links to .dynsym; the other two link to .dynstr and carry
@@ -11241,7 +11253,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // loader aligns each thread's copy to. It sits after PT_DYNAMIC in the
     // program header table and before PT_GNU_RELRO, which describes a region
     // this segment is deliberately outside.
-    Phdr ptls{};if(hasTls){ptls.type=7;ptls.flags=6;ptls.offset=tdataVaddr;ptls.vaddr=tdataVaddr;ptls.paddr=tdataVaddr;ptls.filesz=tdataSize;ptls.memsz=tlsMemEnd-tdataVaddr;ptls.align=kTlsBlockAlign;}
+    Phdr ptls{};if(hasTls){ptls.type=7;ptls.flags=6;ptls.offset=tdataVaddr;ptls.vaddr=tdataVaddr;ptls.paddr=tdataVaddr;ptls.filesz=tdataSize;ptls.memsz=tlsMemEnd-tdataVaddr;ptls.align=tlsAlign;}
     Phdr p3{};p3.type=0x6474e552;p3.flags=4;p3.offset=relroVaddr;p3.vaddr=relroVaddr;p3.paddr=relroVaddr;p3.filesz=relroEnd-relroVaddr;p3.memsz=relroEnd-relroVaddr;p3.align=1;
     // The unwind table is read out of the running image, so it needs a PT_LOAD
     // of its own past every other segment — appending it to an existing one
@@ -11989,11 +12001,15 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         return name;
     };
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
-        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty())ownerOf.emplace(remapPrivateStringSymbol(s.name,i),i);
+        // v0.23.79-dev (D-03): only a data symbol can be the subject of the A-21
+        // order rule; a function definition is not global state an initializer reads.
+        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty()&&(s.info&0xfu)!=2)ownerOf.emplace(remapPrivateStringSymbol(s.name,i),i);
         {
             uint64_t initLo=0,initHi=0;bool haveInit=false;
             for(const auto& s:obj.symbols)if(s.name==kInitSymbol&&s.shndx!=0){initLo=s.value;initHi=s.value+s.size;haveInit=true;}
-            if(haveInit)for(const auto& r:obj.relocs)if(r.offset>=initLo&&r.offset<initHi){
+            // v0.23.79-dev (D-03): a direct CALL26 is a call, not a read of another
+            // object's global. Keep address/data relocations (275/277/GAT).
+            if(haveInit)for(const auto& r:obj.relocs)if(r.offset>=initLo&&r.offset<initHi&&r.type!=283){
                 std::string sym=r.symbol;
                 if(sym.compare(0,12,"__aster_gat_")==0)sym=sym.substr(12);
                 initRefs[i].insert(sym);
@@ -12235,11 +12251,15 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         return name;
     };
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
-        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty())ownerOf.emplace(remapPrivateStringSymbol(s.name,i),i);
+        // v0.23.79-dev (D-03): only a data symbol can be the subject of the A-21
+        // order rule; a function definition is not global state an initializer reads.
+        for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty()&&(s.info&0xfu)!=2)ownerOf.emplace(remapPrivateStringSymbol(s.name,i),i);
         {
             uint64_t initLo=0,initHi=0;bool haveInit=false;
             for(const auto& s:obj.symbols)if(s.name==kInitSymbol&&s.shndx!=0){initLo=s.value;initHi=s.value+s.size;haveInit=true;}
-            if(haveInit)for(const auto& r:obj.relocs)if(r.offset>=initLo&&r.offset<initHi){
+            // v0.23.79-dev (D-03): a direct CALL26 is a call, not a read of another
+            // object's global. Keep address/data relocations (275/277/GAT).
+            if(haveInit)for(const auto& r:obj.relocs)if(r.offset>=initLo&&r.offset<initHi&&r.type!=283){
                 std::string sym=r.symbol;
                 if(sym.compare(0,12,"__aster_gat_")==0)sym=sym.substr(12);
                 initRefs[i].insert(sym);
@@ -14974,7 +14994,7 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
     spec.rodataAlign=L.rodataAlign;
     // v0.23.52-dev: the thread-local block, handed to the writer the same way a
     // link-so does — .tdata bytes plus the size of the .tbss tail behind them.
-    spec.tls=L.tls;spec.tbssSize=L.tbssSize;
+    spec.tls=L.tls;spec.tbssSize=L.tbssSize;spec.tlsAlign=L.tlsAlign;
     std::set<std::string> defFuncs,defObjs,ifSeen,ioSeen,funcAddrSeen;
     for(const auto& e:exports)defFuncs.insert(e.name);
     for(const auto& g:L.globals)defObjs.insert(g.name);
@@ -15040,7 +15060,7 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
                           ef.bytes,ef.patches,ehFrameFdeList(ef),
                           // v0.23.52-dev: the thread-local block, same as the
                           // dynamic writer gets.
-                          L.tls,L.tbssSize,pageSize);
+                          L.tls,L.tbssSize,pageSize,L.tlsAlign);
         std::cout<<"Aster v"<<kVersion<<": emitted AArch64 ELF64 ET_DYN shared object ("<<L.ins.size()<<" instructions, "<<exports.size()<<" exported functions, "<<L.globals.size()<<" globals, "<<L.data.size()<<" data bytes, "<<L.bssSize<<" bss bytes): "<<output<<"\n";
     }
     return 0;
@@ -15436,7 +15456,7 @@ int main(int argc,char**argv){
             return 0;
         }
         if(cmd=="test"){
-            bool dbg=false,bc2=false,noCache=false; uint64_t ps=4096; std::string filter;
+            bool dbg=false,bc2=false,noCache=false; uint64_t ps=4096; bool cliPageSet=false; std::string filter;
             for(int i=2;i<argc;++i){
                 const std::string a=argv[i];
                 if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
@@ -15447,6 +15467,7 @@ int main(int argc,char**argv){
                     if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
                         std::cerr<<"aster test: --page-size must be 4096 or 16384\n";return 2;
                     }
+                    cliPageSet=true;
                 }
                 else if(!a.empty()&&a[0]=='-'){std::cerr<<"aster test: unknown option "<<a<<"\n";return 2;}
                 else if(filter.empty())filter=a;
@@ -15458,6 +15479,8 @@ int main(int argc,char**argv){
                 return 2;
             }
             const ProjectSpec spec=parseProjectFile("aster.proj");
+            // v0.23.79-dev (D-04): the same project default as build|run.
+            const uint64_t filePage = cliPageSet ? ps : (spec.pageSize?spec.pageSize:ps);
             if(spec.kind=="apk"){
                 std::cerr<<"aster test: an apk project is a shared object; list `test` sources in a program project instead\n";
                 return 2;
@@ -15485,18 +15508,18 @@ int main(int argc,char**argv){
                 }
                 g_buildDeps.clear();
                 if(hasMain)continue;
-                libs.push_back(cachedProjectObject(sp,false,dbg,bc2,ps,cacheDir,compiled,reused,noCache));
+                libs.push_back(cachedProjectObject(sp,false,dbg,bc2,filePage,cacheDir,compiled,reused,noCache));
             }
             int ran=0,failed=0;
             for(const auto& tp:spec.tests){
                 if(!filter.empty()&&tp.find(filter)==std::string::npos)continue;
                 if(!fileExists(tp)){std::cerr<<"aster test: missing test source "<<tp<<"\n";return 1;}
                 std::vector<std::string> objs=libs;
-                objs.push_back(cachedProjectObject(tp,false,dbg,bc2,ps,cacheDir,compiled,reused,noCache));
+                objs.push_back(cachedProjectObject(tp,false,dbg,bc2,filePage,cacheDir,compiled,reused,noCache));
                 std::string exe="build/tests/"+baseNameOf(tp);
                 if(exe.size()>4&&exe.compare(exe.size()-4,4,".ast")==0)exe=exe.substr(0,exe.size()-4);
                 if(!makeDirs(dirNameOf(exe))){std::cerr<<"aster test: cannot create "<<dirNameOf(exe)<<"\n";return 1;}
-                linkObjects(objs,exe,0x400000,2,ps);
+                linkObjects(objs,exe,0x400000,2,filePage);
                 pid_t pid=::fork();
                 if(pid<0){std::cerr<<"aster test: cannot fork\n";return 1;}
                 if(pid==0){execAarch64Image(exe,{});std::perror("aster test");::_exit(127);}
@@ -15691,7 +15714,7 @@ int main(int argc,char**argv){
         if(cmd=="build"||cmd=="run"){
             const bool isRun=cmd=="run";
             std::string out; bool dbg=false,bc2=false,noCache=false,afterDash=false;
-            uint64_t ps=4096; std::vector<std::string> runArgs;
+            uint64_t ps=4096; bool cliPageSet=false; std::vector<std::string> runArgs;
             for(int i=2;i<argc;++i){
                 const std::string a=argv[i];
                 if(isRun&&afterDash){runArgs.push_back(a);continue;}
@@ -15705,6 +15728,7 @@ int main(int argc,char**argv){
                     if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
                         std::cerr<<"aster "<<cmd<<": --page-size must be 4096 or 16384\n";return 2;
                     }
+                    cliPageSet=true;
                 }
                 else {std::cerr<<"aster "<<cmd<<": unknown option "<<a<<"\n";return 2;}
             }
@@ -15731,7 +15755,10 @@ int main(int argc,char**argv){
                 return 2;
             }
             if(spec.pageSize!=0){ if(spec.pageSize!=4096&&spec.pageSize!=16384){std::cerr<<"aster "<<cmd<<": page-size in aster.proj must be 4096 or 16384\n";return 2;} }
-            const uint64_t filePage = ps;
+            // v0.23.79-dev (D-04): `page-size` in aster.proj is the default;
+            // an explicit --page-size overrides it. Previously the project
+            // setting was parsed, range-checked and then silently discarded.
+            const uint64_t filePage = cliPageSet ? ps : (spec.pageSize?spec.pageSize:ps);
             if(out.empty())out = isApk ? ("build/"+name+".apk") : ("build/"+name);
             const std::string outDir=dirNameOf(out);
             if(!outDir.empty()&&!makeDirs(outDir)){std::cerr<<"aster "<<cmd<<": cannot create "<<outDir<<"\n";return 1;}
