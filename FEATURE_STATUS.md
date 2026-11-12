@@ -1,6 +1,6 @@
 # Aster — Feature Status
 
-**As of v0.23.77-dev.** One table per area. "Since" is the version that
+**As of v0.23.78-dev.** One table per area. "Since" is the version that
 introduced the feature (see `VERSION_HISTORY.md` for the full record);
 "Coverage" names the suite that fails if the feature regresses. Planned items
 carry their tracking id from `ROADMAP.md`; nothing else is promised.
@@ -14,6 +14,16 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | `link-so` forwards the merged TLS alignment to `PT_TLS` and both headers | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [4/9], [8/9] |
 | `sh_addralign = 0` means "no requirement" for data/bss/TLS sections | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [3/9], [4/9], [8/9] |
 | `.tbss` symbol offsets are not double-counted | shipped | v0.23.76-dev | `section-align-contract-checks.sh` [4/9] (16..16384 spectrum), [8/9], `tls-checks.sh` |
+
+## v0.23.78-dev additions
+
+| Feature | Status | Since | Coverage |
+| --- | --- | --- | --- |
+| A compact frame above 4095 bytes keeps the default 8192 frame instead of overflowing the incoming-argument `ADD` immediate | shipped | v0.23.78-dev | `frame-slot-contract-checks.sh` [2/9], [3/9] (`badspadd`), [4/9], [8/9] m4 |
+| An `f64` local uses the unscaled slot in `LDR/STR D` imm12 | shipped | v0.23.78-dev | `frame-slot-contract-checks.sh` [2/9], [3/9] (`strd`), [4/9], [8/9] m1–m3 |
+| A high-slot `f64` never writes past the 8 KiB frame into the caller's stack | shipped | v0.23.78-dev | `frame-slot-contract-checks.sh` [3/9] (`str d0,[sp,#1024]`), [4/9] (caller sentinel) |
+| The lexer accepts at most one fractional part and one exponent (`1.5.2` / `1e2e3` refused) | shipped | v0.23.78-dev | `frame-slot-contract-checks.sh` [2/9], [4/9], [5/9], [8/9] m5–m6 |
+| The resident gate is in `CRITICAL`, so a `rc=77` skip cannot hide it (G-08) | shipped | v0.23.78-dev | `tests/ci.sh` `CRITICAL`, `ci-protocol-checks.sh` |
 
 ## v0.23.77-dev additions
 

@@ -1,3 +1,24 @@
+## v0.23.78-dev — The audit repairs get a resident gate
+
+> **Status**: the three defects an external review reproduced (D-01, D-02, D-09 of `AUDIT-v0.23.77-dev.md` §3) were fixed upstream in three commits on the `v0.23.77-dev` line — `e9bb50d` (bootstrap `char`), `f6dc30a` (the three repairs), `a235ed2` (the touch-example comment). This round **changes no compiler behaviour**; it promotes those repairs to a numbered release and gives them the gate they lacked. See `VALIDATION-v0.23.78-dev.md`.
+
+### What this version adds
+
+| Area | Change |
+| --- | --- |
+| Version | `ASTER_VERSION_STRING` and the CMake project version move to `0.23.78-dev` / `0.23.78`; 19 hard version guards re-pinned; a byte-identical 393-row snapshot under `tests/baseline/v0.23.78-dev/`. |
+| Gate | `tests/frame-slot-contract-checks.sh`, a 9-layer resident suite registered in `DEFAULT_SUITES` **and** `CRITICAL` (151 suites). Source guards pin the two `if(want<=4095u)` bounds, the unscaled `f64` immediate and `seenDot`/`seenExp`; a pure-Python ELF `.text` reader rejects any overflowing `ADD X16,SP,#imm`; the behavioural matrix covers eight compact frame sizes, `f64` slots 0/1/7/128 with a caller-stack sentinel, the nine-FP-argument path, and the D-09 refusal/acceptance controls; a C oracle runs through `$HOSTCC` / `$RUNNER`; every writer and link; 59 invariants (floor 55); 6/6 mutations caught; all 393 frozen rows reproduced. |
+| D-02 consequence | A high-slot `f64` store used to land at `[sp,#8192]` — outside the 8 KiB frame, in the caller's stack. A caller sentinel returned 20 before and 0 after; it is now a resident assertion. |
+| D-01 strategy | The upstream fallback is kept: a compact frame whose size would exceed the 12-bit `ADD` immediate stays at the default 8192 frame. No two-word `ADD` split is reintroduced, so neither the non-compact byte stream nor the small-frame compact byte stream moves. |
+
+### Zero drift
+
+No shipped example uses `--compact-frames`, and none uses `f64`/`f32`, so the frozen 393-row snapshot needed no re-recording. `cmp -s` against `v0.23.77-dev` is byte-identical, and the new suite reproduces all 393 rows against this build.
+
+### Still open
+
+D-03 (`checkInitOrder`), D-04 (dead `page-size`), D-05 (SysV `.tbss`), the three lower-severity observations and all eight gate meta-findings (G-01 … G-08) keep their queued themes in `AUDIT-v0.23.77-dev.md` §7. The frozen snapshot still has no row exercising `--compact-frames` or `f64`; the resident suite is the nail, which is a deliberate trade-off rather than a claim that the baseline now covers them.
+
 ## v0.23.77-dev — The audit round ships: sixteen defects, Termux CI, and a new snapshot
 
 > **Fourth full source audit (this checkout, `HEAD 6e7a148`)** — see `AUDIT-v0.23.77-dev.md` and `tests/audit-evidence/v0.23.77-dev/`. A pure audit round on the fully green 150-suite gate: six confirmed defects (D-01/D-02 P0: compact-frame `ADD` immediate overflow and an eightfold f64 slot scale; D-03 P1: `checkInitOrder` confuses a `CALL26` helper with a cross-object global read; D-04 P1: `aster.proj`'s `page-size` is parsed, validated and discarded; D-05 P2: the SysV `.so` writer's `.tbss` offset/`p_align` split; D-09 P2: the lexer silently truncates `1e2e3` and `1.5.2` although gcc rejects both), three lower-severity reproductions, and eight gate meta-findings including the new G-08 (the 17 new suites are all outside `CRITICAL`). No compiler behaviour, gate, or frozen snapshot row was changed; fixes are routed one theme per version in the report's §7.
