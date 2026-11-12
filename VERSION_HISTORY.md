@@ -1,5 +1,7 @@
 ## v0.23.77-dev — The audit round ships: sixteen defects, Termux CI, and a new snapshot
 
+> **Fourth full source audit (this checkout, `HEAD 6e7a148`)** — see `AUDIT-v0.23.77-dev.md` and `tests/audit-evidence/v0.23.77-dev/`. A pure audit round on the fully green 150-suite gate: six confirmed defects (D-01/D-02 P0: compact-frame `ADD` immediate overflow and an eightfold f64 slot scale; D-03 P1: `checkInitOrder` confuses a `CALL26` helper with a cross-object global read; D-04 P1: `aster.proj`'s `page-size` is parsed, validated and discarded; D-05 P2: the SysV `.so` writer's `.tbss` offset/`p_align` split; D-09 P2: the lexer silently truncates `1e2e3` and `1.5.2` although gcc rejects both), three lower-severity reproductions, and eight gate meta-findings including the new G-08 (the 17 new suites are all outside `CRITICAL`). No compiler behaviour, gate, or frozen snapshot row was changed; fixes are routed one theme per version in the report's §7.
+
 The release that carries the audit round (A-01 … A-16). It is a version bump and
 a process step, not a new feature round: `src/aster.cpp` is the audited compiler,
 `ASTER_VERSION_STRING` and the CMake project version move together, and this
