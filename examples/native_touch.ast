@@ -7,7 +7,9 @@
 // the looper then calls on_looper_input when input is pending, we read the
 // motion event, convert the (float) coordinates into pixels, and repaint.
 //
-// Coordinates are floats, and Aster has no float type. AMotionEvent_getX/Y are
+// Coordinates are floats. Aster has had them since v0.23.77-dev (f32/f64), but
+// this example is built against the Linux-hosted Android bridge, where the
+// coordinate still comes back through a C helper. AMotionEvent_getX/Y are
 // declared `-> i32`, but that alone does not capture the value: a C `float`
 // return lands in s0, a different register file from the w0 Aster reads for an
 // i32 result. The capture therefore goes through the lrintf bridge — lrintf
