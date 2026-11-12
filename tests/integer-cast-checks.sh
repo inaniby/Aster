@@ -66,7 +66,7 @@ fi
 printf '%s\n' '[2/10] Source guards: the u64 grid and the cast'
 # the version constant — pinned to the current dev line so a stale compiler
 # (or a forgotten version bump) fails loudly rather than silently.
-grep -qF '#define ASTER_VERSION_STRING "0.23.77-dev"' src/aster.cpp \
+grep -qF '#define ASTER_VERSION_STRING "0.23.78-dev"' src/aster.cpp \
     || { echo "FAIL: the version constant is not 0.23.77-dev" >&2; exit 1; }
 # the token and the keyword
 grep -qF '    U64,' src/aster.cpp \
