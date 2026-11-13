@@ -396,7 +396,17 @@ __thread unsigned long c = 0;
 int touch(void) { b = 5; a = a + 1; return a; }
 C
 if $HOSTCC -shared -fPIC -O2 "$W/oracle.c" -o "$W/oracle.so" >"$W/cc.log" 2>&1; then
-    "$PY" "$W/elfkit.py" tls "$W/oracle.so" > "$W/oracle.tls"
+    # v0.23.79-dev (host): Android's C toolchain has no PT_TLS for a shared
+    # object - bionic models thread-local storage through __emutls - so the
+    # third-party witness cannot exist there. That is the host's design, not a
+    # property of the compiler under test, so the layer says so and moves on.
+    if ! "$PY" "$W/elfkit.py" tls "$W/oracle.so" > "$W/oracle.tls" 2>"$W/oracle.err"; then
+        echo '  SKIP the C oracle: this host has no PT_TLS in a shared object (emulated TLS)'
+        printf '  %-40s %s\n' 'GNU ld witness' 'unavailable on this host'
+    elif ! grep -q 'PT_TLS' "$W/oracle.tls"; then
+        echo '  SKIP the C oracle: this host has no PT_TLS in a shared object (emulated TLS)'
+        printf '  %-40s %s\n' 'GNU ld witness' 'unavailable on this host'
+    else
     # GNU ld is deliberately NOT an `addr == off` witness: its .tbss sh_offset
     # is the end of .tdata while its sh_addr sits one segment base higher. The
     # portable invariant is that PT_TLS p_align and both TLS sh_addraligns
@@ -411,6 +421,7 @@ assert int(pt.group(1), 16) in sec, ('PT_TLS p_align disagrees with TLS sections
 print('  OK GNU ld: PT_TLS p_align agrees with both TLS section alignments')
 PY
     bump
+    fi
 else
     echo '  SKIP optional C oracle (host C compiler unavailable for -shared)' >&2
 fi

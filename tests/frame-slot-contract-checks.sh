@@ -303,8 +303,12 @@ insn strs "$W/d02_f32_ctl" | grep -qx 2 || fail 'the f32 scale regressed'
 bump
 printf '  %-40s %s\n' 'instruction words decoded' 'Python only, zero binutils'; bump
 if [ -n "$AST_OBJDUMP" ]; then
-    "$AST_OBJDUMP" -d "$W/d02_guard128" | grep -qE 'str[[:space:]]+d0, \[sp, #1024\]' \
-        || fail 'objdump disagrees: slot 128 is not [sp,#1024]'
+    # v0.23.79-dev (host): the disassembler's radix is its own business - GNU
+    # objdump writes #1024 and llvm-objdump (Termux's default) writes #0x400.
+    # Both say the same thing, so the check accepts either.
+    "$AST_OBJDUMP" -d "$W/d02_guard128" \
+        | grep -qE 'str[[:space:]]+d0, \[sp, #(1024|0x400)\]' \
+        || fail 'objdump disagrees: slot 128 is not [sp,#1024] in either radix'
     printf '  %-40s %s\n' 'GNU objdump cross-check' 'slot 128 = [sp,#1024]'; bump
 else
     printf '  %-40s %s\n' 'GNU objdump cross-check' 'SKIP: no objdump (Python oracle still ran)'
