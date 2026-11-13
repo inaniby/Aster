@@ -2764,8 +2764,38 @@ fn let_stmt() -> i32 {
         return ss2;
     }
     if (curk() == K_LBracket) {
-        die_at("local arrays are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
-        return 0;
+        // v0.23.79-dev: a local array, one dimension, initialized by a
+        // constant that fills every element -- `let a: i32[4] = 0;`, the way
+        // the examples declare a buffer. The host refuses an uninitialized one.
+        advance();
+        let cnt: i32 = 0;
+        if (curk() == K_Number) {
+            convert_num(ppos);
+            if (numflag != 0) { die_at("array length does not fit", tok_line(ppos), tok_col(ppos)); return 0; }
+            cnt = numcnt;
+            advance();
+        } else {
+            die_at("expected a constant array length in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        if (curk() != K_RBracket) { die_at("expected ']' after the array length", tok_line(ppos), tok_col(ppos)); return 0; }
+        advance();
+        if (curk() == K_LBracket) {
+            die_at("multi-dimensional local arrays are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        if (curk() != K_Eq) { die_at("a local array needs an initializer", tok_line(ppos), tok_col(ppos)); return 0; }
+        advance();
+        let ie: i32 = parse_expr();
+        if (perr != 0) { return 0; }
+        if (curk() != K_Semi) { die_at("expected ';'", tok_line(ppos), tok_col(ppos)); return 0; }
+        advance();
+        let sa: i32 = newnode(S_Let, nt);
+        if (sa == 0) { return 0; }
+        nnty[sa - 1] = ty;
+        ncount[sa - 1] = cnt;
+        append(sa, ie);
+        return sa;
     }
     if (curk() == K_At) {
         die_name_at("local alignment is not supported: ", nt);
@@ -4181,7 +4211,9 @@ fn sema_stmt(s: i32) -> i32 {
                 die_name_at("type mismatch assigning variable: ", ntok[s - 1]); return 1;
             }
         }
-        if (add_local(ntok[s - 1], SK_LOCAL, nnty[s - 1], 1) != 0) { return 1; }
+        let lcnt: i32 = 1;
+        if (ncount[s - 1] > 1) { lcnt = ncount[s - 1]; }   // v0.23.79-dev: a local array
+        if (add_local(ntok[s - 1], SK_LOCAL, nnty[s - 1], lcnt) != 0) { return 1; }
         return 0;
     }
     if (k == N_IncDec) {
@@ -6544,9 +6576,26 @@ fn gen_stmt(s: i32) -> i32 {
         }
         return 0;
     }
+    if (k == S_Let && ncount[s - 1] > 1) {
+        // v0.23.79-dev: a local array. The slots are reserved first, then
+        // every element is filled with the initializer's constant value --
+        // the host's broadcast rule (`let a: i32[4] = 5;` makes four 5s).
+        let cnt: i32 = ncount[s - 1];
+        let slot: i32 = cg_add_local(ntok[s - 1], nnty[s - 1], cnt);
+        if (slot < 0) { return 1; }
+        let el: i32 = gen_expr(nfirst[s - 1], nnty[s - 1]);
+        if (el < 0) { return 1; }
+        let w: i32 = ty_width(nnty[s - 1]);
+        let k2: i32 = 0;
+        while (k2 < cnt) {
+            if (emit_mem(1, mem_scale(w), el, 31, slot * 8 + k2 * w) != 0) { return 1; }
+            k2 = k2 + 1;
+        }
+        if (free_tmp(el) != 0) { return 1; }
+        return 0;
+    }
     if (k == S_Let) {
-        // A local is always a scalar here (the parser refuses local arrays),
-        // so one slot, and the initializer stores at the declared width.
+        // A scalar local: one slot, and the initializer stores at its width.
         let slot: i32 = cg_add_local(ntok[s - 1], nnty[s - 1], 1);
         if (slot < 0) { return 1; }
         let v: i32 = gen_expr(nfirst[s - 1], nnty[s - 1]);

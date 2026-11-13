@@ -1230,9 +1230,34 @@ static int let_stmt(void) {
         append(ss2, se);
         return ss2;
     }
-    if (cur() == TK_LBracket)
-        die_at("local arrays are not in the bootstrap subset",
-               tok_line(p), tok_col(p));
+    if (cur() == TK_LBracket) {
+        /* v0.23.79-dev: a local array, one dimension, filled by a constant */
+        adv();
+        if (cur() != TK_Number)
+            die_at("expected a constant array length in the bootstrap subset",
+                   tok_line(p), tok_col(p));
+        convert_num(p);
+        if (numflag != 0) die_at("array length does not fit", tok_line(p), tok_col(p));
+        int cnt = numcnt;
+        adv();
+        if (cur() != TK_RBracket)
+            die_at("expected ']' after the array length", tok_line(p), tok_col(p));
+        adv();
+        if (cur() == TK_LBracket)
+            die_at("multi-dimensional local arrays are not in the bootstrap subset",
+                   tok_line(p), tok_col(p));
+        if (cur() != TK_Eq)
+            die_at("a local array needs an initializer", tok_line(p), tok_col(p));
+        adv();
+        int ie = expr();
+        if (cur() != TK_Semi) die_at("expected ';'", tok_line(p), tok_col(p));
+        adv();
+        int sa = newnode(S_Let, nt);
+        nodes[sa].ty = ty;
+        nodes[sa].count = cnt;
+        append(sa, ie);
+        return sa;
+    }
     if (cur() == TK_At) die_name_at("local alignment is not supported: ", nt);
     if (cur() != TK_Eq) die_at("expected '='", tok_line(p), tok_col(p));
     adv();
@@ -2290,7 +2315,7 @@ static int sema_stmt(int s) {
             if (assign_ok(nodes[s].ty, ety[e], earr[e], e) == 0)
                 die_name_at("type mismatch assigning variable: ", nodes[s].tok);
         }
-        add_local(nodes[s].tok, 1, nodes[s].ty, 1);
+        add_local(nodes[s].tok, 1, nodes[s].ty, nodes[s].count > 1 ? nodes[s].count : 1);
         return 0;
     }
     if (k == S_DerefAssign) {
@@ -3617,6 +3642,17 @@ static int gen_stmt(int s){
         int nsl=ty_slots(tyst);
         for (int isl=0; isl<nsl; isl++)
             if (emit_mem(1,3,31,31,(slotst+isl)*8)) return 1;
+        return 0;
+    }
+    if (k==S_Let && nodes[s].count > 1){
+        /* v0.23.79-dev: a local array -- reserve the slots, then fill every
+         * element with the initializer's value (the host's broadcast rule). */
+        int cnt=nodes[s].count;
+        int slot=cg_add_local(NT(s), NTY(s), cnt); if (slot<0) return 1;
+        int el=gen_expr(NF(s), NTY(s)); if (el<0) return 1;
+        int w=ty_width_t(NTY(s)), k2=0;
+        while (k2<cnt){ if (emit_mem(1, mem_scale_t(w), el, 31, slot*8+k2*w)) return 1; k2++; }
+        if (free_tmp(el)) return 1;
         return 0;
     }
     if (k==S_Let){
