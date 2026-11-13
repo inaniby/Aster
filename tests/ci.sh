@@ -119,7 +119,8 @@ if [ "$JOBS" -gt 1 ]; then
     fi
 fi
 
-PASS=0; SKIP=0; FAIL=0; PARTIAL=0; CRITICAL_SKIP=0
+PASS=0; SKIP=0; FAIL=0; PARTIAL=0; CRITICAL_SKIP=0; NO_EVIDENCE=0
+NO_EVIDENCE_REPORT=""
 GATE_PASS=0; GATE_FAIL=0; GATE_SKIP=0
 FAILURES=""
 SKIP_REPORT=""
@@ -392,6 +393,20 @@ classify_suite() {
             SKIP_REPORT="$SKIP_REPORT
   $s — legacy exit 0 — ${skip_reason:-no reason}"
         fi
+    elif [ "$pass_marks" -eq 0 ]; then
+        # v0.23.79-dev: a suite that exits 0 without printing a single
+        # PASS/OK line has asserted nothing, and calling that green is how a
+        # suite silently stops testing. It is named here, and a CRITICAL suite
+        # that does it fails the gate outright.
+        if is_critical "$s"; then
+            printf 'FAIL (critical suite printed no assertions)\n'
+            FAIL=$((FAIL+1)); FAILURES="$FAILURES $s"
+        else
+            printf 'PASS (no assertions!)\n'
+            PASS=$((PASS+1)); NO_EVIDENCE=$((NO_EVIDENCE+1))
+            NO_EVIDENCE_REPORT="$NO_EVIDENCE_REPORT
+  $s — exit 0, no PASS/OK evidence"
+        fi
     else
         if [ "$skip_marks" -gt 0 ]; then
             printf 'PASS (partial skips: %s)\n' "$skip_marks"
@@ -572,6 +587,10 @@ printf 'CI SUMMARY: %d passed, %d skipped, %d failed (of %d suites)\n' \
     "$PASS" "$SKIP" "$FAIL" "$SUITE_TOTAL"
 printf 'APK GATES : %d passed, %d skipped, %d failed\n' \
     "$GATE_PASS" "$GATE_SKIP" "$GATE_FAIL"
+if [ "$NO_EVIDENCE" -gt 0 ]; then
+    printf 'NO EVIDENCE: %d suite(s) exited 0 without printing an assertion\n' "$NO_EVIDENCE"
+    printf '%s\n' "$NO_EVIDENCE_REPORT"
+fi
 if [ "$PARTIAL" -gt 0 ]; then
     printf 'PARTIAL   : %d suite(s) passed with optional SKIP layers\n' "$PARTIAL"
 fi
