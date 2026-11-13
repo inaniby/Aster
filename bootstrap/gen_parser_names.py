@@ -132,6 +132,8 @@ TYPE_TAGS = [
     ("TY_U32", "u32"),
     # v0.23.77-dev: char - the 8-bit unsigned character type, a byte like u8
     ("TY_CHAR", "char"),
+    # v0.23.79-dev: f32 - the four-byte single beside f64 in the same bank
+    ("TY_F32", "f32"),
 ]
 
 # One record per table entry: the name's bytes, NUL-padded. The longest name
@@ -178,7 +180,7 @@ def check_list():
             % STMT_SUBSET_COUNT)
     if STRUCT_COUNT != 7:
         die("expected 7 structural kinds, list has %d" % STRUCT_COUNT)
-    if TYPE_COUNT != 13:
+    if TYPE_COUNT != 14:
         die("expected 12 type tags, list has %d" % TYPE_COUNT)
     for label, names in (("expression", EXPR_KINDS),
                          ("expression subset", EXPR_SUBSET),

@@ -937,6 +937,8 @@ static int parse_type(void) {
     if (k == TK_I32) { adv(); return TY_I32; }
     if (k == TK_I64) { adv(); return TY_I64; }
     if (k == TK_U8)  { adv(); return TY_U8; }
+    if (k == TK_Ident && toks[p].len == 3 &&
+        memcmp(srcbuf + toks[p].start, "f32", 3) == 0) { adv(); return TY_F32; }
     if (k == TK_CharType) { adv(); return TY_CHAR; }   /* v0.23.77-dev: 8-bit unsigned */
     if (k == TK_Ptr) return ptr_type();
     bad_type_spelling(k);
@@ -2573,9 +2575,13 @@ static int ptr_elem_t(int t){
 }
 /* v0.23.77-dev: pointers to structs live above the struct values */
 #define TY_CHAR 13   /* v0.23.77-dev: the character type, a byte like u8 */
+#define TY_F32  14   /* v0.23.79-dev: the four-byte single */
+static int gx_fp_single;   /* v0.23.79-dev: the width the next FP op uses */
+static int ty_is_fp_t(int t){ return t==9 || t==14; }   /* the FP bank */
 static int ty_width_t(int t){
     if (t==10) return 1;  /* v0.23.77-dev: bool, one byte */
     if (t==13) return 1;  /* v0.23.77-dev: char */
+    if (t==14) return 4;  /* v0.23.79-dev: f32 */
     if (t==11) return 2;  /* v0.23.77-dev: u16 */
     if (t==12) return 4;  /* v0.23.77-dev: u32 */
     if (t==1) return 4;   /* i32 */
@@ -2751,15 +2757,21 @@ static int emit_addsub_ext(int rd,int rn,int rm,int is_sub,int option,int sh){
 /* ---- §4.4 compare / condition / branch ---- */
 /* v0.23.77-dev: the double file, the same encodings the stage emits. A temp is
  * a register *number*: X(n) for integers, D(n) for the same n here. */
+static int emit_str_s(int rt,int rn,int off){ return emit_word(0xbd000000u|((uint32_t)(off>>2)<<10)|((uint32_t)rn<<5)|(uint32_t)rt); }
+static int emit_ldr_s(int rt,int rn,int off){ return emit_word(0xbd400000u|((uint32_t)(off>>2)<<10)|((uint32_t)rn<<5)|(uint32_t)rt); }
+static int emit_fcmp_s(int rn,int rm){ return emit_word(0x1e202000u|((uint32_t)rm<<16)|((uint32_t)rn<<5)); }
+static int emit_fmov_sx(int rd,int rn){ return emit_word(0x1e270000u|((uint32_t)rn<<5)|(uint32_t)rd); }
 static int emit_str_d(int rt,int rn,int off){ return emit_word(0xfd000000u|((uint32_t)(off>>3)<<10)|((uint32_t)rn<<5)|(uint32_t)rt); }
 static int emit_ldr_d(int rt,int rn,int off){ return emit_word(0xfd400000u|((uint32_t)(off>>3)<<10)|((uint32_t)rn<<5)|(uint32_t)rt); }
 static int emit_fmov_xd(int rd,int rn){ return emit_word(0x9e670000u|((uint32_t)rn<<5)|(uint32_t)rd); }
 static int emit_fmov_dx(int rd,int rn){ return emit_word(0x9e660000u|((uint32_t)rn<<5)|(uint32_t)rd); }
 static int emit_fp2(int rd,int rn,int rm,int kind){
     uint32_t base = 0x1e602800u;                 /* FADD D */
+    int single = gx_fp_single;                   /* v0.23.79-dev: 1 = the S form */
     if (kind==1) base = 0x1e603800u;
     if (kind==2) base = 0x1e600800u;
     if (kind==3) base = 0x1e601800u;
+    if (single) base = base & ~0x400000u;   /* D -> S: the ftype bits */
     return emit_word(base|((uint32_t)rm<<16)|((uint32_t)rn<<5)|(uint32_t)rd);
 }
 /* The three below are wired but not yet reached: a float return, a float
@@ -2957,7 +2969,7 @@ static int gx_dispatch(int n,int wt){
         int cw=1; if (ty_is64_t(lt)||ty_is64_t(rt)) cw=2;
         /* v0.23.77-dev: an f64 comparison generates its operands at the double
          * width, which is what the float bank reads */
-        if (lt==9||rt==9) return gx_push_bin(n,9,9,wt);   /* both sides at double width */
+        if (ty_is_fp_t(lt)||ty_is_fp_t(rt)) return gx_push_bin(n,9,9,wt);   /* both sides at double width */
         return gx_push_bin(n,cw,cw,wt);
     }
     if (k==E_And||k==E_Or) return gx_push_logical(n,wt);
@@ -3117,6 +3129,23 @@ static int64_t f64_from_dec(uint64_t digits, int exp10){
     if (e <= 0) return 0;
     return (int64_t)(((uint64_t)e << 52) | (kept - 4503599627370496ULL));
 }
+/* v0.23.79-dev: a double's bits narrowed to a single's, round to nearest
+ * even - the same integer algorithm the stage uses, so the two agree on
+ * every input rather than only on the ones a C cast happens to match. */
+static int64_t to_f32_bits_t(int64_t d){
+    int64_t sign=(d>>63)&1, e=(d>>52)&2047, m=d&4503599627370495LL;
+    int64_t hi=sign<<31;
+    if (e==2047) return m? (hi|2143289344LL) : (hi|2139095040LL);
+    if (e==0) return 0;
+    if (e<=896) return 0;              /* below the single's normal range */
+    if (e>=1151) return hi|2139095040LL;
+    int64_t keep=m>>29, rest=m&536870911LL, up=0;
+    if (rest>268435456LL) up=1;
+    if (rest==268435456LL && (keep&1)) up=1;
+    int64_t expv=e-896+up, mant=keep;
+    if (up && keep==8388607) { expv++; mant=0; }
+    return hi|(expv<<23)|mant;
+}
 static void convert_float(int t){
     int start = toks[t].start, n = toks[t].len, frac = 0, seen = 0;
     uint64_t m = 0;
@@ -3183,9 +3212,10 @@ static int gen_combine(int n,int want){
     }
     int l=NF(n), r=NN(l), lt=ETY(l), rt=ETY(r), a=gx_val[l], b=gx_val[r];
     /* v0.23.77-dev: the double file, decided before every integer arm */
-    if ((k==E_Add||k==E_Sub||k==E_Mul||k==E_Div) && (lt==9||rt==9)){
+    if ((k==E_Add||k==E_Sub||k==E_Mul||k==E_Div) && (ty_is_fp_t(lt)||ty_is_fp_t(rt))){
         int fk=0;
         if (k==E_Sub) fk=1; else if (k==E_Mul) fk=2; else if (k==E_Div) fk=3;
+        gx_fp_single = (lt==14||rt==14) ? 1 : 0;   /* v0.23.79-dev: the width */
         if (emit_fp2(a,a,b,fk)) return 1;
         if (free_tmp(b)) return 1;
         gx_val[n]=a; return 0;
@@ -3245,8 +3275,11 @@ static int gen_combine(int n,int want){
     if (k==E_Eq||k==E_Ne||k==E_Lt||k==E_Le||k==E_Gt||k==E_Ge){
         int is64=0; if (ty_is64_t(lt)||ty_is64_t(rt)) is64=1;
         /* v0.23.77-dev: a float comparison is FCMP, and its own condition map */
-        int isflt = (lt==9||rt==9);
-        if (isflt){ if (emit_fcmp_d(a,b)) return 1; }
+        int isflt = (ty_is_fp_t(lt)||ty_is_fp_t(rt));
+        int single = (lt==14||rt==14) ? 1 : 0;
+        gx_fp_single = single;
+        if (isflt&&single){ if (emit_fcmp_s(a,b)) return 1; }
+        else if (isflt){ if (emit_fcmp_d(a,b)) return 1; }
         else if (emit_cmp_rr(a,b,is64)) return 1;
         if (free_tmp(b)) return 1;
         if (free_tmp(a)) return 1;
@@ -3294,6 +3327,10 @@ static int gen_var(int n,int want){
             return d;
         }
         int d=alloc_tmp(); if (d<0) return -1;
+        if (ty==14){
+            if (emit_ldr_s(d,31,cg_loc_slot[e]*8)) return -1;
+            return d;
+        }
         if (ty==9){
             if (emit_ldr_d(d,31,cg_loc_slot[e]*8)) return -1;
             return d;
@@ -3313,7 +3350,10 @@ static int gen_var(int n,int want){
     int d=alloc_tmp(); if (d<0) return -1;
     int t=alloc_tmp(); if (t<0) return -1;
     if (emit_addr64(t, g_addr[s])) return -1;
-    if (emit_mem(0, mem_scale_t(ty_width_t(st_tag[s])), d, t, 0)) return -1;
+    /* v0.23.79-dev: a float global is read into the FP bank */
+    if (st_tag[s]==14){ if (emit_ldr_s(d,t,0)) return -1; }
+    else if (st_tag[s]==9){ if (emit_ldr_d(d,t,0)) return -1; }
+    else if (emit_mem(0, mem_scale_t(ty_width_t(st_tag[s])), d, t, 0)) return -1;
     if (free_tmp(t)) return -1;
     if (st_tag[s]==1 && ty_is64_t(want)==1){ if (emit_sxtw(d,d)) return -1; }
     return d;
@@ -3486,7 +3526,9 @@ static int gen_call(int n,int want){
             }
         } else {
             int v=gen_expr_at(arg,pty,gx_top); if (v<0) return -1;
-            if (pty==9){
+            if (pty==14){
+                if (emit_str_s(v,31,(800+base+reg)*8)) return -1;
+            } else if (pty==9){
                 if (emit_str_d(v,31,(800+base+reg)*8)) return -1;   /* the double file */
             } else if (emit_mem(1, mem_scale_t(ty_width_t(pty)), v, 31, (800+base+reg)*8)) return -1;
             if (free_tmp(v)) return -1;
@@ -3497,7 +3539,8 @@ static int gen_call(int n,int want){
     }
     cg_grid_hi=base;
     int j2=0; while (j2<reg && j2<8){
-        if (param_type(fnode,j2)==9){ if (emit_ldr_d(j2,31,(800+base+j2)*8)) return -1; }
+        if (param_type(fnode,j2)==14){ if (emit_ldr_s(j2,31,(800+base+j2)*8)) return -1; }
+        else if (param_type(fnode,j2)==9){ if (emit_ldr_d(j2,31,(800+base+j2)*8)) return -1; }
         else if (emit_mem(0,3,j2,31,(800+base+j2)*8)) return -1;
         j2++;
     }
@@ -3505,13 +3548,15 @@ static int gen_call(int n,int want){
     if (emit_bl(fn_lab[fsym])) return -1;
     /* v0.23.77-dev: the result's register file, decided once - a float leaves
      * D0 and is parked as D, everything else leaves X0 and is parked as X */
-    if (st_tag[fsym]==9){ if (emit_str_d(0,31,1022*8)) return -1; }
+    if (st_tag[fsym]==14){ if (emit_str_s(0,31,1022*8)) return -1; }
+    else if (st_tag[fsym]==9){ if (emit_str_d(0,31,1022*8)) return -1; }
     else if (emit_mem(1,3,0,31,1022*8)) return -1;
     pr=0; while (pr<parked_n){ if (emit_mem(0,3,tmp_free[pr],31,(900+pr)*8)) return -1; pr++; }
     tmp_top=parked_n;
     int d=alloc_tmp(); if (d<0) return -1;
     if (ty_reg_slots(st_tag[fsym])==2){ if (emit_mem(1,3,1,31,1021*8)) return -1; }
-    if (st_tag[fsym]==9){ if (emit_ldr_d(d,31,1022*8)) return -1; }
+    if (st_tag[fsym]==14){ if (emit_ldr_s(d,31,1022*8)) return -1; }
+    else if (st_tag[fsym]==9){ if (emit_ldr_d(d,31,1022*8)) return -1; }
     else if (emit_mem(0, mem_scale_t(ty_width_t(st_tag[fsym])), d, 31, 1022*8)) return -1;
     if (st_tag[fsym]==1 && ty_is64_t(want)==1){ if (emit_sxtw(d,d)) return -1; }
     return d;
@@ -3577,6 +3622,11 @@ static int gen_stmt(int s){
     if (k==S_Let){
         int slot=cg_add_local(NT(s), NTY(s), 1); if (slot<0) return 1;
         int v=gen_expr(NF(s), NTY(s)); if (v<0) return 1;
+        if (NTY(s)==14){
+            if (emit_str_s(v,31,slot*8)) return 1;
+            if (free_tmp(v)) return 1;
+            return 0;
+        }
         if (NTY(s)==9){
             if (emit_str_d(v,31,slot*8)) return 1;
             if (free_tmp(v)) return 1;
@@ -3707,7 +3757,8 @@ static int gen_stmt(int s){
         }
         int v=gen_expr(NF(s), cg_ret_ty); if (v<0) return 1;
         int is64 = (ty_is64_t(cg_ret_ty)||ty_is_struct(cg_ret_ty))?1:0;
-        if (cg_ret_ty==9){ if (emit_fmov_dx(0,v)) return 1; }
+        if (cg_ret_ty==14){ if (emit_fmov_sx(0,v)) return 1; }
+        else if (cg_ret_ty==9){ if (emit_fmov_dx(0,v)) return 1; }
         else if (emit_mov_rr(0,v,is64)) return 1;
         if (free_tmp(v)) return 1;
         if (cg_is_main==1){
@@ -3985,6 +4036,7 @@ static int gen_function(int f){
                 if (free_tmp(tp)) return 1;
             } else if (i+rsl<=8){
                 if (rsl==2){ if (emit_mem(1,3,i,31,slot*8)) return 1; if (emit_mem(1,3,i+1,31,slot*8+8)) return 1; }
+                else if (pty0==14){ if (emit_str_s(i,31,slot*8)) return 1; }
                 else if (pty0==9){ if (emit_str_d(i,31,slot*8)) return 1; }
                 else { if (emit_mem(1, mem_scale_t(ty_width_t(pty0)), i, 31, slot*8)) return 1; }
             } else {
@@ -4363,7 +4415,13 @@ static int elf_emit(int prog){
                 if (s>=0 && g_sec[s]==1){
                     int target=data_off + (int)(g_addr[s] - 0x800000);
                     if (elf_pad_to(target)) return 1;
-                    int64_t v=fold(NF(c));
+                    /* v0.23.79-dev: a float literal folds to its BITS; an
+                     * f32 global narrows them to the single's four bytes. */
+                    int64_t v;
+                    if (NK(NF(c))==E_Num && tflt[NT(NF(c))]){
+                        convert_float(NT(NF(c)));
+                        if (st_tag[s]==14) v=to_f32_bits_t((int64_t)numf); else v=(int64_t)numf;
+                    } else v=fold(NF(c));
                     int w2=ty_width_t(st_tag[s]), el=0;
                     while (el<st_cnt[s]){
                         int bi=0;

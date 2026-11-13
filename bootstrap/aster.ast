@@ -250,7 +250,7 @@ let N_Block: i32 = 132;
 let N_Case: i32 = 133;
 let N_IncDec: i32 = 134;
 
-// The 13 type tags (§2.4).
+// The 14 type tags (§2.4).
 let TY_I32: i32 = 1;
 let TY_I64: i32 = 2;
 let TY_U8: i32 = 3;
@@ -264,18 +264,19 @@ let TY_BOOL: i32 = 10;
 let TY_U16: i32 = 11;
 let TY_U32: i32 = 12;
 let TY_CHAR: i32 = 13;
+let TY_F32: i32 = 14;
 
 // The kind names, four packed tables of 16-byte records: a
 // record is the name's bytes, NUL-padded. entab is the
 // host's full Expr::Kind list (36 records, so a kind's
 // record sits at its own number); sntab is Stmt::Kind (15);
 // nntab the structural kinds (7); tytab the type spellings
-// (13, tag 1 at record 0). The dump picks the table by the
+// (14, tag 1 at record 0). The dump picks the table by the
 // kind's space (§9): < 64 entab, < 128 sntab, else nntab.
 let entab: ptr = "Num\0\0\0\0\0\0\0\0\0\0\0\0\0Var\0\0\0\0\0\0\0\0\0\0\0\0\0String\0\0\0\0\0\0\0\0\0\0Call\0\0\0\0\0\0\0\0\0\0\0\0Index\0\0\0\0\0\0\0\0\0\0\0Deref\0\0\0\0\0\0\0\0\0\0\0Add\0\0\0\0\0\0\0\0\0\0\0\0\0Sub\0\0\0\0\0\0\0\0\0\0\0\0\0Mul\0\0\0\0\0\0\0\0\0\0\0\0\0Div\0\0\0\0\0\0\0\0\0\0\0\0\0Neg\0\0\0\0\0\0\0\0\0\0\0\0\0Eq\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ne\0\0\0\0\0\0\0\0\0\0\0\0\0\0Lt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Le\0\0\0\0\0\0\0\0\0\0\0\0\0\0Gt\0\0\0\0\0\0\0\0\0\0\0\0\0\0Ge\0\0\0\0\0\0\0\0\0\0\0\0\0\0And\0\0\0\0\0\0\0\0\0\0\0\0\0Or\0\0\0\0\0\0\0\0\0\0\0\0\0\0Not\0\0\0\0\0\0\0\0\0\0\0\0\0Field\0\0\0\0\0\0\0\0\0\0\0AddrOf\0\0\0\0\0\0\0\0\0\0StructLit\0\0\0\0\0\0\0Embed\0\0\0\0\0\0\0\0\0\0\0Mod\0\0\0\0\0\0\0\0\0\0\0\0\0Shl\0\0\0\0\0\0\0\0\0\0\0\0\0Shr\0\0\0\0\0\0\0\0\0\0\0\0\0BitAnd\0\0\0\0\0\0\0\0\0\0BitOr\0\0\0\0\0\0\0\0\0\0\0BitXor\0\0\0\0\0\0\0\0\0\0BitNot\0\0\0\0\0\0\0\0\0\0Cond\0\0\0\0\0\0\0\0\0\0\0\0SizeOf\0\0\0\0\0\0\0\0\0\0Len\0\0\0\0\0\0\0\0\0\0\0\0\0FieldCall\0\0\0\0\0\0\0Cast\0\0\0\0\0\0\0\0\0\0\0\0";
 let sntab: ptr = "Let\0\0\0\0\0\0\0\0\0\0\0\0\0Assign\0\0\0\0\0\0\0\0\0\0FieldAssign\0\0\0\0\0IndexAssign\0\0\0\0\0DerefAssign\0\0\0\0\0Return\0\0\0\0\0\0\0\0\0\0If\0\0\0\0\0\0\0\0\0\0\0\0\0\0While\0\0\0\0\0\0\0\0\0\0\0For\0\0\0\0\0\0\0\0\0\0\0\0\0Break\0\0\0\0\0\0\0\0\0\0\0Continue\0\0\0\0\0\0\0\0Switch\0\0\0\0\0\0\0\0\0\0Expr\0\0\0\0\0\0\0\0\0\0\0\0DoWhile\0\0\0\0\0\0\0\0\0Nop\0\0\0\0\0\0\0\0\0\0\0\0\0";
 let nntab: ptr = "Program\0\0\0\0\0\0\0\0\0Function\0\0\0\0\0\0\0\0Global\0\0\0\0\0\0\0\0\0\0Param\0\0\0\0\0\0\0\0\0\0\0Block\0\0\0\0\0\0\0\0\0\0\0Case\0\0\0\0\0\0\0\0\0\0\0\0IncDec\0\0\0\0\0\0\0\0\0\0";
-let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0u64\0\0\0\0\0\0\0\0\0\0\0\0\0f64\0\0\0\0\0\0\0\0\0\0\0\0\0bool\0\0\0\0\0\0\0\0\0\0\0\0u16\0\0\0\0\0\0\0\0\0\0\0\0\0u32\0\0\0\0\0\0\0\0\0\0\0\0\0char\0\0\0\0\0\0\0\0\0\0\0\0";
+let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0\0\0\0\0\0\0\0\0\0\0\0\0\0ptr\0\0\0\0\0\0\0\0\0\0\0\0\0ptr<u8>\0\0\0\0\0\0\0\0\0ptr<i32>\0\0\0\0\0\0\0\0ptr<i64>\0\0\0\0\0\0\0\0u64\0\0\0\0\0\0\0\0\0\0\0\0\0f64\0\0\0\0\0\0\0\0\0\0\0\0\0bool\0\0\0\0\0\0\0\0\0\0\0\0u16\0\0\0\0\0\0\0\0\0\0\0\0\0u32\0\0\0\0\0\0\0\0\0\0\0\0\0char\0\0\0\0\0\0\0\0\0\0\0\0f32\0\0\0\0\0\0\0\0\0\0\0\0\0";
 // ---- END GENERATED: parser names ----
 
 // ---------------------------------------------------------------------------
@@ -2321,6 +2322,7 @@ fn parse_type() -> i32 {
         // v0.23.77-dev: `f64` is not a keyword in this language - the host's
         // type parser recognises the spelling, and so does this one
         if (name_is("f64") == 1) { advance(); return TY_F64; }
+        if (name_is("f32") == 1) { advance(); return TY_F32; }   // v0.23.79-dev
         let si2: i32 = struct_find(ppos);
         if (si2 >= 0) {
             if (allow_struct_type == 0) {
@@ -4154,6 +4156,12 @@ fn tc_combine(n: i32) -> i32 {
     // + - * / % & | ^ : result is the wider integer (i64 if either is i64, else
     // i32; u8 widens to i32). Non-integer operands fall back to i32 — no pinned
     // S-error fires for them (§6 lists none), so the program is accepted.
+    if (ty_is_fp(lt) == 1 || ty_is_fp(rt) == 1) {
+        // v0.23.79-dev: the whole FP bank, and the two widths do not mix
+        if (lt != rt) { die_name_at("mixing f32 and f64 in one expression is not in the bootstrap subset: ", ntok[n - 1]); return 1; }
+        ex_ty[n - 1] = lt;
+    }
+    if (lt == TY_F32 && rt == TY_F32) { ex_ty[n - 1] = TY_F32; }   // v0.23.79-dev
     if (lt == TY_F64 || rt == TY_F64) { ex_ty[n - 1] = TY_F64; }
     else if (lt == TY_I64 || rt == TY_I64) { ex_ty[n - 1] = TY_I64; }
     else if (lt == TY_I32 && rt == TY_I32) { ex_ty[n - 1] = TY_I32; }
@@ -4761,6 +4769,22 @@ fn emit_cmp_imm(rn: i32, imm: i32, is64: i32) -> i32 {
 // ---- IEEE-754 double: a handful of encodings, all in the "V" file ----------
 // A temp is a register *number*: X(n) for integers and D(n) for floats, which
 // is why none of this needed a second pool.
+// v0.23.79-dev: f32 lives in the same bank, half as wide. The S forms take the
+// offset divided by 4 and the D forms by 8, so each helper does its own scaling
+// and every caller passes BYTES.
+fn emit_str_s(rt: i32, rn: i32, off: i32) -> i32 {          // STR St,[Xn,#off]
+    return emit_word(0xbd000000 | ((off >> 2) << 10) | (rn << 5) | rt);
+}
+fn emit_ldr_s(rt: i32, rn: i32, off: i32) -> i32 {          // LDR St,[Xn,#off]
+    return emit_word(0xbd400000 | ((off >> 2) << 10) | (rn << 5) | rt);
+}
+fn emit_fcmp_s(rn: i32, rm: i32) -> i32 {                   // FCMP Sn,Sm
+    return emit_word(0x1e202000 | (rm << 16) | (rn << 5));
+}
+fn ty_is_fp(t: i32) -> i32 {                                // the FP bank
+    if (t == TY_F64 || t == TY_F32) { return 1; }
+    return 0;
+}
 fn emit_str_d(rt: i32, rn: i32, off: i32) -> i32 {          // STR Dt,[Xn,#off]
     return emit_word(0xfd000000 | ((off >> 3) << 10) | (rn << 5) | rt);
 }
@@ -4770,15 +4794,50 @@ fn emit_ldr_d(rt: i32, rn: i32, off: i32) -> i32 {          // LDR Dt,[Xn,#off]
 fn emit_fmov_xd(rd: i32, rn: i32) -> i32 {                  // FMOV Dd,Xn
     return emit_word(0x9e670000 | (rn << 5) | rd);
 }
+// v0.23.79-dev: a double's bit pattern narrowed to a single's, round to
+// nearest even. An f32 global may be initialized from a float literal (which
+// is a double) and the subset has no casts, so the data writer needs this.
+// Below the single's normal range the answer is zero, the choice
+// f64_from_dec already makes below the double's range.
+fn to_f32_bits(d: i64) -> i64 {
+    let sign: i64 = (d >> 63) & 1;
+    let e: i64 = (d >> 52) & 2047;
+    let m: i64 = d & 4503599627370495;
+    let hi: i64 = sign << 31;
+    if (e == 2047) {
+        if (m == 0) { return hi | 2139095040; }
+        return hi | 2143289344;
+    }
+    if (e == 0) { return 0; }
+    if (e <= 896) { return 0; }
+    if (e >= 1151) { return hi | 2139095040; }
+    let keep: i64 = m >> 29;
+    let rest: i64 = m & 536870911;
+    let half: i64 = 268435456;
+    let up: i64 = 0;
+    if (rest > half) { up = 1; }
+    if (rest == half && (keep & 1) == 1) { up = 1; }
+    let expv: i64 = e - 896 + up;
+    let mant: i64 = keep;
+    if (up == 1 && keep == 8388607) { expv = expv + 1; mant = 0; }
+    return hi | (expv << 23) | mant;
+}
+
+fn emit_fmov_sx(rd: i32, rn: i32) -> i32 {                 // FMOV Sd,Wn
+    return emit_word(0x1e270000 | (rn << 5) | rd);
+}
 fn emit_fmov_dx(rd: i32, rn: i32) -> i32 {                  // FMOV Xd,Dn
     return emit_word(0x9e660000 | (rn << 5) | rd);
 }
 // kind: 0 FADD, 1 FSUB, 2 FMUL, 3 FDIV
-fn emit_fp2(rd: i32, rn: i32, rm: i32, kind: i32) -> i32 {
+fn emit_fp2(rd: i32, rn: i32, rm: i32, kind: i32, single: i32) -> i32 {
+    // FADD/FSUB/FMUL/FDIV, in the D or the S form. The single form is the
+    // double encoding with bit 22 cleared (ftype), which is the whole difference.
     let base: i64 = 0x1e602800;                             // FADD D
     if (kind == 1) { base = 0x1e603800; }
     if (kind == 2) { base = 0x1e600800; }
     if (kind == 3) { base = 0x1e601800; }
+    if (single == 1) { base = base & 0xffffffffffbfffff; }   // D -> S
     return emit_word(base | (rm << 16) | (rn << 5) | rd);
 }
 fn emit_fcmp_d(rn: i32, rm: i32) -> i32 {                   // FCMP Dn,Dm
@@ -4860,6 +4919,7 @@ let pstk: i32[65536] = 0;       // the ptr-yield walk's pending children
 
 fn ty_width(t: i32) -> i32 {
     if (t == TY_BOOL) { return 1; }
+    if (t == TY_F32) { return 4; }    // v0.23.79-dev: an IEEE-754 single
     if (t == TY_CHAR) { return 1; }   // v0.23.77-dev: unsigned 8-bit, like u8
     if (t == TY_U16) { return 2; }    // v0.23.77-dev
     if (t == TY_U32) { return 4; }   // v0.23.77-dev: 0/1 in one byte
@@ -5499,14 +5559,16 @@ fn gen_combine(n: i32, want: i32) -> i32 {
     let rt: i32 = ex_ty[r - 1];
     let a: i32 = gx_val[l - 1];
     let b: i32 = gx_val[r - 1];
-    if ((k == E_Add || k == E_Sub || k == E_Mul || k == E_Div) && (lt == TY_F64 || rt == TY_F64)) {
+    if ((k == E_Add || k == E_Sub || k == E_Mul || k == E_Div) && (ty_is_fp(lt) == 1 || ty_is_fp(rt) == 1)) {
         // v0.23.77-dev: the float file. The operands arrive as temps whose
         // numbers are D registers, so only the opcode changes.
         let kind: i32 = 0;
         if (k == E_Sub) { kind = 1; }
         if (k == E_Mul) { kind = 2; }
         if (k == E_Div) { kind = 3; }
-        if (emit_fp2(a, a, b, kind) != 0) { return 1; }
+        let single: i32 = 0;
+        if (lt == TY_F32 || rt == TY_F32) { single = 1; }   // v0.23.79-dev
+        if (emit_fp2(a, a, b, kind, single) != 0) { return 1; }
         if (free_tmp(b) != 0) { return 1; }
         gx_val[n - 1] = a;
         return 0;
@@ -5608,15 +5670,17 @@ fn gen_combine(n: i32, want: i32) -> i32 {
     if (k == E_Eq || k == E_Ne || k == E_Lt || k == E_Le || k == E_Gt || k == E_Ge) {
         let is64: i32 = 0;
         if (ty_is64(lt) == 1 || ty_is64(rt) == 1) { is64 = 1; }
-        if (lt == TY_F64 || rt == TY_F64) {
-            if (emit_fcmp_d(a, b) != 0) { return 1; }
+        if (ty_is_fp(lt) == 1 || ty_is_fp(rt) == 1) {
+            if (lt == TY_F32 || rt == TY_F32) {
+                if (emit_fcmp_s(a, b) != 0) { return 1; }
+            } else if (emit_fcmp_d(a, b) != 0) { return 1; }
         } else if (emit_cmp_rr(a, b, is64) != 0) { return 1; }
         if (free_tmp(b) != 0) { return 1; }
         if (free_tmp(a) != 0) { return 1; }
         let d: i32 = alloc_tmp();
         if (d < 0) { return -1; }
         let cond: i32 = cmp_cond(k, lt, rt);
-        if (lt == TY_F64 || rt == TY_F64) { cond = fp_cond(k); }
+        if (ty_is_fp(lt) == 1 || ty_is_fp(rt) == 1) { cond = fp_cond(k); }
         if (emit_cset(d, cond) != 0) { return 1; }
         gx_val[n - 1] = d;
         return 0;
@@ -6087,7 +6151,9 @@ fn gen_call(n: i32, want: i32) -> i32 {
             // v0.23.77-dev: a float argument is staged with STR D, and reaches
             // the callee through the V file - the register *number* is the same,
             // so the grid slot and the move are all that change.
-            if (pty == TY_F64) {
+            if (pty == TY_F32) {   // v0.23.79-dev
+                if (emit_str_s(v, 31, (800 + base + reg) * 8) != 0) { return -1; }
+            } else if (pty == TY_F64) {
                 if (emit_str_d(v, 31, (800 + base + reg) * 8) != 0) { return -1; }
             } else {
                 if (emit_mem(1, mem_scale(ty_width(pty)), v, 31, (800 + base + reg) * 8) != 0) { return -1; }
@@ -6108,7 +6174,9 @@ fn gen_call(n: i32, want: i32) -> i32 {
     // [SP+8192+8*(k-8)].
     let j2: i32 = 0;
     while (j2 < reg && j2 < 8) {
-        if (param_type(fnode, j2) == TY_F64) {
+        if (param_type(fnode, j2) == TY_F32) {   // v0.23.79-dev
+            if (emit_ldr_s(j2, 31, (800 + base + j2) * 8) != 0) { return -1; }
+        } else if (param_type(fnode, j2) == TY_F64) {
             if (emit_ldr_d(j2, 31, (800 + base + j2) * 8) != 0) { return -1; }
         } else if (emit_mem(0, 3, j2, 31, (800 + base + j2) * 8) != 0) { return -1; }
         j2 = j2 + 1;
@@ -6126,7 +6194,9 @@ fn gen_call(n: i32, want: i32) -> i32 {
     // that consumes it stores with STR D, so before this the answer was right
     // only because D0 still held the callee's value as well as the X0 copy the
     // return statement made.
-    if (stag[fsym] == TY_F64) {
+    if (stag[fsym] == TY_F32) {   // v0.23.79-dev
+        if (emit_str_s(0, 31, 1022 * 8) != 0) { return -1; }
+    } else if (stag[fsym] == TY_F64) {
         if (emit_str_d(0, 31, 1022 * 8) != 0) { return -1; }
     } else if (emit_mem(1, 3, 0, 31, 1022 * 8) != 0) { return -1; }
 
@@ -6143,7 +6213,9 @@ fn gen_call(n: i32, want: i32) -> i32 {
     if (ty_reg_slots(stag[fsym]) == 2) {
         if (emit_mem(1, 3, 1, 31, 1021 * 8) != 0) { return -1; }
     }
-    if (stag[fsym] == TY_F64) {
+    if (stag[fsym] == TY_F32) {   // v0.23.79-dev
+        if (emit_ldr_s(d, 31, 1022 * 8) != 0) { return -1; }
+    } else if (stag[fsym] == TY_F64) {
         if (emit_ldr_d(d, 31, 1022 * 8) != 0) { return -1; }
     } else if (emit_mem(0, mem_scale(ty_width(stag[fsym])), d, 31, 1022 * 8) != 0) { return -1; }
     if (stag[fsym] == TY_I32 && ty_is64(want) == 1) {
@@ -6251,6 +6323,10 @@ fn gen_var(n: i32, want: i32) -> i32 {
             if (emit_ldr_d(d, 31, slot * 8) != 0) { return -1; }
             return d;
         }
+        if (ty == TY_F32) {   // v0.23.79-dev
+            if (emit_ldr_s(d, 31, slot * 8) != 0) { return -1; }
+            return d;
+        }
         if (emit_mem(0, mem_scale(ty_width(ty)), d, 31, slot * 8) != 0) { return -1; }
         if (ty == TY_I32 && ty_is64(want) == 1) {
             if (emit_sxtw(d, d) != 0) { return -1; }
@@ -6271,7 +6347,12 @@ fn gen_var(n: i32, want: i32) -> i32 {
     let t: i32 = alloc_tmp();
     if (t < 0) { return -1; }
     if (emit_addr64(t, g_addr[s]) != 0) { return -1; }
-    if (emit_mem(0, mem_scale(ty_width(stag[s])), d, t, 0) != 0) { return -1; }
+    // v0.23.79-dev: a float global is read into the FP bank, S or D
+    if (stag[s] == TY_F32) {
+        if (emit_ldr_s(d, t, 0) != 0) { return -1; }
+    } else if (stag[s] == TY_F64) {
+        if (emit_ldr_d(d, t, 0) != 0) { return -1; }
+    } else if (emit_mem(0, mem_scale(ty_width(stag[s])), d, t, 0) != 0) { return -1; }
     if (free_tmp(t) != 0) { return -1; }
     if (stag[s] == TY_I32 && ty_is64(want) == 1) {
         if (emit_sxtw(d, d) != 0) { return -1; }
@@ -6475,6 +6556,11 @@ fn gen_stmt(s: i32) -> i32 {
             if (free_tmp(v) != 0) { return 1; }
             return 0;
         }
+        if (nnty[s - 1] == TY_F32) {   // v0.23.79-dev
+            if (emit_str_s(v, 31, slot * 8) != 0) { return 1; }
+            if (free_tmp(v) != 0) { return 1; }
+            return 0;
+        }
         if (emit_mem(1, mem_scale(ty_width(nnty[s - 1])), v, 31, slot * 8) != 0) { return 1; }
         if (free_tmp(v) != 0) { return 1; }
         return 0;
@@ -6639,7 +6725,9 @@ if (k == S_IndexAssign) {
         let is64: i32 = 0;
         if (ty_is64(cg_ret_ty) == 1) { is64 = 1; }
         if (ty_is_struct(cg_ret_ty) == 1) { is64 = 1; }
-        if (cg_ret_ty == TY_F64) {
+        if (cg_ret_ty == TY_F32) {   // v0.23.79-dev: an S0 return
+            if (emit_fmov_sx(0, v) != 0) { return 1; }
+        } else if (cg_ret_ty == TY_F64) {
             if (emit_fmov_dx(0, v) != 0) { return 1; }
         } else if (emit_mov_rr(0, v, is64) != 0) { return 1; }
         if (free_tmp(v) != 0) { return 1; }
@@ -6985,6 +7073,8 @@ fn gen_function(f: i32) -> i32 {
                 if (rsl == 2) {
                     if (emit_mem(1, 3, i, 31, slot * 8) != 0) { return 1; }
                     if (emit_mem(1, 3, i + 1, 31, slot * 8 + 8) != 0) { return 1; }
+                } else if (pty0 == TY_F32) {   // v0.23.79-dev
+                    if (emit_str_s(i, 31, slot * 8) != 0) { return 1; }
                 } else if (pty0 == TY_F64) {
                     if (emit_str_d(i, 31, slot * 8) != 0) { return 1; }
                 } else {
@@ -7449,8 +7539,19 @@ fn elf_emit(prog: i32) -> i32 {
                 if (s >= 0 && g_sec[s] == 1) {
                     let target: i32 = data_off + (g_addr[s] - 0x800000);
                     if (elf_pad_to(target) != 0) { return 1; }
-                    let v: i64 = fold(nfirst[c - 1]);
-                    if (perr != 0) { return 1; }
+                    // v0.23.79-dev: a float literal folds to its BITS, not to an
+                    // integer - fold() answers 1 for `1.5`, which is what a float
+                    // global used to be written as. An f32 global narrows those
+                    // bits to the single's four bytes.
+                    let initn: i32 = nfirst[c - 1];
+                    let v: i64 = 0;
+                    if (nkind[initn - 1] == E_Num && nflt[initn - 1] == 1) {
+                        if (convert_float(ntok[initn - 1]) != 0) { return 1; }
+                        if (stag[s] == TY_F32) { v = to_f32_bits(numf); } else { v = numf; }
+                    } else {
+                        v = fold(initn);
+                        if (perr != 0) { return 1; }
+                    }
                     let w2: i32 = ty_width(stag[s]);
                     let el: i32 = 0;
                     while (el < scnt[s]) {

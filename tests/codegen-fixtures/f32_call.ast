@@ -1,0 +1,9 @@
+let g: f32 = 2.5;
+
+fn half(v: f32) -> f32 { return v / g; }
+
+fn main() -> i32 {
+    let q: f32 = half(g);
+    if (q > g) { return 1; }
+    return 0;
+}
