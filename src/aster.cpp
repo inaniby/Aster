@@ -12512,6 +12512,19 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         }
     }
     if(spec.exports.empty())throw Error("shared object must export at least one function");
+    // v0.23.82-dev: auto-emit DT_NEEDED for extern NDK/system imports, the
+    // same derivation buildSoFromSource already applies. Without it a
+    // project-mode APK's .so carried 0 DT_NEEDED while its PLT/GOT stubs
+    // referenced liblog/libandroid/libc/libm, so validate_apk.py [3b]
+    // refused the package (UND imports with no DT_NEEDED) and the on-device
+    // linker could not resolve them at dlopen() time. User-supplied
+    // --needed entries are preserved and de-duplicated.
+    {
+        std::set<std::string> have(spec.needed.begin(), spec.needed.end());
+        auto addNeeded=[&](const std::string& lib){ if(have.insert(lib).second) spec.needed.push_back(lib); };
+        for (const auto& s : spec.importFuncs) addNeeded(ndkLibraryFor(s));
+        for (const auto& s : spec.importObjects) addNeeded(ndkLibraryFor(s));
+    }
     for(const auto& f:debugLineFixups)dbgPatchAddress(mergedDebugLine,f.first,pageSize+f.second);
     spec.debugLine=mergedDebugLine;
     // v0.23.32-dev: the same units, still holding zeroes; the addresses are

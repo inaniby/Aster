@@ -436,6 +436,25 @@ set -e
 grep -q 'failed closing ELF executable: /dev/full' full-exe.log || {
     echo 'FAIL: the exe project /dev/full failure was reported for the wrong reason:' >&2; cat full-exe.log >&2; exit 1; }
 cd "$WORK/apkapp"
+# v0.23.82-dev: a project-mode APK's .so must carry DT_NEEDED for the NDK
+# libraries its imports resolve from. linkSharedObjects used to take the
+# passed-in needed list verbatim, so `aster build` (which passed {}) built
+# a .so with 0 DT_NEEDED while its PLT stubs called __android_log_print --
+# validate_apk.py [3b] refused it (UND imports with no DT_NEEDED). The
+# linker now derives DT_NEEDED from the imports itself, the same
+# derivation buildSoFromSource applies, so this package must validate.
+cat > src/main.ast <<'AST'
+extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32;
+
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+    let logged: i32 = __android_log_print(3, "Aster", "Hello from Aster");
+    return logged;
+}
+AST
+printf 'kind apk\npackage com.example.apkapp\nsrc/main.ast\n' > aster.proj
+"$ASTER" build > apkndk.log 2>&1
+python3 "$ROOT/tests/validate_apk.py" build/apkapp.apk --package com.example.apkapp --libname apkapp --abi arm64-v8a > apkndkcheck.log 2>&1 || {
+    echo 'FAIL: the NDK-importing project APK did not validate:' >&2; cat apkndkcheck.log >&2; exit 1; }
 printf '  %-40s %s\n' 'signed APK verifies; run and package errors; /dev/full fails' 'ok'
 
 printf '%s\n' '[14/19] signing is configured in aster.proj'
