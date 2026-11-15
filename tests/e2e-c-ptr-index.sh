@@ -18,3 +18,8 @@ printf '%s\n' '[4/4] Run C -> Aster pointer index tests'
 # The C harness is an AArch64 ELF: run it through the repo runner so it works
 # on AArch64 hosts natively and under qemu-user everywhere else.
 ./tests/run-aarch64.sh "$OUT/c-ptr-index-host" "$PWD/$OUT/libaster_ptr_index.so"
+
+# v0.23.80-dev (G-01): the gate fails a suite that exits 0 without a
+# PASS/OK line, and this suite used to print none — the harness above is
+# the assertion, so reaching here is the pass.
+echo 'PASS: e2e-c-ptr-index (C harness ran pointer index cases against the .so)'

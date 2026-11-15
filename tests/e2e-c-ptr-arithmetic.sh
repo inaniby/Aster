@@ -16,3 +16,8 @@ printf '%s\n' '[3/4] Compile C ABI harness'
 $HOSTCC -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror tests/c-ptr-arithmetic-host.c -ldl -o "$OUT/c-ptr-arithmetic-host"
 printf '%s\n' '[4/4] Run C -> Aster pointer arithmetic tests'
 run "$OUT/c-ptr-arithmetic-host" "$PWD/$OUT/libaster_ptr_arithmetic.so"
+
+# v0.23.80-dev (G-01): the gate fails a suite that exits 0 without a
+# PASS/OK line, and this suite used to print none — the harness above is
+# the assertion, so reaching here is the pass.
+echo 'PASS: e2e-c-ptr-arithmetic (C harness ran pointer arithmetic cases against the .so)'

@@ -1,13 +1,24 @@
-/aster
-/build/
+# Compiled compiler binary — any depth, not just the repo root: the direct
+# g++ build (./aster), a CMake -B build dir, a suite OUT dir, or a nested
+# project's build output (tests/ci.sh also copies it to $PWD/aster).
+**/aster
+# Per-project build cache (aster build writes <proj>/build/.cache/*.meta and
+# *.so): the cache lives under the project, so this must match at any depth,
+# not just the repo root.
+**/build/
 /tmp-*
 # v0.23.64-dev: tests/ci.sh writes aster.tmp.$$ and renames it; an interrupted
-# run leaves the temporary behind, and /aster above does not match it.
+# run leaves the temporary behind, and **/aster above does not match it.
 *.tmp.*
 *.o
 *.so
 *.elf
 *.apk
+# Static archives and compiler dependency files. No current producer in-tree
+# emits either (no ar/-MMD invocation found); added per audit §6.2 so a
+# future producer cannot leak build products into the tree.
+*.a
+*.d
 
 # v0.23.71-dev: these four are committed reference fixtures, not build
 # products. The generic *.o / *.so rules above would otherwise hide them and
@@ -21,14 +32,40 @@ core.*
 *.core
 qemu_deep.bin_*
 
+# Coverage products (tests/coverage-checks.sh builds with --coverage and
+# runs gcov; the .gcno/.gcda land in its OUT dir and the .gcov next to them).
+# That OUT dir itself (tmp-coverage-checks) is already covered by /tmp-*.
+*.gcda
+*.gcno
+*.gcov
+
 # Logs
 build.log
 *.log
 /ci-artifacts/
+# v0.23.81-dev: bootstrap-loop-checks.sh writes OUT=bootstrap-loop-artifacts
+# and self-cleans via an EXIT trap, but a SIGKILL/timeout kill leaves it
+# behind; the "working tree clean" CI step would then fail on residue.
+# (Its OUT dir does not carry a tmp- prefix, so /tmp-* does not cover it.)
+/bootstrap-loop-artifacts/
 
 # Python caches
 __pycache__/
 *.pyc
 
-# Local keystore (RSA private key) — never commit
-/.aster/
+# Local keystore (RSA private key) — never commit. The keystore is per
+# project (<proj>/.aster/), so this must match at any depth, not just the
+# repo root (a nested .aster/ was already observed under ci-artifacts/keys/).
+**/.aster/
+
+# Editor / IDE and OS files — none of these are currently in the tree;
+# preventive, per audit §6.2. (.idea/ is plausible: CMakeLists.txt exists
+# as an editor/IDE aid. No Windows-only entries: nothing in the repo
+# produces desktop.ini.)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

@@ -1,0 +1,82 @@
+// compact-crash.ast -- MINIMAL nested-call segfault repro (M3).
+//
+// Mechanism (HEAD v0.23.79-dev, --compact-frames only), confirmed by
+// disassembly of the crashing object (see cc-aster-head-compact.obj):
+//   1dc: ldr w0,[sp,#0x8]   ; w0 = a0 (=1), the live temp
+//   1e0: str x0,[sp,#0xfc0] ; OUTER spill -> [SP,#4032], unrecorded,
+//                              outside the 416-byte frame (secondary)
+//   1e4: str x0,[sp]        ; INNER spill -> [SP,#0], recorded and
+//                              rebased: OVERWRITES param n (slot 0)
+//   1e8: ldr x1,[sp]        ; x1 = n = 1 (clobbered)
+//   1f0: ldr x1,[x16]       ; n.text: dereference of address 1 -> SIGSEGV
+// The rebase validation computes no = fx.off + localBase - 4160 as
+// uint32_t, which underflows for the spill fix (4032 < 4160) UNLESS
+// localBase >= 128, i.e. the function has >= 16 slots. With fewer slots
+// the underflow fails validation, the frame stays 8192, and the spill
+// stays at [SP,#4032] where it belongs. With >= 16 slots the frame
+// compacts to 416 and the spill lands on slot 0. The crash happens
+// while setting up the INNER call's own arguments (n.text), so NO
+// post-call use of n is needed: the -nonuse variant crashes identically.
+//
+// Shape requirements (all load-bearing):
+//   * --compact-frames (plain builds keep the 8192 frame; nothing breaks)
+//   * a nested call inside a larger expression, so a temp is live at the
+//     inner call's entry (here `a0 + outer(inner(...))`)
+//   * >= 16 frame slots (param n + 15 i32 locals => localBase == 128)
+//   * the inner call's arguments dereference the clobbered slot-0
+//     pointer (here n.text / n.text_len)
+// Without any one of these the program returns 0.
+// Expected when correct: inner=78, outer=78, a0+78=79, +n.x(42)=121,
+// +a1..a14(119)=240; main returns 240-240 = 0.
+
+struct Node {
+    text: ptr,
+    text_len: i32,
+    x: i32,
+    y: i32
+}
+
+let g_scale: i32 = 3;
+let g_buf: i32[4] = 0;
+
+fn inner(p: ptr, n: i32, s: i32) -> i32 {
+    return load_u8(p) + n * s;
+}
+
+fn outer(x: i32) -> i32 {
+    if (x <= 0) {
+        return 0;
+    } else {
+    }
+    return (x * 256 + 128) / 256;
+}
+
+fn big(n: ptr<Node>) -> i32 {
+    let a0: i32 = 1;
+    let a1: i32 = 2;
+    let a2: i32 = 3;
+    let a3: i32 = 4;
+    let a4: i32 = 5;
+    let a5: i32 = 6;
+    let a6: i32 = 7;
+    let a7: i32 = 8;
+    let a8: i32 = 9;
+    let a9: i32 = 10;
+    let a10: i32 = 11;
+    let a11: i32 = 12;
+    let a12: i32 = 13;
+    let a13: i32 = 14;
+    let a14: i32 = 15;
+    return (a0 + outer(inner(n.text, n.text_len, g_scale))) + n.x + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + a12 + a13 + a14;
+}
+
+fn main() -> i32 {
+    g_buf[0] = 26952;
+    let nd: Node;
+    nd.text = &g_buf;
+    nd.text_len = 2;
+    nd.x = 42;
+    nd.y = 0;
+    let r: i32 = big(&nd);
+    return r - 240;
+}

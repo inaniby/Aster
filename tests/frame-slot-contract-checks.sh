@@ -503,7 +503,7 @@ mutate 'm6: lexer takes a second exponent again' \
     "if(!isHex&&!isBin&&(q=='e'||q=='E')){"
 
 # ---------------------------------------------------------------------------
-printf '%s\n' '[9/9] Byte baseline: zero drift, all 393 rows reproduced'
+printf '%s\n' '[9/9] Byte baseline: H-4 @embed + M3.6 lifecycle re-pins, all 393 rows reproduced'
 BASE=$(aster_baseline_file)
 rows=$(wc -l < "$BASE")
 [ "$rows" = 393 ] || fail "the current baseline has $rows rows, expected 393"
@@ -512,13 +512,27 @@ _prev_v=$(ls tests/baseline/ | grep -v "^v${_cur_v}\$" | sort -V | tail -1)
 PREV="tests/baseline/${_prev_v}/example-hashes.txt"
 prev_rows=$(wc -l < "$PREV")
 [ "$prev_rows" = 393 ] || fail "the previous baseline has $prev_rows rows, expected 393"
-# v0.23.78-dev changes no compiler behaviour relative to a235ed2 (the
-# three repairs are already in that tree); it only bumps the version and
-# adds this resident gate. The frozen snapshot covers build-elf /
-# build-obj --pic / build-so over the shipped examples, none of which use
-# --compact-frames or f64/f32, so every inherited row is byte-identical.
-cmp -s "$PREV" "$BASE" || fail "a frozen byte moved against ${_prev_v}"
-printf '  %-40s %s\n' 'zero drift vs previous snapshot' "$prev_rows rows"; bump
+# v0.23.81-dev (H-4/C-2): @embed blob symbols are namespaced per source
+# file, so the two shipped examples that @embed (embed_align,
+# icon_text_demo) legitimately move in their .build-obj_--pic and
+# .build-so rows — the longer symbol names are the fix itself — and those
+# four rows were re-pinned in this version's snapshot. Everything else is
+# still inherited byte for byte; whole-file equality with the previous
+# snapshot is no longer the right invariant (same shape as A-16's
+# .build-so re-pin in section-align-contract-checks.sh).
+# v0.23.81-dev (M3.6): lifecycle's .build-obj_--pic and .build-so rows
+# also move — the example was rewritten to install the correct 16-slot
+# ANativeActivityCallbacks table; those two rows were re-pinned in this
+# version's snapshot.
+moved=$(awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' "$PREV" "$BASE")
+if [ -n "$moved" ]; then
+    bad=$(printf '%s\n' "$moved" | grep -v -e '^embed_align\.build-obj_--pic$' -e '^embed_align\.build-so$' -e '^icon_text_demo\.build-obj_--pic$' -e '^icon_text_demo\.build-so$' -e '^lifecycle\.build-obj_--pic$' -e '^lifecycle\.build-so$' || true)
+    [ -z "$bad" ] || fail "a frozen byte moved outside the H-4 @embed / M3.6 lifecycle re-pins: $(printf '%s\n' "$bad" | head -5)"
+    printf '  %-40s %s\n' '@embed + lifecycle rows re-pinned (H-4/M3.6)' "$(printf '%s\n' "$moved" | wc -l)"
+else
+    printf '  %-40s %s\n' 'zero drift vs previous snapshot' "$prev_rows rows"
+fi
+bump
 # Reproduce every frozen row with this build's compiler. build-so derives
 # DT_SONAME from the output basename, so the reproduction uses the exact key.
 reproduced=0

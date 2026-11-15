@@ -46,17 +46,17 @@ W="$OUT/work"
 mkdir -p "$W"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 
 # ---------------------------------------------------------------------------
-# [1/6] Strictly build Aster — the exact flags CI enforces under -Werror.
-printf '%s\n' '[1/6] Strictly build Aster compiler'
+# [1/7] Strictly build Aster — the exact flags CI enforces under -Werror.
+printf '%s\n' '[1/7] Strictly build Aster compiler'
 ${CXX:-g++} -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OUT/aster"
 AS="$OUT/aster"
 
 # ---------------------------------------------------------------------------
-# [2/6] Source-level guards: the three ELF writers must derive every loadable
+# [2/7] Source-level guards: the three ELF writers must derive every loadable
 # segment's align/offset from `pageSize`, not from a hard-coded 0x1000. The
 # dead kSharedTextVaddr constant (the old shared-object .text base) is gone,
 # and no bare 0x1000 literal remains in the file.
-printf '%s\n' '[2/6] Source guards: no hard-coded 0x1000 segment layout'
+printf '%s\n' '[2/7] Source guards: no hard-coded 0x1000 segment layout'
 if grep -q 'kSharedTextVaddr' src/aster.cpp; then
     echo "FAIL: kSharedTextVaddr still present in src/aster.cpp" >&2
     exit 1
@@ -69,10 +69,10 @@ fi
 echo "OK: no bare 0x1000 literal in src/aster.cpp"
 
 # ---------------------------------------------------------------------------
-# [3/6] The test corpus. A global (data segment) plus a string literal
+# [3/7] The test corpus. A global (data segment) plus a string literal
 # (rodata segment) plus the text segment exercises more than one PT_LOAD in
 # both writers, so the alignment parameter is checked on every segment kind.
-printf '%s\n' '[3/6] Prepare test corpus'
+printf '%s\n' '[3/7] Prepare test corpus'
 cat > "$W/source.ast" <<'AST'
 let g_factor: i32 = 6;
 fn main() -> i32 {
@@ -84,10 +84,10 @@ fn main() -> i32 {
 AST
 
 # ---------------------------------------------------------------------------
-# [4/6] Behavioral guard. A Python ELF reader inspects every PT_LOAD of every
+# [4/7] Behavioral guard. A Python ELF reader inspects every PT_LOAD of every
 # produced image and asserts the alignment contract. It also refuses to let the
 # 16 KB flag be a silent no-op: the 4 KB and 16 KB build-elf images must differ.
-printf '%s\n' '[4/6] Build and verify load-segment alignment (default 0x1000, 16384 -> 0x4000)'
+printf '%s\n' '[4/7] Build and verify load-segment alignment (default 0x1000, 16384 -> 0x4000)'
 "$AS" build-obj "$W/source.ast" -o "$W/source.o"
 "$AS" build-obj --pic "$W/source.ast" -o "$W/source-pic.o"
 python3 - "$AS" "$W" <<'PY'
@@ -249,10 +249,10 @@ print("PASS: --page-size 16384 changes the emitted build-elf image (not a silent
 PY
 
 # ---------------------------------------------------------------------------
-# [5/6] Executability. A 16 KB image is only useful if it still loads and runs.
+# [5/7] Executability. A 16 KB image is only useful if it still loads and runs.
 # Drive build-elf and build-pie (16384) under qemu-aarch64 and require the
 # expected exit code (7 * 6 = 42). The default-path images must also still run.
-printf '%s\n' '[5/6] Run 16 KB (and default) executables under qemu-aarch64'
+printf '%s\n' '[5/7] Run 16 KB (and default) executables under qemu-aarch64'
 run(){ sh tests/run-aarch64.sh "$@"; }
 "$AS" build-elf "$W/source.ast" -o "$W/run-4k.elf"
 "$AS" build-elf --page-size 16384 "$W/source.ast" -o "$W/run-16k.elf"
@@ -270,14 +270,14 @@ for img in run-4k.elf run-16k.elf run-16k-pie; do
 done
 
 # ---------------------------------------------------------------------------
-# [6/6] build-apk end-to-end. Android mmaps the packaged .so straight out of the
+# [6/7] build-apk end-to-end. Android mmaps the packaged .so straight out of the
 # APK, so the .so's data offset inside the ZIP must be congruent to the page
 # size as well — not just the ELF segment alignment. This block builds an APK
 # both ways (.ast -> build-apk, which compiles the .so internally with the
 # chosen page size) and asserts, for each: the embedded .so's PT_LOAD segments
 # carry the right Align, AND the .so's ZIP entry is aligned to that page size.
 # The project's own APK validator is run as an independent cross-check.
-printf '%s\n' '[6/6] build-apk: .so ELF alignment AND ZIP entry alignment'
+printf '%s\n' '[6/7] build-apk: .so ELF alignment AND ZIP entry alignment'
 python3 - "$AS" "$W" <<'PY'
 import struct, subprocess, sys, os, zipfile
 
@@ -354,6 +354,104 @@ for apk, page in (("app-4k.apk", 4096), ("app-16k.apk", 16384)):
     if r.returncode != 0:
         sys.exit("FAIL: validate_apk.py rejected %s:\n%s" % (apk, r.stdout.decode()))
 print("PASS: validate_apk.py accepts both APKs at their respective page size")
+PY
+
+# ---------------------------------------------------------------------------
+# [7/7] S-04: a prebuilt .so packaged with build-apk --page-size. buildApk
+# aligns the .so's ZIP entry to the page size, but that says nothing about
+# the segments inside the file: a 4 KB .so (p_align 0x1000) packaged with
+# --page-size 16384 used to be silently accepted, producing an APK whose
+# library cannot load on a 16 KB-page device. The check is the contract in
+# this file's header — every PT_LOAD needs p_align >= pageSize and vaddr ==
+# offset (mod pageSize) — and a violation is refused with a message that
+# names the segment and tells the user to rebuild the .so with the same
+# --page-size. Rewriting p_align in place would be a lie (the congruence was
+# laid out for the old page size), so refusal is the fix. The positive
+# controls pin the boundary: a 16 KB .so passes at 16384, a 4 KB .so passes
+# at the 4096 default, and a GNU ld .so built with max-page-size 65536
+# (p_align 0x10000, which is >= 16384) passes too — the check is ">=",
+# not "==". A truncated .so fails closed instead of being packaged.
+printf '%s\n' '[7/7] S-04: prebuilt .so + build-apk --page-size refuses a mismatched p_align'
+python3 - "$AS" "$W" <<'PY'
+import struct, subprocess, sys, os
+
+AS, W = sys.argv[1], sys.argv[2]
+KEYS = os.path.join(W, "s04-keys")
+os.makedirs(KEYS, exist_ok=True)
+subprocess.run([AS, "keygen", "--dir", KEYS], check=True,
+               stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+def build_so(args, out):
+    subprocess.run([AS, "build-so"] + args + ["-o", out], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+def build_apk(so, apk, page):
+    argv = [AS, "build-apk"]
+    if page:
+        argv += ["--page-size", str(page)]
+    argv += [so, "-o", apk, "--package", "com.s04.test", "--libname", "pstest",
+             "--abi", "arm64-v8a", "--keystore-dir", KEYS]
+    return subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+AST = "examples/native_activity.ast"
+build_so([AST, "--soname", "libpstest.so"], os.path.join(W, "s04-4k.so"))
+build_so(["--page-size", "16384", AST, "--soname", "libpstest.so"], os.path.join(W, "s04-16k.so"))
+
+# The mismatch: 4 KB .so at --page-size 16384 must be refused, naming p_align.
+r = build_apk(os.path.join(W, "s04-4k.so"), os.path.join(W, "s04-16k.apk"), 16384)
+assert r.returncode != 0, "build-apk --page-size 16384 silently accepted a 4 KB .so"
+err = r.stdout.decode()
+assert "p_align" in err and "rebuild the .so" in err, ("refusal did not name p_align / the rebuild", err)
+print("PASS: build-apk --page-size 16384 refuses a prebuilt 4 KB .so: %s" % err.strip().splitlines()[-1])
+
+# The matching pairs must still build.
+r = build_apk(os.path.join(W, "s04-16k.so"), os.path.join(W, "s04-16k-ok.apk"), 16384)
+assert r.returncode == 0, ("16 KB .so + --page-size 16384 failed", r.stdout.decode())
+print("PASS: build-apk --page-size 16384 accepts a prebuilt 16 KB .so")
+r = build_apk(os.path.join(W, "s04-4k.so"), os.path.join(W, "s04-4k.apk"), None)
+assert r.returncode == 0, ("4 KB .so + default page size failed", r.stdout.decode())
+print("PASS: build-apk (default) accepts a prebuilt 4 KB .so")
+
+# A GNU ld .so with p_align 0x10000 is >= 16384 and congruent, so it passes.
+# Unlike the congruence differential in [4/7], this one is packaged, so the
+# probe must be an AArch64 .so: the host cc builds x86-64, which build-apk
+# refuses on --abi grounds before the page-size check is even reached.
+CC = "aarch64-linux-gnu-gcc" if any(
+    os.access(os.path.join(d, "aarch64-linux-gnu-gcc"), os.X_OK)
+    for d in (os.environ.get("PATH") or "").split(os.pathsep) if d) else None
+if CC:
+    csrc = os.path.join(W, "s04-probe.c")
+    with open(csrc, "w") as fh:
+        fh.write("int s04_probe_add(int a, int b) { return a + b; }\n")
+    ldso = os.path.join(W, "s04-ld64k.so")
+    try:
+        subprocess.run([CC, "-shared", "-fPIC", "-Wl,-z,max-page-size=65536", csrc, "-o", ldso],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    except (OSError, subprocess.CalledProcessError):
+        ldso = None
+    if ldso:
+        b = open(ldso, "rb").read()
+        phoff = struct.unpack_from("<Q", b, 32)[0]
+        phentsize, phnum = struct.unpack_from("<HH", b, 54)
+        aligns = [struct.unpack_from("<IIQQQQQQ", b, phoff + i * phentsize)[7]
+                  for i in range(phnum)
+                  if struct.unpack_from("<I", b, phoff + i * phentsize)[0] == 1]
+        assert aligns and min(aligns) >= 0x4000, ("GNU ld 64K .so aligns", aligns)
+        r = build_apk(ldso, os.path.join(W, "s04-ld64k.apk"), 16384)
+        assert r.returncode == 0, ("GNU ld 64K .so + --page-size 16384 failed", r.stdout.decode())
+        print("PASS: build-apk --page-size 16384 accepts a GNU ld .so with p_align 0x10000")
+    else:
+        print("SKIP: the GNU ld 64K differential needs aarch64-linux-gnu-gcc")
+else:
+    print("SKIP: the GNU ld 64K differential needs aarch64-linux-gnu-gcc")
+
+# A truncated .so fails closed instead of being packaged.
+trunc = os.path.join(W, "s04-trunc.so")
+with open(os.path.join(W, "s04-4k.so"), "rb") as fh:
+    open(trunc, "wb").write(fh.read(100))
+r = build_apk(trunc, os.path.join(W, "s04-trunc.apk"), 16384)
+assert r.returncode != 0, "build-apk --page-size 16384 silently accepted a truncated .so"
+print("PASS: build-apk --page-size 16384 refuses a truncated prebuilt .so")
 PY
 
 echo "=== page-size checks: ALL PASSED ==="

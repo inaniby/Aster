@@ -16,16 +16,24 @@
 # A sanitizer report is made fatal by `abort_on_error=1`, so it cannot hide
 # behind the compiler's own `exit(1)`.
 #
-# Six corpora:
+# Eight corpora:
 #   [2] examples/*.ast          every shipped program, standalone or link-only
 #   [3] generated syntax        tests/fuzz-gen.py (seeds, mutations, soup,
 #                               valid frames)
 #   [4] mutated ELF objects     header/section/program-header fields, through
 #                               link-obj
 #   [5] mutated APKs            central-directory/local-header/EOCD/Signing
-#                               Block fields, through verify-apk
+#                               Block fields, through verify-apk, plus the
+#                               structured semantic mutants of
+#                               tests/apk-semantic-mutate.py (each with a
+#                               known expected verdict)
 #   [6] mutated DER/PEM keys    ASN.1 lengths and base64 framing, through a
 #                               release build-apk (the key parser path)
+#   [8] mutated aster.proj and cache .meta files
+#                               hand-built project/meta mutants from
+#                               tests/proj-meta-mutate.py, through build,
+#                               doctor and deps; a bad .meta must fail
+#                               closed to a recompile, never to a crash
 #
 # The corpora are deterministic: the same SAN_SEED/SAN_COUNT produce the same
 # files.  Half of each binary corpus is *targeted* (one length/offset field set
@@ -83,7 +91,7 @@ export ASAN_OPTIONS UBSAN_OPTIONS
 
 SAN_FLAGS="-std=c++17 -O0 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Wall -Wextra -Wpedantic -Werror"
 
-printf '%s\n' '[1/8] Sanitizer toolchain and compiler'
+printf '%s\n' '[1/9] Sanitizer toolchain and compiler'
 printf '      %s %s\n' "$REAL_CXX" "$SAN_FLAGS"
 printf 'int main(void){return 0;}\n' > "$WORK/probe.cpp"
 if ! $REAL_CXX $SAN_FLAGS "$WORK/probe.cpp" -o "$WORK/probe" 2>"$WORK/probe.log"; then
@@ -122,7 +130,7 @@ no_crash() {
     [ "$CRASH" -eq 0 ] || { echo "FAIL: $CRASH ${1} input(s) crashed or hung:$CRASHES"; exit 1; }
 }
 
-printf '%s\n' '[2/8] Every shipped example through build-elf'
+printf '%s\n' '[2/9] Every shipped example through build-elf'
 reset_counts
 n=0
 for f in examples/*.ast; do
@@ -137,7 +145,7 @@ no_crash example
 [ "$OK" -ge 40 ] || { echo "FAIL: only $OK examples compiled; the corpus is not reaching codegen"; exit 1; }
 echo "PASS: $n examples, $OK compiled and $REJ rejected cleanly"
 
-printf '%s\n' "[3/8] Generated syntax corpus ($SAN_COUNT inputs, seed $SAN_SEED)"
+printf '%s\n' "[3/9] Generated syntax corpus ($SAN_COUNT inputs, seed $SAN_SEED)"
 python3 tests/fuzz-gen.py --seed "$SAN_SEED" --count "$SAN_COUNT" \
     --outdir "$WORK/corpus-src" --corpus examples >/dev/null
 n=$(find "$WORK/corpus-src" -name '*.ast' | wc -l)
@@ -154,7 +162,7 @@ no_crash syntax
 [ "$OK" -gt 0 ] || { echo "FAIL: no generated input compiled; the corpus never reaches the parser"; exit 1; }
 echo "PASS: $n syntax inputs, $OK compiled and $REJ rejected cleanly"
 
-printf '%s\n' '[4/8] Mutated ELF objects through link-obj'
+printf '%s\n' '[4/9] Mutated ELF objects through link-obj'
 "$WORK/aster-asan" build-obj examples/align_global.ast -o "$WORK/seed.o" >/dev/null
 rc=0
 "$WORK/aster-asan" link-obj "$WORK/seed.o" -o "$WORK/seed.elf" >/dev/null 2>"$WORK/seed-o.err" || rc=$?
@@ -174,7 +182,7 @@ echo "      linked=$OK rejected=$REJ crashed=$CRASH"
 no_crash object
 echo "PASS: seed object links; $n mutations, $OK linked and $REJ rejected cleanly"
 
-printf '%s\n' "[5/8] Mutated APKs through verify-apk"
+printf '%s\n' "[5/9] Mutated APKs through verify-apk"
 "$WORK/aster-asan" build-so examples/so_math.ast -o "$WORK/seed.so" >/dev/null
 mkdir -p "$WORK/keys"
 "$WORK/aster-asan" build-apk "$WORK/seed.so" -o "$WORK/seed.apk" \
@@ -198,7 +206,37 @@ echo "      verified=$OK rejected=$REJ crashed=$CRASH"
 no_crash apk
 echo "PASS: seed APK verifies; $n mutations, $OK verified and $REJ rejected cleanly"
 
-printf '%s\n' '[6/8] Mutated DER/PEM signing keys through build-apk'
+# v0.23.81-dev (fuzz batch): structured, semantic APK mutants (audit §6.2).
+# tests/fuzz-bin.py churns bytes at random; these mutants are built by
+# parsing the ZIP/Signing-Block structure (tests/apk-semantic-mutate.py),
+# so each one has a known meaning and a known expected verdict: 15 must be
+# rejected (payload/manifest flips, truncation, an extra META-INF or
+# payload entry, local/central extraLen disagreement, the Signing Block
+# size2 disagreement -- the counter-proof for the size2 check -- a
+# duplicated signer, a duplicated central-directory entry, a wrong EOCD
+# cdStart, a renamed CERT.SF, a flipped CRC, and a duplicated v2 pair --
+# the last one was a known gap in the fuzz batch, fixed in v0.23.81-dev by
+# rejecting any Signing Block ID that appears twice) and 1 must be
+# accepted: a v3 pair next to a valid v2 pair (unknown Signing Block IDs
+# are ignored by design).
+printf '%s\n' '      semantic APK mutants through verify-apk'
+python3 tests/apk-semantic-mutate.py "$WORK/seed.apk" "$WORK/corpus-apk-semantic"
+n=$(find "$WORK/corpus-apk-semantic" -name '*.apk' | wc -l)
+[ "$n" -eq 16 ] || { echo "FAIL: generated $n semantic APK inputs, wanted 16"; exit 1; }
+reset_counts
+for f in "$WORK"/corpus-apk-semantic/*.apk; do
+    rc=0
+    timeout "$SAN_TIMEOUT" "$WORK/aster-asan" verify-apk "$f" \
+        >/dev/null 2>"$WORK/last.err" || rc=$?
+    classify apk-semantic "$f" "$rc"
+done
+echo "      verified=$OK rejected=$REJ crashed=$CRASH"
+no_crash apk-semantic
+[ "$OK" -eq 1 ] || { echo "FAIL: $OK semantic APKs verified, expected exactly 1 (v3-pair-added)"; exit 1; }
+[ "$REJ" -eq 15 ] || { echo "FAIL: $REJ semantic APKs rejected, expected exactly 15"; exit 1; }
+echo "PASS: 16 semantic APK mutants, 1 verified and 15 rejected cleanly"
+
+printf '%s\n' '[6/9] Mutated DER/PEM signing keys through build-apk'
 python3 - "$WORK/keys/.aster/debug.key.pem" "$WORK/seed.key.der" <<'PY'
 import base64, sys
 pem = open(sys.argv[1], "rb").read()
@@ -226,7 +264,7 @@ echo "      accepted=$OK rejected=$REJ crashed=$CRASH"
 no_crash key
 echo "PASS: $n mutated keys, $OK accepted and $REJ rejected cleanly"
 
-printf '%s\n' '[7/8] Proof the sanitizer harness can fail: re-inject the nameLen bug'
+printf '%s\n' '[7/9] Proof the sanitizer harness can fail: re-inject the nameLen bug'
 cp src/aster.cpp "$WORK/broken.cpp"
 BEFORE='if (nameAt > end || nameLen > end - nameAt) { err = "a central directory entry name runs past the directory"; return false; }'
 AFTER='if (false) { err = "a central directory entry name runs past the directory"; return false; }'
@@ -264,5 +302,62 @@ if [ "$caught" -ne 1 ]; then
 fi
 echo "PASS: ASan caught the injected nameLen over-read (exit $rc)"
 
-printf '%s\n' '[8/8] Summary'
-echo "PASS: sanitizer corpora -- examples + $SAN_COUNT syntax + $SAN_COUNT objects + $SAN_COUNT APKs + $SAN_KEY_COUNT keys, 0 crashes"
+printf '%s\n' '[8/9] Mutated aster.proj and cache .meta files through build/doctor/deps'
+# v0.23.81-dev (fuzz batch): the project file and the cache meta are
+# untrusted input too (audit §6.2), and no earlier corpus fed them to the
+# compiler. tests/proj-meta-mutate.py writes 38 hand-built aster.proj
+# mutants (duplicate lines, malformed settings, over-long lines, NUL bytes,
+# truncation, escaping paths) and 21 cache-.meta mutants (truncated, hash
+# flipped, field dropped or duplicated, NUL bytes, over-long line, a dep
+# pointing nowhere, an unknown line). Every one runs through the ASan
+# binary; the only accepted outcomes are 0 (accepted, or rebuilt after a
+# failed-closed meta) and 1/2 (rejected with a diagnostic). The seed
+# project is built once first, so the .meta mutants start from a warm cache
+# and a bad meta must fail closed to a recompile: all 21 must still build.
+"$WORK/aster-asan" new "$WORK/proj-seed" >/dev/null
+(cd "$WORK/proj-seed" && "$WORK/aster-asan" build >"$WORK/proj-seed.log" 2>&1) \
+    || { echo 'FAIL: the seed project for the proj/meta corpus did not build:'; cat "$WORK/proj-seed.log" >&2; exit 1; }
+python3 tests/proj-meta-mutate.py --project "$WORK/proj-seed" --outdir "$WORK/corpus-projmeta"
+n=$(find "$WORK/corpus-projmeta" -maxdepth 1 -name 'proj-*' -type d | wc -l)
+[ "$n" -eq 38 ] || { echo "FAIL: generated $n aster.proj mutants, wanted 38"; exit 1; }
+n=$(find "$WORK/corpus-projmeta" -maxdepth 1 -name 'meta-*' -type d | wc -l)
+[ "$n" -eq 21 ] || { echo "FAIL: generated $n cache-meta mutants, wanted 21"; exit 1; }
+# classify_proj <label> <dir> <rc>: 0/1/2 are clean (accepted / rejected /
+# usage error); anything else -- a signal, an ASan abort, a timeout -- is a
+# crash. The shared classify() only accepts 0/1, so this step has its own.
+CRASH=0; CRASHES=""
+classify_proj() {
+    case "$3" in
+        0|1|2) ;;
+        *)
+            CRASH=$((CRASH + 1))
+            CRASHES="$CRASHES $2"
+            if [ "$3" -eq 124 ]; then echo "  TIMEOUT ($1): $2"; else echo "  CRASH ($1, exit $3): $2"; fi
+            sed -n '1,12p' "$WORK/last.err" 2>/dev/null || true
+            ;;
+    esac
+}
+for d in "$WORK"/corpus-projmeta/proj-*; do
+    for cmd in build doctor deps; do
+        rc=0
+        (cd "$d" && timeout "$SAN_TIMEOUT" "$WORK/aster-asan" "$cmd" \
+            >/dev/null 2>"$WORK/last.err") || rc=$?
+        classify_proj "proj-$cmd" "$d" "$rc"
+    done
+done
+[ "$CRASH" -eq 0 ] || { echo "FAIL: $CRASH aster.proj input(s) crashed or hung:$CRASHES"; exit 1; }
+echo "PASS: 38 aster.proj mutants through build, doctor and deps -- 0 crashes"
+ok0=0
+for d in "$WORK"/corpus-projmeta/meta-*; do
+    rc=0
+    (cd "$d" && timeout "$SAN_TIMEOUT" "$WORK/aster-asan" build \
+        >/dev/null 2>"$WORK/last.err") || rc=$?
+    classify_proj "meta-build" "$d" "$rc"
+    if [ "$rc" -eq 0 ]; then ok0=$((ok0 + 1)); fi
+done
+[ "$CRASH" -eq 0 ] || { echo "FAIL: $CRASH cache-meta input(s) crashed or hung:$CRASHES"; exit 1; }
+[ "$ok0" -eq 21 ] || { echo "FAIL: only $ok0 of 21 bad-meta builds succeeded -- a bad meta must fail closed to a recompile, not fail the build"; exit 1; }
+echo "PASS: 21 cache-meta mutants, all 21 rebuilt cleanly -- 0 crashes"
+
+printf '%s\n' '[9/9] Summary'
+echo "PASS: sanitizer corpora -- examples + $SAN_COUNT syntax + $SAN_COUNT objects + $SAN_COUNT APKs + 16 semantic APKs + $SAN_KEY_COUNT keys + 38 aster.proj + 21 cache-meta, 0 crashes"

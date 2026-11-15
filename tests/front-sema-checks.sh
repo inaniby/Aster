@@ -123,6 +123,19 @@ enum C { Red }
 fn main()->i32 { let a: A = 1; let b: B = B { 2 }; let c: C = Red;
     return a + b.x + i32(c); }
 '''
+# P1-5 (v0.23.80-dev): the tag check used to live only on the struct/enum/
+# alias side, so a global or a function declared *after* a struct of the
+# same name was accepted while the reverse order was refused — and the
+# struct-literal rule in primary() then shadowed the value. Both orders
+# are refused now.
+C['tag_struct_global'] = '''struct P { x: i32 }
+let P: i32 = 5;
+fn main()->i32 { return 0; }
+'''
+C['tag_struct_fn'] = '''struct P { x: i32 }
+fn P() -> i32 { return 1; }
+fn main()->i32 { return 0; }
+'''
 # F-05
 C['enum_case_big'] = '''enum Color { Red = 0 }
 fn main()->i32 { let c: Color = Red;
@@ -167,7 +180,8 @@ PY
 printf '%s\n' '[3/9] Static diagnostics: every refusal is a positioned, caret-backed error'
 for n in tag_alias_struct tag_alias_enum tag_struct_alias tag_struct_enum \
          tag_enum_alias tag_enum_struct tag_alias_alias tag_struct_struct \
-         tag_enum_enum tag_union_alias enum_case_big enum_case_neg \
+         tag_enum_enum tag_union_alias tag_struct_global tag_struct_fn \
+         enum_case_big enum_case_neg \
          i32_case_big deref_bool; do
     if "$A" build-elf "$W/$n.ast" -o "$W/$n.elf" >"$W/$n.diag" 2>&1; then
         echo "FAIL: $n is accepted but must be refused" >&2; exit 1
@@ -228,6 +242,8 @@ refuse tag_alias_alias  'duplicate type alias: P'
 refuse tag_struct_struct 'duplicate struct declaration: P'
 refuse tag_enum_enum    'duplicate enum declaration: P'
 refuse tag_union_alias  'type alias conflicts with a struct: P'
+refuse tag_struct_global 'global variable name conflicts with a struct: P'
+refuse tag_struct_fn    'function name conflicts with a struct: P'
 refuse enum_case_big    'case value does not fit the switch subject type'
 refuse enum_case_neg    'case value does not fit the switch subject type'
 refuse i32_case_big     'case value does not fit the switch subject type'

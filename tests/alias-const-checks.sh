@@ -102,8 +102,8 @@ guard 'if(const TypeAlias* ta=typeAliasOf(cur().s)){' 'the expansion in parseTyp
 guard 'if(ta->isFunc){pendingFuncType=true;pendingFuncSig=ta->sig;}' 'the signature an alias carries'
 guard 'void typeAliasDeclaration(){' 'the type-alias declaration'
 guard 'if(eat(TK::Type)){typeAliasDeclaration();continue;}' 'the file-scope hook'
-guard '"duplicate type alias: "+id.s' 'the duplicate-name refusal'
-guard '"type alias conflicts with a struct: "+id.s' 'the struct-name collision refusal'
+guard '"duplicate type alias: "+name' 'the duplicate-name refusal'
+guard '"type alias conflicts with a struct: "+name' 'the struct-name collision refusal'
 guard 'if(eat(TK::Const)){globalDeclaration(false,false,true);continue;}' 'the file-scope const hook'
 guard 'if(eat(TK::Const))return letStatement(true);' 'the local const hook'
 guard 'Stmt letStatement(bool isConst=false){' 'the const flag on a let'
@@ -580,7 +580,7 @@ fi
 # (f) A duplicate type alias is refused. v0.23.74-dev (F-04) moved the
 # duplicate-name check into the shared rejectTagConflict(); neutralise the
 # alias-table branch there so the refusal goes inert.
-mutate m6 's|if(g_typeAlias.count(id.s)){|if(false){|'
+mutate m6 's|if(g_typeAlias.count(name)){|if(false){|'
 printf '%s\n' 'type P = i32;
 type P = u16;
 fn main() -> i32 { let x: P = 300; return x; }' > "$W/m6.ast"
@@ -633,13 +633,22 @@ printf '  %-30s %s\n' "baseline rows reproduced" "$rows"
 # documented fix rather than drift. Every ET_EXEC and ET_REL product (the
 # build-elf and build-obj --pic rows) must still be byte-identical, and that is
 # what this claim now asserts.
+# v0.23.81-dev (H-4/C-2): the same exclusion extends to the two @embed
+# examples' .build-obj_--pic rows (embed_align, icon_text_demo) — the
+# per-file blob symbol names are the fix itself, and those rows were
+# re-pinned in this version's snapshot.
+# v0.23.81-dev (M3.6): the same exclusion extends to lifecycle's
+# .build-obj_--pic row — the example was rewritten to install the correct
+# 16-slot ANativeActivityCallbacks table (the old 7-slot install at 0..48
+# omitted onSaveInstanceState and onWindowFocusChanged), and that row was
+# re-pinned in this version's snapshot.
 _cur_v=$(aster_baseline_version)
 _prev_v=$(ls tests/baseline/ | grep -v "^v${_cur_v}\$" | sort -V | tail -1)
 if [ -n "$_prev_v" ]; then
     PREV="tests/baseline/${_prev_v}/example-hashes.txt"
     if [ -f "$PREV" ]; then
         moved=$( (awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' \
-                     "$PREV" "$OUT/hashes.filtered.txt" | grep -v '\.build-so$') || true)
+                     "$PREV" "$OUT/hashes.filtered.txt" | grep -v '\.build-so$' | grep -v -e '^embed_align\.build-obj_--pic$' -e '^icon_text_demo\.build-obj_--pic$' -e '^lifecycle\.build-obj_--pic$') || true)
         prev_rows=$(wc -l < "$PREV")
         if [ -n "$moved" ]; then
             echo 'FAIL: this round moved bytes of a program written before it:' >&2

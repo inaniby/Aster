@@ -351,7 +351,11 @@ CHOST_EOF
     # v0.23.77-dev (audit): derive the binutils sibling of $HOSTCC, and fall
     # back to any objcopy on the box. The old s/gcc$/objcopy/ left "cc" and
     # "clang" unchanged, so the step re-ran the compiler with -R flags.
-    OBJCOPY=$(printf '%s\n' "$HOSTCC" | sed -e 's/cc$/objcopy/' -e 's/gcc$/objcopy/')
+    # v0.23.80-dev: the gcc rule must come first: s/cc$/objcopy/ applied to
+    # "aarch64-linux-gnu-gcc" yields "aarch64-linux-gnu-gobjcopy", which does
+    # not exist, and the fallback then lands on the host objcopy, which
+    # cannot read an AArch64 object ("Unable to recognise the format").
+    OBJCOPY=$(printf '%s\n' "$HOSTCC" | sed -e 's/gcc$/objcopy/' -e 's/cc$/objcopy/')
     if ! command -v "$OBJCOPY" >/dev/null 2>&1; then
         for _oc in llvm-objcopy objcopy aarch64-linux-gnu-objcopy; do
             if command -v "$_oc" >/dev/null 2>&1; then OBJCOPY=$_oc; break; fi

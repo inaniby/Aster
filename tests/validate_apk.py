@@ -89,6 +89,22 @@ def _decode_utf8_str(b, base, off):
 def _u16(b, p): return struct.unpack_from('<H', b, p)[0]
 def _u32(b, p): return struct.unpack_from('<I', b, p)[0]
 
+def _config_changes_value(v):
+    """Normalize a parsed configChanges attribute to an int, or None.
+
+    TYPE_INT_HEX (0x11) decodes to a "0x........" string in parse_axml;
+    TYPE_INT_DEC (0x10) decodes to a plain int. Anything else is not a
+    usable configChanges value.
+    """
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        try:
+            return int(v, 16)
+        except ValueError:
+            return None
+    return None
+
 def parse_axml(b):
     """Return dict of manifest facts, or raise on malformed input."""
     # ResXMLTree_header is the first chunk (offset 0 of the manifest file content)
@@ -103,7 +119,7 @@ def parse_axml(b):
              "package": None, "versionCode": None, "versionName": None,
              "minSdk": None, "targetSdk": None, "bad_str_attrs": [],
              "icon": None, "icon_type": None,
-             "label": None, "label_type": None}
+             "label": None, "label_type": None, "configChanges": None}
     while pos + 8 <= end:
         ctype = _u16(b, pos)
         hsize = _u16(b, pos + 2)
@@ -171,6 +187,13 @@ def parse_axml(b):
                 elif el["name"] == "activity":
                     nm = ad.get("name")
                     if nm: facts["activities"].append(nm)
+                    # v0.23.81-dev (H-1): android:configChanges must cover
+                    # KEYBOARD|ORIENTATION|SCREEN_LAYOUT|UI_MODE|SCREEN_SIZE|
+                    # SMALLEST_SCREEN_SIZE|DENSITY (0x1F90) so the Activity is
+                    # not recreated (losing navigation/text state) on a
+                    # rotation, theme, or density change. TYPE_INT_HEX (0x11)
+                    # decodes to a "0x........" string above.
+                    facts["configChanges"] = ad.get("configChanges")
                 elif el["name"] == "application":
                     # android:icon must be TYPE_REFERENCE (0x01). If it were written as
                     # TYPE_INT_HEX (0x11) the id would look identical in a hex dump but
@@ -493,8 +516,14 @@ def validate(path, want_pkg=None, want_lib=None, want_abi="arm64-v8a", want_labe
         allok = fail("android.app.lib_name meta-data missing or empty")
     elif want_lib and facts["lib_name"] != want_lib:
         allok = fail("lib_name mismatch: got %r want %r" % (facts["lib_name"], want_lib))
+    elif facts.get("configChanges") is None:
+        allok = fail("no android:configChanges on <activity> (AXML attribute encoding problem)")
+    elif _config_changes_value(facts["configChanges"]) != 0x1F90:
+        allok = fail("android:configChanges is %r, expected 0x1f90 "
+                     "(KEYBOARD|ORIENTATION|SCREEN_LAYOUT|UI_MODE|SCREEN_SIZE|"
+                     "SMALLEST_SCREEN_SIZE|DENSITY)" % (facts["configChanges"],))
     else:
-        ok("AXML fields consistent (package/activity/lib_name all correct)")
+        ok("AXML fields consistent (package/activity/lib_name/configChanges all correct)")
 
     print("[4a] android:icon reference")
     # The value must be TYPE_REFERENCE (0x01). Written as TYPE_INT_HEX (0x11) the

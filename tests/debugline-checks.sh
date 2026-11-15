@@ -3,7 +3,7 @@
 #
 # `-g` / `--debug-line` makes aster emit a DWARF v4 line-number table, so a
 # debugger can answer "which .ast line is this instruction?" and "where does a
-# breakpoint for line N go?". This suite proves four things:
+# breakpoint for line N go?". This suite proves six things:
 #
 #   1. THE TABLE IS CORRECT, not merely present: a decoder written for this
 #      suite (tests/debugline-decode.py) reads the section straight out of the
@@ -246,5 +246,55 @@ $DECODE "$OUT/mutant.elf" > "$OUT/rows.mutant"
 mut=$(awk '{print $2}' "$OUT/rows.mutant" | sort -n -u | tr '\n' ' ' | sed 's/ *$//')
 [ "$mut" != "$want" ] \
     || fail "an off-by-one in the recorded source line went unnoticed"
+
+# --- 10. a malformed .debug_line is refused; garbage in it is carried, not parsed --
+# v0.23.81-dev (S-10 sweep): the linker never interprets the line program —
+# it concatenates the bytes and patches the address fields its relocations
+# name — so garbage bytes in .debug_line cannot overflow anything, they are
+# carried verbatim into the output. What is checked is the relocation that
+# names an address field: a .debug_line truncated below its patch site is
+# refused. Both halves are pinned here so a future reader that does start
+# parsing the program has a tripwire to extend.
+"$ASTER" build-obj "$OUT/lines.ast" -g -o "$OUT/line.o"
+# Garbage in, garbage out: every byte 0xff, link succeeds, and the output
+# table is the input table with only the 8-byte address field at the
+# relocation site replaced by the linked text address (0x401000).
+python3 tests/bounds-mutate.py "$OUT/line.o" "$OUT/line-garbage.o" fill-line 0xff
+"$ASTER" link-obj "$OUT/line-garbage.o" -o "$OUT/line-garbage.elf" > "$OUT/line-garbage.log" 2>&1 \
+    || fail "an object with a garbage .debug_line no longer links: $(cat "$OUT/line-garbage.log")"
+python3 - "$OUT/line-garbage.o" "$OUT/line-garbage.elf" <<'PY' || fail "the linked garbage .debug_line is not the input table with only its address field patched"
+import struct, sys
+def secs(b):
+    shoff, = struct.unpack_from('<Q', b, 0x28)
+    n, strndx = struct.unpack_from('<HH', b, 0x3c)
+    ss = {}
+    for i in range(n):
+        name, typ, flags, addr, off, size = struct.unpack_from('<IIQQQQ', b, shoff+i*64)
+        ss[i] = (name, off, size)
+    sh = ss[strndx]
+    def nm(i):
+        o = ss[i][0]; e = b.index(b'\0', sh[1]+o); return b[sh[1]+o:e].decode()
+    return {nm(i): (ss[i][1], ss[i][2]) for i in range(n)}
+a = open(sys.argv[1], 'rb').read()
+c = open(sys.argv[2], 'rb').read()
+sa, sc = secs(a), secs(c)
+assert '.debug_line' in sa and '.debug_line' in sc
+line_a = a[sa['.debug_line'][0]:sa['.debug_line'][0]+sa['.debug_line'][1]]
+line_c = c[sc['.debug_line'][0]:sc['.debug_line'][0]+sc['.debug_line'][1]]
+assert len(line_a) == len(line_c), 'linked .debug_line changed length'
+assert all(x == 0xff for x in line_a), 'input .debug_line was not all garbage'
+rela = a[sa['.rela.debug_line'][0]:sa['.rela.debug_line'][0]+sa['.rela.debug_line'][1]]
+site, = struct.unpack_from('<Q', rela, 0)
+expect = bytearray(line_a)
+expect[site:site+8] = struct.pack('<Q', 0x401000)
+assert bytes(expect) == line_c, 'linked .debug_line differs anywhere but its address field'
+PY
+# Truncated below its relocation site: refused, naming the relocation.
+python3 tests/bounds-mutate.py "$OUT/line.o" "$OUT/line-trunc.o" trunc-line 8
+if "$ASTER" link-obj "$OUT/line-trunc.o" -o "$OUT/line-trunc.elf" > "$OUT/line-trunc.log" 2>&1; then
+    fail "a .debug_line truncated below its relocation site was accepted"
+fi
+grep -qF '.debug_line relocation offset is out of bounds' "$OUT/line-trunc.log" \
+    || fail "the truncated .debug_line refusal is worded differently: $(cat "$OUT/line-trunc.log")"
 
 echo "PASS: -g emits a correct DWARF v4 .debug_line (statement lines match the source, codegen unchanged, off by default, carried through link and .so)"

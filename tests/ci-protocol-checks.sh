@@ -292,8 +292,11 @@ check_ci_jobs() {
     name=$1
     value=$2
     want_text=$3
+    # v0.23.80-dev (G-02): the APK-gate skip here is deliberate — this probe
+    # is about the CI_JOBS protocol, not the gates — so the allow flag
+    # travels with it, or the hardened verdict would fail the probe run.
     out=$(CI_JOBS="$value" CI_OUT="$TMP/ci-jobs-$value" \
-        CI_SUITES=ci-jobs-probe-missing.sh CI_SKIP_APK_GATE=1 \
+        CI_SUITES=ci-jobs-probe-missing.sh CI_SKIP_APK_GATE=1 CI_ALLOW_APK_GATE_SKIP=1 \
         sh "$HERE/ci.sh" 2>&1)
     rc=$?
     ok=1
@@ -313,6 +316,48 @@ check_ci_jobs "CI_JOBS=0 is rejected before any suite runs" 0 \
     "CI_JOBS must be at least 1"
 check_ci_jobs "CI_JOBS=abc is rejected before any suite runs" abc \
     "CI_JOBS must be a positive integer"
+
+# ---------------------------------------------------------------------------
+# Gate verdict (G-01/G-02, v0.23.80-dev). The verdict is about evidence, not
+# just failures: a suite that exits 0 without a PASS/OK line, and a skipped
+# APK gate nobody explicitly allowed, are both red. These probes run the
+# real ci.sh against a throwaway suite directory, the same shape the audit
+# used for its controlled experiment.
+# ---------------------------------------------------------------------------
+check_gate() {
+    name=$1
+    want_rc=$2
+    want_text=$3
+    shift 3
+    # CI_OUT stays private: a green nested run deletes its own output
+    # directory, and it must never be the outer gate's ci-artifacts.
+    out=$(CI_SUITE_DIR="$GATE_SUITES" CI_OUT="$TMP/gate-out" "$@" sh "$HERE/ci.sh" 2>&1)
+    rc=$?
+    ok=1
+    [ "$rc" -eq "$want_rc" ] || ok=0
+    case "$out" in
+        *"$want_text"*) : ;;
+        *) ok=0 ;;
+    esac
+    if [ "$ok" -eq 1 ]; then
+        pass "$name"
+    else
+        fail "$name (rc=$rc, wanted $want_rc; output: $out)"
+    fi
+}
+
+GATE_SUITES="$TMP/gate-suites"
+mkdir -p "$GATE_SUITES"
+printf '#!/bin/sh\nexit 0\n' > "$GATE_SUITES/zero-assert.sh"
+printf '#!/bin/sh\necho "PASS: fake suite asserted"\nexit 0\n' > "$GATE_SUITES/ok.sh"
+# Each probe skips the APK gates (no signing work in a protocol probe) and
+# allows missing tools, so the verdict under test is only the gate logic.
+check_gate "zero-assertion suite fails the gate (G-01)" 1 "without printing an assertion" \
+    env CI_SUITES="zero-assert.sh" CI_SKIP_APK_GATE=1 CI_ALLOW_APK_GATE_SKIP=1 CI_ALLOW_MISSING=1
+check_gate "skipped APK gates fail without the allow flag (G-02)" 1 "without CI_ALLOW_APK_GATE_SKIP=1" \
+    env CI_SUITES="ok.sh" CI_SKIP_APK_GATE=1 CI_ALLOW_MISSING=1
+check_gate "asserting suite with an allowed gate skip stays green" 0 "CI SUMMARY: 1 passed" \
+    env CI_SUITES="ok.sh" CI_SKIP_APK_GATE=1 CI_ALLOW_APK_GATE_SKIP=1 CI_ALLOW_MISSING=1
 
 # ---------------------------------------------------------------------------
 # Coverage ratchet. The gate is only as wide as its suite list, and the

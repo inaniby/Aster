@@ -47,16 +47,47 @@ for image in tmp-pie-global tmp-pie-modular; do
   echo "PASS: $image executed at $distinct distinct load bases, all exit=42"
 done
 
+# --- shared object from several TUs sharing one struct-bearing include -------
+# v0.23.80-dev (P1-4, found again by AsterUI M1): the struct/enum/alias tables
+# are process globals, cleared per top-level Parser. Two TUs that both include
+# the same header declaring a struct used to fail on the second TU with
+# `duplicate struct declaration` (M1 hit it with stdlib's `Buf` at
+# aster_std.ast:783). Each TU keeps its own type namespace; the linked .so
+# still runs. The build is pinned outside the dlopen branch so the parse
+# regression is caught on hosts that cannot dlopen a glibc .so either.
+cat > tmp-so-shared.ast <<'EOF'
+struct Acc { v: i32 }
+EOF
+cat > tmp-so-multi-a.ast <<'EOF'
+include "tmp-so-shared.ast";
+let accumulator: i32 = 7;
+fn add(a: i32, b: i32) -> i32 { return a + b; }
+fn mul(a: i32, b: i32) -> i32 { return a * b; }
+fn accumulate(delta: i32) -> i32 { accumulator = accumulator + delta; return accumulator; }
+fn current() -> i32 { return accumulator; }
+EOF
+cat > tmp-so-multi-b.ast <<'EOF'
+include "tmp-so-shared.ast";
+let untouched: i32 = 0;
+fn untouched_value() -> i32 { let s: Acc = Acc { 0 }; return untouched + s.v; }
+EOF
+./aster build-so tmp-so-multi-a.ast tmp-so-multi-b.ast -o tmp-so-multi.so
+echo "PASS: multi-TU build-so sharing a struct include compiles"
+
 # --- shared object through dlopen/dlsym ----------------------------------------------
 if aster_can_dlopen_glibc_so; then
 ./aster build-so examples/so_math.ast -o tmp-so-math.so
 set +e; run ./tmp-so-host ./tmp-so-math.so; got=$?; set -e
 [ "$got" -eq 0 ] || { echo "FAIL: shared-object host exit=$got"; exit 1; }
 echo "PASS: dlopen/dlsym shared-object host exit=$got"
+set +e; run ./tmp-so-host ./tmp-so-multi.so; got=$?; set -e
+[ "$got" -eq 0 ] || { echo "FAIL: multi-TU shared-object host exit=$got"; exit 1; }
+echo "PASS: multi-TU shared-object host exit=$got"
 else
 echo "SKIP: this host's loader cannot resolve an Aster .so's glibc DT_NEEDED (Android bionic)"
 fi
 
 rm -f tmp-pie-hello tmp-pie-global tmp-pie-modular tmp-pie-main.o tmp-pie-helper.o \
-      tmp-pie-loader tmp-so-host tmp-so-math.so tmp-pie-bases tmp-pie-base.log
+      tmp-pie-loader tmp-so-host tmp-so-math.so tmp-pie-bases tmp-pie-base.log \
+      tmp-so-shared.ast tmp-so-multi-a.ast tmp-so-multi-b.ast tmp-so-multi.so
 echo "PASS: all v0.17.0 static-PIE and shared-object execution checks"

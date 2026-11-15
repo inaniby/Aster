@@ -1,0 +1,42 @@
+# .gitleaksignore — Aster repository secret-scan allowlist.
+#
+# Status as of 2026-11-14 (v0.23.81-dev): EMPTY on purpose — there is
+# currently nothing to allowlist.
+#
+# What was checked:
+# - `git fetch --unshallow` completed the local history (270 commits,
+#   earliest 85ef3cd "v0.23.44-dev"); `gitleaks detect` (v8.30.1) over the
+#   full history with --log-opts="--all" exits 0 with no leaks found
+#   (265 commits scanned; see note below).
+# - The deleted src/aster_apk_key.h (RSA-2048 dev key, removed in
+#   v0.23.4-dev) does NOT appear anywhere in this repository's history:
+#   the remote history starts at v0.23.44-dev, i.e. after the file was
+#   already gone, and `git log --all -- src/aster_apk_key.h` returns zero
+#   commits. There is therefore no gitleaks fingerprint for it to list
+#   here. Do not invent one.
+# - No PEM private-key material exists in any commit: `git grep` for
+#   "BEGIN.*PRIVATE KEY" across all commits only matches the literal
+#   grep pattern in tests/signing-checks.sh, which gitleaks correctly
+#   does not flag.
+#
+# Why 265 and not 270: gitleaks counts commits that yield scannable
+# (added-line) fragments. Five commits yield none and are not counted:
+# 2 merges (232db31, 6e1f1e6 — git log -p emits no merge diff; their
+# only merge-unique added line is a suite-name list in tests/ci.sh),
+# 1 pure rename (8bd1a15, 0 insertions/deletions), and 2 deletion-only
+# chores (48b1f5a, c9e40b2 — they only delete stray *.err logs whose
+# contents are "sh: ./tv: inaccessible or not found"). All content the
+# merges brought in was introduced by ordinary commits that were scanned.
+#
+# Working-tree note (NOT history, NOT allowlisted): two ephemeral,
+# runtime-generated debug signing keys exist on disk as untracked,
+# gitignored files — .aster/debug.key.pem and
+# ci-artifacts/keys/.aster/debug.key.pem (both covered by .gitignore,
+# **/.aster/ and /ci-artifacts/). They are generated fresh by test runs,
+# are not committed, and must never be allowlisted or committed. If a
+# future scan flags a real credential, do not add it here — rotate it
+# and purge it from history instead.
+#
+# Format: one gitleaks fingerprint per line, e.g.
+#   <file>:<rule-id>:<line>
+# with an explanatory comment above each entry.

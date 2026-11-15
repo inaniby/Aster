@@ -835,7 +835,7 @@ All carry a position.
 | B8 | `'&' address-of is not in the bootstrap subset` | the `&` |
 | B9 | `'++' and '--' are not in the bootstrap subset` | the token |
 | B10 | `compound assignment is not in the bootstrap subset` | the compound token |
-| B11 | `local arrays are not in the bootstrap subset` | the `[` |
+| B11 | ~~`local arrays are not in the bootstrap subset`~~ — superseded v0.23.79-dev: one-dimensional local arrays are supported (`let a: T[N] = <constant>;`, length 1..1000, constant initializer only; v0.23.80-dev adds the 1..1000 bound and the constant-initializer check, E-02). A local array reserves `ceil(N * sizeof(T) / 8)` frame slots (E-01 fix, v0.23.80-dev). Multi-dimensional local arrays are still refused, as are array parameters (B12). | the `[` |
 | B12 | `array parameters are not in the bootstrap subset` | the `[` |
 | B13 | `multi-dimensional indexing is not in the bootstrap subset` | the second `[` |
 | B14 | `true/false are not in the bootstrap subset` | the token |

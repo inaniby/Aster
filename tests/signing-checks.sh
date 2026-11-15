@@ -186,6 +186,19 @@ fi
 grep -q "FAIL:" "$WORK/tampered.log" || { echo "FAIL: tampering rejected without a reason"; exit 1; }
 echo "PASS: verify-apk rejects an APK whose v2 block was tampered with"
 
+# v0.23.81-dev: a Signing Block with the v2 pair twice used to verify (the
+# verifier kept the last pair and silently ignored the first). It must now
+# be rejected with a clear duplicate-ID reason, while a single unknown
+# (v3) pair next to a valid v2 pair is still ignored by design.
+python3 tests/apk-semantic-mutate.py "$WORK/rel.apk" "$WORK/mutants" > /dev/null
+if "$ASTER_BIN" verify-apk "$WORK/mutants/dup-v2-pair.apk" > "$WORK/dup-v2.log" 2>&1; then
+    echo "FAIL: verify-apk accepted an APK with a duplicated v2 pair"; exit 1
+fi
+grep -qi "duplicate" "$WORK/dup-v2.log" || { echo "FAIL: duplicated v2 pair rejected without a duplicate-ID reason"; exit 1; }
+"$ASTER_BIN" verify-apk "$WORK/mutants/v3-pair-added.apk" > /dev/null \
+    || { echo "FAIL: verify-apk rejected an APK with a single unknown (v3) pair"; exit 1; }
+echo "PASS: verify-apk rejects a duplicated v2 pair and still accepts a single v3 pair"
+
 echo "[9b/10] validate_apk.py verifies the v1 signature in-process, and rejects a bad one"
 # The v1 PKCS#7 signature used to be checked only by shelling out to openssl,
 # so a machine without it (a bare Termux install) reported FAIL for an APK that

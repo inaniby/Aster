@@ -1,0 +1,87 @@
+# Aster CI — the full regression gate on a hosted Ubuntu runner.
+#
+# This is the same gate a developer runs locally (`sh tests/ci.sh`): 152
+# suites plus the three APK gates, with the verdict rules from tests/ci.sh —
+# a suite that exits 0 without a PASS/OK line, and a skipped APK gate
+# without an explicit allow flag, both fail the run. No skip flags are set
+# here on purpose: the hosted runner is expected to have the whole
+# toolchain, so a skip would be a real gap, not an environment quirk.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # v0.23.81-dev: gitleaks scans the whole git history, not just the
+          # tip commit, so the checkout must not be shallow (the default
+          # fetch-depth: 1 would leave every older commit unscanned).
+          fetch-depth: 0
+
+      # v0.23.81-dev (audit §6.2): scan the repository for leaked secrets
+      # before the gate runs — a finding fails the job here instead of
+      # after ~3 hours of suites. GITHUB_TOKEN lets the action post its
+      # findings as PR annotations; no license secret is needed for this
+      # public repo on a personal account.
+      - name: Scan for leaked secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the Aster toolchain
+        run: |
+          sudo apt-get update -o Acquire::Languages=none
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            llvm-18 openjdk-21-jre-headless file shellcheck \
+            libc6-dev-arm64-cross
+          sudo ln -sf /usr/bin/llvm-objdump-18 /usr/local/bin/llvm-objdump
+          sudo ln -sf /usr/bin/llvm-dwarfdump-18 /usr/local/bin/llvm-dwarfdump
+          sudo ln -sf /usr/bin/llvm-readelf-18 /usr/local/bin/llvm-readelf
+          sudo ln -sf /usr/bin/llvm-nm-18 /usr/local/bin/llvm-nm
+          qemu-aarch64 --version
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: Doctor
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o /tmp/aster
+          /tmp/aster doctor
+
+      - name: Full gate
+        env:
+          CI_JOBS: "3"
+          CI_KEEP_ARTIFACTS: "1"
+        run: sh tests/ci.sh
+
+      # v0.23.81-dev (audit §6.2): the gate must leave the checkout clean.
+      # Everything it legitimately writes is gitignored — ci-artifacts/,
+      # the ./aster copy, tmp-*/ per-suite scratch, *.o/*.so/*.elf/*.apk,
+      # *.log — and the suites run in isolated copies (CI_JOBS=3), so any
+      # line `git status --porcelain` prints here is real residue, not a
+      # known product: no allowlist. Runs even when the gate failed, so
+      # residue from a red run is reported instead of silently skipped.
+      - name: Check the working tree is clean
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo 'FAIL: the gate left the working tree dirty:' >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          echo 'Working tree clean after the gate.'
+
+      - name: Upload gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts
+          path: ci-artifacts
+          if-no-files-found: ignore

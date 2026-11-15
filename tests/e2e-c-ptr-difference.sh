@@ -19,3 +19,8 @@ printf '%s\n' '[4/4] Run C -> Aster pointer difference tests'
 # The C harness is an AArch64 ELF: run it through the repo runner so it works
 # on AArch64 hosts natively and under qemu-user everywhere else.
 ./tests/run-aarch64.sh "$OUT/c-ptr-difference-host" "$PWD/$OUT/libaster_ptr_difference.so"
+
+# v0.23.80-dev (G-01): the gate fails a suite that exits 0 without a
+# PASS/OK line, and this suite used to print none — the harness above is
+# the assertion, so reaching here is the pass.
+echo 'PASS: e2e-c-ptr-difference (C harness ran pointer difference cases against the .so)'

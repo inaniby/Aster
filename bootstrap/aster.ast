@@ -2780,6 +2780,10 @@ fn let_stmt() -> i32 {
         }
         if (curk() != K_RBracket) { die_at("expected ']' after the array length", tok_line(ppos), tok_col(ppos)); return 0; }
         advance();
+        // v0.23.80-dev (E-02): the host refuses lengths outside 1..1000;
+        // the bootstrap used to accept 0 and 2000, the latter writing past
+        // the 8192-byte frame into the caller's area.
+        if (cnt < 1 || cnt > 1000) { die_at("local array length must be between 1 and 1000", tok_line(ppos), tok_col(ppos)); return 0; }
         if (curk() == K_LBracket) {
             die_at("multi-dimensional local arrays are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
             return 0;
@@ -2788,6 +2792,11 @@ fn let_stmt() -> i32 {
         advance();
         let ie: i32 = parse_expr();
         if (perr != 0) { return 0; }
+        // v0.23.80-dev (E-02): the comment above promised a constant
+        // initializer, but the code never checked — `let a: i32[4] = f();`
+        // was accepted and one evaluation was silently broadcast. The host
+        // refuses it; so does the bootstrap now.
+        if (is_const(ie) == 0) { die_at("local array initializer must be a constant expression", tok_line(ppos), tok_col(ppos)); return 0; }
         if (curk() != K_Semi) { die_at("expected ';'", tok_line(ppos), tok_col(ppos)); return 0; }
         advance();
         let sa: i32 = newnode(S_Let, nt);
@@ -5236,7 +5245,20 @@ fn cg_pop_scope() -> i32 {
 // end of the locals area (§5); both are defensive — M3c already enforced
 // the first.
 fn cg_add_local(tok: i32, ty: i32, cnt: i32) -> i32 {
-    if (cg_nlocs >= 500 || cg_next_slot >= 532) {
+    // v0.23.80-dev (E-01): an array reserves ceil(cnt * width / 8) slots,
+    // not one. The old line advanced by ty_slots(ty) only, so the next
+    // local landed on the array's second slot and overwrote its tail
+    // elements (`a[2]`/`a[3]` of an `i32[4]`). Structs keep ty_slots per
+    // element; the advance is checked against the frame end before use,
+    // so an oversized array is refused here instead of writing past it.
+    let adv: i32 = 0;
+    if (cnt > 1) {
+        if (ty_is_struct(ty) == 1) { adv = cnt * ty_slots(ty); }
+        else { adv = (cnt * ty_width(ty) + 7) / 8; }
+    } else {
+        adv = ty_slots(ty);
+    }
+    if (cg_nlocs >= 500 || cg_next_slot + adv > 532) {
         cg_l = tok_line(tok);
         cg_c = tok_col(tok);
         if (cg_die("too many local declarations (limit 500, including parameters)") != 0) { return -1; }
@@ -5246,7 +5268,7 @@ fn cg_add_local(tok: i32, ty: i32, cnt: i32) -> i32 {
     cg_loc_ty[cg_nlocs] = ty;
     cg_loc_cnt[cg_nlocs] = cnt;
     cg_nlocs = cg_nlocs + 1;
-    cg_next_slot = cg_next_slot + ty_slots(ty);   // v0.23.77-dev: a struct needs several
+    cg_next_slot = cg_next_slot + adv;
     return cg_loc_slot[cg_nlocs - 1];
 }
 // The visible local entry for a name token (latest first, so an inner shadow

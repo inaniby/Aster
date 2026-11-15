@@ -1,0 +1,21 @@
+// i64_park_nested_call.ast -- i64 live-temporary park probe (W4, §6.3).
+//
+// CODEGEN-SPEC §11 #3 says the host parks live temporaries with STR W
+// (storeLocal) while bootstrap uses STR X/LDR X. On this tree that is
+// stale: storeLocal/loadLocal have no callers anywhere in the tree, and
+// the live park path is spillTemps -> storeStackOff(..., Ty::I64) ->
+// storeStackT, which emits STR X (v0.23.61-dev). This probe pins the
+// correct behaviour so a future park change cannot silently truncate.
+//
+// big = 5000000000 = 0x1_2A05F200: its high 32 bits are nonzero, so a
+// 32-bit park would restore 705032704 and main would return 1. The
+// expression `big + id(zero())` keeps big live across two nested calls
+// (the park fires at [SP, #4032] before each BL); correct runs return 0
+// under both the default and the --compact-frames layouts.
+fn id(x: i64) -> i64 { return x; }
+fn zero() -> i64 { return 0; }
+fn main() -> i32 {
+    let big: i64 = 5000000000;
+    let r: i64 = big + id(zero());
+    if (r == 5000000000) { return 0; } else { return 1; }
+}

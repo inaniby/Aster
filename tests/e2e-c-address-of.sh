@@ -19,3 +19,8 @@ printf '%s\n' '[4/4] Run C -> Aster address-of tests'
 # The C harness is an AArch64 ELF: run it through the repo runner so it works
 # on AArch64 hosts natively and under qemu-user everywhere else.
 ./tests/run-aarch64.sh "$OUT/c-address-of-host" "$PWD/$OUT/libaster_address_of.so"
+
+# v0.23.80-dev (G-01): the gate fails a suite that exits 0 without a
+# PASS/OK line, and this suite used to print none — the harness above is
+# the assertion, so reaching here is the pass.
+echo 'PASS: e2e-c-address-of (C harness ran address-of cases against the .so)'

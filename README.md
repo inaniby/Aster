@@ -235,7 +235,7 @@ optimization levels, static links and unknown flags to the real compiler. A focu
 
 ```sh
 CI_SUITES="tls-checks.sh linker-checks.sh" sh tests/ci.sh
-CI_SKIP_APK_GATE=1 sh tests/ci.sh     # suites only
+CI_SKIP_APK_GATE=1 CI_ALLOW_APK_GATE_SKIP=1 sh tests/ci.sh     # suites only (the skip is deliberate: without the allow flag the run is red)
 CI_REBUILD=1 sh tests/ci.sh           # ignore the build stamp
 CI_ALLOW_MISSING=1 sh tests/ci.sh     # let missing tools SKIP (critical skips still fail)
 CI_JOBS=4 sh tests/ci.sh              # isolated parallel suites (private worktrees)

@@ -1,15 +1,23 @@
 #!/bin/sh
-# v0.23.34-dev: empirical proof that the seven ANativeActivity lifecycle
+# v0.23.34-dev: empirical proof that the ANativeActivity lifecycle
 # callbacks can be wired up and driven — the carry-forward item in README's
-# "Android's bionic loader is not covered" note.
+# "Android's bionic loader is not covered" note. M3.6: the example installs
+# the ten non-window/input slots of the 16-slot ANativeActivityCallbacks
+# table (onStart@0, onResume@8, onSaveInstanceState@16, onPause@24,
+# onStop@32, onDestroy@40, onWindowFocusChanged@48,
+# onContentRectChanged@104, onConfigurationChanged@112, onLowMemory@120);
+# the previous seven-slot install at 0..48 was wrong (it omitted
+# onSaveInstanceState and onWindowFocusChanged and put
+# onConfigurationChanged@40 / onLowMemory@48 — the same error M1.2d fixed
+# in asterui/backend/android.ast).
 #
 # native_render.ast and native_touch.ast fill the window/input callback slots
-# (56..96) of ANativeActivityCallbacks but leave the first seven — the activity
-# lifecycle — empty. Aster's function-name-as-address feature lets an Aster
-# module populate them, but nothing exercised that path. This example does, and
-# this script drives it the way Android would: load the module as a shared
-# object, call ANativeActivity_onCreate, then call each of the seven installed
-# entries and read the counters back.
+# (56..96) of ANativeActivityCallbacks but leave the lifecycle slots empty.
+# Aster's function-name-as-address feature lets an Aster module populate
+# them, but nothing exercised that path. This example does, and this script
+# drives it the way Android would: load the module as a shared object, call
+# ANativeActivity_onCreate, then call each of the ten installed entries and
+# read the counters back.
 #
 # The instructions are the ones Android runs. Only the loader (glibc under qemu,
 # not bionic on a phone) and the provider of __android_log_print (a host liblog
@@ -19,7 +27,7 @@
 #
 # Layers:
 #   [1] Strictly build the Aster compiler.
-#   [2] Source guards — pin the seven offset assignments and the count routing.
+#   [2] Source guards — pin the ten offset assignments and the count routing.
 #   [3] Build the shared object and assert its exported-symbol set (byte-stable
 #       at the symbol level) — the example's contract with the host.
 #   [4] Build the AArch64 test host and the liblog stub, then drive the callbacks
@@ -44,15 +52,16 @@ $CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o "$OUT/aste
 A="$OUT/aster"
 
 # ---------------------------------------------------------------------------
-# [2] Source guards. The wiring is seven stores at fixed byte offsets into the
+# [2] Source guards. The wiring is ten stores at fixed byte offsets into the
 # callbacks table, plus a counter router keyed by index. Pin both so a refactor
 # that moves an offset or drops a slot fails here, loudly.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[2/4] Source guards for the lifecycle example'
 EX=examples/lifecycle.ast
 [ -f "$EX" ] || { echo "FAIL: $EX missing" >&2; exit 1; }
-# The seven lifecycle slots, at offsets 0..48 (8 bytes each).
-for off in 0 8 16 24 32 40 48; do
+# The ten non-window/input slots, at offsets 0..120 (8 bytes each).
+# Window/input slots 56..96 belong to native_render/native_touch, not here.
+for off in 0 8 16 24 32 40 48 104 112 120; do
     grep -qF "*(cb + $off) =" "$EX" \
         || { echo "FAIL: lifecycle example no longer installs a callback at offset $off" >&2; exit 1; }
 done
@@ -60,7 +69,7 @@ done
 grep -qF 'let cb: ptr = load_ptr(activity);' "$EX" \
     || { echo 'FAIL: ANativeActivity_onCreate no longer loads the callbacks pointer' >&2; exit 1; }
 # The counter router answers -1 out of range and each index in range.
-grep -qF 'if (which == 6) { return g_lowmem; }' "$EX" \
+grep -qF 'if (which == 9) { return g_lowmem; }' "$EX" \
     || { echo 'FAIL: lifecycle count router dropped a slot' >&2; exit 1; }
 grep -qF 'return -1;' "$EX" \
     || { echo 'FAIL: lifecycle count router no longer rejects out-of-range' >&2; exit 1; }
@@ -74,8 +83,9 @@ printf '%s\n' '[3/4] Build the shared object and check its exported symbols'
 $A build-so examples/lifecycle.ast -o "$OUT/lifecycle.so" \
     || { echo 'FAIL: lifecycle.ast does not build as a shared object' >&2; exit 1; }
 NM=$(command -v aarch64-linux-gnu-nm || command -v nm)
-EXP="ANativeActivity_onCreate aster_lifecycle_count on_start on_resume on_pause \
-on_stop on_destroy on_configuration_changed on_low_memory"
+EXP="ANativeActivity_onCreate aster_lifecycle_count on_start on_resume on_save_instance_state \
+on_pause on_stop on_destroy on_window_focus_changed on_content_rect_changed \
+on_configuration_changed on_low_memory"
 # v0.23.51-dev: symbol versioning suffixes every dynamic symbol with its
 # version (the default one prints as name@@aster). This contract is about
 # *names* — which functions the Android entry points resolve — so the suffix
@@ -85,9 +95,9 @@ for sym in $EXP; do
     printf '%s\n' "$got" | grep -qx "$sym" \
         || { echo "FAIL: lifecycle.so does not export $sym" >&2; exit 1; }
 done
-# And nothing extra in the contract beyond these nine.
+# And nothing extra in the contract beyond these twelve.
 n=$(printf '%s\n' "$got" | grep -xcE "$(printf '%s\n' $EXP | tr '\n' '|' | sed 's/|$//')")
-[ "$n" -eq 9 ] || { echo "FAIL: lifecycle.so exports $n expected symbols, want 9" >&2; exit 1; }
+[ "$n" -eq 12 ] || { echo "FAIL: lifecycle.so exports $n expected symbols, want 12" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 # [4] Build the AArch64 host and the liblog stub, drive the callbacks, assert.
@@ -119,16 +129,16 @@ if [ "$rc" -ne 0 ]; then
     exit 1
 fi
 # The host prints the per-slot result; assert the key facts it reports.
-grep -qF '7 callbacks installed at offsets 0..48 and driven' "$OUT/run.out" \
-    || { echo 'FAIL: lifecycle host did not report all seven callbacks driven' >&2; exit 1; }
+grep -qF '10 callbacks installed at offsets 0..120 and driven' "$OUT/run.out" \
+    || { echo 'FAIL: lifecycle host did not report all ten callbacks driven' >&2; exit 1; }
 grep -qF 'count(0)=2' "$OUT/run.out" \
     || { echo 'FAIL: onStart counter did not accumulate to 2' >&2; exit 1; }
-grep -qF 'count(7)=-1' "$OUT/run.out" \
-    || { echo 'FAIL: out-of-range count(7) did not return -1' >&2; exit 1; }
+grep -qF 'count(10)=-1' "$OUT/run.out" \
+    || { echo 'FAIL: out-of-range count(10) did not return -1' >&2; exit 1; }
 # The liblog stub must have printed each lifecycle event to stderr.
-for ev in onStart onResume onPause onStop onDestroy onConfigurationChanged onLowMemory; do
+for ev in onStart onResume onSaveInstanceState onPause onStop onDestroy onWindowFocusChanged onContentRectChanged onConfigurationChanged onLowMemory; do
     grep -qF "[AsterLifecycle] $ev" "$OUT/run.err" \
         || { echo "FAIL: liblog stub did not log $ev" >&2; exit 1; }
 done
 
-printf '%s\n' 'PASS: the seven ANativeActivity lifecycle callbacks install at offsets 0..48, run, and count (AArch64 .so driven under qemu)'
+printf '%s\n' 'PASS: the ten ANativeActivity lifecycle callbacks install at offsets 0..120, run, and count (AArch64 .so driven under qemu)'

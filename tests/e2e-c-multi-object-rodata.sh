@@ -45,3 +45,8 @@ ${HOSTCC:-cc} -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror tests/c-multi-object
 printf '%s\n' '[5/5] Run five-object ABI and object-order tests'
 case "$OUT" in /*) SO_PATH="$OUT/libaster_multi_object_rodata.so"; REV_PATH="$OUT/libaster_multi_object_rodata_reverse.so";; *) SO_PATH="$PWD/$OUT/libaster_multi_object_rodata.so"; REV_PATH="$PWD/$OUT/libaster_multi_object_rodata_reverse.so";; esac
 run "$OUT/multi-object-rodata-host" "$SO_PATH" "$REV_PATH"
+
+# v0.23.80-dev (G-01): the gate fails a suite that exits 0 without a
+# PASS/OK line, and this suite used to print none — the harness above is
+# the assertion, so reaching here is the pass.
+echo 'PASS: e2e-c-multi-object-rodata (C harness ran five-object ABI and order cases)'

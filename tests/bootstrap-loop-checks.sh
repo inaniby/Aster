@@ -200,6 +200,9 @@ if [ "$SELFHOST_OK" -eq 1 ]; then
 
     run_product return_42 tests/codegen-fixtures/return_42.ast 42 ""
     run_product globals_and_write tests/codegen-fixtures/globals_and_write.ast 163 "s1ok"
+    # v0.23.80-dev (E-01): the bootstrap local-array slot probe — the
+    # buggy self-host returns 3 (a[2] overwritten), the fixed one 5.
+    run_product local_array_overlap tests/codegen-fixtures/local_array_overlap.ast 5 ""
 else
     echo "SKIP: self-hosted output phase (no AArch64 runner)"
 fi

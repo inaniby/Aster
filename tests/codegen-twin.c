@@ -1243,6 +1243,11 @@ static int let_stmt(void) {
         if (cur() != TK_RBracket)
             die_at("expected ']' after the array length", tok_line(p), tok_col(p));
         adv();
+        /* v0.23.80-dev (E-02): mirror bootstrap/aster.ast — lengths outside
+         * 1..1000 are refused, as the host refuses them. */
+        if (cnt < 1 || cnt > 1000)
+            die_at("local array length must be between 1 and 1000",
+                   tok_line(p), tok_col(p));
         if (cur() == TK_LBracket)
             die_at("multi-dimensional local arrays are not in the bootstrap subset",
                    tok_line(p), tok_col(p));
@@ -1250,6 +1255,11 @@ static int let_stmt(void) {
             die_at("a local array needs an initializer", tok_line(p), tok_col(p));
         adv();
         int ie = expr();
+        /* v0.23.80-dev (E-02): mirror bootstrap/aster.ast — a local array
+         * initializer must be a constant expression. */
+        if (!is_const(ie))
+            die_at("local array initializer must be a constant expression",
+                   tok_line(p), tok_col(p));
         if (cur() != TK_Semi) die_at("expected ';'", tok_line(p), tok_col(p));
         adv();
         int sa = newnode(S_Let, nt);
@@ -2866,12 +2876,19 @@ static int cg_pop_scope(void){
     cg_sc_depth--; cg_nlocs=cg_scope[cg_sc_depth]; return 0;
 }
 static int cg_add_local(int tok,int ty,int cnt){
-    if (cg_nlocs>=500 || cg_next_slot>=532){
+    /* v0.23.80-dev (E-01): mirror bootstrap/aster.ast — an array reserves
+     * ceil(cnt * width / 8) slots, not one; a struct keeps ty_slots per
+     * element. The twin and the bootstrap must stay identical here, or
+     * their byte differential stops proving anything. */
+    int adv = cnt > 1 ? (ty_is_struct(ty) ? cnt * ty_slots(ty)
+                                          : (cnt * ty_width_t(ty) + 7) / 8)
+                      : ty_slots(ty);
+    if (cg_nlocs>=500 || cg_next_slot + adv > 532){
         cg_l=tok_line(tok); cg_c=tok_col(tok);
         if (cg_die("too many local declarations (limit 500, including parameters)")) return -1;
     }
     cg_loc_tok[cg_nlocs]=tok; cg_loc_slot[cg_nlocs]=cg_next_slot; cg_loc_ty[cg_nlocs]=ty; cg_loc_cnt[cg_nlocs]=cnt;
-    cg_nlocs++; cg_next_slot += ty_slots(ty); return cg_loc_slot[cg_nlocs-1];
+    cg_nlocs++; cg_next_slot += adv; return cg_loc_slot[cg_nlocs-1];
 }
 static int cg_find_local(int tok){
     for (int i=cg_nlocs-1;i>=0;i--) if (name_eq(cg_loc_tok[i],tok)==1) return i;

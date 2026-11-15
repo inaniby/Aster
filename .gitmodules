@@ -1,0 +1,3 @@
+[submodule "stdlib/asterui"]
+	path = stdlib/asterui
+	url = https://github.com/inaniby/AsterUI.git

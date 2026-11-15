@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <sys/wait.h>          // waitpid/WIFEXITED for `aster run`
+#include <csignal>             // kill/SIGTERM/SIGKILL for the run/test timeout (v0.23.81-dev CLI-P2-12)
 #include <sys/utsname.h>        // `aster doctor`: host description
 #include <sys/statvfs.h>        // `aster doctor`: free space
 #include <dirent.h>             // `aster doctor`: cache entries
@@ -1483,6 +1484,11 @@ class Parser {
     // adds i64/u8/u16/u32 to the i32/ptr/bool set; every site that used to
     // accept exactly three types now accepts seven through this helper.
     bool parseType(Ty& out){
+        // v0.23.80-dev: nested type spellings (`ptr<ptr<…>>`, nested
+        // `fn(…)->…`) used to recurse through parseType/pointerType/
+        // needType with no guard and segfaulted the compiler (exit 139).
+        // Guard the nesting itself; sequential types do not accumulate.
+        DepthGuard depthGuard(typeDepth,256,"type");
         switch(cur().k){
             case TK::I32: out=Ty::I32;  ++p; return true;
             case TK::I64: out=Ty::I64;  ++p; return true;
@@ -1631,6 +1637,21 @@ class Parser {
     // only one file, so the two were the same string and `embedDir` was set to
     // whichever one applied.
     std::string selfDir;
+    // v0.23.81-dev (H-4/C-2): the @embed blob symbol is namespaced per
+    // compilation unit. It used to be "__aster_embed_<n>" from a counter
+    // that restarted at 0 in every unit, so any two objects that each
+    // @embed a file both defined __aster_embed_0 and link-so refused
+    // them as duplicates. embedPrefix names the unit: the source file's
+    // basename with every non-alphanumeric byte as '_', capped at 32
+    // chars, plus a hash of the full path — the hash is what
+    // distinguishes two paths that sanitize (or truncate) to the same
+    // spelling, e.g. same-basename files in different directories.
+    // (The first version namespaced on the whole path and truncated it
+    // to 32 chars, which dropped the basename whenever the repo path
+    // was long — the full gate runs under a deep ci-artifacts path —
+    // so the symbol no longer named its file.)
+    std::string srcPath;      // the top-level source file, as given on the command line
+    std::string embedPrefix;  // sanitized basename + "_h" + 12 hex of the full path's sha256; embedFile appends "_<n>"
     std::map<std::string,std::string> embedSymbols;             // resolved path -> global name
     std::map<std::string,std::vector<uint8_t>> embedBlobs;      // the bytes themselves; a map, so
                                                                 // a reference to one stays valid
@@ -1696,7 +1717,11 @@ class Parser {
         // A map, not a vector: inserting a second blob must not move the first
         // one out from under a reference already handed to the caller.
         const std::vector<uint8_t>& data = embedBlobs.emplace(full, std::move(bytes)).first->second;
-        const std::string symName = "__aster_embed_" + std::to_string(embedCounter++);
+        // v0.23.81-dev (H-4/C-2): per-unit blob symbol (see embedPrefix).
+        // The reference still goes through embedSymbols, keyed by the
+        // resolved embedded path, so the name the code generator emits
+        // for an @embed expression is the name made here, unchanged.
+        const std::string symName = "__aster_embed_" + embedPrefix + "_" + std::to_string(embedCounter++);
         Global g; g.name = symName;
         g.isString = true;                 // rodata, laid out as the bytes it holds
         g.rawData = data;
@@ -2057,6 +2082,13 @@ class Parser {
     // `&&` cannot be mistaken for two `&`: the lexer emits one token for the
     // logical form, and `eat(TK::Amp)` matches only the single one.
     E unary(){
+        // v0.23.80-dev: a prefix chain (`!!!!…`, `-----x`, `*****p`) used to
+        // recurse here with no guard — expr()'s DepthGuard is entered once
+        // at the top and never re-entered by the prefix chain, so a long
+        // chain drove the host off the C stack with no diagnostic. Guard
+        // the chain itself; the guard is scoped, so flat operands do not
+        // accumulate depth.
+        DepthGuard depthGuard(exprDepth,256,"expression");
         if(eat(TK::Star)){E x=unary();E z(new Expr(Expr::Deref));z->line=x->line;z->col=x->col;z->a=std::move(x);return z;}
         // &x : the address of an lvalue. Only a struct lvalue has a typed
         // address today (Sema rejects the rest), so this is how a struct
@@ -2505,6 +2537,11 @@ class Parser {
     // return no longer proves the function returns. No codegen path changes,
     // which is what keeps every existing output byte-identical.
     Stmt ifStatement(){
+        // v0.23.80-dev: an `else if` chain recursed here directly, bypassing
+        // statement()'s DepthGuard, and segfaulted the compiler (exit 139)
+        // on a long chain. Guard the chain itself; a single `if` costs one
+        // level, nested `if`s in blocks are counted by statement() as well.
+        DepthGuard depthGuard(ifDepth,256,"if statement");
         Stmt s(Stmt::If);need(TK::LParen,"expected '(' after if");s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;need(TK::RParen,"expected ')' after condition");s.thenBody=block();
         if(eat(TK::Else)){
             if(eat(TK::If)){std::vector<Stmt> eb;eb.push_back(ifStatement());s.elseBody=std::move(eb);}
@@ -2740,6 +2777,16 @@ class Parser {
                 if(e.ty!=Ty::F64&&e.ty!=Ty::F32)return false;
                 double a=0;
                 if(constantFloat(*e.a,a)){out=(e.ty==Ty::F32)?double(float(a)):a;return true;}
+                // v0.23.80-dev: a plain integer literal is a non-negative
+                // magnitude, so convert it as uint64_t. The old path went
+                // through constantInteger()'s int64_t, which wrapped a large
+                // u64 (`f64(18446744073709551615ul)` became -1.0 instead of
+                // 1.84e19). Signed values are unaffected: they are Neg nodes
+                // around a literal, handled by the Neg case above.
+                if(e.a->k==Expr::Num&&!e.a->boolLit&&!e.a->isFloat){
+                    double d=double((uint64_t)e.a->n);
+                    out=(e.ty==Ty::F32)?double(float(d)):d;return true;
+                }
                 int64_t v=0;
                 if(constantInteger(*e.a,v)){out=(e.ty==Ty::F32)?double(float(v)):double(v);return true;}
                 return false;
@@ -2750,7 +2797,13 @@ class Parser {
     int64_t foldConst(const Expr& e,bool u64Target=false){
         RecursionGuard depthGuard(foldDepth,2048,"constant expression");
         switch(e.k){
-            case Expr::Num: return (int64_t)e.n;
+            case Expr::Num:
+                // v0.23.80-dev: a float literal is not an integer constant
+                // (constantInteger() already refuses it). Folding it here
+                // read e.n, which is 0 for a float, so `let g: i32 = 1.5;`
+                // silently stored 0 and `let h: bool = 1.5;` stored false.
+                if(e.isFloat)throw Error(loc(e.line,e.col,"global variable initializer must be an integer constant expression"));
+                return (int64_t)e.n;
             case Expr::SizeOf: case Expr::Len: return (int64_t)e.n;   // v0.23.35-dev: the type-form folded at parse time
             // v0.23.48-dev: a cast of a constant expression is a constant
             // expression: the operand folds first, then its bits are read back
@@ -2788,6 +2841,11 @@ class Parser {
             case Expr::Div: {
                 int64_t a=foldConst(*e.a,u64Target),b=foldConst(*e.b,u64Target);
                 if(b==0)throw Error(loc(e.line,e.col,"division by zero in global variable initializer"));
+                // v0.23.80-dev: the unsigned branch was missing (Add/Sub/Mul
+                // have one): `18446744073709551615 / 2` folded to 0 instead
+                // of 2^63-1, and the signed INT64_MIN/-1 check misfired on
+                // unsigned operands. Unsigned division cannot overflow.
+                if(u64Target)return (int64_t)((uint64_t)a/(uint64_t)b);
                 if(a==INT64_MIN&&b==-1)
                     throw Error(loc(e.line,e.col,"division overflows i64 in global variable initializer"));
                 return a/b;
@@ -2797,6 +2855,8 @@ class Parser {
             case Expr::Mod: {
                 int64_t a=foldConst(*e.a,u64Target),b=foldConst(*e.b,u64Target);
                 if(b==0)throw Error(loc(e.line,e.col,"division by zero in global variable initializer"));
+                // v0.23.80-dev: unsigned branch, as for Div above.
+                if(u64Target)return (int64_t)((uint64_t)a%(uint64_t)b);
                 // INT64_MIN % -1 is the other signed-overflow corner: the
                 // mathematical result is 0, but the C++ operation is UB.
                 if(a==INT64_MIN&&b==-1)return 0;
@@ -2812,6 +2872,9 @@ class Parser {
             case Expr::Shl: case Expr::Shr: {
                 int64_t a=foldConst(*e.a,u64Target),b=foldConst(*e.b,u64Target);
                 if(b<0||b>63)throw Error(loc(e.line,e.col,"shift count "+std::to_string(b)+" is out of range (0..63) in global variable initializer"));
+                // v0.23.80-dev: unsigned right shift (logical, not arithmetic):
+                // `u64 >> 1` used to sign-extend and return -1.
+                if(e.k==Expr::Shr&&u64Target)return (int64_t)((uint64_t)a>>b);
                 if(e.k==Expr::Shr)return a>>b;
                 if(u64Target)return (int64_t)((uint64_t)a<<b);
                 int64_t r=0;
@@ -2912,23 +2975,26 @@ class Parser {
     // check, called by all three declaration entry points. The historical
     // messages are preserved so the existing guards keep pinning the same
     // refusals.
-    void rejectTagConflict(const Token& id,const std::string& kind){
+    void rejectTagConflict(const std::string& name,int line,int col,const std::string& kind){
         const bool isAlias=(kind=="type alias");
-        if(g_structIndex.count(id.s)){
-            if(isAlias)throw Error(loc(id.line,id.col,"type alias conflicts with a struct: "+id.s));
+        if(g_structIndex.count(name)){
+            if(isAlias)throw Error(loc(line,col,"type alias conflicts with a struct: "+name));
             if(kind=="struct"||kind=="union")
-                throw Error(loc(id.line,id.col,"duplicate "+kind+" declaration: "+id.s));
-            throw Error(loc(id.line,id.col,kind+" name conflicts with a struct: "+id.s));
+                throw Error(loc(line,col,"duplicate "+kind+" declaration: "+name));
+            throw Error(loc(line,col,kind+" name conflicts with a struct: "+name));
         }
-        if(g_enumIndex.count(id.s)){
-            if(isAlias)throw Error(loc(id.line,id.col,"type alias conflicts with an enum: "+id.s));
-            if(kind=="enum")throw Error(loc(id.line,id.col,"duplicate enum declaration: "+id.s));
-            throw Error(loc(id.line,id.col,kind+" name conflicts with an enum: "+id.s));
+        if(g_enumIndex.count(name)){
+            if(isAlias)throw Error(loc(line,col,"type alias conflicts with an enum: "+name));
+            if(kind=="enum")throw Error(loc(line,col,"duplicate enum declaration: "+name));
+            throw Error(loc(line,col,kind+" name conflicts with an enum: "+name));
         }
-        if(g_typeAlias.count(id.s)){
-            if(isAlias)throw Error(loc(id.line,id.col,"duplicate type alias: "+id.s));
-            throw Error(loc(id.line,id.col,kind+" name conflicts with a type alias: "+id.s));
+        if(g_typeAlias.count(name)){
+            if(isAlias)throw Error(loc(line,col,"duplicate type alias: "+name));
+            throw Error(loc(line,col,kind+" name conflicts with a type alias: "+name));
         }
+    }
+    void rejectTagConflict(const Token& id,const std::string& kind){
+        rejectTagConflict(id.s,id.line,id.col,kind);
     }
     // v0.23.70-dev: a union is the same declaration with every member placed
     // at offset 0. The bool overload is the shared parser; the no-argument
@@ -3079,6 +3145,12 @@ class Parser {
     // wider integer types (v0.23.2-dev) carry their own storage width.
     void globalDeclaration(bool external,bool tls=false,bool isConst=false){
         auto id=need(TK::Ident,"expected global variable name");
+        // v0.23.80-dev (P1-5): the tag check used to live only on the
+        // struct/enum/alias side, so a global declared *after* a struct of
+        // the same name was accepted while the reverse order was refused —
+        // and the struct-literal rule in primary() then shadowed the global.
+        // Refuse the collision in both orders.
+        rejectTagConflict(id,"global variable");
         need(TK::Colon,"expected ':'");
         const Ty ty=needType(kTypeExpected);
         // v0.23.77-dev: an f32 global — the same float folder, four bytes.
@@ -3279,8 +3351,40 @@ class Parser {
     }
 public:
     explicit Parser(const std::string&s,bool requireEntry=true,
-                    const std::string& selfDir_="",IncludeState* inc=nullptr)
-        :t(Lexer(s).run()),requireMain(requireEntry),includes(inc?inc:&ownIncludes),selfDir(selfDir_){}
+                    const std::string& selfDir_="",IncludeState* inc=nullptr,
+                    const std::string& srcPath_="")
+        :t(Lexer(s).run()),requireMain(requireEntry),includes(inc?inc:&ownIncludes),selfDir(selfDir_),srcPath(srcPath_){
+        // v0.23.81-dev (H-4/C-2): derive the @embed symbol namespace for
+        // this compilation unit from its source file (see embedPrefix).
+        if(!srcPath.empty()){
+            std::string base=srcPath;
+            std::string::size_type slash=base.find_last_of("/\\");
+            if(slash!=std::string::npos)base=base.substr(slash+1);
+            std::string san;
+            for(char c:base)
+                san+=((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9'))?c:'_';
+            if(san.empty())san="embed";
+            if(san.size()>32)san.resize(32);
+            embedPrefix=san+"_h"+sha256Hex(srcPath).substr(0,12);
+        }else{
+            // Defensive: every compile entry passes a path. Without one,
+            // fall back to a hash of the source text, so two different
+            // sources still get different symbols instead of colliding.
+            embedPrefix="h"+sha256Hex(s).substr(0,12);
+        }
+        // v0.23.80-dev (P1-4): the type tables are process globals, so a
+        // struct/enum/alias declared by one translation unit used to leak
+        // into the next one compiled in the same process — the next unit
+        // could use a type it never declared, and re-declaring the same tag
+        // was a spurious duplicate. A top-level parser (no shared include
+        // state) starts a fresh type namespace; an included file's parser
+        // shares its parent's state and keeps seeing the parent's tags.
+        if(!inc){
+            g_structs.clear();g_structIndex.clear();
+            g_enums.clear();g_enumIndex.clear();g_enumConsts.clear();
+            g_typeAlias.clear();
+        }
+    }
     std::vector<Function> functions;
     // v0.23.77-dev: the statics of the function currently being parsed.
     std::vector<std::pair<std::string,std::string>> pendingStatics;
@@ -3290,7 +3394,7 @@ public:
     // `((((((...1...))))))` or a hundred nested ifs. These counters make the
     // parser say "too deep" long before the process would die without a
     // diagnostic; the limits are far above any hand-written program.
-    unsigned exprDepth=0, stmtDepth=0, foldDepth=0, constExprDepth=0;
+    unsigned exprDepth=0, stmtDepth=0, foldDepth=0, constExprDepth=0, typeDepth=0, ifDepth=0;
     struct DepthGuard {
         unsigned& d;
         DepthGuard(unsigned& depth,unsigned limit,const char* what):d(depth){
@@ -3355,7 +3459,7 @@ public:
         // Parsed into its own parser so that what it declares is a separate,
         // inspectable list — and so its own `include` lines resolve against *its*
         // directory, not this file's.
-        Parser sub(text,false,dirNameOf(full),includes);
+        Parser sub(text,false,dirNameOf(full),includes,srcPath);
         includes->stack.push_back(full);
         includes->done.insert(full);
         // v0.23.77-dev (audit A-15): while this file is parsed, a diagnostic is
@@ -3477,6 +3581,11 @@ public:
             Function f;f.external=eat(TK::Extern);
             f.line=cur().line;f.col=cur().col;   // v0.23.12-dev: the `fn` token, for the prologue row
             need(TK::Fn,"expected fn");f.name=functionName();
+            // v0.23.80-dev (P1-5): as with globals — a function declared
+            // after a struct/enum/alias of the same name used to be accepted
+            // while the reverse order was refused, and primary() reads the
+            // name as a struct literal first.
+            rejectTagConflict(f.name,f.line,f.col,"function");
             need(TK::LParen,"expected '(' after function name");
             if(cur().k!=TK::RParen){do{
                 auto id=need(TK::Ident,"expected parameter name");need(TK::Colon,"expected ':' after parameter name");
@@ -4737,10 +4846,17 @@ struct Codegen {
     // the `write` intrinsic at 0.23.21-dev line-for-line so the two stay in
     // lockstep.
     int syscallInsn(int num, const std::vector<std::unique_ptr<Expr>>& args, const std::vector<Ty>& tys, Ty resultTy=Ty::I32){
+        // v0.23.80-dev (P1-8): a syscall stages through the same grid and
+        // spill area a call does, so it takes the same treatment — the grid
+        // is claimed (usesCallScratch) and the spill, staging and restore are
+        // recorded, or a compact frame shrinks under absolute [SP, #4032] /
+        // [SP, #4160] accesses. The previous recording value is restored at
+        // the end so a nested syscall does not switch off an outer one.
+        usesCallScratch=true;
+        const bool outerRec=recordingScratch;recordingScratch=true;
         const int live=nextTemp;
         spillTemps(live);
         const uint32_t scratchByte=4160u+uint32_t(callDepth)*256u;++callDepth;
-        recordingScratch=true;
         for(size_t i=0;i<args.size();++i){
             int v=gen(*args[i],tys[i]);
             storeStackOff(v,scratchByte+uint32_t(i)*8u,tys[i]);
@@ -4756,7 +4872,9 @@ struct Codegen {
         for(size_t i=0;i<args.size();++i)rs[i]=temp();
         for(size_t i=0;i<args.size();++i)
             loadStackOff(rs[i],scratchByte+uint32_t(i)*8u,tys[i]);
-        recordingScratch=false;
+        // v0.23.80-dev (P1-8): recording stays on until after restoreTemps
+        // below — switching it off here would leave the restore reading the
+        // unrebased slot while the spill wrote the rebased one.
         for(size_t i=0;i<args.size();++i){
             // An i64 argument rides at full width exactly like a ptr does —
             // staging it through W would silently truncate a length or an
@@ -4775,6 +4893,7 @@ struct Codegen {
         // access through that pointer would fault (v0.23.41-dev).
         int d=temp();emit((tyIs64(resultTy)?0xaa0003e0u:0x2a0003e0u)|uint32_t(d)); // MOV (X|W)d, (X|W)0
         restoreTemps(live);
+        recordingScratch=outerRec;   // v0.23.80-dev (P1-8)
         return d;
     }
     int gen(const Expr& e,Ty want=Ty::I32){
@@ -5025,6 +5144,10 @@ struct Codegen {
                     // `total = total + write(...)` summed the byte count with
                     // itself. A syscall preserves every register but x0, so the
                     // only damage is the argument loading itself.
+                    // v0.23.80-dev (P1-8): see syscallInsn — the inline
+                    // `write` stages through the same grid and spill area.
+                    usesCallScratch=true;
+                    const bool outerRec=recordingScratch;recordingScratch=true;
                     const int live=nextTemp;
                     spillTemps(live);
                     static const Ty wts[3]={Ty::I32,Ty::Ptr,Ty::I32};
@@ -5048,6 +5171,7 @@ struct Codegen {
                     emit(0xd4000001u);                          // SVC #0
                     int d=temp();emit(0x2a0003e0u|uint32_t(d));// MOV Wd, W0 — bytes written
                     restoreTemps(live);
+                    recordingScratch=outerRec;   // v0.23.80-dev (P1-8)
                     return d;
                 }
                 // v0.23.40-dev: raw system-call intrinsics (zero libc). Each
@@ -5560,11 +5684,17 @@ struct Codegen {
                         const uint32_t slot=4000u+uint32_t(floatSpillDepth)*8u;
                         ++floatSpillDepth;
                         int fa=gen(*e.a,ft);
+                        // v0.23.80-dev (P1-8): the float spill gap (4000..4032)
+                        // is frame infrastructure like the integer spill area —
+                        // record the park so a compact frame rebases it instead
+                        // of leaving [SP, #4000] outside the shrunken frame.
+                        const bool outerRec=recordingScratch;recordingScratch=true;
                         storeStackOff(fa,slot,ft);
                         releaseTemp(fa);
                         int fb=gen(*e.b,ft);
                         int d=temp();
                         loadStackOff(d,slot,ft);
+                        recordingScratch=outerRec;
                         // The result lands in the lower temporary so the
                         // higher one can be released first (the pool is LIFO).
                         emit(fop|(uint32_t(d)<<16)|(uint32_t(fb)<<5)|uint32_t(fb));
@@ -6111,6 +6241,11 @@ struct Codegen {
         const auto tm=argTypes.find(e.name);
         const std::vector<Ty>& argT=tm==argTypes.end()?noArgTypes:tm->second;
         const size_t nargs=e.args.size();
+        // v0.23.80-dev (P1-9): the parser limits calls to 32 arguments, but
+        // argOff/copyOff below are fixed 32-element arrays — the limit must
+        // not rest on the parser alone, or any future path that builds a
+        // Call with more arguments writes past the stack arrays.
+        if(nargs>32)throw Error("function calls support at most 32 arguments");
         auto at=[&](size_t i)->Ty{
             // v0.23.37-dev: a typed fn-pointer stages each argument at the
             // width its signature declares — the AAPCS64 rule a direct call
@@ -6176,9 +6311,15 @@ struct Codegen {
         usesCallScratch=true;
         if(callDepth>=14)throw Error("nested function-call arguments exceed compiler limit (14 for pointer ABI)");
         int live=nextTemp;
+        // v0.23.80-dev (P1-8): the spill slots and the grid are one rebased
+        // region — recording starts before spillTemps, not after it, so the
+        // spill stores are rebased with the grid instead of staying at the
+        // absolute [SP, #4032] while a compact frame shrinks beneath them.
+        // The previous value is restored at the end: a nested call must not
+        // switch off an outer call's recording.
+        const bool outerRec=recordingScratch;recordingScratch=true;
         spillTemps(live);
         const int scratchByte=4160+callDepth*256;++callDepth;
-        recordingScratch=true;
         for(size_t i=0;i<nargs;++i){
             const Ty ty=at(i);const uint32_t off=uint32_t(scratchByte+argOff[i]);
             if(structInMemory(ty)){
@@ -6323,8 +6464,9 @@ struct Codegen {
             }
         }
         if(total){emit(0x910003ffu|(total<<10));spAdj=0;}
-        recordingScratch=false;
         restoreTemps(live);
+        recordingScratch=outerRec;   // v0.23.80-dev (P1-8): the restore is
+        // recorded too — it must read the rebased slot the spill wrote.
         return d;
     }
     // Store the struct value `e` produces into the memory X16 points at. An
@@ -6587,6 +6729,15 @@ struct Codegen {
     // copies/returns an aggregate keeps none of the compiler scratch tail.
     std::vector<size_t> frameWords;
     std::vector<size_t> incomingBaseWords;
+    // v0.23.82-dev (D-01): the incoming-argument base is frame-sized (X16 =
+    // SP + frame), so in compact mode it reserves the same two words the
+    // frame move does and is patched with framePairX16 below; the default
+    // layout keeps its single ADD X16, SP, #8192 byte for byte.
+    void emitIncomingBase(){
+        incomingBaseWords.push_back(code.size());
+        if(compact){emit(0x910003f0u);emit(0xd503201fu);} // ADD X16, SP, #0; NOP (patched)
+        else emit(0x91400bf0u);                            // ADD X16, SP, #8192
+    }
     // v0.23.77-dev: statement targets are names, not expressions, so the rename
     // annotateExpr does cannot reach them. A `static` local's source name is
     // mapped here to the mangled global that holds it, and the two statement
@@ -7259,7 +7410,7 @@ struct Codegen {
                 } else {
                     // A ninth FP argument arrives on the stack, at the caller's
                     // outgoing area: X16 = SP + frame, then LDR D/S from it.
-                    incomingBaseWords.push_back(code.size());emit(0x91400bf0u); // ADD X16, SP, #8192 (patched)
+                    emitIncomingBase();
                     // The address is X16 + the byte offset; LDR D scales its
                     // immediate by 8, LDR S by 4, so the immediate differs.
                     emit(pt==Ty::F64
@@ -7281,11 +7432,11 @@ struct Codegen {
                     emit(movX(kGlobalBase,lay.reg[i]));         // X16: the caller's copy
                     emitStructCopy(17,kGlobalBase,tySize(pt));
                 } else if(structInMemory(pt)){
-                    incomingBaseWords.push_back(code.size());emit(0x91400bf0u); // ADD X16, SP, #8192 (patched)
+                    emitIncomingBase();
                     emit(loadIncomingArgT(lay.stackOff[i],Ty::I64));
                     emitStructCopy(17,kGlobalBase,tySize(pt));
                 } else {
-                    incomingBaseWords.push_back(code.size());emit(0x91400bf0u); // ADD X16, SP, #8192 (patched)
+                    emitIncomingBase();
                     emit(addImm(kGlobalBase,kGlobalBase,lay.stackOff[i]));
                     emitStructCopy(17,kGlobalBase,argBytes(pt));
                 }
@@ -7293,7 +7444,7 @@ struct Codegen {
             }
             if(lay.reg[i]>=0)emit(storeVarT(lay.reg[i],pslot,pt));
             else {
-                incomingBaseWords.push_back(code.size());emit(0x91400bf0u); // ADD X16, SP, #8192 (patched)
+                emitIncomingBase();
                 const uint32_t incomingOffset=lay.stackOff[i];
                 if(incomingOffset>16380)throw Error("incoming argument offset exceeds load range");
                 emit(loadIncomingArgT(incomingOffset,pt));
@@ -7325,24 +7476,47 @@ struct Codegen {
         const uint32_t localBase=(localsBytes+15u)&~15u;
         bool rebase=false;
         uint32_t frameBytes=8192u, raOff=8184u;
-        // v0.23.77-dev (audit): the incoming-argument base is patched with an
-        // *unscaled* ADD imm12, which holds 0..4095 only. A compact frame larger
-        // than that wrote the size into the Rn/Rd fields and corrupted the
-        // instruction - silently at exactly 4096, badly above it. A frame that
-        // big is not worth compacting, so the default 8192 frame is kept, which
-        // the unpatched ADD X16, SP, #8192 already describes.
+        // v0.23.77-dev (audit): the incoming-argument base used to be patched
+        // with an *unscaled* ADD imm12, which holds 0..4095 only. A compact
+        // frame larger than that wrote the size into the Rn/Rd fields and
+        // corrupted the instruction - silently at exactly 4096, badly above
+        // it. v0.23.82-dev (D-01): the base now reserves two words up front
+        // (emitIncomingBase) and is patched with the framePairX16 pair below,
+        // the same two-word encoding the frame move uses, so frames up to
+        // 4096 + 4095 = 8191 compact instead of falling back to 8192. Only a
+        // frame that would need more than 8191 still keeps the default.
+        // v0.23.80-dev (P1-8): the recorded fixes fall in two blocks — the
+        // spill block [4000,4160) (the float park and the integer spill area)
+        // and the grid [4160,scratchHigh). The grid moves to just above the
+        // locals, as before; the spill block moves to just above the grid,
+        // preserving the gaps inside each block. A fix below 4000 cannot be
+        // placed (nothing below the locals is free) and refuses the
+        // compaction, as does any fix that would not fit its scaled range.
+        uint32_t gridExtent=0,spillSpan=0;
+        auto rebaseOff=[&](uint32_t off)->uint32_t{
+            if(off>=4160u)return localBase+(off-4160u);
+            return localBase+gridExtent+(off-4000u);
+        };
         if(compact&&!usesStructScratch&&scratchHigh>4160u&&scratchFixable){
             // Validate the whole grid before touching a byte: every recorded
             // immediate must stay inside its own scaled range once moved.
+            gridExtent=scratchHigh-4160u;
+            for(const auto& fx:scratchFixes){
+                if(fx.off>=4000u&&fx.off<4160u){
+                    const uint32_t e=fx.off+uint32_t(fx.stride);
+                    if(e-4000u>spillSpan)spillSpan=e-4000u;
+                }
+            }
             bool ok=true;
             for(const auto& fx:scratchFixes){
-                const uint32_t no=fx.off+localBase-4160u;
+                if(fx.off<4000u){ok=false;break;}
+                const uint32_t no=rebaseOff(fx.off);
                 if(no/uint32_t(fx.stride)>4095u){ok=false;break;}
             }
             if(ok){
-                const uint32_t end=localBase+(scratchHigh-4160u);
+                const uint32_t end=localBase+gridExtent+spillSpan;
                 const uint32_t want=(end+8u+15u)&~15u;
-                if(want<=4095u){
+                if(want<=8191u){
                     frameBytes=want;
                     raOff=frameBytes-8u;
                     rebase=(frameBytes<8192u);
@@ -7350,9 +7524,16 @@ struct Codegen {
                     ok=false;
                 }
             }
-        } else if(compact&&!usesCallScratch&&!usesStructScratch){
+        } else if(compact&&!usesCallScratch&&!usesStructScratch&&scratchFixes.empty()){
+            // v0.23.80-dev (P1-8): without a recorded fix there is nothing to
+            // rebase, so the frame may shrink to the locals. A non-empty fix
+            // list here would mean an absolute [SP, #4000..] access survived
+            // unrecorded — shrinking under it is the bug, so stay at 8192.
+            // The bound is the same two-word limit as the grid branch (a leaf
+            // can never reach it: 500 slots cap localsBytes at 4000), so the
+            // two branches cannot drift apart again.
             const uint32_t want=(localsBytes+8u+15u)&~15u;
-            if(want<=4095u){
+            if(want<=8191u){
                 frameBytes=want;
                 raOff=frameBytes-8u;
             }
@@ -7368,6 +7549,16 @@ struct Codegen {
             const uint32_t rest=size-4096u;
             return {wide,rest==4096u?wide:(base|(rest<<10))};
         };
+        // v0.23.82-dev (D-01): X16 = SP + frame, the same two-word encoding
+        // as framePair with the destination moved from SP to X16. Encodings
+        // verified against the disassembler, not just the bit math: the wide
+        // first word is ADD X16, SP, #1, LSL #12 (0x914007f0), the wide
+        // second word ADD X16, X16, #1, LSL #12 (0x91400610).
+        auto framePairX16=[&](uint32_t size)->std::pair<uint32_t,uint32_t>{
+            if(size<=4095u)return {0x910003f0u|(size<<10),0xd503201f}; // ADD X16, SP, #size; NOP
+            const uint32_t rest=size-4096u;
+            return {0x914007f0u,rest==4096u?0x91400610u:(0x91000210u|(rest<<10))};
+        };
         if(compact){
             const auto sp0=framePair(frameBytes,true);
             code[frameWords[0]]=sp0.first;code[frameWords[1]]=sp0.second;
@@ -7378,12 +7569,14 @@ struct Codegen {
         for(size_t at:raWords)patchImm12(at,raOff);
         // The caller's stack arguments sit at the frame's far end: SP + the frame
         // this function just allocated. The default layout's single ADD #8192 is
-        // already right; a compact frame needs the smaller immediate.
-        if(compact&&frameBytes!=8192u)
-            for(size_t at:incomingBaseWords)code[at]=0x910003f0u|(frameBytes<<10);
+        // already right; a compact frame takes the framePairX16 pair, which
+        // covers (4096, 8191] with two ADDs and keeps the small-frame shape
+        // (ADD #frame, NOP) byte for byte apart from the reserved NOP word.
+        if(compact)
+            for(size_t at:incomingBaseWords){const auto bp=framePairX16(frameBytes);code[at]=bp.first;code[at+1]=bp.second;}
         if(rebase){
             for(const auto& fx:scratchFixes){
-                const uint32_t no=fx.off+localBase-4160u;
+                const uint32_t no=rebaseOff(fx.off);
                 code[fx.at]=(code[fx.at]&~(0xFFFu<<10))|((no/uint32_t(fx.stride))<<10);
             }
         }
@@ -7411,23 +7604,38 @@ std::vector<uint8_t> instructionBytes(const std::vector<uint32_t>& ins){
 }
 std::string elfNameOf(const std::string& n){return n=="main"?std::string("_start"):n;}
 // One source-level symbol destined for a final image. kind selects the owning section:
-// 0 = .text (STT_FUNC), 1 = .data (STT_OBJECT), 2 = .bss (STT_OBJECT). off is the offset inside
+// 0 = .text (STT_FUNC), 1 = .data (STT_OBJECT), 2 = .bss (STT_OBJECT), 3 = .rodata (STT_OBJECT),
+// 4 = .tdata (STT_TLS), 5 = .tbss (STT_TLS). off is the offset inside
 // that section and size becomes st_size (4 for an i32 scalar, 4*length for an i32[length] array).
+// For kind 4/5 off is the offset inside the TLS block: for kind 5 it is the
+// offset inside the .tbss tail, and the caller supplies tbssBlockOff (the
+// tail's offset inside the block) so the value becomes the block offset.
 struct OutSym { std::string name; int kind; uint64_t off; uint64_t size; };
 struct SymTable { std::vector<Sym> syms; std::string strtab; };
 SymTable buildSymbolTable(const std::vector<OutSym>& in,uint64_t textVaddr,uint64_t dataVaddr,uint64_t bssVaddr,
-                          uint16_t idxText,uint16_t idxData,uint16_t idxBss,uint64_t rodataVaddr=0,uint16_t idxRodata=0){
+                          uint16_t idxText,uint16_t idxData,uint16_t idxBss,uint64_t rodataVaddr=0,uint16_t idxRodata=0,
+                          // v0.23.82-dev (§6.3 ELF-P2-3): the thread-local sections. A TLS
+                          // symbol's st_value is its offset inside the TLS block (the
+                          // STT_TLS convention, as GNU ld emits it), not a virtual
+                          // address — so the caller passes the .tdata/.tbss indices
+                          // and the .tbss tail's offset inside the block. A caller
+                          // that can pass kind 4/5 must supply them; the .so writers
+                          // never pass kind 4/5 (both split TLS globals out before
+                          // building their symbol list), so their defaults are inert.
+                          uint16_t idxTdata=0,uint16_t idxTbss=0,uint64_t tbssBlockOff=0){
     SymTable t; t.strtab.assign(1,'\0');
     std::map<std::string,uint32_t> seen;
     auto addName=[&](const std::string& n)->uint32_t{auto it=seen.find(n);if(it!=seen.end())return it->second;
         uint32_t o=(uint32_t)t.strtab.size();t.strtab+=n;t.strtab.push_back('\0');seen[n]=o;return o;};
     t.syms.resize(1+in.size());
     for(size_t i=0;i<in.size();++i){const OutSym& s=in[i];Sym& y=t.syms[i+1];
-        y.name=addName(s.name);y.info=uint8_t(s.kind==0?0x12:0x11);y.other=0;
-        if(s.kind==0){y.shndx=idxText;y.value=textVaddr+s.off;}
-        else if(s.kind==1){y.shndx=idxData;y.value=dataVaddr+s.off;}
-        else if(s.kind==3){y.shndx=idxRodata;y.value=rodataVaddr+s.off;}
-        else{y.shndx=idxBss;y.value=bssVaddr+s.off;}
+        y.name=addName(s.name);y.other=0;
+        if(s.kind==0){y.info=0x12;y.shndx=idxText;y.value=textVaddr+s.off;}
+        else if(s.kind==1){y.info=0x11;y.shndx=idxData;y.value=dataVaddr+s.off;}
+        else if(s.kind==3){y.info=0x11;y.shndx=idxRodata;y.value=rodataVaddr+s.off;}
+        else if(s.kind==4){y.info=0x16;y.shndx=idxTdata;y.value=s.off;}
+        else if(s.kind==5){y.info=0x16;y.shndx=idxTbss;y.value=tbssBlockOff+s.off;}
+        else{y.info=0x11;y.shndx=idxBss;y.value=bssVaddr+s.off;}
         y.size=s.size;}
     return t;
 }
@@ -7481,6 +7689,16 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     const bool hasRodataSection=!rodata.empty();
     const uint64_t rodataFileOff=hasRodataSection?alignUp(textFileEnd,pageSize):0;
     const uint64_t rodataVaddr=hasRodataSection?base+rodataFileOff:0;
+    // v0.23.82-dev (§6.3 ELF-P2-4 / S-11): .rodata is placed on a page boundary,
+    // but the section header declares the input's sh_addralign — up to 65536,
+    // which parseObject accepts. When the declared alignment exceeds the page
+    // size the placed address silently violates it, and no later layout step
+    // re-checks it. The Dyn writer already refuses the same input; refuse it
+    // here too instead of emitting a section header that lies about its own
+    // alignment. The check is the invariant itself, so an alignment the page
+    // placement already satisfies (anything up to the page size) still links.
+    if(hasRodataSection&&rodataAlign>1&&rodataVaddr%rodataAlign)
+        throw Error("cannot link: .rodata address is not aligned to its declared alignment "+std::to_string(rodataAlign)+" (page size "+std::to_string(pageSize)+")");
     const uint64_t afterRodata=hasRodataSection?rodataFileOff+rodata.size():textFileEnd;
     // v0.23.51-dev: the thread-local block rides in the data PT_LOAD, so the
     // segment exists even when there is no ordinary .data/.bss.
@@ -7534,7 +7752,13 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
     uint16_t idxTdata=0;if(hasTdataSection)idxTdata=next++; // .tdata: the initialized part of the thread-local block
     uint16_t idxTbss=0;if(hasTbssSection)idxTbss=next++;    // v0.23.52-dev: .tbss, the zeroed tail (no file bytes)
     const uint16_t idxText=1,idxSym=next++,idxStr=next++,idxShstr=next++,shnum=next;
-    const SymTable st=buildSymbolTable(symbols,base+off,dataVaddr,bssVaddr,idxText,idxData,idxBss,rodataVaddr,idxRodata);
+    // v0.23.82-dev (§6.3 ELF-P2-3): the .tbss tail's offset inside the TLS
+    // block, so a kind 5 symbol's st_value becomes its block offset. It is the
+    // distance between the two section starts in the file, which is the same
+    // distance in the block: the block is laid out contiguously in the data
+    // PT_LOAD. With no .tdata the tail starts the block, so the offset is 0.
+    const uint64_t tbssBlockOff=hasTbssSection?(tbssFileOff-tlsFileOff):0;
+    const SymTable st=buildSymbolTable(symbols,base+off,dataVaddr,bssVaddr,idxText,idxData,idxBss,rodataVaddr,idxRodata,idxTdata,idxTbss,tbssBlockOff);
     const std::string shstr(std::string("\0.text",6)+(hasRodataSection?std::string("\0.rodata",8):std::string())
         +(hasDataSection?std::string("\0.data",6):std::string())+(hasBssSection?std::string("\0.bss",5):std::string())+(hasTdataSection?std::string("\0.tdata",7):std::string())+(hasTbssSection?std::string("\0.tbss",6):std::string())+std::string("\0.symtab",8)
         +std::string("\0.strtab",8)+std::string("\0.shstrtab",10)+(hasDebugLine?std::string("\0.debug_line",12):std::string())
@@ -7639,7 +7863,10 @@ void writeElfBytes(const std::string& path,const std::vector<uint8_t>& text,uint
         {Shdr& e=sh[idxEhFrameHdr];e.name=nameAt(".eh_frame_hdr");e.type=1;e.flags=0x2;e.addr=ehFrameHdrVaddr;e.offset=ehFrameHdrOff;e.size=ehFrameHdr.size();e.addralign=4;}
     }
     std::ofstream o(path,std::ios::binary);if(!o)throw Error("cannot create output: "+path);
-    auto pad=[&](uint64_t target){auto pos=(uint64_t)o.tellp();if(pos>target)throw Error("internal ELF layout error");std::vector<char> z((size_t)(target-pos),0);if(!z.empty())o.write(z.data(),z.size());};
+    // v0.23.81-dev: a failed earlier write leaves tellp() at -1, which cast
+    // to uint64_t looks like a position past the target; report the write
+    // failure instead of a bogus layout error.
+    auto pad=[&](uint64_t target){if(!o)throw Error("failed writing output: "+path);auto pos=(uint64_t)o.tellp();if(pos>target)throw Error("internal ELF layout error");std::vector<char> z((size_t)(target-pos),0);if(!z.empty())o.write(z.data(),z.size());};
     o.write((char*)&h,sizeof h);o.write((char*)&p,sizeof p);if(hasRodataSection)o.write((char*)&r,sizeof r);if(hasData)o.write((char*)&d,sizeof d);
     if(hasTlsSection)o.write((char*)&tl,sizeof tl);
     if(hasEhFrame){o.write((char*)&ef,sizeof ef);o.write((char*)&efh,sizeof efh);}
@@ -8813,6 +9040,11 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     checkArgument(e.name,i+1,fs->params[i],*e.args[i],typeOf(*e.args[i]));
                 return fs->ret;
             }
+            // v0.23.80-dev (P1-9): the parser limits calls to 32 arguments;
+            // sema's bare-ptr path is the second layer, so a Call that
+            // reaches here any other way is refused before codegen's fixed
+            // 32-element argument arrays are indexed.
+            if(e.args.size()>32)throw Error(loc(e.line,e.col,"function calls support at most 32 arguments"));
             // A struct argument needs a signature to lay out — register class,
             // copy area, hidden result pointer — and a ptr variable has none,
             // so a composite is refused rather than silently mis-marshalled.
@@ -10354,7 +10586,11 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     sh[idxStr].name=nameAt(".strtab");sh[idxStr].type=3;sh[idxStr].offset=strOff;sh[idxStr].size=strtab.size();sh[idxStr].addralign=1;
     sh[idxShstr].name=nameAt(".shstrtab");sh[idxShstr].type=3;sh[idxShstr].offset=shstrOff;sh[idxShstr].size=shstr.size();sh[idxShstr].addralign=1;
     std::ofstream o(path,std::ios::binary);if(!o)throw Error("cannot create output: "+path);
-    o.write((const char*)&h,sizeof h);auto pad=[&](uint64_t target){auto pos=(uint64_t)o.tellp();if(pos>target)throw Error("internal ELF layout error");std::vector<char> z((size_t)(target-pos),0);if(!z.empty())o.write(z.data(),z.size());};
+    o.write((const char*)&h,sizeof h);
+    // v0.23.81-dev: a failed earlier write leaves tellp() at -1, which cast
+    // to uint64_t looks like a position past the target; report the write
+    // failure instead of a bogus layout error.
+    auto pad=[&](uint64_t target){if(!o)throw Error("failed writing output: "+path);auto pos=(uint64_t)o.tellp();if(pos>target)throw Error("internal ELF layout error");std::vector<char> z((size_t)(target-pos),0);if(!z.empty())o.write(z.data(),z.size());};
     pad(textOff);auto bytes=instructionBytes(L.ins);o.write((const char*)bytes.data(),bytes.size());
     if(hasData){pad(dataOff);o.write((const char*)L.data.data(),L.data.size());}
     if(hasRodata){pad(rodataOff);o.write((const char*)L.rodata.data(),L.rodata.size());}
@@ -10367,6 +10603,12 @@ void writeObject(const std::string& path,const std::vector<CompiledFunction>& fu
     if(hasEhFrame){pad(ehFrameOff);o.write((const char*)ehFrame.bytes.data(),ehFrameSize);
         pad(relaEhFrameOff);if(!relasEh.empty())o.write((const char*)relasEh.data(),relaEhFrameSize);}
     pad(relaOff);if(!relas.empty())o.write((const char*)relas.data(),relaSize);pad(symOff);o.write((const char*)syms.data(),symSize);o.write(strtab.data(),strtab.size());o.write(shstr.data(),shstr.size());pad(shoff);o.write((const char*)sh.data(),sh.size()*sizeof(Shdr));if(!o)throw Error("failed writing relocatable ELF object");
+    // v0.23.81-dev (CLI-P2-2): close() flushes the stream buffer, so a full
+    // disk only surfaces here for outputs smaller than the buffer (a .o is
+    // ~600 bytes). Without this the destructor swallowed the ENOSPC and the
+    // command exited 0. Same pattern as writeElfBytes.
+    o.close();
+    if(!o)throw Error("failed closing relocatable ELF object: "+path);
 }
 uint64_t checkedEnd(uint64_t off,uint64_t size,uint64_t total,const char* what){
     if(off>total||size>total-off) throw Error(std::string("malformed object: ")+what+" is out of bounds");
@@ -10461,7 +10703,25 @@ static bool dwarfCuStmtListOffset(const std::vector<uint8_t>& info,const std::ve
                 case 0x18:{uint64_t n=0;if(!uleb(info,p,n))return false;size=(size_t)n;break;}
                 default: return false;
             }
-            if(af.first==0x10){out=p;return true;}   // DW_AT_stmt_list
+            // v0.23.80-dev (P1-7): the old code returned here without
+            // checking that the attribute's bytes fit inside the unit —
+            // a truncated .debug_info put `p` within 4 bytes of the end
+            // and the linker's merge wrote 4 bytes past the merged buffer
+            // (see the debugStmtListOff write at the merge site). Refuse
+            // the unit instead, as every other form above already does.
+            // v0.23.81-dev (S-10 residual): two holes that check left.
+            // A variable-length form can claim fewer than 4 bytes for the
+            // field (DW_FORM_data1/string/exprloc, or DW_FORM_addr with a
+            // 1-byte address_size), so `p+size` fits while the merge's
+            // 4-byte write at `out` does not — the field has to hold 4
+            // bytes whatever its form says. And a DW_FORM_exprloc length
+            // near 2^64 wraps `p+size` past the end of the unit, so the
+            // fit check is written as a subtraction that cannot wrap.
+            if(p>info.size()||size>info.size()-p)return false;
+            if(af.first==0x10){
+                if(info.size()-p<4)return false;   // the merge writes 4 bytes at out
+                out=p;return true;                  // DW_AT_stmt_list
+            }
             p+=size;
             if(p>info.size())return false;
         }
@@ -10758,7 +11018,21 @@ struct LinkPending { uint64_t patch; std::string symbol; int64_t addend; uint32_
 void resolveRelocations(std::vector<uint8_t>& text,const std::vector<LinkPending>& pending,
                         const std::map<std::string,uint64_t>& symbolVaddr,const std::map<std::string,int>& symbolKind,
                         uint64_t textVaddr,bool funcAddrDirect=false,uint64_t tlsVaddr=0){
-    for(const auto& r:pending){auto it=symbolVaddr.find(r.symbol);
+    for(const auto& r:pending){
+        // v0.23.81-dev (audit ELF-P2-5 / S-01): the patch is an offset into
+        // `text`, and every branch below reads (and, for TLS, writes) 4 or 8
+        // bytes there. Upstream callers validate their offsets today
+        // (parseObject's need=4/8 check, codegen's own layout), but this
+        // function is the last place that can say no before the access, so
+        // it checks instead of trusting the invariant: a TLS relocation
+        // fills a MOVZ/MOVK pair (8 bytes), any other one instruction (4).
+        const uint64_t need=(r.type==kRelTlsOff)?8u:4u;
+        if(r.patch>text.size()||text.size()-r.patch<need)
+            throw Error("relocation patch at offset "+std::to_string(r.patch)+" needs "+
+                        std::to_string(need)+" bytes of .text and only "+
+                        std::to_string(r.patch>text.size()?0:text.size()-r.patch)+
+                        " remain for '"+r.symbol+"'");
+        auto it=symbolVaddr.find(r.symbol);
         if(it==symbolVaddr.end()){
             if(r.type==283)throw Error("undefined function symbol '"+r.symbol+"'");
             throw Error("undefined global variable symbol '"+r.symbol+"'");
@@ -10890,6 +11164,30 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     std::vector<ObjectLayout::GlobalDef> tlsGlobals;
     for(const auto& g:globalsIn){ if(g.kind==4||g.kind==5) tlsGlobals.push_back(g); else globals.push_back(g); }
     const size_t nglobals=globals.size(),nTls=tlsGlobals.size();
+    // v0.23.81-dev (ELF-P2-1): the Dyn writer learned in H-2 that a defined
+    // function's address is a RELATIVE GOT slot, but this writer never did:
+    // a callback-table-only .so (no imports, no --soname, no --needed, no
+    // rodata) takes this path and died with "undefined global variable
+    // symbol '__aster_gat_cb_add'". Derive the address-taken functions from
+    // the pending GAT relocations — the only place this writer can see them
+    // — and give each one a GOT slot exactly as the Dyn writer does. A TLS
+    // slot (`__aster_gat___aster_tls_<name>`) strips to a global, never an
+    // export, so it cannot land here by mistake. With no such function every
+    // formula below is identical to before, so existing outputs are byte
+    // identical.
+    std::vector<std::string> funcAddrRefs;
+    {
+        std::set<std::string> exportNames;
+        for(const auto& e:exports)exportNames.insert(e.name);
+        std::set<std::string> seen;
+        for(const auto& r:pending){
+            if(r.symbol.compare(0,12,"__aster_gat_")!=0)continue;
+            std::string base=r.symbol.substr(12);
+            if(base.compare(0,12,"__aster_tls_")==0)base=base.substr(12);
+            if(exportNames.count(base)&&seen.insert(base).second)funcAddrRefs.push_back(base);
+        }
+    }
+    const size_t nFuncAddr=funcAddrRefs.size();
     const bool hasTdata=!tls.empty(),hasTbss=tbssSize>0,hasTls=hasTdata||hasTbss||nTls>0;
     // .dynstr / .dynsym: index 0 is the reserved null symbol, then one GLOBAL FUNC per export.
     std::string dynstr(1,'\0');
@@ -10940,7 +11238,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // end of the table, never before the RELATIVE block, because DT_RELACOUNT
     // below counts the run of RELATIVE entries the loader may skip in one go —
     // interleaving a TPREL would make that count a lie.
-    const uint64_t relaOff=alignUp(hashOff+hashSize,8),relaSize=uint64_t(nglobals+nTls+(hasInit?1u:0u))*sizeof(Rela);
+    const uint64_t relaOff=alignUp(hashOff+hashSize,8),relaSize=uint64_t(nglobals+nFuncAddr+nTls+(hasInit?1u:0u))*sizeof(Rela);
     uint64_t seg0End=relaOff+relaSize;
     // v0.23.51-dev: place the three GNU version sections right after .rela.dyn, inside the
     // read-only PT_LOAD, so no existing offset or vaddr moves. .gnu.version is one 2-byte
@@ -10960,7 +11258,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // v0.23.52-dev: one more GOT slot per thread-local, after every ordinary
     // one, so no existing slot moves. The slot holds the offset from TPIDR_EL0,
     // not an address — the loader fills it and the code adds it to TPIDR_EL0.
-    const uint64_t gotVaddr=initArrVaddr+initArrSize,gotSize=uint64_t(nglobals+nTls)*8;
+    const uint64_t gotVaddr=initArrVaddr+initArrSize,gotSize=uint64_t(nglobals+nFuncAddr+nTls)*8;
     const uint32_t kDynEntries=15u+(hasInit?2u:0u); // nine tags + five version tags + DT_NULL (DT_INIT_ARRAY adds two)
     const uint64_t dynOff=alignUp(gotVaddr+gotSize,8),dynSize=uint64_t(kDynEntries)*sizeof(Elf64Dyn);
     const uint64_t seg1End=dynOff+dynSize;
@@ -10981,7 +11279,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     for(size_t i=0;i<exports.size();++i)dynsym[i+1].value=textVaddr+exports[i].offset;
     // .got slots and their R_AARCH64_RELATIVE relocations (addend = the global's link-time address).
     std::vector<uint8_t> got((size_t)gotSize,0);
-    std::vector<Rela> relas(nglobals+nTls+(hasInit?1u:0u));
+    std::vector<Rela> relas(nglobals+nFuncAddr+nTls+(hasInit?1u:0u));
     std::map<std::string,uint64_t> symbolVaddr;std::map<std::string,int> symbolKind;
     for(size_t i=0;i<nglobals;++i){
         const uint64_t v=globals[i].kind==1?dataVaddr+globals[i].offset:bssVaddr+globals[i].offset;
@@ -10990,7 +11288,21 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
         const std::string slot=gatSymbol(globals[i].name);
         symbolVaddr[slot]=gotVaddr+uint64_t(i)*8;symbolKind[slot]=3;
     }
-    if(hasInit){Rela& r=relas[nglobals];r.offset=initArrVaddr;r.info=1027;r.addend=(int64_t)(textVaddr+uint64_t(initOffset));}
+    // v0.23.81-dev (ELF-P2-1): the RELATIVE GOT slots for defined functions
+    // whose address is taken, after the globals and before the init entry, so
+    // the RELATIVE run DT_RELACOUNT counts stays unbroken.
+    if(nFuncAddr>0){
+        std::map<std::string,uint64_t> exportVaddr;
+        for(const auto& e:exports)exportVaddr[e.name]=textVaddr+e.offset;
+        for(size_t i=0;i<nFuncAddr;++i){
+            const uint64_t v=exportVaddr.at(funcAddrRefs[i]);
+            const uint64_t slot=gotVaddr+uint64_t(nglobals+i)*8;
+            for(int k=0;k<8;++k)got[(nglobals+i)*8+k]=uint8_t(v>>(k*8));
+            Rela& r=relas[nglobals+i];r.offset=slot;r.info=1027;r.addend=(int64_t)v;
+            symbolVaddr[gatSymbol(funcAddrRefs[i])]=slot;symbolKind[gatSymbol(funcAddrRefs[i])]=3;
+        }
+    }
+    if(hasInit){Rela& r=relas[nglobals+nFuncAddr];r.offset=initArrVaddr;r.info=1027;r.addend=(int64_t)(textVaddr+uint64_t(initOffset));}
     // v0.23.52-dev: the thread-local GOT slots and their R_AARCH64_TLS_TPREL64
     // relocations. The addend is the variable's offset inside the block — not an
     // address — and the symbol index is 0 (STN_UNDEF). That is not a shortcut:
@@ -11001,8 +11313,8 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     // to TPIDR_EL0. No TCB size enters into it: the loader's module offset
     // already accounts for the thread pointer sitting at the TCB.
     for(size_t i=0;i<nTls;++i){
-        const uint64_t slot=gotVaddr+(nglobals+i)*8;
-        Rela& r=relas[nglobals+(hasInit?1u:0u)+i];
+        const uint64_t slot=gotVaddr+(nglobals+nFuncAddr+i)*8;
+        Rela& r=relas[nglobals+nFuncAddr+(hasInit?1u:0u)+i];
         r.offset=slot;r.info=kRelTlsTprel;r.addend=(int64_t)tlsGlobals[i].offset;
         symbolVaddr[gatTlsSymbol(tlsGlobals[i].name)]=slot;symbolKind[gatTlsSymbol(tlsGlobals[i].name)]=3;
     }
@@ -11057,7 +11369,7 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
     dyn.push_back({8,(uint64_t)relaSize});             // DT_RELASZ
     dyn.push_back({9,sizeof(Rela)});                   // DT_RELAENT
     if(hasInit){dyn.push_back({25,(uint64_t)initArrVaddr});dyn.push_back({27,(uint64_t)initArrSize});} // DT_INIT_ARRAY / DT_INIT_ARRAYSZ
-    dyn.push_back({1879048185,(uint64_t)(nglobals+(hasInit?1u:0u))});    // DT_RELACOUNT
+    dyn.push_back({1879048185,(uint64_t)(nglobals+nFuncAddr+(hasInit?1u:0u))});    // DT_RELACOUNT
     dyn.push_back({0x6ffffffc,(uint64_t)verDefOff});   // DT_VERDEF -> .gnu.version_d
     dyn.push_back({0x6ffffffd,2});                     // DT_VERDEFNUM (BASE + "aster")
     // v0.23.77-dev (audit A-16): this writer (SysV hash, no imports) has no
@@ -11298,6 +11610,12 @@ void writeSharedObject(const std::string& path,std::vector<uint8_t>& text,
         pad((uint64_t)o.tellp(),ehFrameHdrOff);o.write((const char*)ehFrameHdr.data(),(std::streamsize)ehFrameHdr.size());
     }
     if(!o)throw Error("failed writing shared object");
+    // v0.23.81-dev (CLI-P2-2): close() flushes the stream buffer, so a full
+    // disk only surfaces here for outputs smaller than the buffer. Without
+    // this the destructor swallowed the ENOSPC and the command exited 0.
+    // Same pattern as writeElfBytes.
+    o.close();
+    if(!o)throw Error("failed closing shared object: "+path);
     (void)S_NULL;
 }
 
@@ -11431,8 +11749,20 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     std::stable_sort(gnuDefs.begin(),gnuDefs.end(),[](const GnuDef& a,const GnuDef& b){return a.bucket<b.bucket;});
     std::map<std::string,uint32_t> dynIndex;
     for(size_t i=0;i<gnuDefs.size();++i)dynIndex[gnuDefs[i].name]=gnuSymOffset+(uint32_t)i;
-    for(size_t i=0;i<nIF;++i)dynIndex[spec.importFuncs[i]]=gnuSymOffset+(uint32_t)gnuDefs.size()+(uint32_t)i;
-    for(size_t i=0;i<nIO;++i)dynIndex[spec.importObjects[i]]=gnuSymOffset+(uint32_t)gnuDefs.size()+(uint32_t)nIF+(uint32_t)i;
+    // v0.23.81-dev (ELF-P2-2): one name may arrive as both a PLT function
+    // import and a GOT object import (one TU calls `extern fn f`, another
+    // reads `extern let f`). .dynsym must hold it once: the old code indexed
+    // the two lists independently, so the second mapping overwrote the first
+    // in dynIndex and the first slot stayed an empty-named NOTYPE entry that
+    // the SysV hash then hashed as "". A name already seen as an import keeps
+    // its first slot; a name that also names a definition still gets a fresh
+    // import slot (the definition itself is filled positionally and stays
+    // intact), so only the import/import double-mapping is folded away.
+    std::set<std::string> importSeen;
+    uint32_t nextDyn=gnuSymOffset+(uint32_t)gnuDefs.size();
+    for(size_t i=0;i<nIF;++i)if(importSeen.insert(spec.importFuncs[i]).second)dynIndex[spec.importFuncs[i]]=nextDyn++;
+    for(size_t i=0;i<nIO;++i)if(importSeen.insert(spec.importObjects[i]).second)dynIndex[spec.importObjects[i]]=nextDyn++;
+    const size_t nDynImp=importSeen.size();
     const bool hasInit=spec.initOffset>=0;
     // Calls to an imported function are retargeted at that function's PLT stub before resolution.
     std::vector<LinkPending> pending=pendingIn;
@@ -11497,7 +11827,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     // ---- fixed layout (link-time vaddr == file offset, load base 0) ---------------------------
     const uint64_t textVaddr=pageSize,textOff=pageSize,textEnd=textOff+text.size();
     const uint64_t pltOff=alignUp(textEnd,16),pltSize=16*nIF;
-    const uint64_t nsym=1+nExp+nDef+nIF+nIO;
+    const uint64_t nsym=1+nExp+nDef+nDynImp;
     const uint64_t dynsymOff=alignUp(pltOff+pltSize,8),dynsymSize=nsym*sizeof(Sym);
     const uint64_t dynstrOff=dynsymOff+dynsymSize,dynstrSize=dynstr.size();
     const uint32_t nchain=(uint32_t)nsym,nbucket=nchain<3?3u:nchain;
@@ -11670,7 +12000,11 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
         else {const auto& g=globals[d.sourceIndex];sym.name=glName[d.sourceIndex];sym.info=0x11;sym.shndx=g.kind==1?S_DATA:(g.kind==3?S_RODATA:S_BSS);
             sym.value=g.kind==1?dataVaddr+g.offset:(g.kind==3?rodataVaddr+g.offset:bssVaddr+g.offset);sym.size=g.size;}}
     for(size_t i=0;i<nIF;++i){Sym& sym=dynsym[dynIndex.at(spec.importFuncs[i])];sym.name=ifName[i];sym.info=0x12;sym.shndx=0;sym.value=0;sym.size=0;}
-    for(size_t i=0;i<nIO;++i){Sym& sym=dynsym[dynIndex.at(spec.importObjects[i])];sym.name=ioName[i];sym.info=0x11;sym.shndx=0;sym.value=0;sym.size=0;}
+    // v0.23.81-dev (ELF-P2-2): a name imported both ways keeps the single
+    // FUNC entry above: it is the address the GLOB_DAT relocation must bind
+    // (a function's address), and re-typing the shared slot OBJECT here
+    // would undo the de-duplication.
+    for(size_t i=0;i<nIO;++i){if(importFuncSet.count(spec.importObjects[i]))continue;Sym& sym=dynsym[dynIndex.at(spec.importObjects[i])];sym.name=ioName[i];sym.info=0x11;sym.shndx=0;sym.value=0;sym.size=0;}
 
     // v0.23.51-dev: .gnu.version — one 16-bit version index per .dynsym entry. The null
     // symbol is VER_NDX_LOCAL (0); every defined symbol (export or global) belongs to the
@@ -11895,7 +12229,10 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
 
     // ---- emit --------------------------------------------------------------------------------
     std::ofstream o(path,std::ios::binary);if(!o)throw Error("cannot create output: "+path);
-    auto pad=[&](uint64_t target){auto pos=(uint64_t)o.tellp();if(pos>target)throw Error("internal ELF layout error");std::vector<char> z((size_t)(target-pos),0);if(!z.empty())o.write(z.data(),z.size());};
+    // v0.23.81-dev: a failed earlier write leaves tellp() at -1, which cast
+    // to uint64_t looks like a position past the target; report the write
+    // failure instead of a bogus layout error.
+    auto pad=[&](uint64_t target){if(!o)throw Error("failed writing output: "+path);auto pos=(uint64_t)o.tellp();if(pos>target)throw Error("internal ELF layout error");std::vector<char> z((size_t)(target-pos),0);if(!z.empty())o.write(z.data(),z.size());};
     o.write((char*)&h,sizeof h);o.write((char*)&p0,sizeof p0);if(!spec.rodata.empty())o.write((char*)&pr,sizeof pr);o.write((char*)&p1,sizeof p1);o.write((char*)&p2,sizeof p2);
     if(hasTls)o.write((char*)&ptls,sizeof ptls);
     o.write((char*)&p3,sizeof p3);
@@ -11931,6 +12268,12 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     if(hasEhFrame){pad(ehFrameOff);o.write((const char*)ehFrameBytes.data(),(std::streamsize)ehFrameBytes.size());
         pad(ehFrameHdrOff);o.write((const char*)ehFrameHdr.data(),(std::streamsize)ehFrameHdr.size());}
     if(!o)throw Error("failed writing shared object");
+    // v0.23.81-dev (CLI-P2-2): close() flushes the stream buffer, so a full
+    // disk only surfaces here for outputs smaller than the buffer. Without
+    // this the destructor swallowed the ENOSPC and the command exited 0.
+    // Same pattern as writeElfBytes.
+    o.close();
+    if(!o)throw Error("failed closing shared object: "+path);
 }
 
 // Link one or more ET_REL *PIC* objects (produced by `build-obj --pic`) into one shared object.
@@ -12134,7 +12477,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
     // from these two sizes — an object's own .tbss offsets already sit past its
     // .tdata, so nothing here is added twice.
     spec.tls=mergedTls;spec.tbssSize=mergedTbss;
-    std::set<std::string> defFuncs,defObjs,impF,impO;
+    std::set<std::string> defFuncs,defObjs,impF,impO,funcAddrSeen;
     for(const auto& d:definitions){
         if(d.second.kind==0){defFuncs.insert(d.first);spec.exports.push_back({d.first,d.second.off,d.second.size});}
         else{defObjs.insert(d.first);spec.globals.push_back({d.first,int(d.second.kind),d.second.off,d.second.size});}
@@ -12145,6 +12488,11 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         if(r.type==283){
             if(r.symbol=="__aster_init_end")continue;
             if(defFuncs.count(r.symbol))continue;
+            // v0.23.81-dev (ELF-P2-2): a call to a name this link defines as
+            // data is a kind conflict between TUs, not an import. Emitting
+            // an UND FUNC .dynsym entry for a name already defined as OBJECT
+            // would corrupt the table, so refuse it loudly instead.
+            if(defObjs.count(r.symbol))throw Error("symbol '"+r.symbol+"' is defined as a global but called as a function");
             if(impF.insert(r.symbol).second)spec.importFuncs.push_back(r.symbol);
         } else {
             if(r.symbol.compare(0,12,"__aster_gat_")!=0)throw Error("PIC object relocation references unexpected symbol: "+r.symbol);
@@ -12153,6 +12501,13 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
             // so the name a definition was recorded under is one prefix shorter.
             const std::string base=(src.compare(0,12,"__aster_tls_")==0)?src.substr(12):src;
             if(defObjs.count(base))continue;
+            // v0.23.81-dev (H-2): a defined function's address (a callback
+            // table entry) is a RELATIVE GOT slot, not a GLOB_DAT import —
+            // the same classification buildSoFromSource already applies, and
+            // writeSharedObjectDyn already consumes funcAddrRefs that way.
+            // Without this the link-so .so carried an UND OBJECT duplicate of
+            // every such function and a GLOB_DAT self-reference to it.
+            if(defFuncs.count(base)){ if(funcAddrSeen.insert(base).second) spec.funcAddrRefs.push_back(base); continue; }
             if(impO.insert(base).second)spec.importObjects.push_back(base);
         }
     }
@@ -12391,16 +12746,37 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     // 4096-aligned block made the TLS access run past the PT_LOAD.
     if(startCount==0) throw Error("no input object defines global _start");
     if(startCount>1) throw Error("multiple input objects define global _start");
-    // v0.23.77-dev (audit A-22): the run-time initializer chain is entered from
-    // the object that holds _start — its main prologue calls __aster_init. When
-    // the initializers live in another object the chain was never entered, so
-    // every global that needed one stayed zero and the program carried the zeros
-    // to the end without a word. Refuse the link instead.
-    if(!initNameByInput.empty()&&!initNameByInput.count(entryInput))
-        throw Error(inputs[entryInput]+": it defines _start, but the run-time global initializers live in "+
-                    inputs[initNameByInput.begin()->first]+
-                    "; initializers are entered from the object that holds _start — put one there, or build "
-                    "a single object that holds both");
+    // v0.23.81-dev (H-3/C-1): the run-time initializer chain used to be
+    // entered only from the object that holds _start — its main prologue
+    // calls __aster_init. When the initializers lived in another object
+    // the chain was never entered, so every global that needed one stayed
+    // zero and the program carried the zeros to the end without a word;
+    // audit A-22 refused the link instead. Now the link synthesizes the
+    // entry: an 8-byte stub at the end of .text that calls the first
+    // initializer in link order (the chain already walks the rest and ends
+    // at the synthesized __aster_init_end RET) and then branches to
+    // _start. The stub exists only in the case A-22 used to refuse, so a
+    // program that linked before keeps its exact bytes; the A-21 link-
+    // order rule above still refuses an inverted initializer dependency.
+    if(!initNameByInput.empty()&&!initNameByInput.count(entryInput)){
+        const std::string& firstInit=initNameByInput.begin()->second;
+        auto firstIt=definitions.find(firstInit);
+        if(firstIt==definitions.end()||firstIt->second.kind!=0)
+            throw Error("internal error: first run-time global initializer is not a function");
+        while(mergedText.size()%4u!=0)mergedText.push_back(0);
+        const uint64_t stubOff=mergedText.size();
+        const int64_t blDiff=(int64_t)firstIt->second.off-(int64_t)stubOff;
+        const int64_t bDiff=(int64_t)entryOffset-(int64_t)(stubOff+4);
+        // BL/B carry a signed 26-bit immediate scaled by 4 (+-128 MiB);
+        // a merged .text that far apart is not a program this link can
+        // express, so refuse it loudly instead of truncating the offset.
+        if((blDiff>>2)<-(1<<25)||(blDiff>>2)>=(1<<25)||(bDiff>>2)<-(1<<25)||(bDiff>>2)>=(1<<25))
+            throw Error("internal error: run-time global initializer entry stub is out of branch range");
+        auto put32=[&](uint32_t w){for(int k=0;k<4;++k)mergedText.push_back(uint8_t(w>>(k*8)));};
+        put32(0x94000000u|((uint32_t)((blDiff>>2)&0x3ffffffu)));  // BL first __aster_init
+        put32(0x14000000u|((uint32_t)((bDiff>>2)&0x3ffffffu)));   // B _start
+        entryOffset=stubOff;
+    }
     const uint64_t textVaddr=base+pageSize;
     const bool hasRodata=!mergedRodata.empty();
     const uint64_t rodataFileOff=hasRodata?alignUp(pageSize+mergedText.size(),pageSize):0;
@@ -12506,14 +12882,14 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
 "       aster new [--apk] <dir>              scaffold a program or APK project\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
-"       aster build|run [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache] [-- args]\n"
-"       aster test  [-g] [--bounds-check] [--page-size N] [--no-cache] [filter]\n"
+"       aster build|run [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [-- args]\n"
+"       aster test  [-g] [--bounds-check] [--page-size N] [--no-cache] [--timeout SECONDS] [filter]\n"
 "       aster doctor [--strict]             check the host and the project it is run in\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
     "       aster link-obj|link-pie <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
     "       aster keygen [--dir DIR] [--bits 2048] [--force]\n"
-    "       aster verify-apk <app.apk>\n"
+    "       aster verify-apk [--expect-sha256 <hex>] <app.apk>\n"
     "  build-elf  fixed-address AArch64 ET_EXEC executable (link base 0x400000)\n"
     "  build-pie  static PIE: AArch64 ET_DYN executable, no interpreter (link base 0)\n"
     "  build-obj  relocatable AArch64 ET_REL object (--pic: position-independent, for link-so)\n"
@@ -12558,6 +12934,9 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "                 every dynamic index into a fixed-size array is compared against the\n"
 "                 array's length and raises BRK #1 (SIGTRAP) when it is out of range.\n"
 "                 Constant indexes are still rejected at compile time either way.\n"
+"  --timeout SECONDS  how long `aster run`/`aster test` wait for the child before\n"
+"                 killing it (SIGTERM, then SIGKILL after 5s): default 60, 0 disables;\n"
+"                 --timeout wins over $ASTER_RUN_TIMEOUT.\n"
 "  @embed(\"PATH\")   the address of a file's bytes, which the compiler reads and puts\n"
 "                 in rodata; @embed_len(\"PATH\") is how many bytes there are. PATH is\n"
 "                 relative to the source file's own directory, or to --embed-dir DIR\n"
@@ -13460,6 +13839,19 @@ static void writeFileAtomic(const std::string& path, const std::string& data) {
     const int dfd = ::open(dir.empty() ? "." : dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dfd >= 0) { ::fsync(dfd); ::close(dfd); }
 }
+// v0.23.80-dev (P1-12): a unique, O_EXCL-created scratch path in `dir`.
+// The build cache used to write objects to a predictable `tmp-<key>.o`
+// name through ofstream, so a pre-planted symlink there redirected the
+// object bytes into an arbitrary file. The name returned here is created
+// by mkstemp (0600, never follows a link) and used immediately.
+static std::string mkTempPath(const std::string& dir,const std::string& prefix){
+    std::string tmpl=dir+"/"+prefix+".XXXXXX";
+    std::vector<char> name(tmpl.begin(),tmpl.end());name.push_back('\0');
+    const int fd=::mkstemp(name.data());
+    if(fd<0)throw Error("cannot create a temporary file in "+dir+": "+std::strerror(errno));
+    ::close(fd);
+    return std::string(name.data());
+}
 static void writeKeyPair(const std::string& projectDir, const SigningKey& k) {
     const std::string kd = keyDirOf(projectDir);
     if (!dirExists(kd) && mkdir(kd.c_str(), 0700) != 0 && !dirExists(kd))
@@ -13968,7 +14360,11 @@ static std::vector<uint8_t> nativeActivity(const std::string& pkg, int verCode,
                                            bool debuggable = false) {
     char labelId[32]; std::snprintf(labelId, sizeof labelId, "0x%08X", labelResId);
     Builder b; Builder::Node activity; activity.name="activity";
-    activity.attrs={{"name","str","android.app.NativeActivity"},{"label","ref",labelId},{"exported","bool","true"},{"configChanges","hex","0x490"}};
+    // v0.23.81-dev (H-1): 0x1F90 = KEYBOARD|ORIENTATION|SCREEN_LAYOUT|UI_MODE|
+    // SCREEN_SIZE|SMALLEST_SCREEN_SIZE|DENSITY. AsterUI handles all of these
+    // in onConfigurationChanged/onNativeWindowResized, so the Activity must
+    // not be recreated (and lose its navigation/text state) for them.
+    activity.attrs={{"name","str","android.app.NativeActivity"},{"label","ref",labelId},{"exported","bool","true"},{"configChanges","hex","0x1F90"}};
     if(!labelLiteral.empty()) activity.attrs[1]={"label","str",labelLiteral};
     Builder::Node metadata; metadata.name="meta-data";
     metadata.attrs={{"name","str","android.app.lib_name"},{"value","str",libName}};
@@ -14531,6 +14927,22 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
     if (!readPairs(std::vector<uint8_t>(b.begin() + (long)(sbStart + 8), b.begin() + (long)(sbEnd - 24)), pairs)) {
         r.fail("the Signing Block's ID-value pairs are malformed"); return false;
     }
+    // v0.23.81-dev: every Signing Block ID may appear at most once. The old
+    // code silently kept the last v2 pair (0x7109871a) and ignored the first,
+    // so two different v2 signatures verified differently depending on which
+    // copy a verifier picked. Unknown IDs are still ignored (a single v3
+    // pair verifies), but a repeated ID of any kind is now a hard failure.
+    {
+        std::set<uint32_t> seenIds;
+        for (const auto& pr : pairs) {
+            if (!seenIds.insert(pr.first).second) {
+                char buf[16]; snprintf(buf, sizeof(buf), "%08x", pr.first);
+                r.fail(std::string("the Signing Block has two pairs with ID 0x") + buf +
+                       " (duplicate Signing Block ID)");
+                return false;
+            }
+        }
+    }
     std::string ids;
     for (const auto& pr : pairs)
         ids += (ids.empty() ? "" : ", ") + std::string("0x") + [&] {
@@ -14715,6 +15127,27 @@ static bool validApkPackageName(const std::string& s) {
     }
     return !atSegmentStart;
 }
+// v0.23.81-dev (CLI-P2-13, project name vs package name): the project name
+// is the directory name and may be Chinese; the Android package is derived
+// from it, never equated with it. Map every byte that is not an ASCII letter,
+// digit or '_' to '_' (each UTF-8 byte of a Chinese character becomes one),
+// drop leading '_'s, prefix a leading digit with 'a' so the segment starts
+// with a letter, fall back to "app" when nothing survives, and cap the suffix
+// so "com.example." + suffix stays within the 127-byte package limit.
+static std::string packageSuffixFromProjectName(const std::string& n){
+    std::string s;
+    for(char c:n){
+        const unsigned char u=(unsigned char)c;
+        if((u>='a'&&u<='z')||(u>='A'&&u<='Z')||(u>='0'&&u<='9')||c=='_')s.push_back(c);
+        else s.push_back('_');
+    }
+    const size_t b=s.find_first_not_of('_');
+    if(b==std::string::npos)return "app";
+    s=s.substr(b);
+    if(s[0]>='0'&&s[0]<='9')s="a"+s;
+    if(s.size()>115)s.resize(115);
+    return s;
+}
 static bool validApkAbi(const std::string& s) {
     if (s.empty() || s.size() > 64) return false;
     for (char c : s) {
@@ -14794,6 +15227,52 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
             throw Error("build-apk: --abi " + abi + " expects an " + want->what +
                         " shared object, but the input is e_machine=" + std::to_string(mach) +
                         (cls == 2 ? " (ELF64)" : " (ELF32)"));
+    }
+    // v0.23.82-dev (§6.3 S-04): a prebuilt .so packaged with --page-size must
+    // already satisfy that page size — every PT_LOAD needs p_align >= pageSize
+    // and p_vaddr == p_offset (mod pageSize), or the .so cannot load on a
+    // pageSize-page device. buildApk aligns the .so's ZIP entry to pageSize,
+    // but that says nothing about the segments inside the file, and rewriting
+    // p_align in place would be a lie: the vaddr/offset congruence was laid
+    // out for the old page size, so only a rebuild lays it out right. Refuse
+    // here — this is the one place every packaged .so passes through, whether
+    // it was prebuilt or compiled from source just above — and tell the user
+    // to rebuild the .so with the same --page-size. 32-bit libraries keep 4 KB
+    // pages on a 16 KB device, so only ELF64 is checked. The header fields
+    // are bounds-checked: a prebuilt .so is untrusted input, and a truncated
+    // program-header table must fail closed, not read past the buffer.
+    // (so.size() >= 20 here: the block above throws on anything shorter.)
+    if (so[4] == 2) {
+        auto u16 = [&](size_t o) -> uint64_t { return (uint64_t)so[o] | ((uint64_t)so[o + 1] << 8); };
+        auto u32 = [&](size_t o) -> uint64_t { return u16(o) | (u16(o + 2) << 16); };
+        auto u64 = [&](size_t o) -> uint64_t { uint64_t v = 0; for (int i = 0; i < 8; ++i) v |= ((uint64_t)so[o + (size_t)i] << (8 * i)); return v; };
+        if (so.size() < 64)
+            throw Error("build-apk: the shared object to package has a truncated ELF header");
+        const uint64_t phoff = u64(32), phentsize = u16(54), phnum = u16(56);
+        if (phentsize < 56 || phnum == 0 || phoff > so.size() || phnum > (so.size() - phoff) / phentsize)
+            throw Error("build-apk: the shared object to package has no readable program headers");
+        bool anyLoad = false;
+        for (uint64_t i = 0; i < phnum; ++i) {
+            const size_t o = (size_t)(phoff + i * phentsize);
+            if (u32(o) != 1) continue;              // PT_LOAD only: the loader maps these
+            anyLoad = true;
+            const uint64_t pOffset = u64(o + 8), pVaddr = u64(o + 16), pAlign = u64(o + 48);
+            auto hex = [](uint64_t v) { std::ostringstream s; s << "0x" << std::hex << v; return s.str(); };
+            if (pAlign != 0 && (pAlign & (pAlign - 1)) != 0)
+                throw Error("build-apk: the shared object to package has PT_LOAD[" + std::to_string(i) +
+                            "] with p_align " + hex(pAlign) + ", which is not a power of two");
+            if (pAlign < pageSize)
+                throw Error("build-apk: the shared object to package has PT_LOAD[" + std::to_string(i) +
+                            "] with p_align " + hex(pAlign) + ", smaller than --page-size " + hex(pageSize) +
+                            "; rebuild the .so with --page-size " + std::to_string(pageSize));
+            if (pVaddr % pageSize != pOffset % pageSize)
+                throw Error("build-apk: the shared object to package has PT_LOAD[" + std::to_string(i) +
+                            "] with vaddr " + hex(pVaddr) + " and offset " + hex(pOffset) +
+                            ", not congruent mod --page-size " + hex(pageSize) +
+                            "; rebuild the .so with --page-size " + std::to_string(pageSize));
+        }
+        if (!anyLoad)
+            throw Error("build-apk: the shared object to package has no PT_LOAD segment");
     }
     // The icon is part of the package rather than an option: a launcher entry
     // with no icon falls back to the system default, which is the thing this
@@ -14955,7 +15434,15 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     }
     std::ofstream os(out, std::ios::binary);
     if (!os) { std::cerr << "aster: build-apk: cannot open " << out << " for writing\n"; return 1; }
+    // v0.23.80-dev (P1-13): the old code never checked the write — a full
+    // disk, or /dev/full as the output, still exited 0 with a truncated or
+    // empty APK. The ELF writers already check after write and after close;
+    // do the same here.
     os.write((const char*)apk.data(), (std::streamsize)apk.size());
+    os.flush();
+    if (!os) { std::cerr << "aster: build-apk: failed writing " << out << "\n"; return 1; }
+    os.close();
+    if (!os) { std::cerr << "aster: build-apk: failed closing " << out << "\n"; return 1; }
     return 0;
 }
 
@@ -14972,7 +15459,7 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
                              // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
                              uint64_t pageSize=4096,
                              bool compactFrames=false){
-    Parser p(src,false,dirNameOf(sourcePath));p.parse();
+    Parser p(src,false,dirNameOf(sourcePath),nullptr,sourcePath);p.parse();
     // v0.23.52-dev: `tls let` is a first-class global in a shared object too —
     // each thread that dlopen's the module gets its own copy out of PT_TLS, and
     // the Initial-Exec GOT slot is what makes that work without a `__tls_get_addr`
@@ -15001,6 +15488,10 @@ static int buildSoFromSource(const std::string& src, const std::string& output,
     for(const auto& r:pending){
         if(r.type==Codegen::kRelCall26){
             if(r.symbol==kInitNextSymbol||defFuncs.count(r.symbol))continue;
+            // v0.23.81-dev (ELF-P2-2): same kind-conflict guard as link-so —
+            // a call to a name defined as data must never become an UND FUNC
+            // import duplicating a defined OBJECT .dynsym entry.
+            if(defObjs.count(r.symbol))throw Error("symbol '"+r.symbol+"' is defined as a global but called as a function");
             if(ifSeen.insert(r.symbol).second)spec.importFuncs.push_back(r.symbol);
         } else {
             if(r.symbol.compare(0,12,"__aster_gat_")!=0)throw Error("internal error: unexpected shared-object relocation symbol: "+r.symbol);
@@ -15082,6 +15573,85 @@ static bool parseCliUInt(const char* s, uint64_t max, uint64_t& out) {
     return true;
 }
 
+// v0.23.81-dev (CLI-P2-12): `aster run`/`aster test` used to block forever in
+// waitpid(pid,&st,0): a hanging child hung aster too, and a signal arriving
+// while waiting made waitpid fail with EINTR instead of resuming the wait.
+// waitChildWithTimeout polls with WNOHANG, so EINTR is retried and the wait
+// is bounded: on timeout the child gets SIGTERM, then SIGKILL after a
+// 5-second grace period if it is still alive, and is always reaped.
+// Returns 0 when the child exited (st filled), 1 on timeout (child killed
+// and reaped, message already printed), -1 on a waitpid error.
+static int waitChildWithTimeout(pid_t pid, int& st, long timeoutSec, const char* label) {
+    struct timespec start{};
+    ::clock_gettime(CLOCK_MONOTONIC, &start);
+    auto elapsedMs = [&]() -> long {
+        struct timespec now{};
+        ::clock_gettime(CLOCK_MONOTONIC, &now);
+        return (long)((now.tv_sec - start.tv_sec) * 1000 +
+                      (now.tv_nsec - start.tv_nsec) / 1000000);
+    };
+    auto sleepMs = [](long ms) {
+        struct timespec ts{ms / 1000, (ms % 1000) * 1000000};
+        while (::nanosleep(&ts, &ts) < 0 && errno == EINTR) { }
+    };
+    for (;;) {
+        const int r = ::waitpid(pid, &st, WNOHANG);
+        if (r == pid) return 0;
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            std::cerr << label << ": waitpid failed\n";
+            return -1;
+        }
+        if (timeoutSec > 0 && elapsedMs() >= timeoutSec * 1000) {
+            std::cerr << label << ": timed out after " << timeoutSec
+                      << "s; terminating the child process\n";
+            ::kill(pid, SIGTERM);
+            const long graceStart = elapsedMs();
+            bool reaped = false;
+            while (elapsedMs() - graceStart < 5000) {
+                const int g = ::waitpid(pid, &st, WNOHANG);
+                if (g == pid) { reaped = true; break; }
+                if (g < 0) {
+                    if (errno == EINTR) continue;
+                    std::cerr << label << ": waitpid failed\n";
+                    return -1;
+                }
+                sleepMs(10);
+            }
+            if (!reaped) {
+                ::kill(pid, SIGKILL);
+                while (::waitpid(pid, &st, 0) < 0) {
+                    if (errno == EINTR) continue;
+                    std::cerr << label << ": waitpid failed\n";
+                    return -1;
+                }
+            }
+            return 1;
+        }
+        sleepMs(10);
+    }
+}
+
+// v0.23.81-dev (CLI-P2-12): --timeout wins, then $ASTER_RUN_TIMEOUT, then
+// 60 seconds. 0 disables the timeout. Returns false (after printing) when
+// the configured value is not a decimal integer in 0..86400.
+static bool resolveRunTimeout(long cliTimeout, long& out, const char* label) {
+    if (cliTimeout >= 0) { out = cliTimeout; return true; }
+    const char* env = std::getenv("ASTER_RUN_TIMEOUT");
+    if (env && *env) {
+        uint64_t v = 0;
+        if (!parseCliUInt(env, 86400, v)) {
+            std::cerr << label << ": $ASTER_RUN_TIMEOUT must be a decimal integer between 0 and 86400 (got \""
+                      << env << "\")\n";
+            return false;
+        }
+        out = (long)v;
+        return true;
+    }
+    out = 60;
+    return true;
+}
+
 
 // ---------------------------------------------------------------- project build
 // v0.23.77-dev: sha256Hex, the project file and the incremental cache.
@@ -15099,6 +15669,49 @@ static std::string trimWs(const std::string& s){
     while(a<b&&(s[a]==' '||s[a]=='\t'||s[a]=='\r'))++a;
     while(b>a&&(s[b-1]==' '||s[b-1]=='\t'||s[b-1]=='\r'))--b;
     return s.substr(a,b-a);
+}
+// v0.23.80-dev (P1-10): a project name becomes a file name (`build/<name>`,
+// `build/<name>.apk`, `lib<name>.so`), so it must be one plain component.
+// A name carrying `/`, `..` or an absolute path would let an aster.proj
+// write outside the project directory. The cwd fallback is sanitised
+// instead of rejected — a directory may legitimately contain spaces.
+static std::string sanitizeFileName(const std::string& n){
+    std::string s=n;
+    for(char& c:s){if(!((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'||c=='-'||c=='.'))c='_';}
+    if(s.empty()||s=="."||s=="..")s="app";
+    return s;
+}
+static bool validProjectName(const std::string& n){
+    return !n.empty()&&n!="."&&n!=".."&&sanitizeFileName(n)==n;
+}
+// v0.23.81-dev (CLI-P2-3 / D-06): lexical normalisation of a project source
+// path, so `src/util.ast`, `./src/util.ast` and `src/../src/util.ast` name
+// the same source. Purely lexical — it never touches the filesystem, so it
+// works whether or not the file exists. `.` segments and empty segments are
+// dropped, a `..` pops the previous normal segment, and a leading `..` (or a
+// leading `/` for an absolute path) is kept.
+static std::string normalizeProjPath(const std::string& p){
+    const bool absolute=!p.empty()&&p[0]=='/';
+    std::vector<std::string> parts;
+    std::string cur;
+    for(size_t i=0;i<=p.size();++i){
+        if(i==p.size()||p[i]=='/'){
+            if(cur.empty()||cur=="."){ /* dropped */ }
+            else if(cur==".."){
+                if(!parts.empty()&&parts.back()!="..")parts.pop_back();
+                else if(!absolute)parts.push_back(cur);
+            } else parts.push_back(cur);
+            cur.clear();
+        } else cur.push_back(p[i]);
+    }
+    std::string out;
+    if(absolute)out="/";
+    for(size_t i=0;i<parts.size();++i){
+        if(i)out.push_back('/');
+        out+=parts[i];
+    }
+    if(out.empty())return absolute?"/":".";
+    return out;
 }
 // mkdir -p, returning false when the directory still is not there.
 static bool makeDirs(const std::string& path){
@@ -15170,8 +15783,22 @@ static ProjectSpec parseProjectFile(const std::string& path){
             if(!end||*end||(n!=2048&&n!=3072&&n!=4096))throw Error(path+": key-bits must be 2048, 3072 or 4096 (got \""+v+"\")");
             spec.keyBits=(int)n;
         }
-        else if(k=="test") spec.tests.push_back(v);
-        else if(k=="name") spec.name=v;
+        else if(k=="test"){
+            // v0.23.81-dev (P2-3 / D-06): a hand-edited aster.proj can
+            // list the same test under different spellings
+            // (`./tests/util_test.ast`, `tests/../tests/util_test.ast`);
+            // keep only the first spelling, in order, so a duplicate line
+            // can never run the same test twice. Same normalisation as
+            // the sources lines below.
+            const std::string n=normalizeProjPath(v);
+            bool seen=false;
+            for(const auto& t:spec.tests)if(t==n){seen=true;break;}
+            if(!seen)spec.tests.push_back(n);
+        }
+        else if(k=="name"){
+            if(!validProjectName(v))throw Error(path+": name must be a plain file name (letters, digits, '_', '-', '.') (got \""+v+"\")");
+            spec.name=v;
+        }
         else if(k=="abi") spec.abi=v;
         else if(k=="label") spec.label=v;
         else if(k=="min-sdk"||k=="target-sdk"){
@@ -15182,7 +15809,17 @@ static ProjectSpec parseProjectFile(const std::string& path){
             char* end=nullptr; unsigned long n=std::strtoul(v.c_str(),&end,10);
             if(!end||*end||(n!=4096&&n!=16384))throw Error(path+": page-size must be 4096 or 16384 (got \""+v+"\")");
             spec.pageSize=(uint64_t)n;
-        } else spec.sources.push_back(l);
+        } else {
+            // v0.23.81-dev (CLI-P2-3 / D-06): a hand-edited aster.proj can
+            // list the same source under different spellings
+            // (`./src/util.ast`, `src/../src/util.ast`); keep only the
+            // first spelling, in link order, so a duplicate line can never
+            // make the build compile and link the same TU twice.
+            const std::string n=normalizeProjPath(l);
+            bool seen=false;
+            for(const auto& s:spec.sources)if(s==n){seen=true;break;}
+            if(!seen)spec.sources.push_back(n);
+        }
     };
     for(char ch:txt){if(ch=='\n'){handle(cur);cur.clear();}else cur.push_back(ch);}
     handle(cur);
@@ -15203,7 +15840,12 @@ static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,b
     bool reuse=false;
     if(!noCache&&fileExists(objPath)&&fileExists(metaPath)){
         const std::string meta=readFile(metaPath);
-        bool ok=true,sawSrc=false;
+        // v0.23.81-dev (CLI-P2-1): the cached object itself is hashed, so a
+        // planted or damaged .o is never trusted on the meta alone. An
+        // unreadable object fails closed (recompile) instead of aborting.
+        std::string objHash;
+        try{objHash=sha256Hex(readFile(objPath));}catch(const std::exception&){objHash.clear();}
+        bool ok=true,sawSrc=false,sawObj=false;
         std::string cur; std::vector<std::string> lines;
         for(char ch:meta){if(ch=='\n'){lines.push_back(cur);cur.clear();}else cur.push_back(ch);}
         if(!cur.empty())lines.push_back(cur);
@@ -15212,11 +15854,19 @@ static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,b
             if(l.rfind("version ",0)==0){if(l.substr(8)!=kVersion)ok=false;}
             else if(l.rfind("flags ",0)==0){if(trimWs(l.substr(6))!=flags)ok=false;}
             else if(l.rfind("src ",0)==0){
+                // v0.23.81-dev (CLI-P2-4/D-07): split at the LAST space, not
+                // the first: the hash is a fixed 64-hex suffix, while the
+                // path may contain spaces. The writer format is unchanged,
+                // so .meta files written by older versions still read.
                 const std::string rest=l.substr(4);
-                const size_t cut=rest.find(' ');
+                const size_t cut=rest.rfind(' ');
                 if(cut==std::string::npos){ok=false;continue;}
                 const std::string q=rest.substr(0,cut),h=rest.substr(cut+1);
-                if(q!=sp||h!=srcHash)ok=false; else sawSrc=true;
+                if(h.size()!=64||q!=sp||h!=srcHash)ok=false; else sawSrc=true;
+            }
+            else if(l.rfind("obj ",0)==0){
+                const std::string h=trimWs(l.substr(4));
+                if(objHash.empty()||h!=objHash)ok=false; else sawObj=true;
             }
             else if(l.rfind("dep ",0)==0){
                 const std::string rest=l.substr(4);
@@ -15226,12 +15876,12 @@ static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,b
                 if(!fileExists(q)||sha256Hex(readFile(q))!=h)ok=false;
             }
         }
-        if(ok&&sawSrc)reuse=true;
+        if(ok&&sawSrc&&sawObj)reuse=true;
     }
     if(!reuse){
         g_buildDeps.clear();
         setSourceCache(sp,src);
-        Parser p(src,true,dirNameOf(sp));p.parse();
+        Parser p(src,true,dirNameOf(sp),nullptr,sp);p.parse();
         auto funcs=compileProgram(p.functions,p.globals,pic,true,bc,dbg);
         auto mkDL=[&]()->DebugLineBlob{
             if(!dbg)return DebugLineBlob{};
@@ -15250,11 +15900,15 @@ static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,b
             ObjectLayout L=layoutObject(funcs,p.globals);
             return encodeEhFrame(L,funcs);
         };
-        const std::string tmp=cacheDir+"/tmp-"+key+".o";
+        const std::string tmp=mkTempPath(cacheDir,".aster-tmp");   // v0.23.80-dev (P1-12): unpredictable, O_EXCL-created
         writeObject(tmp,funcs,p.globals,pic,mkDL(),mkDI(),mkEH());
-        writeFileAtomic(objPath,readFile(tmp));
-        std::remove(tmp.c_str());
-        std::string meta="version "+std::string(kVersion)+"\nflags "+flags+"\nsrc "+sp+" "+srcHash+"\n";
+        // v0.23.81-dev (CLI-P2-1): publish the object by renaming the
+        // mkstemp-created file into place, and record its sha256 in the meta
+        // so reuse can verify it. A meta without an `obj` line is never
+        // trusted (see the reuse check above): it recompiles instead.
+        const std::string objBytes=readFile(tmp);
+        if(std::rename(tmp.c_str(),objPath.c_str())!=0){const int e=errno;std::remove(tmp.c_str());throw Error("cannot move "+tmp+" into place: "+std::strerror(e));}
+        std::string meta="version "+std::string(kVersion)+"\nflags "+flags+"\nsrc "+sp+" "+srcHash+"\nobj "+sha256Hex(objBytes)+"\n";
         for(const auto& kv:g_buildDeps)meta+="dep "+kv.second+" "+kv.first+"\n";
         writeFileAtomic(metaPath,meta);
         g_buildDeps.clear();
@@ -15338,17 +15992,44 @@ int main(int argc,char**argv){
             if(dir.empty()){std::cerr<<"aster new: usage: aster new [--apk] <dir>\n";return 2;}
             if(fileExists(dir)){std::cerr<<"aster new: "<<dir<<" is a file\n";return 1;}
             if(fileExists(dir+"/aster.proj")){std::cerr<<"aster new: "<<dir<<" already holds a project\n";return 1;}
-            if(!makeDirs(dir+"/src")){std::cerr<<"aster new: cannot create "<<dir<<"/src\n";return 1;}
+            // v0.23.81-dev (CLI-P2-13): `new` used to take the directory
+            // basename as the project/package name unchecked, so `foo bar`,
+            // `foo-bar` and `123abc` scaffolded projects whose package
+            // `com.example.<name>` only failed later at `aster build`
+            // (validateApkInputs). The project name and the package name are
+            // different things: the project name is the directory name and
+            // may be Chinese, so `new` only requires it to be a usable
+            // directory name; the Android package is derived from it with
+            // packageSuffixFromProjectName and validated before anything is
+            // created. A `name` line is written only when the directory name
+            // is not already a plain file name, so the build output and the
+            // .so keep a readable ASCII name instead of all underscores.
             const std::string name=baseNameOf(dir);
+            if(name.empty()||name=="."||name==".."){
+                std::cerr<<"aster new: \""<<dir<<"\" is not a usable project name: give a directory name\n";
+                return 2;
+            }
+            std::string fileName=sanitizeFileName(name);
+            if(fileName.find_first_not_of('_')==std::string::npos)fileName="app";
+            std::string pkgSuffix;
             if(apk){
-                writeFileAtomic(dir+"/aster.proj",
-                    "# aster.proj — an APK project.\n"
+                pkgSuffix=packageSuffixFromProjectName(name);
+                if(!validApkPackageName("com.example."+pkgSuffix)){
+                    std::cerr<<"aster new: internal error: derived package \"com.example."<<pkgSuffix<<"\" is not valid\n";
+                    return 2;
+                }
+            }
+            if(!makeDirs(dir+"/src")){std::cerr<<"aster new: cannot create "<<dir<<"/src\n";return 1;}
+            if(apk){
+                std::string proj="# aster.proj — an APK project.\n"
                     "# kind apk compiles the sources into one shared object and wraps it\n"
                     "# in a signed NativeActivity APK; `aster build` writes build/<name>.apk.\n"
                     "kind apk\n"
-                    "package com.example." + name + "\n"
-                    "label " + name + "\n"
-                    "src/main.ast\n");
+                    "package com.example." + pkgSuffix + "\n"
+                    "label " + name + "\n";
+                if(fileName!=name)proj+="name " + fileName + "\n";
+                proj+="src/main.ast\n";
+                writeFileAtomic(dir+"/aster.proj",proj);
                 writeFileAtomic(dir+"/src/main.ast",
                     "// The shared object inside the APK. `aster build` compiles these\n"
                     "// sources for Android (PIC), links them, and signs the result.\n"
@@ -15356,16 +16037,17 @@ int main(int argc,char**argv){
                     "    return 0;\n"
                     "}\n");
             } else {
-                writeFileAtomic(dir+"/aster.proj",
-                    "# aster.proj — one source per line, in link order.\n"
+                std::string proj="# aster.proj — one source per line, in link order.\n"
                     "# Initializers run in this order, and the object holding main must\n"
-                    "# hold at least one run-time initialized global (see A-21/A-22).\n"
-                    "src/main.ast\n"
+                    "# hold at least one run-time initialized global (see A-21/A-22).\n";
+                if(fileName!=name)proj+="name " + fileName + "\n";
+                proj+="src/main.ast\n"
                     "src/util.ast\n"
-                    "test tests/util_test.ast\n");
+                    "test tests/util_test.ast\n";
+                writeFileAtomic(dir+"/aster.proj",proj);
                 writeFileAtomic(dir+"/src/main.ast",
                     "// `aster build` compiles the sources in aster.proj and links them\n"
-                    "// into build/" + name + ".\n"
+                    "// into build/" + fileName + ".\n"
                     "include \"util.ast\";\n\n"
                     "fn main() -> i32 {\n"
                     "    return add(40, 2) - 42;\n"
@@ -15407,14 +16089,19 @@ int main(int argc,char**argv){
             if(src.empty()){std::cerr<<"aster add: usage: aster add <source.ast>\n";return 2;}
             if(!fileExists(proj)){std::cerr<<"aster add: no "<<proj<<" here (create one with `aster new NAME`)\n";return 2;}
             if(!fileExists(src)){std::cerr<<"aster add: no such source: "<<src<<"\n";return 1;}
+            // v0.23.81-dev (CLI-P2-3 / D-06): compare (and store) the
+            // normalised path, so `./src/util.ast` and
+            // `src/../src/util.ast` are recognised as the `src/util.ast`
+            // that is already listed instead of being appended again.
+            const std::string norm=normalizeProjPath(src);
             const ProjectSpec spec=parseProjectFile(proj);
             for(const auto& s:spec.sources)
-                if(s==src){std::cout<<"aster add: "<<src<<" is already in "<<proj<<"\n";return 0;}
+                if(s==norm){std::cout<<"aster add: "<<norm<<" is already in "<<proj<<"\n";return 0;}
             std::string text=readFile(proj);
             if(!text.empty()&&text.back()!='\n')text.push_back('\n');
-            text+=src+"\n";
+            text+=norm+"\n";
             writeFileAtomic(proj,text);
-            std::cout<<"Aster v"<<kVersion<<": added "<<src<<" to "<<proj<<" ("
+            std::cout<<"Aster v"<<kVersion<<": added "<<norm<<" to "<<proj<<" ("
                      <<(spec.sources.size()+1)<<" sources)\n";
             return 0;
         }
@@ -15442,7 +16129,7 @@ int main(int argc,char**argv){
                 g_buildDeps.clear();
                 const std::string src=readFile(sp);
                 setSourceCache(sp,src);
-                Parser p(src,false,dirNameOf(sp));p.parse();
+                Parser p(src,false,dirNameOf(sp),nullptr,sp);p.parse();
                 std::string target=obj;
                 if(target.empty()){
                     target="build/"+baseNameOf(sp);
@@ -15457,12 +16144,25 @@ int main(int argc,char**argv){
         }
         if(cmd=="test"){
             bool dbg=false,bc2=false,noCache=false; uint64_t ps=4096; bool cliPageSet=false; std::string filter;
+            uint64_t timeoutVal=0; bool timeoutSet=false;
             for(int i=2;i<argc;++i){
                 const std::string a=argv[i];
                 if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
                 if(a=="-g"||a=="--debug-line")dbg=true;
                 else if(a=="--bounds-check")bc2=true;
                 else if(a=="--no-cache")noCache=true;
+                else if(a=="--timeout"){
+                    if(i+1>=argc||!parseCliUInt(argv[++i],86400,timeoutVal)){
+                        std::cerr<<"aster test: --timeout must be a decimal integer between 0 and 86400\n";return 2;
+                    }
+                    timeoutSet=true;
+                }
+                else if(a.rfind("--timeout=",0)==0){
+                    if(!parseCliUInt(a.c_str()+10,86400,timeoutVal)){
+                        std::cerr<<"aster test: --timeout must be a decimal integer between 0 and 86400\n";return 2;
+                    }
+                    timeoutSet=true;
+                }
                 else if(a=="--page-size"){
                     if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
                         std::cerr<<"aster test: --page-size must be 4096 or 16384\n";return 2;
@@ -15474,6 +16174,8 @@ int main(int argc,char**argv){
                 else {std::cerr<<"aster test: usage: aster test [-g] [--bounds-check] [--page-size N] [--no-cache] [filter]\n";return 2;}
             }
             if(ps!=4096&&ps!=16384){std::cerr<<"aster test: --page-size must be 4096 or 16384\n";return 2;}
+            long timeoutSec=60;
+            if(!resolveRunTimeout(timeoutSet?(long)timeoutVal:-1,timeoutSec,"aster test"))return 2;
             if(!fileExists("aster.proj")){
                 std::cerr<<"aster test: no aster.proj in this directory (create one with `aster new NAME`)\n";
                 return 2;
@@ -15503,7 +16205,7 @@ int main(int argc,char**argv){
                     g_buildDeps.clear();
                     const std::string src=readFile(sp);
                     setSourceCache(sp,src);
-                    Parser p(src,false,dirNameOf(sp));p.parse();
+                    Parser p(src,false,dirNameOf(sp),nullptr,sp);p.parse();
                     for(const auto& f:p.functions)if(f.name=="main")hasMain=true;
                 }
                 g_buildDeps.clear();
@@ -15524,7 +16226,11 @@ int main(int argc,char**argv){
                 if(pid<0){std::cerr<<"aster test: cannot fork\n";return 1;}
                 if(pid==0){execAarch64Image(exe,{});std::perror("aster test");::_exit(127);}
                 int st=0;
-                if(::waitpid(pid,&st,0)<0){std::cerr<<"aster test: waitpid failed\n";return 1;}
+                // v0.23.81-dev (CLI-P2-12): bounded wait with EINTR retry; a
+                // hanging test is killed and reported instead of hanging aster.
+                const int wr=waitChildWithTimeout(pid,st,timeoutSec,"aster test");
+                if(wr<0)return 1;
+                if(wr==1){++ran;++failed;std::cout<<"FAIL "<<tp<<" (timed out after "<<timeoutSec<<"s)\n";continue;}
                 const int rc=WIFEXITED(st)?WEXITSTATUS(st):(WIFSIGNALED(st)?128+WTERMSIG(st):1);
                 ++ran;
                 if(rc==0)std::cout<<"PASS "<<tp<<"\n";
@@ -15594,11 +16300,20 @@ int main(int argc,char**argv){
             // --- scratch space
             {
                 std::string tmp=std::getenv("TMPDIR")?std::getenv("TMPDIR"):"/tmp";
-                const std::string probe=tmp+"/.aster-doctor-probe";
-                std::ofstream t(probe,std::ios::binary);
-                if(t){t<<"x";t.close();std::remove(probe.c_str());
-                    say("ok  ","writable scratch: "+tmp);}
-                else {
+                // v0.23.80-dev (P1-11): the old probe opened the fixed name
+                // `.aster-doctor-probe` through ofstream, which truncates
+                // whatever a pre-planted symlink points at. mkstemp creates
+                // a unique file with O_EXCL and never follows a link.
+                std::string tmpl=tmp+"/.aster-doctor-probe-XXXXXX";
+                std::vector<char> pname(tmpl.begin(),tmpl.end());pname.push_back('\0');
+                const int pfd=::mkstemp(pname.data());
+                if(pfd>=0){
+                    const std::string probe(pname.data());
+                    const bool okw=::write(pfd,"x",1)==1;
+                    ::close(pfd);std::remove(probe.c_str());
+                    if(okw)say("ok  ","writable scratch: "+tmp);
+                    else say("fail","scratch directory is not writable: "+tmp+" (set TMPDIR)");
+                } else {
                     say("fail","scratch directory is not writable: "+tmp+" (set TMPDIR)");
                 }
             }
@@ -15638,7 +16353,7 @@ int main(int argc,char**argv){
                             try{
                                 const std::string src=readFile(sp);
                                 g_buildDeps.clear();
-                                Parser p(src,false,dirNameOf(sp));p.parse();
+                                Parser p(src,false,dirNameOf(sp),nullptr,sp);p.parse();
                                 for(const auto& f:p.functions)if(f.name=="main")++mains;
                             }catch(...){}
                         }
@@ -15715,6 +16430,7 @@ int main(int argc,char**argv){
             const bool isRun=cmd=="run";
             std::string out; bool dbg=false,bc2=false,noCache=false,afterDash=false;
             uint64_t ps=4096; bool cliPageSet=false; std::vector<std::string> runArgs;
+            uint64_t timeoutVal=0; bool timeoutSet=false;
             for(int i=2;i<argc;++i){
                 const std::string a=argv[i];
                 if(isRun&&afterDash){runArgs.push_back(a);continue;}
@@ -15724,6 +16440,18 @@ int main(int argc,char**argv){
                 else if(a=="-g"||a=="--debug-line")dbg=true;
                 else if(a=="--bounds-check")bc2=true;
                 else if(a=="--no-cache")noCache=true;
+                else if(a=="--timeout"){
+                    if(i+1>=argc||!parseCliUInt(argv[++i],86400,timeoutVal)){
+                        std::cerr<<"aster "<<cmd<<": --timeout must be a decimal integer between 0 and 86400\n";return 2;
+                    }
+                    timeoutSet=true;
+                }
+                else if(a.rfind("--timeout=",0)==0){
+                    if(!parseCliUInt(a.c_str()+10,86400,timeoutVal)){
+                        std::cerr<<"aster "<<cmd<<": --timeout must be a decimal integer between 0 and 86400\n";return 2;
+                    }
+                    timeoutSet=true;
+                }
                 else if(a=="--page-size"){
                     if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
                         std::cerr<<"aster "<<cmd<<": --page-size must be 4096 or 16384\n";return 2;
@@ -15732,7 +16460,10 @@ int main(int argc,char**argv){
                 }
                 else {std::cerr<<"aster "<<cmd<<": unknown option "<<a<<"\n";return 2;}
             }
+            if(!isRun&&timeoutSet){std::cerr<<"aster build: --timeout only applies to `aster run` (and `aster test`)\n";return 2;}
             if(ps!=4096&&ps!=16384){std::cerr<<"aster "<<cmd<<": --page-size must be 4096 or 16384\n";return 2;}
+            long timeoutSec=60;
+            if(isRun&&!resolveRunTimeout(timeoutSet?(long)timeoutVal:-1,timeoutSec,"aster run"))return 2;
             if(!fileExists("aster.proj")){
                 std::cerr<<"aster "<<cmd<<": no aster.proj in this directory (create one with `aster new NAME`)\n";
                 return 2;
@@ -15744,6 +16475,9 @@ int main(int argc,char**argv){
             std::string name=spec.name;
             if(name.empty())name=baseNameOf(cwd);
             if(name.empty()||name=="."||name=="..")name="app";
+            name=sanitizeFileName(name);   // v0.23.80-dev (P1-10): the cwd
+            // fallback may contain spaces or other characters that are not
+            // safe in a file name; an explicit `name` was validated at parse.
             const bool isApk=spec.kind=="apk";
             if(isApk&&spec.package.empty()){
                 std::cerr<<"aster "<<cmd<<": an apk project needs `package <android.package>` in aster.proj\n";
@@ -15776,7 +16510,12 @@ int main(int argc,char**argv){
                 bool reuse=false;
                 if(!noCache&&fileExists(objPath)&&fileExists(metaPath)){
                     const std::string meta=readFile(metaPath);
-                    bool ok=true,sawSrc=false;
+                    // v0.23.81-dev (CLI-P2-1): the cached object itself is hashed, so a
+                    // planted or damaged .o is never trusted on the meta alone. An
+                    // unreadable object fails closed (recompile) instead of aborting.
+                    std::string objHash;
+                    try{objHash=sha256Hex(readFile(objPath));}catch(const std::exception&){objHash.clear();}
+                    bool ok=true,sawSrc=false,sawObj=false;
                     std::string cur; std::vector<std::string> lines;
                     for(char ch:meta){if(ch=='\n'){lines.push_back(cur);cur.clear();}else cur.push_back(ch);}
                     if(!cur.empty())lines.push_back(cur);
@@ -15785,11 +16524,20 @@ int main(int argc,char**argv){
                         if(l.rfind("version ",0)==0){if(l.substr(8)!=kVersion)ok=false;}
                         else if(l.rfind("flags ",0)==0){if(trimWs(l.substr(6))!=flags)ok=false;}
                         else if(l.rfind("src ",0)==0){
+                            // v0.23.81-dev (CLI-P2-4/D-07): split at the LAST
+                            // space, not the first: the hash is a fixed
+                            // 64-hex suffix, while the path may contain
+                            // spaces. The writer format is unchanged, so
+                            // .meta files written by older versions still read.
                             const std::string rest=l.substr(4);
-                            const size_t cut=rest.find(' ');
+                            const size_t cut=rest.rfind(' ');
                             if(cut==std::string::npos){ok=false;continue;}
                             const std::string q=rest.substr(0,cut),h=rest.substr(cut+1);
-                            if(q!=sp||h!=srcHash)ok=false; else sawSrc=true;
+                            if(h.size()!=64||q!=sp||h!=srcHash)ok=false; else sawSrc=true;
+                        }
+                        else if(l.rfind("obj ",0)==0){
+                            const std::string h=trimWs(l.substr(4));
+                            if(objHash.empty()||h!=objHash)ok=false; else sawObj=true;
                         }
                         else if(l.rfind("dep ",0)==0){
                             const std::string rest=l.substr(4);
@@ -15799,12 +16547,12 @@ int main(int argc,char**argv){
                             if(!fileExists(q)||sha256Hex(readFile(q))!=h)ok=false;
                         }
                     }
-                    if(ok&&sawSrc)reuse=true;
+                    if(ok&&sawSrc&&sawObj)reuse=true;
                 }
                 if(!reuse){
                     g_buildDeps.clear();
                     setSourceCache(sp,src);
-                    Parser p(src,true,dirNameOf(sp));p.parse();
+                    Parser p(src,true,dirNameOf(sp),nullptr,sp);p.parse();
                     auto funcs=compileProgram(p.functions,p.globals,isApk,true,bc2,dbg);
                     auto mkDL=[&]()->DebugLineBlob{
                         if(!dbg)return DebugLineBlob{};
@@ -15823,11 +16571,15 @@ int main(int argc,char**argv){
                         ObjectLayout L=layoutObject(funcs,p.globals);
                         return encodeEhFrame(L,funcs);
                     };
-                    const std::string tmp=cacheDir+"/tmp-"+key+".o";
+                    const std::string tmp=mkTempPath(cacheDir,".aster-tmp");   // v0.23.80-dev (P1-12): unpredictable, O_EXCL-created
                     writeObject(tmp,funcs,p.globals,isApk,mkDL(),mkDI(),mkEH());
-                    writeFileAtomic(objPath,readFile(tmp));
-                    std::remove(tmp.c_str());
-                    std::string meta="version "+std::string(kVersion)+"\nflags "+flags+"\nsrc "+sp+" "+srcHash+"\n";
+                    // v0.23.81-dev (CLI-P2-1): publish the object by renaming the
+                    // mkstemp-created file into place, and record its sha256 in the meta
+                    // so reuse can verify it. A meta without an `obj` line is never
+                    // trusted (see the reuse check above): it recompiles instead.
+                    const std::string objBytes=readFile(tmp);
+                    if(std::rename(tmp.c_str(),objPath.c_str())!=0){const int e=errno;std::remove(tmp.c_str());throw Error("cannot move "+tmp+" into place: "+std::strerror(e));}
+                    std::string meta="version "+std::string(kVersion)+"\nflags "+flags+"\nsrc "+sp+" "+srcHash+"\nobj "+sha256Hex(objBytes)+"\n";
                     for(const auto& kv:g_buildDeps)meta+="dep "+kv.second+" "+kv.first+"\n";
                     writeFileAtomic(metaPath,meta);
                     g_buildDeps.clear();
@@ -15875,7 +16627,11 @@ int main(int argc,char**argv){
                 if(pid==0){execAarch64Image(out,runArgs);std::perror("aster run");::_exit(127);}
                 int st=0;
                 if(pid<0){std::cerr<<"aster run: cannot fork\n";return 1;}
-                if(::waitpid(pid,&st,0)<0){std::cerr<<"aster run: waitpid failed\n";return 1;}
+                // v0.23.81-dev (CLI-P2-12): bounded wait with EINTR retry; a
+                // hanging program is killed and reported instead of hanging aster.
+                const int wr=waitChildWithTimeout(pid,st,timeoutSec,"aster run");
+                if(wr<0)return 1;
+                if(wr==1)return 124;
                 if(WIFEXITED(st))return WEXITSTATUS(st);
                 if(WIFSIGNALED(st))return 128+WTERMSIG(st);
                 return 1;
@@ -16017,15 +16773,49 @@ int main(int argc,char**argv){
         }
         // verify-apk answers the question an installer asks: is this APK's
         // signature intact, and does it cover the bytes actually in the file.
+        // v0.23.80-dev (P1-14): --expect-sha256 adds a trust anchor — the
+        // caller pins the exact bytes it expects, so a correctly signed but
+        // different build (a swapped APK, a stale download) is refused
+        // instead of merely "a valid signature on some APK".
         if(cmd=="verify-apk"){
-            if(argc!=3){std::cerr<<"aster: verify-apk usage: aster verify-apk <app.apk>\n";return 2;}
-            std::string apkText=readFile(argv[2]);
+            std::string expectSha,apkPath;
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="--expect-sha256"){
+                    if(i+1>=argc){std::cerr<<"aster: verify-apk: --expect-sha256 requires a 64-hex-digit argument\n";return 2;}
+                    expectSha=argv[++i];
+                } else if(a.rfind("--expect-sha256=",0)==0){
+                    expectSha=a.substr(16);   // "--expect-sha256=" is 16 chars
+                } else if(apkPath.empty()){
+                    apkPath=a;
+                } else {
+                    std::cerr<<"aster: verify-apk usage: aster verify-apk [--expect-sha256 <hex>] <app.apk>\n";return 2;
+                }
+            }
+            if(apkPath.empty()){std::cerr<<"aster: verify-apk usage: aster verify-apk [--expect-sha256 <hex>] <app.apk>\n";return 2;}
+            if(!expectSha.empty()){
+                auto isHex=[&](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f')||(c>='A'&&c<='F');};
+                bool bad=expectSha.size()!=64;
+                for(char c:expectSha)if(!isHex(c))bad=true;
+                if(bad){std::cerr<<"aster: verify-apk: --expect-sha256 must be 64 hex digits (got \""<<expectSha<<"\")\n";return 2;}
+                for(char& c:expectSha)c=(char)std::tolower((unsigned char)c);
+            }
+            std::string apkText=readFile(apkPath);
             std::vector<uint8_t> apk(apkText.begin(),apkText.end());
             std::ostringstream log;
             const bool ok=Verify::verify(apk,log);
             std::cout<<log.str();
-            if(!ok){std::cerr<<"aster: verify-apk: "<<argv[2]<<": signature verification FAILED\n";return 1;}
-            std::cout<<"aster: verify-apk: "<<argv[2]<<": OK (v1 + v2 signatures verified)\n";
+            if(!ok){std::cerr<<"aster: verify-apk: "<<apkPath<<": signature verification FAILED\n";return 1;}
+            if(!expectSha.empty()){
+                const std::string got=sha256Hex(apk);
+                if(got!=expectSha){
+                    std::cerr<<"aster: verify-apk: "<<apkPath<<": signature OK but sha256 mismatch: expected "<<expectSha<<", got "<<got<<"\n";
+                    return 1;
+                }
+                std::cout<<"aster: verify-apk: "<<apkPath<<": OK (v1 + v2 signatures verified, sha256 matches --expect-sha256)\n";
+                return 0;
+            }
+            std::cout<<"aster: verify-apk: "<<apkPath<<": OK (v1 + v2 signatures verified)\n";
             return 0;
         }
         if(cmd=="link-obj"||cmd=="link-pie"){
@@ -16055,7 +16845,7 @@ int main(int argc,char**argv){
             const std::string& sp=sources[0];
             const std::string src=readFile(sp);
             setSourceCache(sp,src);
-            Parser p(src,true,dirNameOf(sp));p.parse();
+            Parser p(src,true,dirNameOf(sp),nullptr,sp);p.parse();
             auto funcs=compileProgram(p.functions,p.globals,pic,true,boundsCheck,debugLine,compactFrames);
             auto makeDebugLine=[&]()->DebugLineBlob{
                 if(!debugLine)return DebugLineBlob{};
@@ -16102,7 +16892,7 @@ int main(int argc,char**argv){
                     const std::string src=readFile(sp);
                     setSourceCache(sp,src);
                     const bool soObject = cmd=="build-so";
-                    Parser p(src,true,dirNameOf(sp));p.parse();
+                    Parser p(src,true,dirNameOf(sp),nullptr,sp);p.parse();
                     if(soObject)
                         for(const auto& g:p.globals)
                             if(g.tls&&g.external)

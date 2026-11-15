@@ -25,3 +25,8 @@ printf '%s\n' '[3/4] Compile C ABI harness'
 ${HOSTCC:-cc} -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror tests/c-libc-strings-host.c -ldl -o "$OUT/c-libc-strings-host"
 printf '%s\n' '[4/4] Run C -> Aster -> Bionic tests'
 run "$OUT/c-libc-strings-host" "$PWD/$OUT/libaster_libc_strings.so"
+
+# v0.23.80-dev (G-01): the gate fails a suite that exits 0 without a
+# PASS/OK line, and this suite used to print none — the harness above is
+# the assertion, so reaching here is the pass.
+echo 'PASS: e2e-c-libc-strings (C harness ran libc string cases against the .so)'

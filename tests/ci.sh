@@ -12,6 +12,14 @@
 # critical suite is a red run: the clean-machine CI is supposed to have qemu,
 # readelf, objdump, python3, sha256sum and a C++17 compiler.
 #
+# v0.23.80-dev (G-01): a suite that exits 0 without printing a single PASS/OK
+# line has asserted nothing, and a green run must not contain one — a suite
+# that silently stops testing used to stay green and only be named in the
+# NO EVIDENCE report. The verdict below fails when NO_EVIDENCE > 0.
+# v0.23.80-dev (G-02): skipping the three APK gates is likewise a red run
+# unless CI_ALLOW_APK_GATE_SKIP=1 says the skip is deliberate: a skipped
+# gate is an untested gate, not a passed one.
+#
 # The compiler is built once, strictly, and tests/lib/cxx-cache.sh hands that
 # binary to every suite that would otherwise recompile src/aster.cpp.  Mutated
 # sources, -c, -g, sanitizer and alternate-target builds bypass the cache.
@@ -20,7 +28,7 @@
 #   sh tests/ci.sh
 #   sh tests/ci.sh                         # full gate, green machine
 #   CI_SUITES="tls-checks.sh linker-checks.sh" sh tests/ci.sh
-#   CI_SKIP_APK_GATE=1 CI_ALLOW_MISSING=1 sh tests/ci.sh
+#   CI_SKIP_APK_GATE=1 CI_ALLOW_APK_GATE_SKIP=1 CI_ALLOW_MISSING=1 sh tests/ci.sh
 #   CI_REBUILD=1 sh tests/ci.sh            # ignore the build stamp
 #
 # Environment:
@@ -31,7 +39,11 @@
 #   CI_CRITICAL             suites whose SKIP is fatal (default list below)
 #   CI_ALLOW_MISSING=1      do not exit 2 when a required tool is absent; the
 #                           suites then SKIP and critical skips still fail
-#   CI_SKIP_APK_GATE=1      skip the three independent APK gates
+#   CI_SKIP_APK_GATE=1      skip the three independent APK gates (red unless
+#                           CI_ALLOW_APK_GATE_SKIP=1 is also set)
+#   CI_ALLOW_APK_GATE_SKIP=1
+#                           allow a CI_SKIP_APK_GATE=1 run to stay green; the
+#                           skip is then deliberate and named in the summary
 #   CI_KEEP_ARTIFACTS=1     keep logs even on a green run
 #   CI_REBUILD=1            rebuild the cached compiler unconditionally
 #   CI_JOBS=N               run N suites in isolated, parallel worktrees
@@ -83,9 +95,10 @@ case "$SUITE_DIR" in
     *) SUITE_DIR="$PWD/$SUITE_DIR" ;;
 esac
 
-CRITICAL=${CI_CRITICAL-apk-checks.sh signing-checks.sh tls-checks.sh linker-checks.sh codegen-checks.sh struct-checks.sh enum-checks.sh eval-order-checks.sh type-strictness-checks.sh resource-table-checks.sh page-size-checks.sh layout-boundary-checks.sh elf-metadata-checks.sh alias-const-checks.sh void-checks.sh char-checks.sh union-checks.sh embed-align-checks.sh stack-arg-abi-checks.sh stride-scale-checks.sh const-fold-u64-checks.sh front-sema-checks.sh signedness-checks.sh section-align-contract-checks.sh frame-slot-contract-checks.sh link-project-contract-checks.sh version-checks.sh}
+CRITICAL=${CI_CRITICAL-apk-checks.sh signing-checks.sh tls-checks.sh linker-checks.sh codegen-checks.sh struct-checks.sh enum-checks.sh eval-order-checks.sh type-strictness-checks.sh resource-table-checks.sh page-size-checks.sh layout-boundary-checks.sh elf-metadata-checks.sh alias-const-checks.sh void-checks.sh char-checks.sh union-checks.sh embed-align-checks.sh stack-arg-abi-checks.sh stride-scale-checks.sh const-fold-u64-checks.sh front-sema-checks.sh signedness-checks.sh section-align-contract-checks.sh frame-slot-contract-checks.sh link-project-contract-checks.sh version-checks.sh coverage-checks.sh mutation-score-checks.sh ci-protocol-checks.sh difftest-checks.sh bootstrap-loop-checks.sh wide-int-literal-checks.sh frame-size-checks.sh local-array-checks.sh}
 ALLOW_MISSING=${CI_ALLOW_MISSING:-0}
 SKIP_APK_GATE=${CI_SKIP_APK_GATE:-0}
+ALLOW_APK_GATE_SKIP=${CI_ALLOW_APK_GATE_SKIP:-0}
 KEEP_ARTIFACTS=${CI_KEEP_ARTIFACTS:-0}
 JOBS=${CI_JOBS:-1}
 
@@ -327,6 +340,7 @@ c-abi-32-args-structural.sh c-abi-32-external-structural.sh c-abi-structural.sh
 c-libc-strings-structural.sh c-mixed-ptr-stack-structural.sh
 c-multi-object-rodata-structural.sh c-ptr-arithmetic-structural.sh c-ptr-structural.sh
 c-ptr-u8-structural.sh c-string-literals-structural.sh
+../stdlib/asterui/tests/ui-checks.sh
 "
 SUITES=${CI_SUITES:-$DEFAULT_SUITES}
 set -- $SUITES
@@ -459,11 +473,17 @@ run_suite_isolated() {
     tarfile="$OUT/$s.tar"
     rm -rf "$work"
     mkdir -p "$work/tmp"
+    # v0.23.80-dev: extract with --no-same-owner. On a capability-restricted
+    # host the extractor runs as uid 0 without cap_chown, so restoring the
+    # archived ownership (uid 0, gid 65534) fails and every isolated suite
+    # died with rc=125 before running a single assertion. Ownership of the
+    # extracted copy is irrelevant to the suites; the files' contents and
+    # modes are what they assert on.
     if ! tar -C "$PWD" -cf "$tarfile" \
             --exclude=./.git --exclude=./.aster --exclude=./build \
             --exclude=./ci-artifacts --exclude='./tmp-*' \
             --exclude='./*.core' --exclude='__pycache__' . 2>"$OUT/$s.copy.log" \
-            || ! tar -C "$work" -xf "$tarfile" 2>>"$OUT/$s.copy.log"; then
+            || ! tar -C "$work" -xf "$tarfile" --no-same-owner 2>>"$OUT/$s.copy.log"; then
         printf 'FAIL: could not isolate the tree\n' >"$log"
         printf '125\n' >"$OUT/$s.rc"
         rm -rf "$work" "$tarfile"
@@ -571,7 +591,9 @@ gate_apk() {
 }
 
 if [ "$SKIP_APK_GATE" -eq 1 ]; then
-    echo "SKIP (CI_SKIP_APK_GATE=1)"; GATE_SKIP=$((GATE_SKIP+1))
+    # v0.23.80-dev (G-02): the skip is named, counted, and — unless the
+    # allow flag says it is deliberate — red at the verdict below.
+    echo "SKIP (CI_SKIP_APK_GATE=1; red unless CI_ALLOW_APK_GATE_SKIP=1)"; GATE_SKIP=$((GATE_SKIP+1))
 else
     gate_apk "apk: native_render"  examples/native_render.ast  com.aster.nativerender nativerender 'Aster NativeRender'
     gate_apk "apk: icon_text_demo" examples/icon_text_demo.ast com.aster.icontext    icontext    'Aster 图标文字' \
@@ -602,6 +624,20 @@ if [ -n "$FAILURES" ]; then
 fi
 printf '========================================\n'
 
+# v0.23.80-dev (G-01/G-02): the verdict is about evidence, not just about
+# failures. A suite that asserted nothing (NO_EVIDENCE) and a skipped APK
+# gate that nobody explicitly allowed are both red: the run cannot claim
+# the gate passed when part of it never ran.
+if [ "$NO_EVIDENCE" -gt 0 ]; then
+    printf 'Failing run: %d suite(s) exited 0 without printing an assertion — see NO EVIDENCE above\n' "$NO_EVIDENCE"
+    printf 'Failing run: per-suite logs kept under %s/\n' "$OUT"
+    exit 1
+fi
+if [ "$GATE_SKIP" -gt 0 ] && [ "$ALLOW_APK_GATE_SKIP" -ne 1 ]; then
+    printf 'Failing run: the APK gates were skipped (CI_SKIP_APK_GATE=1) without CI_ALLOW_APK_GATE_SKIP=1\n'
+    printf 'Failing run: per-suite logs kept under %s/\n' "$OUT"
+    exit 1
+fi
 if [ "$FAIL" -gt 0 ] || [ "$GATE_FAIL" -gt 0 ]; then
     printf 'Failing run: per-suite logs kept under %s/\n' "$OUT"
     exit 1

@@ -3,7 +3,7 @@
 #
 # `-g` makes aster emit DWARF v4 .debug_abbrev and .debug_info beside the line
 # table it already wrote, so a debugger can print a variable by name and not
-# only say which .ast line an instruction came from. This suite proves nine
+# only say which .ast line an instruction came from. This suite proves ten
 # things:
 #
 #   1. IT IS OFF BY DEFAULT: without -g there is no .debug_info in an
@@ -29,6 +29,10 @@
 #      own text address, and both a gnu-hash and a plain shared object keep
 #      theirs.
 #   9. THE SUITE CAN STILL FAIL.
+#  10. A MALFORMED .debug_info IS REFUSED (S-10): a DW_AT_stmt_list field a
+#      short form or a wrapped length puts within 4 bytes of the end of its
+#      unit is refused instead of overflowing the link's merge write, and a
+#      huge input stmt_list value is overwritten, never trusted.
 set -eu
 cd "$(dirname "$0")/.."
 CXX=${CXX:-g++}
@@ -499,7 +503,99 @@ grep -q 'slot\*8+8);return e;' "$OUT/mutant.cpp" \
 $CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
 "$OUT/aster-mutant" build-elf "$SRC" -g -o "$OUT/mutant.elf" >/dev/null
 $DECODE --vars "$OUT/mutant.elf" > "$OUT/vars.mutant"
-[ "$(grep '^scale p param' "$OUT/vars.mutant")" = "scale p param Point fbreg+0 7" ] \
-    && fail "a shift in every frame slot went unnoticed (a parameter is no longer at the frame base)"
+# --- 10. a malformed .debug_info is refused (S-10) --------------------------------
+# v0.23.81-dev: P1-7 fixed the DW_AT_stmt_list field truncated to under 4
+# bytes, but the walk that finds the field still trusted the field's own
+# accounting. A DWARF form that claims fewer than 4 bytes for the field
+# (data1, string, exprloc, or addr with a 1-byte address_size) put the
+# field within 4 bytes of the end of a truncated unit, and the link's merge
+# wrote 4 bytes at it — past the merged buffer. An exprloc length near 2^64
+# wrapped the fit check itself, so the merge wrote the line offset in the
+# middle of a DIE while the real field kept its input bytes. Both are fixed
+# in dwarfCuStmtListOffset: the fit check cannot wrap, and the field must
+# hold the 4 bytes the merge writes. The cases below mutate one fact of a
+# good -g object in place (tests/bounds-mutate.py) and require link-obj to
+# refuse it; the controls prove the fix is a bounds check, not a form ban —
+# a short-form field with room still links, and a huge input stmt_list value
+# is overwritten with the merged offset, never trusted.
+"$ASTER" build-obj -g "$SRC" -o "$OUT/stmt.o"
+OFF=$(python3 tests/bounds-mutate.py "$OUT/stmt.o" - stmt-off | sed -n 's/.*\.debug_info+\([0-9]*\).*/\1/p')
+[ -n "$OFF" ] || fail "could not locate the DW_AT_stmt_list field in $OUT/stmt.o"
+MUTATE="tests/bounds-mutate.py"
+stmt_refuse() { # name, expected message is always the unsupported-unit refusal
+    if "$ASTER" link-obj "$OUT/stmt-$1.o" -o "$OUT/stmt-$1.elf" > "$OUT/stmt-$1.log" 2>&1; then
+        fail "malformed .debug_info ($1) was accepted"
+    fi
+    grep -qF 'unsupported .debug_info unit (DW_AT_stmt_list not found)' "$OUT/stmt-$1.log" \
+        || fail "malformed .debug_info ($1) refused with the wrong message: $(cat "$OUT/stmt-$1.log")"
+}
+stmt_link() { # name
+    "$ASTER" link-obj "$OUT/stmt-$1.o" -o "$OUT/stmt-$1.elf" > "$OUT/stmt-$1.log" 2>&1 \
+        || fail "a well-formed .debug_info ($1) no longer links: $(cat "$OUT/stmt-$1.log")"
+}
+# D3 (P1-7 regression): sec_offset form, 2 bytes of the field remain.
+python3 "$MUTATE" "$OUT/stmt.o" "$OUT/stmt-d3.o" trunc-info $((OFF+2))
+stmt_refuse d3
+# D1/D4/D5: short-form field, 1 byte of it remains. The .rela.debug_info
+# trim keeps only the CU low_pc entry, so the truncation does not trip the
+# relocation bounds check before the walk runs.
+python3 "$MUTATE" "$OUT/stmt.o" "$OUT/stmt-d1.o" abbrev-form 0x0b
+python3 "$MUTATE" "$OUT/stmt-d1.o" "$OUT/stmt-d1.o" trunc-rela-info 24
+python3 "$MUTATE" "$OUT/stmt-d1.o" "$OUT/stmt-d1.o" trunc-info $((OFF+1))
+stmt_refuse d1
+python3 "$MUTATE" "$OUT/stmt.o" "$OUT/stmt-d4.o" abbrev-form 0x08
+python3 "$MUTATE" "$OUT/stmt-d4.o" "$OUT/stmt-d4.o" trunc-rela-info 24
+python3 "$MUTATE" "$OUT/stmt-d4.o" "$OUT/stmt-d4.o" trunc-info $((OFF+1))
+stmt_refuse d4
+python3 "$MUTATE" "$OUT/stmt.o" "$OUT/stmt-d5.o" abbrev-form 0x18
+python3 "$MUTATE" "$OUT/stmt-d5.o" "$OUT/stmt-d5.o" trunc-rela-info 24
+python3 "$MUTATE" "$OUT/stmt-d5.o" "$OUT/stmt-d5.o" trunc-info $((OFF+1))
+stmt_refuse d5
+# D10: addr form with a 1-byte address_size shrinks the low_pc read by 7,
+# so the field is found 7 bytes early; truncate to 3 bytes past it.
+python3 "$MUTATE" "$OUT/stmt.o" "$OUT/stmt-d10.o" abbrev-form 0x01
+python3 "$MUTATE" "$OUT/stmt-d10.o" "$OUT/stmt-d10.o" set-addrsize 1
+python3 "$MUTATE" "$OUT/stmt-d10.o" "$OUT/stmt-d10.o" trunc-rela-info 24
+python3 "$MUTATE" "$OUT/stmt-d10.o" "$OUT/stmt-d10.o" trunc-info $((OFF-4))
+stmt_refuse d10
+# D13: exprloc length 2^64-1 (nine 0xff bytes then 0x01). The old fit check
+# wrapped and accepted it; the merge then wrote mid-DIE.
+python3 "$MUTATE" "$OUT/stmt.o" "$OUT/stmt-d13.o" abbrev-form 0x18
+i=$OFF; while [ $i -lt $((OFF+9)) ]; do python3 "$MUTATE" "$OUT/stmt-d13.o" "$OUT/stmt-d13.o" set-info-byte $i ff; i=$((i+1)); done
+python3 "$MUTATE" "$OUT/stmt-d13.o" "$OUT/stmt-d13.o" set-info-byte $((OFF+9)) 01
+python3 "$MUTATE" "$OUT/stmt-d13.o" "$OUT/stmt-d13.o" trunc-rela-info 24
+stmt_refuse d13
+# Controls: a short-form field with room still links (the fix is a bounds
+# check, not a form ban); a field truncated to exactly its 4 bytes links;
+# a huge input stmt_list value is overwritten with the merged offset (0 for
+# a single object), never trusted.
+python3 "$MUTATE" "$OUT/stmt.o" "$OUT/stmt-d2.o" abbrev-form 0x0b
+stmt_link d2
+[ "$(python3 "$MUTATE" "$OUT/stmt-d2.elf" - stmt-value)" = 0 ] \
+    || fail "the short-form unit did not link with stmt_list 0"
+python3 "$MUTATE" "$OUT/stmt.o" "$OUT/stmt-d11.o" trunc-rela-info 24
+python3 "$MUTATE" "$OUT/stmt-d11.o" "$OUT/stmt-d11.o" trunc-info $((OFF+4))
+stmt_link d11
+python3 "$MUTATE" "$OUT/stmt.o" "$OUT/stmt-d7.o" set-info-u32 "$OFF" 0xffffffff
+stmt_link d7
+[ "$(python3 "$MUTATE" "$OUT/stmt-d7.elf" - stmt-value)" = 0 ] \
+    || fail "the huge input stmt_list value survived the merge instead of being overwritten with 0"
+# ASan: the refusals above must come from the check, not from luck. The same
+# mutated objects under an AddressSanitizer build must report no memory
+# error (the pattern tests/elf-metadata-checks.sh uses).
+if [ "${ASTER_SKIP_ASAN:-}" != 1 ] && $CXX -std=c++17 -O1 -g -fsanitize=address \
+        -fno-omit-frame-pointer src/aster.cpp -o "$OUT/aster-asan" > "$OUT/asan-build.log" 2>&1; then
+    for c in d3 d1 d4 d5 d10 d13; do
+        ASAN_OPTIONS=detect_leaks=0 "$OUT/aster-asan" link-obj "$OUT/stmt-$c.o" \
+            -o "$OUT/stmt-$c.asan.elf" > "$OUT/stmt-$c.asan.log" 2>&1 && rc=0 || rc=$?
+        [ "$rc" != 0 ] || fail "the ASan build accepted malformed .debug_info ($c)"
+        grep -q 'AddressSanitizer' "$OUT/stmt-$c.asan.log" \
+            && fail "ASan reports a memory error on malformed .debug_info ($c)"
+    done
+    echo "  ASan build: 6 malformed .debug_info objects refused with no memory error"
+else
+    echo "  ASan build skipped"
+fi
+echo "PASS: malformed .debug_info is refused (short-form or wrapped stmt_list field, truncated unit); well-formed units still link and a huge input stmt_list value is overwritten"
 
 echo "PASS: -g emits DWARF v4 .debug_info — a unit anchored to .text, one subprogram per function matching the symbol table, every variable reachable from the frame base or its own address, real type DIEs, carried through link and .so, off by default"

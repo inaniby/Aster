@@ -462,10 +462,17 @@ prev_rows=$(wc -l < "$PREV")
 # or any other non-reproducible write fails on the first row it touches.
 moved=$(awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' "$PREV" "$BASE")
 if [ -n "$moved" ]; then
-    non_so=$(printf '%s\n' "$moved" | grep -vc '\.build-so$' || true)
-    [ "$non_so" = 0 ] \
-        || fail "a non-.build-so inherited byte moved: $(printf '%s\n' "$moved" | grep -v '\.build-so$' | head -5)"
-    printf '  %-40s %s\n' '.build-so rows re-pinned by A-16' "$(printf '%s\n' "$moved" | wc -l)"
+    # v0.23.81-dev (H-4/C-2): the two @embed examples also move in their
+    # .build-obj_--pic rows (the per-file blob symbol names); those two
+    # rows join the .build-so rows as the only permitted movement.
+    # v0.23.81-dev (M3.6): lifecycle's .build-obj_--pic row also moves —
+    # the example was rewritten to install the correct 16-slot
+    # ANativeActivityCallbacks table; that row was re-pinned in this
+    # version's snapshot.
+    other=$(printf '%s\n' "$moved" | grep -v '\.build-so$' | grep -v -e '^embed_align\.build-obj_--pic$' -e '^icon_text_demo\.build-obj_--pic$' -e '^lifecycle\.build-obj_--pic$' || true)
+    [ -z "$other" ] \
+        || fail "an inherited byte moved outside the A-16/H-4/M3.6 re-pins: $(printf '%s\n' "$other" | head -5)"
+    printf '  %-40s %s\n' '.build-so + @embed + lifecycle rows re-pinned (A-16/H-4/M3.6)' "$(printf '%s\n' "$moved" | wc -l)"
 else
     printf '  %-40s %s\n' 'inherited rows byte-identical' "$prev_rows"
 fi

@@ -11,6 +11,9 @@
 #   * every imported object has a .got slot with R_AARCH64_GLOB_DAT inside the DT_RELA range;
 #   * DT_HASH resolves the exported and the imported names;
 #   * `link-so` merges several objects and resolves their mutual references inside the .so.
+#   * `link-so` stores a defined function's address (a callback table entry) as
+#     R_AARCH64_RELATIVE, never as a GLOB_DAT import of an UND OBJECT duplicate
+#     of the same name (v0.23.81-dev H-2; the build-so path already did this).
 set -eu
 [ -x ./aster ] || { echo "build ./aster first" >&2; exit 2; }
 READELF=${READELF:-readelf}
@@ -23,6 +26,72 @@ READELF=${READELF:-readelf}
 ./aster link-so tmp-dyn-import.o -o tmp-dyn-import-linked.so --soname libdyn-import-linked.so --needed libdyn.so
 ./aster link-so tmp-dyn-a.o tmp-dyn-b.o -o tmp-dyn-linked.so --soname liblinked.so
 ./aster build-so examples/link_so_client.ast -o tmp-dyn-client.so --needed liblinked.so
+# v0.23.81-dev (H-2): a callback table that stores the addresses of functions
+# defined in the same link. The table TU defines the callbacks and takes their
+# addresses; the second TU only calls through the table. Taking the address of
+# an extern function is refused by the language itself, so the GLOB_DAT
+# self-reference this guards against is always a same-link definition.
+cat > tmp-dyn-funcaddr-a.ast <<'AST'
+fn cb_add(x: i32) -> i32 { return x + 1; }
+fn cb_mul(x: i32) -> i32 { return x * 2; }
+let table: ptr[2] = 0;
+fn install() -> i32 {
+    table[0] = cb_add;
+    table[1] = cb_mul;
+    return 0;
+}
+fn call_first(x: i32) -> i32 {
+    let f: fn(i32) -> i32 = table[0];
+    return f(x);
+}
+AST
+cat > tmp-dyn-funcaddr-b.ast <<'AST'
+extern fn install() -> i32;
+extern fn call_first(x: i32) -> i32;
+fn run() -> i32 {
+    install();
+    return call_first(41);
+}
+AST
+./aster build-obj --pic tmp-dyn-funcaddr-a.ast -o tmp-dyn-funcaddr-a.o
+./aster build-obj --pic tmp-dyn-funcaddr-b.ast -o tmp-dyn-funcaddr-b.o
+./aster link-so tmp-dyn-funcaddr-a.o tmp-dyn-funcaddr-b.o -o tmp-dyn-funcaddr.so --soname libfuncaddr.so
+# v0.23.81-dev (ELF-P2-1): the same callback table, but with no --soname and
+# no imports at all, takes the non-Dyn writer — which used to die with
+# "undefined global variable symbol '__aster_gat_cb_add'".
+./aster build-so tmp-dyn-funcaddr-a.ast -o tmp-dyn-funcaddr-nodyn.so
+# v0.23.81-dev (ELF-P2-2): one TU calls `extern fn f`, another reads
+# `extern let f` — the same name lands in importFuncs and importObjects.
+cat > tmp-dyn-dupimp-call.ast <<'AST'
+extern fn f() -> i32;
+fn run() -> i32 { return f(); }
+AST
+cat > tmp-dyn-dupimp-data.ast <<'AST'
+extern let f: i32;
+fn getf() -> i32 { return f; }
+AST
+./aster build-obj --pic tmp-dyn-dupimp-call.ast -o tmp-dyn-dupimp-call.o
+./aster build-obj --pic tmp-dyn-dupimp-data.ast -o tmp-dyn-dupimp-data.o
+./aster link-so tmp-dyn-dupimp-call.o tmp-dyn-dupimp-data.o -o tmp-dyn-dupimp.so --soname libdupimp.so
+# v0.23.81-dev (ELF-P2-2): a kind conflict between TUs — one defines `f` as
+# data, another calls it as a function — must fail loudly, never emit a .so
+# whose .dynsym holds a defined OBJECT `f` and an UND FUNC `f` at once.
+cat > tmp-dyn-kindconf-def.ast <<'AST'
+let f: i32 = 7;
+fn getf() -> i32 { return f; }
+AST
+cat > tmp-dyn-kindconf-call.ast <<'AST'
+extern fn f() -> i32;
+fn run() -> i32 { return f(); }
+AST
+./aster build-obj --pic tmp-dyn-kindconf-def.ast -o tmp-dyn-kindconf-def.o
+./aster build-obj --pic tmp-dyn-kindconf-call.ast -o tmp-dyn-kindconf-call.o
+if ./aster link-so tmp-dyn-kindconf-def.o tmp-dyn-kindconf-call.o -o tmp-dyn-kindconf.so --soname libkindconf.so 2>tmp-dyn-kindconf.err; then
+    echo 'FAIL: link-so accepted a call to a symbol defined as data'
+    exit 1
+fi
+grep -q "defined as a global but called as a function" tmp-dyn-kindconf.err || { echo 'FAIL: kind-conflict error message missing'; exit 1; }
+echo 'PASS: link-so refuses a call to a symbol defined as data (kind conflict between TUs)'
 
 python3 - <<'PY'
 import struct
@@ -220,6 +289,68 @@ strs = b[sec['.dynstr'][4]:sec['.dynstr'][4]+sec['.dynstr'][5]]
 sonames = [strs[v:].split(b'\0')[0].decode() for v in dyn.get(14, [])]
 assert sonames == ['liblinked.so'], sonames
 print('PASS: link-so sets DT_SONAME from --soname')
+
+# ---------------------------------------------------------------- link-so: defined-function addresses are RELATIVE, not GLOB_DAT
+# v0.23.81-dev (H-2): before the fix the GAT loop pushed every defined
+# function whose address was taken into spec.importObjects, so the .so
+# carried an UND OBJECT duplicate of cb_add/cb_mul and a GLOB_DAT relocation
+# pointing at it (the reference check_so.py gate failed 30/30 on libuihello).
+# The writer already emitted RELATIVE for funcAddrRefs; only the link-so
+# feeder was missing the classification build-so has.
+b = load('tmp-dyn-funcaddr.so'); sec = sections(b); dyn = dynamic(b, sec)
+syms = dynsyms(b, sec)
+defs = {n for i, (n, info, sh, v, s) in enumerate(syms) if sh != 0}
+undef = {n for i, (n, info, sh, v, s) in enumerate(syms) if i and sh == 0}
+assert 'cb_add' in defs and 'cb_mul' in defs, sorted(defs)
+assert 'cb_add' not in undef and 'cb_mul' not in undef, sorted(undef)
+glob = [r for r in relocs(b, sec, '.rela.dyn') if r[2] == 1025]
+assert not glob, [(r, syms[r[1]][0]) for r in glob]
+rel = [r for r in relocs(b, sec, '.rela.dyn') if r[2] == 1027]
+export_vaddr = {n: v for n, info, sh, v, s in syms if sh != 0}
+cb_rel = sorted(r[3] for r in rel if r[3] in (export_vaddr['cb_add'], export_vaddr['cb_mul']))
+assert cb_rel == sorted([export_vaddr['cb_add'], export_vaddr['cb_mul']]), cb_rel
+print('PASS: link-so stores defined-function addresses as R_AARCH64_RELATIVE (no GLOB_DAT self-reference for cb_add/cb_mul)')
+
+# ---------------------------------------------------------------- build-so without --soname: defined-function addresses in the non-Dyn writer
+# v0.23.81-dev (ELF-P2-1): the non-Dyn writer had no GOT slot for a defined
+# function, so this build used to fail outright. Now it must look exactly like
+# the Dyn-writer shape: no undefined imports, RELATIVE relocations whose
+# addends are the two callback addresses (plus the table global), and a
+# DT_RELACOUNT that counts all three.
+b = load('tmp-dyn-funcaddr-nodyn.so'); sec = sections(b); dyn = dynamic(b, sec)
+syms = dynsyms(b, sec)
+assert not [n for n, info, sh, v, s in syms if n and sh == 0], syms
+assert 'cb_add' in [n for n, info, sh, v, s in syms if sh != 0]
+# The non-Dyn writer lists only exported functions in .dynsym, so the table
+# global's address is read off the Dyn-writer twin of the same source (the
+# two writers lay .text out identically — the twin's cb_add/cb_mul values
+# must match this file's too).
+tb = load('tmp-dyn-funcaddr.so'); tsec = sections(tb)
+twin_vaddr = {n: v for n, info, sh, v, s in dynsyms(tb, tsec) if sh != 0}
+own_vaddr = {n: v for n, info, sh, v, s in syms if sh != 0}
+assert own_vaddr['cb_add'] == twin_vaddr['cb_add'] and own_vaddr['cb_mul'] == twin_vaddr['cb_mul']
+rel = [r for r in relocs(b, sec, '.rela.dyn') if r[2] == 1027]
+assert sorted(r[3] for r in rel) == sorted([twin_vaddr['cb_add'], twin_vaddr['cb_mul'], twin_vaddr['table']]), rel
+assert dyn[1879048185][0] == 3, ('DT_RELACOUNT', dyn[1879048185])
+assert not [r for r in relocs(b, sec, '.rela.dyn') if r[2] == 1025], 'no GLOB_DAT expected'
+print('PASS: build-so without --soname stores defined-function addresses as R_AARCH64_RELATIVE (non-Dyn writer)')
+
+# ---------------------------------------------------------------- link-so: one name imported as both function and object
+# v0.23.81-dev (ELF-P2-2): before the fix .dynsym held an empty-named NOTYPE
+# slot (the orphaned FUNC import) plus an UND OBJECT `f`, and both the
+# GLOB_DAT and the JUMP_SLOT pointed at the OBJECT slot. Now `f` appears
+# exactly once, as UND FUNC, and both relocations reference that one entry.
+b = load('tmp-dyn-dupimp.so'); sec = sections(b); dyn = dynamic(b, sec)
+syms = dynsyms(b, sec)
+assert all(syms[i][0] for i in range(1, len(syms))), syms
+assert [n for n, info, sh, v, s in syms].count('f') == 1, syms
+fidx = [i for i, (n, info, sh, v, s) in enumerate(syms) if n == 'f'][0]
+assert syms[fidx][1] == 0x12 and syms[fidx][2] == 0, syms[fidx]
+glob = [r for r in relocs(b, sec, '.rela.dyn') if r[2] == 1025]
+jump = [r for r in relocs(b, sec, '.rela.plt') if r[2] == 1026]
+assert [r[1] for r in glob] == [fidx] and [r[1] for r in jump] == [fidx], (glob, jump)
+assert hash_lookup(b, sec, 'f'), 'DT_HASH lookup failed for f'
+print('PASS: a name imported as both function and object gets one UND FUNC .dynsym entry serving both JUMP_SLOT and GLOB_DAT')
 
 # ---------------------------------------------------------------- link-so client: real imports
 b = load('tmp-dyn-client.so'); sec = sections(b); dyn = dynamic(b, sec)

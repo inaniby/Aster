@@ -1,0 +1,15 @@
+// v0.23.80-dev (E-01): the regression probe for the bootstrap local-array
+// slot bug. Before the fix, `a` (i32[4]) only reserved one slot, so `b`
+// (u8[8]) and the following local `c` landed on a[2]/a[3]'s addresses:
+// a[2] came back 3 (from b[0]) and c overwrote it with 9. The fixed
+// bootstrap must return 5; the buggy one returns 3. This fixture is also
+// executed by bootstrap-loop-checks.sh [6/7] (run_product), not only
+// byte-compared by codegen-checks.sh.
+fn main() -> i32 {
+    let a: i32[4] = 5;
+    let b: u8[8] = 0;
+    b[0] = 3;
+    let c: i32 = 9;
+    if (a[2] == 5 && a[3] == 5 && b[0] == 3 && c == 9) { return 5; }
+    return 3;
+}

@@ -16,3 +16,8 @@ printf '%s\n' '[3/4] Compile C ABI harness'
 ${HOSTCC:-clang} -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror tests/c-mixed-ptr-stack-host.c -ldl -o "$OUT/c-mixed-ptr-stack-host"
 printf '%s\n' '[4/4] Run mixed ABI tests'
 run "$OUT/c-mixed-ptr-stack-host" "$PWD/$OUT/libaster_mixed_ptr_stack.so"
+
+# v0.23.80-dev (G-01): the gate fails a suite that exits 0 without a
+# PASS/OK line, and this suite used to print none — the harness above is
+# the assertion, so reaching here is the pass.
+echo 'PASS: e2e-c-mixed-ptr-stack (C harness ran mixed ABI cases against the .so)'
