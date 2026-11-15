@@ -15843,6 +15843,8 @@ static bool haveProgram(const std::string& name){
 struct ProjectSpec {
     std::string kind="exe";          // exe | apk
     std::string name, package, abi="arm64-v8a", label;
+    int versionCode=1;               // apk only; 1..2100000000 like build-apk
+    std::string versionName="1.0";   // apk only
     int minSdk=21, targetSdk=30;
     uint64_t pageSize=0;             // 0 = use the command line / default
     std::string signMode="debug";    // debug | release
@@ -15852,8 +15854,9 @@ struct ProjectSpec {
     std::vector<std::string> tests;  // `test <path>` lines
 };
 // v0.23.77-dev: aster.proj is line-oriented. `kind`, `package`, `name`, `abi`,
-// `label`, `min-sdk`, `target-sdk` and `page-size` are settings; every other
-// non-comment line is a source path, in link order.
+// `label`, `version-code`, `version-name`, `min-sdk`, `target-sdk` and
+// `page-size` are settings; every other non-comment line is a source path, in
+// link order.
 static ProjectSpec parseProjectFile(const std::string& path){
     const std::string txt=readFile(path);
     ProjectSpec spec; std::string cur;
@@ -15896,6 +15899,20 @@ static ProjectSpec parseProjectFile(const std::string& path){
         }
         else if(k=="abi") spec.abi=v;
         else if(k=="label") spec.label=v;
+        else if(k=="version-code"){
+            // v0.23.82-dev: an apk project has to carry its own version, or
+            // `aster build` writes versionCode 1 / versionName "1.0" and a
+            // rebuild of an existing app looks like a downgrade to the
+            // installer. The range matches build-apk's --version-code
+            // (1..2100000000); the default keeps old projects unchanged.
+            char* end=nullptr; long n=std::strtol(v.c_str(),&end,10);
+            if(!end||*end||n<1||n>2100000000L)throw Error(path+": version-code must be a decimal integer between 1 and 2100000000 (got \""+v+"\")");
+            spec.versionCode=(int)n;
+        }
+        else if(k=="version-name"){
+            if(v.empty())throw Error(path+": version-name must not be empty");
+            spec.versionName=v;
+        }
         else if(k=="min-sdk"||k=="target-sdk"){
             char* end=nullptr; long n=std::strtol(v.c_str(),&end,10);
             if(!end||*end||n<0||n>1000)throw Error(path+": "+k+" must be a small decimal integer (got \""+v+"\")");
@@ -16437,6 +16454,12 @@ int main(int argc,char**argv){
                     say(" ok ",std::string("project: kind ")+spec.kind+
                         (spec.name.empty()?"":" name "+spec.name)+
                         (spec.package.empty()?"":" package "+spec.package));
+                    // v0.23.82-dev: the version an apk build stamps into the
+                    // manifest, so a project that forgot it shows up here
+                    // before the installer refuses the "downgrade".
+                    if(spec.kind=="apk")
+                        say("ok  ",std::string("version ")+std::to_string(spec.versionCode)+
+                            " ("+spec.versionName+")");
                     int missing=0;
                     for(const auto& sp:spec.sources)if(!fileExists(sp)){++missing;say("fail","missing source: "+sp);}
                     if(missing==0)say("ok  ",std::to_string(spec.sources.size())+" source"+((spec.sources.size()==1)?"":"s")+" present");
@@ -16710,7 +16733,7 @@ int main(int argc,char**argv){
                 std::vector<uint8_t> so(soText.begin(),soText.end());
                 const std::string label=spec.label.empty()?name:spec.label;
                 int r=buildApk(out,spec.package,name,spec.abi,so,spec.minSdk,spec.targetSdk,label,
-                               1,"1.0",{},key,true,false,false,filePage);
+                               spec.versionCode,spec.versionName,{},key,true,false,false,filePage);
                 if(r!=0)return r;
                 std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n";
                 return 0;

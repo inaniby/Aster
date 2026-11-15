@@ -18,6 +18,7 @@
 #       (no hash at all) fails closed to a recompile
 set -eu
 cd "$(dirname "$0")/.."
+ROOT=$(pwd)
 # v0.23.77-dev (host adaptation): run AArch64 products through the shared
 # runner. It executes them natively on an AArch64/Termux host and under qemu
 # elsewhere, so the very same suite is valid on both kinds of machine.
@@ -397,6 +398,35 @@ set -e
 [ "$full_apk_rc" != 0 ] || { echo 'FAIL: an apk project build to /dev/full exited 0' >&2; exit 1; }
 grep -q 'failed writing /dev/full' fullapk.log || {
     echo 'FAIL: the apk project /dev/full failure was reported for the wrong reason:' >&2; cat fullapk.log >&2; exit 1; }
+# v0.23.82-dev: an apk project carries its own version. Without the fields
+# the build stamps versionCode 1 / versionName "1.0"; with them the manifest
+# carries the project's version, so rebuilding an existing app never looks
+# like a downgrade to the installer.
+cd "$WORK/apkapp"
+printf 'kind apk\npackage com.example.apkapp\nversion-code 19\nversion-name 2.7.1\nsrc/main.ast\n' > aster.proj
+"$ASTER" build > apkver.log 2>&1
+python3 "$ROOT/tests/validate_apk.py" build/apkapp.apk --package com.example.apkapp --libname apkapp --abi arm64-v8a > apkvercheck.log 2>&1 || {
+    echo 'FAIL: the versioned project APK did not validate:' >&2; cat apkvercheck.log >&2; exit 1; }
+grep -q 'verCode=19' apkvercheck.log || {
+    echo 'FAIL: version-code 19 did not reach the manifest:' >&2; cat apkvercheck.log >&2; exit 1; }
+grep -q "verName='2.7.1'" apkvercheck.log || {
+    echo 'FAIL: version-name 2.7.1 did not reach the manifest:' >&2; cat apkvercheck.log >&2; exit 1; }
+"$ASTER" doctor > apkverdoc.log 2>&1
+grep -q 'version 19 (2.7.1)' apkverdoc.log || {
+    echo 'FAIL: doctor did not report the project version:' >&2; cat apkverdoc.log >&2; exit 1; }
+# invalid versions fail closed, with the range in the message
+for bad in 'version-code 0' 'version-code 2100000001' 'version-code abc' 'version-code 12x'; do
+    printf 'kind apk\npackage com.example.apkapp\n%s\nsrc/main.ast\n' "$bad" > aster.proj
+    set +e; "$ASTER" build > apkbadv.log 2>&1; bad_rc=$?; set -e
+    [ "$bad_rc" != 0 ] || { echo "FAIL: aster build accepted '$bad':" >&2; cat apkbadv.log >&2; exit 1; }
+    grep -q 'version-code must be a decimal integer between 1 and 2100000000' apkbadv.log || {
+        echo "FAIL: '$bad' was refused for the wrong reason:" >&2; cat apkbadv.log >&2; exit 1; }
+done
+printf 'kind apk\npackage com.example.apkapp\nversion-name\nsrc/main.ast\n' > aster.proj
+set +e; "$ASTER" build > apkbadv2.log 2>&1; bad2_rc=$?; set -e
+[ "$bad2_rc" != 0 ] || { echo 'FAIL: aster build accepted an empty version-name' >&2; exit 1; }
+grep -q 'version-name must not be empty' apkbadv2.log || {
+    echo 'FAIL: the empty version-name refusal is wrong:' >&2; cat apkbadv2.log >&2; exit 1; }
 cd "$WORK/app"
 set +e
 "$ASTER" build -o /dev/full > full-exe.log 2>&1
