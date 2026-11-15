@@ -7,6 +7,12 @@ verifier -- a machine without it still gets every check, and says so):
   [1] ZIP container integrity (every entry's stored CRC-32 matches its bytes)
   [2] APK layout: AndroidManifest.xml, lib/<abi>/lib<name>.so, META-INF/{MANIFEST.MF,CERT.SF,CERT.RSA}
   [3] the .so is 4 KiB-aligned inside the ZIP (required by the Android loader for mmap)
+  [3a] resources.arsc and AndroidManifest.xml are STORED and 4-byte aligned
+      (since API 30 the installer refuses an unaligned stored resources.arsc)
+  [3b] NativeActivity .so DT_NEEDED / external imports
+  [3c] local entries are contiguous from offset 0 (the system installer
+      scans local headers sequentially; a raw gap before a header breaks
+      the device parse while every central-directory check passes)
   [4] binary AXML parse of AndroidManifest.xml (custom parser, no aapt/androguard):
       package, versionCode, versionName, minSdk, targetSdk, activities,
       launcher category, android.app.lib_name meta-data, android:icon reference
@@ -432,6 +438,38 @@ def validate(path, want_pkg=None, want_lib=None, want_abi="arm64-v8a", want_labe
             allok = fail("%s data starts at %d (not %d-aligned)" % (n, off, want_page_size)); so_align_ok = False
     if so_align_ok: ok("all .so entries %d-byte aligned" % want_page_size)
 
+    print("[3a] resources.arsc / AndroidManifest.xml 4-byte alignment")
+    # Since API 30 the installer refuses an APK whose resources.arsc is stored
+    # uncompressed but not 4-byte aligned (INSTALL_FAILED_INVALID_APK, -124:
+    # "Targeting R+ requires the resources.arsc of installed APKs to be stored
+    # uncompressed and aligned on a 4-byte boundary"). Some devices do not
+    # enforce it, so an APK can install on one phone and fail on another.
+    # The manifest is held to the same bar: it is binary XML read in 4-byte
+    # words. Both must be STORED (method 0) and start on a 4-byte boundary.
+    # The data offset comes from the LOCAL header (header + 30 + name + extra),
+    # not the central directory, because the two extra fields may differ.
+    align_ok = True
+    for n in ("resources.arsc", "AndroidManifest.xml"):
+        idx = raw.find(b"PK\x03\x04")
+        off = None
+        method = None
+        while idx != -1:
+            name_len = struct.unpack_from('<H', raw, idx + 26)[0]
+            extra_len = struct.unpack_from('<H', raw, idx + 28)[0]
+            fname = raw[idx + 30: idx + 30 + name_len].decode('utf-8', 'replace')
+            if fname == n:
+                off = idx + 30 + name_len + extra_len
+                method = struct.unpack_from('<H', raw, idx + 8)[0]
+                break
+            idx = raw.find(b"PK\x03\x04", idx + 4)
+        if off is None:
+            allok = fail("cannot locate local header for %s" % n); align_ok = False; break
+        if method != 0:
+            allok = fail("%s is compressed (method %d), must be STORED" % (n, method)); align_ok = False
+        elif off % 4 != 0:
+            allok = fail("%s data starts at %d (not 4-byte aligned)" % (n, off)); align_ok = False
+    if align_ok: ok("resources.arsc and AndroidManifest.xml STORED and 4-byte aligned")
+
     print("[3b] NativeActivity .so DT_NEEDED / external imports")
     # Guard against the classic launch crash: a NativeActivity .so that calls
     # extern NDK functions (__android_log_print, ANativeActivity_finish, ...) but
@@ -495,6 +533,57 @@ def validate(path, want_pkg=None, want_lib=None, want_abi="arm64-v8a", want_labe
         allok=fail("UND imports lack DT_NEEDED (crash at dlopen): %s" % missing)
     else:
         ok("all strict NDK imports resolve via DT_NEEDED")
+
+    print("[3c] local entries are contiguous from offset 0")
+    # The system installer scans local headers sequentially from offset 0
+    # (libziparchive/PackageParser); it does not start from the central
+    # directory the way zipfile and apksigner do. A raw gap before a local
+    # header — the old alignment padding — makes the device parse fail while
+    # every desktop check passes (a v2.8 Gallery built that way was refused
+    # on a real device). Entries must tile [0, signing block start) with no
+    # gaps; the first header is at 0. Alignment padding lives in the local
+    # header's extra field (zipalign/apksigner layout), which this walk
+    # counts as part of the header, not as a gap.
+    eocd = raw.rfind(b"PK\x05\x06")
+    cd_start = struct.unpack_from("<I", raw, eocd + 16)[0] if eocd != -1 else None
+    mag = raw.find(b"APK Sig Block 42")
+    # The walk ends at the signing block (or the central directory when
+    # there is none): walking up to cd_start would try to parse the block's
+    # size field as a local header. A magic with a size that lands outside
+    # [0, cd_start] is a malformed block — [6] reports it, so the walk is
+    # skipped instead of failing with the wrong message.
+    walk_end = cd_start; skip_reason = None
+    if mag != -1:
+        size_tail = struct.unpack_from("<Q", raw, mag - 8)[0]
+        sb_start = mag + 16 - (size_tail + 8)
+        if sb_start < 0 or (cd_start is not None and sb_start > cd_start):
+            skip_reason = "a malformed signing block is section [6]'s error to report"
+        else:
+            walk_end = sb_start
+    p = 0; walked = 0; skipped = skip_reason; contig_ok = True
+    while walk_end is not None and p < walk_end and not skipped:
+        if raw[p:p+4] != b"PK\x03\x04":
+            allok = fail("local entries are not contiguous: expected a local header at offset %d" % p); contig_ok = False; break
+        nl, el = struct.unpack_from("<HH", raw, p + 26)
+        flags = struct.unpack_from("<H", raw, p + 6)[0]
+        if flags & 0x08:
+            skipped = "a data descriptor hides an entry size"; break
+        cs = struct.unpack_from("<I", raw, p + 18)[0]
+        end = p + 30 + nl + el + cs
+        if end > len(raw):
+            allok = fail("local entry at offset %d runs past the end of the file" % p); contig_ok = False; break
+        p = end; walked += 1
+    if skipped:
+        ok("local-header walk skipped (%s)" % skipped)
+    elif contig_ok:
+        if walked != len(names):
+            allok = fail("local-header walk found %d entries but the central directory lists %d" % (walked, len(names)))
+        elif walk_end is not None and p != walk_end:
+            allok = fail("local entries end at %d but the %s starts at %d" % (p, "central directory" if walk_end == cd_start else "signing block", walk_end))
+        elif walk_end == cd_start:
+            ok("local entries are contiguous from offset 0, no signing block")
+        else:
+            ok("local entries are contiguous from offset 0, signing block follows immediately")
 
     print("[4] AXML binary manifest parse")
     facts = parse_axml(data["AndroidManifest.xml"])

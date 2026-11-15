@@ -14,6 +14,9 @@
 #         imm12 is 12 bits, so a compact frame over 4095 bytes corrupted the
 #         instruction. The upstream fix keeps the default 8192 frame when the
 #         wanted size does not fit, which the unpatched word already says.
+#         v0.23.81-dev raised the compact bound to 8191: frames of
+#         4096..8191 bytes now use a two-word incoming-base encoding
+#         instead of falling back to the default 8192 frame.
 #   D-02  loadVarT/storeVarT wrote the F64 immediate as slot*8, but LDR/STR D
 #         already scale imm12 by 8. A double landed eight slots away; at
 #         slot >= 128 it landed at [sp,#8192] and wrote into the caller's
@@ -78,11 +81,11 @@ assert '0xfd0003e0u|(uint32_t(slot)<<10)' in st, 'STR D immediate is not the slo
 assert '0xbd0003e0u|(uint32_t(slot*2)<<10)' in st, 'STR S scale changed'
 print('  OK F64 immediates are unscaled; F32 keeps its factor of two')
 
-assert s.count('if(want<=4095u){') == 2, 'both compact-frame bounds are gone'
-assert 'if(compact&&frameBytes!=8192u)' in s, 'the incoming-base patch lost its guard'
-assert '0x910003f0u|(frameBytes<<10)' in s, 'the legal small-frame patch is gone'
+assert s.count('if(want<=8191u){') == 2, 'both compact-frame bounds are gone'
+assert 'if(compact)\n            for(size_t at:incomingBaseWords){const auto bp=framePairX16(frameBytes);code[at]=bp.first;code[at+1]=bp.second;}' in s, 'the incoming-base patch lost its guard'
+assert '0x910003f0u|(size<<10)' in s, 'the legal small-frame patch is gone'
 assert 'if(frameBytes>8192u)frameBytes=8192u;' in s, 'frameBytes lost its 8192 clamp'
-print('  OK a compact frame above 4095 falls back to the default 8192 frame')
+print('  OK a compact frame above 8191 falls back to the default 8192 frame')
 
 assert 'bool seenDot=false, seenExp=false;' in s, 'lexer lost its one-dot/one-exp state'
 assert "!seenDot&&!seenExp&&q=='.'" in s, 'the fractional-part guard is gone'
@@ -144,10 +147,12 @@ def main():
                 print(imm12(w))
     elif cmd == 'badspadd':
         # The old defect wrote frameBytes (>=4096) into an unscaled imm12, so
-        # the shift field lit up and Rd/Rn were corrupted. 0x91400bf0 is the
-        # one legal shifted ADD X16,SP word (ADD X16, SP, #2, LSL #12).
+        # the shift field lit up and Rd/Rn were corrupted. Two shifted ADD
+        # X16,SP words are legal: 0x91400bf0 (ADD X16, SP, #2, LSL #12, the
+        # default 8192 frame) and 0x914007f0 (ADD X16, SP, #1, LSL #12, the
+        # first word of the two-word encoding for frames in (4096, 8191]).
         bad = [w for w in ws
-               if add16_sp(w) and (w & 0x00400000) and w != 0x91400bf0]
+               if add16_sp(w) and (w & 0x00400000) and w not in (0x91400bf0, 0x914007f0)]
         if bad:
             print('BAD ' + ' '.join('%08x' % w for w in bad), path)
             sys.exit(1)
@@ -265,8 +270,9 @@ for name in slot0 slot1 slot7 guard128 nine f32_ctl i32_ctl; do
 done
 
 # D-01: no ADD X16,SP immediate may overflow. Small compact frames keep a
-# legal unshifted ADD and lose the 8192 default; large ones keep 8192 (the
-# upstream fallback) and get no patch at all. Non-compact always keeps 8192.
+# legal unshifted ADD and lose the 8192 default; midrange ones (4096..8191)
+# take the two-word encoding (0x914007f0 first word, no 8192 fallback).
+# Non-compact always keeps 8192.
 for pad in 100 450 465 466; do
     insn badspadd "$W/c_p$pad" >/dev/null || fail "compact pad=$pad has an overflowing ADD X16,SP immediate"
     insn hasnt "$W/c_p$pad" 91400bf0 >/dev/null || fail "compact pad=$pad did not compact"
@@ -277,12 +283,18 @@ for pad in 100 450 465 466; do
     insn has "$W/n_p$pad" 91400bf0 >/dev/null || fail "normal pad=$pad lost ADD X16,SP,#8192"
     bump; bump
 done
+# v0.23.82-dev (D-01): pads 467..490 used to fall back to the default 8192
+# frame; the compact bound is now 8191, so these frames take the two-word
+# encoding instead. The >8191 fallback itself is pinned by the [2/9]
+# source guards (the want<=8191u bounds and the 8192 clamp).
 for pad in 467 469 480 490; do
     insn badspadd "$W/c_p$pad" >/dev/null || fail "compact pad=$pad has an overflowing ADD X16,SP immediate"
-    insn has "$W/c_p$pad" 91400bf0 >/dev/null \
-        || fail "compact pad=$pad did not fall back to the default 8192 frame"
+    insn has "$W/c_p$pad" 914007f0 >/dev/null \
+        || fail "compact pad=$pad did not take the two-word encoding"
+    insn hasnt "$W/c_p$pad" 91400bf0 >/dev/null \
+        || fail "compact pad=$pad fell back to the default 8192 frame"
     [ -z "$(insn spadd "$W/c_p$pad")" ] \
-        || fail "compact pad=$pad still patched a frame above 4095"
+        || fail "compact pad=$pad still uses a single-word ADD X16,SP"
     insn has "$W/n_p$pad" 91400bf0 >/dev/null || fail "normal pad=$pad lost ADD X16,SP,#8192"
     bump; bump
 done
@@ -492,8 +504,8 @@ mutate 'm2: loadVarT F64 immediate reverts to slot*8' \
 mutate 'm3: storeVarT F64 immediate takes the f32 scale' \
     '0xfd0003e0u|(uint32_t(slot)<<10)' \
     '0xfd0003e0u|(uint32_t(slot*2)<<10)'
-mutate 'm4: compact frames stop checking the 4095 ADD immediate bound' \
-    'if(want<=4095u){' \
+mutate 'm4: compact frames stop checking the 8191 bound' \
+    'if(want<=8191u){' \
     'if(true){' 2
 mutate 'm5: lexer takes a second fractional part again' \
     "if(!isHex&&!isBin&&!seenDot&&!seenExp&&q=='.'&&std::isdigit((unsigned char)peek(1))){" \
@@ -524,11 +536,15 @@ prev_rows=$(wc -l < "$PREV")
 # also move — the example was rewritten to install the correct 16-slot
 # ANativeActivityCallbacks table; those two rows were re-pinned in this
 # version's snapshot.
+# v0.23.81-dev (ELF-P2-1): five .build-so rows also move — the GOT-slot
+# fix lets call-stmt, cb_table, fn_ret, fn_type and type_alias link as
+# shared objects for the first time (their rows used to say FAILED);
+# those five rows were re-pinned in this version's snapshot.
 moved=$(awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' "$PREV" "$BASE")
 if [ -n "$moved" ]; then
-    bad=$(printf '%s\n' "$moved" | grep -v -e '^embed_align\.build-obj_--pic$' -e '^embed_align\.build-so$' -e '^icon_text_demo\.build-obj_--pic$' -e '^icon_text_demo\.build-so$' -e '^lifecycle\.build-obj_--pic$' -e '^lifecycle\.build-so$' || true)
-    [ -z "$bad" ] || fail "a frozen byte moved outside the H-4 @embed / M3.6 lifecycle re-pins: $(printf '%s\n' "$bad" | head -5)"
-    printf '  %-40s %s\n' '@embed + lifecycle rows re-pinned (H-4/M3.6)' "$(printf '%s\n' "$moved" | wc -l)"
+    bad=$(printf '%s\n' "$moved" | grep -v -e '^embed_align\.build-obj_--pic$' -e '^embed_align\.build-so$' -e '^icon_text_demo\.build-obj_--pic$' -e '^icon_text_demo\.build-so$' -e '^lifecycle\.build-obj_--pic$' -e '^lifecycle\.build-so$' -e '^call-stmt\.build-so$' -e '^cb_table\.build-so$' -e '^fn_ret\.build-so$' -e '^fn_type\.build-so$' -e '^type_alias\.build-so$' || true)
+    [ -z "$bad" ] || fail "a frozen byte moved outside the H-4 @embed / M3.6 lifecycle / ELF-P2-1 re-pins: $(printf '%s\n' "$bad" | head -5)"
+    printf '  %-40s %s\n' '@embed + lifecycle + ELF-P2-1 rows re-pinned (H-4/M3.6/ELF-P2-1)' "$(printf '%s\n' "$moved" | wc -l)"
 else
     printf '  %-40s %s\n' 'zero drift vs previous snapshot' "$prev_rows rows"
 fi

@@ -14393,19 +14393,24 @@ static std::vector<uint8_t> nativeActivity(const std::string& pkg, int verCode,
 
 // ---------------------------------------------------------------- ZIP (store) writer
 namespace ZIP {
-struct Entry { std::string name; std::vector<uint8_t> data; uint32_t crc; size_t offset; };
-static std::vector<uint8_t> localHeader(const std::string& name, uint32_t crc, size_t size) {
+// v0.23.82-dev: an entry may carry an alignment pad in its local header's
+// extra field (and the same bytes mirrored in its central directory record),
+// the zipalign/apksigner layout. The pad is zero bytes: the extra field is
+// opaque to every reader, and a zero-filled extra parses as a header id 0
+// record of length 0, so no parser trips over it.
+struct Entry { std::string name; std::vector<uint8_t> data; uint32_t crc; size_t offset; std::vector<uint8_t> extra; };
+static std::vector<uint8_t> localHeader(const std::string& name, uint32_t crc, size_t size, const std::vector<uint8_t>& extra = {}) {
     std::vector<uint8_t> h; auto u16=[&](uint16_t v){ h.push_back(v&0xFF); h.push_back((v>>8)&0xFF); };
     auto u32=[&](uint32_t v){ h.push_back(v&0xFF); h.push_back((v>>8)&0xFF); h.push_back((v>>16)&0xFF); h.push_back((v>>24)&0xFF); };
-    u32(0x04034b50); u16(20); u16(0); u16(0); u16(0); u16(0); u32(crc); u32((uint32_t)size); u32((uint32_t)size); u16((uint16_t)name.size()); u16(0);
-    h.insert(h.end(), name.begin(), name.end()); return h;
+    u32(0x04034b50); u16(20); u16(0); u16(0); u16(0); u16(0); u32(crc); u32((uint32_t)size); u32((uint32_t)size); u16((uint16_t)name.size()); u16((uint16_t)extra.size());
+    h.insert(h.end(), name.begin(), name.end()); h.insert(h.end(), extra.begin(), extra.end()); return h;
 }
-static std::vector<uint8_t> centralHeader(const std::string& name, uint32_t crc, size_t size, size_t offset) {
+static std::vector<uint8_t> centralHeader(const std::string& name, uint32_t crc, size_t size, size_t offset, const std::vector<uint8_t>& extra = {}) {
     std::vector<uint8_t> h; auto u16=[&](uint16_t v){ h.push_back(v&0xFF); h.push_back((v>>8)&0xFF); };
     auto u32=[&](uint32_t v){ h.push_back(v&0xFF); h.push_back((v>>8)&0xFF); h.push_back((v>>16)&0xFF); h.push_back((v>>24)&0xFF); };
     u32(0x02014b50); u16(20); u16(20); u16(0); u16(0); u16(0); u16(0); u32(crc); u32((uint32_t)size); u32((uint32_t)size);
-    u16((uint16_t)name.size()); u16(0); u16(0); u16(0); u16(0); u32(0); u32((uint32_t)offset);
-    h.insert(h.end(), name.begin(), name.end()); return h;
+    u16((uint16_t)name.size()); u16((uint16_t)extra.size()); u16(0); u16(0); u16(0); u32(0); u32((uint32_t)offset);
+    h.insert(h.end(), name.begin(), name.end()); h.insert(h.end(), extra.begin(), extra.end()); return h;
 }
 }
 
@@ -14832,6 +14837,72 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
         if (crc32(b.data() + e.dataOff, e.compSize) != e.crc) { crcOk = false; r.fail("entry " + e.name + ": CRC-32 mismatch"); }
     }
     if (crcOk) r.pass("every stored entry's CRC-32 matches its central directory record");
+    // v0.23.82-dev: since API 30 the installer refuses an APK whose
+    // resources.arsc is stored uncompressed but not 4-byte aligned
+    // (INSTALL_FAILED_INVALID_APK, -124), and the manifest is binary XML
+    // read in 4-byte words. Some devices do not enforce it, so an APK can
+    // install on one phone and fail on another — which is how this shipped
+    // unnoticed. The data offsets are already computed by readZip above.
+    bool alignOk = true;
+    for (const char* name : {"resources.arsc", "AndroidManifest.xml"}) {
+        const ZipEntry* e = findEntry(z, name);
+        if (!e) { r.fail(std::string("missing ") + name); alignOk = false; continue; }
+        if (e->method != 0) { r.fail(std::string(name) + " is compressed; it must be STORED"); alignOk = false; }
+        else if (e->dataOff % 4 != 0) { r.fail(std::string(name) + " data starts at " + std::to_string(e->dataOff) + " (not 4-byte aligned)"); alignOk = false; }
+    }
+    if (alignOk) r.pass("resources.arsc and AndroidManifest.xml are STORED and 4-byte aligned");
+    // v0.23.82-dev: the system installer scans local headers sequentially
+    // from offset 0 (libziparchive/PackageParser) — it does not start from
+    // the central directory the way zipfile, apksigner and this verifier do.
+    // A raw gap before a local header makes the device parse fail while
+    // every desktop check passes: a v2.8 Gallery built with pre-header
+    // alignment padding was refused on a real device ("package parse
+    // error") while the MT-re-signed copy of the same file installed fine.
+    // Entries must tile [0, signing block start) with no gaps. The walk
+    // ends at the signing block (found by findSigningBlock, the same
+    // function section [3] uses) or at the central directory when there is
+    // no block. A malformed block is section [3]'s error to report, so the
+    // walk is skipped then; an entry with a data descriptor (flag bit 3)
+    // hides its size from its header, so the walk cannot be trusted there
+    // either — this writer never sets that flag.
+    {
+        size_t walkEnd = z.cdStart;
+        bool skipWalk = false;
+        {
+            size_t sbS = 0, sbE = 0; std::string sbErr;
+            if (findSigningBlock(b, z, sbS, sbE, sbErr)) {
+                walkEnd = sbS;
+            } else {
+                static const char magic[16] = {'A','P','K',' ','S','i','g',' ','B','l','o','c','k',' ','4','2'};
+                if (z.cdStart >= 16 && std::memcmp(b.data() + z.cdStart - 16, magic, 16) == 0)
+                    skipWalk = true;
+            }
+        }
+        size_t p = 0, walked = 0;
+        bool walkOk = true, sawDescriptor = false;
+        while (!skipWalk && p < walkEnd) {
+            if (p + 30 > b.size() || rd32(b, p) != 0x04034b50u) { walkOk = false; break; }
+            if (rd16(b, p + 6) & 0x08) { sawDescriptor = true; break; }
+            const uint16_t nl = rd16(b, p + 26), el = rd16(b, p + 28);
+            const size_t end = p + 30 + nl + el + rd32(b, p + 18);
+            if (end > b.size()) { walkOk = false; break; }
+            p = end;
+            ++walked;
+        }
+        if (skipWalk) {
+            r.pass("local-header walk skipped (a malformed signing block is section [3]'s error to report)");
+        } else if (sawDescriptor) {
+            r.pass("local-header walk skipped (a data descriptor hides an entry size)");
+        } else if (!walkOk) {
+            r.fail("local entries are not contiguous from offset 0 (a gap before a local header breaks the system installer)");
+        } else if (walked != z.entries.size()) {
+            r.fail("local-header walk found " + std::to_string(walked) + " entries but the central directory lists " + std::to_string(z.entries.size()));
+        } else if (p != walkEnd) {
+            r.fail("local entries end at " + std::to_string(p) + " but the " + (walkEnd == z.cdStart ? std::string("central directory") : std::string("signing block")) + " starts at " + std::to_string(walkEnd));
+        } else {
+            r.pass(std::string("local entries are contiguous from offset 0") + (walkEnd == z.cdStart ? ", no signing block" : ", signing block follows immediately"));
+        }
+    }
 
     *r.log << "[2] v1 (JAR) signature\n";
     const ZipEntry *mfE = findEntry(z, "META-INF/MANIFEST.MF"),
@@ -15311,7 +15382,7 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
                                                        debuggable);
     std::vector<ZIP::Entry> entries; std::vector<uint8_t> apk;
     std::set<std::string> entryNames;
-    auto append=[&](const std::string& name, const std::vector<uint8_t>& data, bool align){
+    auto append=[&](const std::string& name, const std::vector<uint8_t>& data, uint64_t alignment){
         // Everything above builds these names from validated options, but this
         // is the last point before they become bytes: reject anything that is
         // not a plain relative path or would make two entries share a name.
@@ -15323,18 +15394,42 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
         // v0.23.55-dev: the shared-object entry must be aligned to the page size
         // so Android's 16 KB-page loader can mmap it straight out of the APK. The
         // default 4096 keeps the historical byte-for-byte APK layout unchanged.
-        if (align) { size_t lh = 30 + name.size(); size_t pad = (pageSize - ((off + lh) % pageSize)) % pageSize; if (pad) apk.insert(apk.end(), pad, 0); off = apk.size(); }
-        auto lh=ZIP::localHeader(name, crc, data.size());
+        // v0.23.82-dev: AndroidManifest.xml and resources.arsc need 4-byte
+        // alignment too. Since API 30 the installer refuses an APK whose
+        // resources.arsc is stored uncompressed but not 4-byte aligned
+        // (INSTALL_FAILED_INVALID_APK, -124), and the manifest is binary XML
+        // read in 4-byte words. The old comment said the resource table was
+        // "4-byte aligned by construction" — true of the table's own bytes,
+        // but the installer checks the ZIP data offset, which was 1 mod 4.
+        // The padding goes INSIDE the local header's extra field (the
+        // zipalign/apksigner layout), never before the header. The first
+        // version of this fix padded with raw zero bytes ahead of the local
+        // header, which left gaps between entries: the first header landed
+        // at offset 3 and a 4339-byte gap sat ahead of the .so. zipfile,
+        // apksigner and this verifier all walk the central directory, so
+        // every check passed — but the system installer scans local headers
+        // sequentially from offset 0 (libziparchive/PackageParser), and
+        // leading zero bytes make that parse fail. A v2.8 Gallery built that
+        // way was refused on a real device ("package parse error") while the
+        // MT-re-signed copy of the same file installed fine. Entries stay
+        // contiguous; the pad lives in the extra field, mirrored in the
+        // central directory record.
+        size_t pad = 0;
+        if (alignment > 1) {
+            size_t lh = 30 + name.size();
+            pad = (size_t)((alignment - ((off + lh) % alignment)) % alignment);
+            if (pad > 65535) throw Error("build-apk: alignment padding for " + name + " exceeds the ZIP extra-field limit");
+        }
+        std::vector<uint8_t> extra(pad, 0);
+        auto lh=ZIP::localHeader(name, crc, data.size(), extra);
         apk.insert(apk.end(), lh.begin(), lh.end()); apk.insert(apk.end(), data.begin(), data.end());
-        ZIP::Entry e; e.name=name; e.data=data; e.crc=crc; e.offset=off; entries.push_back(e);
+        ZIP::Entry e; e.name=name; e.data=data; e.crc=crc; e.offset=off; e.extra=extra; entries.push_back(e);
     };
-    append("AndroidManifest.xml", manifest, false);
-    append(iconPath, icon, false);
-    // The resource table is 4-byte aligned by construction, so it needs no
-    // padding of its own; the loader reads it by mmap and asks for that.
-    append("resources.arsc", arsc, false);
+    append("AndroidManifest.xml", manifest, 4);
+    append(iconPath, icon, 0);
+    append("resources.arsc", arsc, 4);
     std::string soname = "lib/" + abi + "/lib" + libname + ".so";
-    append(soname, so, true);
+    append(soname, so, pageSize);
     std::string mf = "Manifest-Version: 1.0\r\nCreated-By: Aster " + std::string(kVersion) + "\r\n\r\n";
     auto addMF=[&](const std::string& n, const std::vector<uint8_t>& d){ SHA256 s; s.upd(d.data(), d.size()); std::vector<uint8_t> h=s.fin(); mf += "Name: "+n+"\r\nSHA-256-Digest: "+b64(h)+"\r\n\r\n"; };
     addMF("AndroidManifest.xml", manifest); addMF(iconPath, icon);
@@ -15393,7 +15488,7 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     };
     appendSig("META-INF/MANIFEST.MF", mfBytes); appendSig("META-INF/CERT.SF", sfBytes); appendSig("META-INF/CERT.RSA", certRsa);
     std::vector<uint8_t> cd;
-    for (auto& e : entries) { auto ch=ZIP::centralHeader(e.name, e.crc, e.data.size(), e.offset); cd.insert(cd.end(), ch.begin(), ch.end()); }
+    for (auto& e : entries) { auto ch=ZIP::centralHeader(e.name, e.crc, e.data.size(), e.offset, e.extra); cd.insert(cd.end(), ch.begin(), ch.end()); }
     size_t cdSize=cd.size();
 
     // The APK Signing Block sits between the last local entry and the Central

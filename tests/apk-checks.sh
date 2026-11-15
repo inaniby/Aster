@@ -205,10 +205,13 @@ PY
 # never actually consulted.
 # ---------------------------------------------------------------------------
 echo "[4/7] v2 mutation: flip a byte no v1 digest covers"
-# The 4 KiB alignment padding between AndroidManifest.xml and the .so lies inside
-# the region v2 protects (everything before the Signing Block) but outside every
-# entry payload, so every CRC-32 and every MANIFEST/SF digest still passes. Only
-# the v2 chunked content digest can see this edit.
+# The alignment padding inside AndroidManifest.xml's local-header extra field
+# lies inside the region v2 protects (everything before the Signing Block) but
+# outside every entry payload, so every CRC-32 and every MANIFEST/SF digest
+# still passes. Only the v2 chunked content digest can see this edit. The pad
+# used to sit in a raw gap ahead of the local header; it moved into the extra
+# field when that layout turned out to break the system installer (which scans
+# local headers sequentially from offset 0), so the test flips a byte there now.
 python3 - <<'PY'
 import os
 import struct
@@ -216,17 +219,19 @@ raw = open(os.environ["TMPD"]+"/aster-apk-test.apk", 'rb').read()
 MAG = b"APK Sig Block 42"
 i = raw.find(MAG)
 sb_start = i + 16 - (struct.unpack_from('<Q', raw, i - 8)[0] + 8)
-# walk the local file headers to find the gap between entries
-offs = []
+# walk the local file headers to find AndroidManifest.xml's extra field
 p = raw.find(b"PK\x03\x04")
+off = None
 while p != -1 and p < sb_start:
     nl, el = struct.unpack_from('<HH', raw, p + 26)
+    fname = raw[p + 30:p + 30 + nl].decode('utf-8', 'replace')
     end = p + 30 + nl + el + struct.unpack_from('<I', raw, p + 18)[0]
-    offs.append((p, end))
+    if fname == "AndroidManifest.xml":
+        assert el > 0, 'expected alignment padding in the manifest extra field'
+        off = p + 30 + nl
+        break
     p = raw.find(b"PK\x03\x04", end)
-gaps = [(offs[k][1], offs[k + 1][0]) for k in range(len(offs) - 1) if offs[k + 1][0] > offs[k][1]]
-assert gaps, 'expected alignment padding between two entries'
-off = gaps[0][0]
+assert off is not None, 'could not locate AndroidManifest.xml'
 m = bytearray(raw)
 m[off] ^= 0xFF
 open(os.environ["TMPD"]+"/aster-v2-padding.apk", 'wb').write(bytes(m))

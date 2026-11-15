@@ -572,11 +572,15 @@ prev_rows=$(wc -l < "$PREV")
 # also move — the example was rewritten to install the correct 16-slot
 # ANativeActivityCallbacks table; those two rows were re-pinned in this
 # version's snapshot.
+# v0.23.81-dev (ELF-P2-1): five .build-so rows also move — the GOT-slot
+# fix lets call-stmt, cb_table, fn_ret, fn_type and type_alias link as
+# shared objects for the first time (their rows used to say FAILED);
+# those five rows were re-pinned in this version's snapshot.
 moved=$(awk 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' "$PREV" "$BASE")
 if [ -n "$moved" ]; then
-    bad=$(printf '%s\n' "$moved" | grep -v -e '^embed_align\.build-obj_--pic$' -e '^embed_align\.build-so$' -e '^icon_text_demo\.build-obj_--pic$' -e '^icon_text_demo\.build-so$' -e '^lifecycle\.build-obj_--pic$' -e '^lifecycle\.build-so$' || true)
-    [ -z "$bad" ] || fail "a frozen byte moved outside the H-4 @embed / M3.6 lifecycle re-pins: $(printf '%s\n' "$bad" | head -5)"
-    printf '  %-40s %s\n' '@embed + lifecycle rows re-pinned (H-4/M3.6)' "$(printf '%s\n' "$moved" | wc -l)"
+    bad=$(printf '%s\n' "$moved" | grep -v -e '^embed_align\.build-obj_--pic$' -e '^embed_align\.build-so$' -e '^icon_text_demo\.build-obj_--pic$' -e '^icon_text_demo\.build-so$' -e '^lifecycle\.build-obj_--pic$' -e '^lifecycle\.build-so$' -e '^call-stmt\.build-so$' -e '^cb_table\.build-so$' -e '^fn_ret\.build-so$' -e '^fn_type\.build-so$' -e '^type_alias\.build-so$' || true)
+    [ -z "$bad" ] || fail "a frozen byte moved outside the H-4 @embed / M3.6 lifecycle / ELF-P2-1 re-pins: $(printf '%s\n' "$bad" | head -5)"
+    printf '  %-40s %s\n' '@embed + lifecycle + ELF-P2-1 rows re-pinned (H-4/M3.6/ELF-P2-1)' "$(printf '%s\n' "$moved" | wc -l)"
 else
     printf '  %-40s %s\n' 'zero drift vs previous snapshot' "$prev_rows rows"
 fi

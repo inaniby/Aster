@@ -479,11 +479,23 @@ run_suite_isolated() {
     # died with rc=125 before running a single assertion. Ownership of the
     # extracted copy is irrelevant to the suites; the files' contents and
     # modes are what they assert on.
-    if ! tar -C "$PWD" -cf "$tarfile" \
+    # Pack the tree. GNU tar exits 1 when a file changes while it is being
+    # read ("file changed as we read it"); the archive is still complete,
+    # so that is not an isolation failure — only a fatal tar error (rc>=2)
+    # or a failed extract is. A rc=1 pack is accepted only after the
+    # archive proves itself by listing cleanly.
+    pack_rc=0
+    tar -C "$PWD" -cf "$tarfile" \
             --exclude=./.git --exclude=./.aster --exclude=./build \
             --exclude=./ci-artifacts --exclude='./tmp-*' \
-            --exclude='./*.core' --exclude='__pycache__' . 2>"$OUT/$s.copy.log" \
-            || ! tar -C "$work" -xf "$tarfile" --no-same-owner 2>>"$OUT/$s.copy.log"; then
+            --exclude='./*.core' --exclude='__pycache__' . 2>"$OUT/$s.copy.log" || pack_rc=$?
+    if [ "$pack_rc" -ge 2 ] || ! tar -tf "$tarfile" >/dev/null 2>>"$OUT/$s.copy.log"; then
+        printf 'FAIL: could not isolate the tree\n' >"$log"
+        printf '125\n' >"$OUT/$s.rc"
+        rm -rf "$work" "$tarfile"
+        return 0
+    fi
+    if ! tar -C "$work" -xf "$tarfile" --no-same-owner 2>>"$OUT/$s.copy.log"; then
         printf 'FAIL: could not isolate the tree\n' >"$log"
         printf '125\n' >"$OUT/$s.rc"
         rm -rf "$work" "$tarfile"

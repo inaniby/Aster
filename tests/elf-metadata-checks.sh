@@ -435,9 +435,15 @@ printf '%s\n' 'PASS: the suite covers every field it claims to'
 printf '%s\n' '[8/9] The suite can still fail (three mutations)'
 # (a) Put the 4-byte footprint back: the tampered object must be accepted
 # again, and [5/9] is what notices.
-sed 's|const uint64_t need=(type==kRelTlsOff)?8u:4u;|const uint64_t need=(type==kRelTlsOff)?4u:4u;|' \
+# v0.23.81-dev (ELF-P2-5/S-01): resolveRelocations gained its own need=4/8
+# guard (r.type), so this mutation must neuter both checks; neutering only
+# parseObject leaves the downstream guard refusing the object and the
+# mutation invisible.
+sed -e 's|const uint64_t need=(type==kRelTlsOff)?8u:4u;|const uint64_t need=(type==kRelTlsOff)?4u:4u;|' \
+    -e 's|const uint64_t need=(r.type==kRelTlsOff)?8u:4u;|const uint64_t need=(r.type==kRelTlsOff)?4u:4u;|' \
     src/aster.cpp > "$OUT/m1.cpp"
 grep -q '(type==kRelTlsOff)?4u:4u' "$OUT/m1.cpp" \
+    && grep -q '(r.type==kRelTlsOff)?4u:4u' "$OUT/m1.cpp" \
     || { echo 'FAIL: mutation (a) stopped applying' >&2; exit 1; }
 $CXX -std=c++17 -O2 -w "$OUT/m1.cpp" -o "$OUT/m1" 2>/dev/null \
     || { echo 'FAIL: mutation (a) no longer compiles' >&2; exit 1; }
