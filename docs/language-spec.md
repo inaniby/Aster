@@ -4,6 +4,8 @@ This document began as the v0.18.1 subset and is maintained feature by feature;
 `docs/language-reference.md` is the current compact grammar and the authority
 when the two differ.
 
+**Frozen design note.** This document is a design note, not a living reference: it is no longer updated with the compiler. Where it disagrees with `docs/language-reference.md`, the reference governs — the reference is the normative document.
+
 ```aster
 let counter: i32 = 0;
 let limit: i32 = 100;
@@ -1491,10 +1493,6 @@ aster build-obj bootstrap/aster.ast -o boot.o
 aster build-obj stdlib/aster_std.ast -o std.o
 aster link-obj boot.o std.o -o asterparse
 echo 'fn main() -> i32 { return 0; }' | ./asterparse
-# Program 1:1
-# Function 1:1 main i32 0
-# Return 1:11
-# End 1:12
 ```
 
 The contract is `bootstrap/PARSER-SPEC.md` (13 sections, frozen); this

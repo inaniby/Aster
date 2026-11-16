@@ -154,4 +154,70 @@ check_status_line ARCHITECTURE.md         'As of'
 check_status_line FEATURE_STATUS.md       'As of'
 check_status_line docs/language-reference.md 'Applies to:'
 
+# 8) The gate paragraph in README states the current suite count and the size
+#    of src/aster.cpp. Both drifted silently once: the paragraph still said
+#    115 suites when DEFAULT_SUITES had grown to 153, and quoted a coverage
+#    measurement from the 115-suite era. The suite count is exact — it is
+#    cheap to keep in step, and the count is the thing that changed — while
+#    the line count is checked within the same 10% band as the ARCHITECTURE.md
+#    claim above, because a one-line compiler edit must not redden this suite.
+readme_suites=$(grep -A1 'The gate now runs' README.md | tr '\n' ' ' \
+    | sed -n 's/.*The gate now runs \*\*\([0-9][0-9]*\)\*\* suites.*/\1/p' | head -1)
+if [ -z "$readme_suites" ]; then
+    echo "FAIL: could not read the suite count from README.md ('The gate now runs **N** suites')" >&2
+    exit 1
+fi
+suite_total=$(sed -n '/^DEFAULT_SUITES="/,/^"$/p' tests/ci.sh | sed '1d;$d' | wc -w | tr -d ' ')
+if [ "$readme_suites" != "$suite_total" ]; then
+    echo "FAIL: README.md says the gate runs $readme_suites suites; DEFAULT_SUITES in tests/ci.sh has $suite_total" >&2
+    exit 1
+fi
+echo "OK: README.md suite count ($readme_suites) matches DEFAULT_SUITES in tests/ci.sh"
+
+readme_lines=$(sed -n 's/.*src\/aster.cpp[`]* is \([0-9][0-9,]*\) lines.*/\1/p' README.md | head -1 | tr -d ',')
+if [ -z "$readme_lines" ]; then
+    echo "FAIL: could not read the line count from README.md ('src/aster.cpp is N lines')" >&2
+    exit 1
+fi
+actual_lines=$(wc -l < src/aster.cpp | tr -d ' ')
+readme_lo=$((readme_lines * 9 / 10))
+readme_hi=$((readme_lines * 11 / 10))
+if [ "$actual_lines" -lt "$readme_lo" ] || [ "$actual_lines" -gt "$readme_hi" ]; then
+    echo "FAIL: README.md says src/aster.cpp is $readme_lines lines; it has $actual_lines (allowed ${readme_lo}-${readme_hi})" >&2
+    exit 1
+fi
+echo "OK: README.md line-count claim ($readme_lines) matches src/aster.cpp ($actual_lines)"
+
+# 9) The same paragraph states the mutation census (suites declaring mutant
+#    builds, and the caught figure a green gate reports). The census is a
+#    static grep over the suites — no toolchain — so it is re-derived here
+#    with the same pattern tests/mutation-score-checks.sh uses, and the README
+#    numbers must match it exactly. The coverage percentage next to it cannot
+#    be pinned this way: it needs a --coverage build and a full corpus drive,
+#    which is what tests/coverage-checks.sh itself does on every gate run.
+readme_mut_suites=$(sed -n 's/.* \([0-9][0-9]*\) suites declaring \([0-9][0-9]*\) mutant builds.*/\1/p' README.md | head -1)
+readme_mutants=$(sed -n 's/.* \([0-9][0-9]*\) suites declaring \([0-9][0-9]*\) mutant builds.*/\2/p' README.md | head -1)
+readme_caught=$(sed -n 's/.*reports \*\*\([0-9][0-9]*\)\/\([0-9][0-9]*\) caught.*/\1 \2/p' README.md | head -1)
+if [ -z "$readme_mut_suites" ] || [ -z "$readme_mutants" ] || [ -z "$readme_caught" ]; then
+    echo "FAIL: could not read the mutation census from README.md" >&2
+    exit 1
+fi
+mut_suites=0
+mut_total=0
+for f in tests/*-checks.sh; do
+    n=$(grep -cE '^[[:space:]]*(mutate|build_mutant|mutate_and_check)[[:space:]]+["'"'"'$A-Za-z0-9_]' "$f" || true)
+    [ "$n" -gt 0 ] || continue
+    mut_suites=$((mut_suites + 1))
+    mut_total=$((mut_total + n))
+done
+if [ "$readme_mut_suites" != "$mut_suites" ] || [ "$readme_mutants" != "$mut_total" ]; then
+    echo "FAIL: README.md says $readme_mut_suites suites declare $readme_mutants mutant builds; the census over tests/*-checks.sh is $mut_suites suites, $mut_total mutants" >&2
+    exit 1
+fi
+if [ "$readme_caught" != "$mut_total $mut_total" ]; then
+    echo "FAIL: README.md reports '$readme_caught' caught; a green gate means $mut_total/$mut_total" >&2
+    exit 1
+fi
+echo "OK: README.md mutation census ($mut_suites suites, $mut_total mutants, $mut_total/$mut_total caught) matches the suite census"
+
 echo "=== version checks: ALL PASSED ==="

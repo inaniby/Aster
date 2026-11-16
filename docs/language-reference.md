@@ -167,13 +167,13 @@ leading `&` and the bitwise level only sees one in operator position.
 | `bool` | 4 | 4 | holds 0 or 1 |
 | `E` (an enum) | 4 | 4 | named integer constants over `i32` (v0.23.61-dev) |
 | `S` (a struct) | layout | layout | passed and returned by address |
-| `U` (a union) | widest member | widest member | every member at offset 0; **byte-for-byte C union ABI** (v0.23.70-dev), see §5.4 |
+| `U` (a union) | widest member | widest member | every member at offset 0; **byte-for-byte C union ABI** (v0.23.70-dev), see §5.5 |
 | `void` | — | — | **return type only** (v0.23.68-dev) — names the absence of a result; never a value you can hold |
 
 Struct layout is AAPCS64 / C: each field starts at the next offset that is a
 multiple of its own alignment, the struct's alignment is the largest of its
 fields', and its size is the final offset rounded up to that alignment. A
-**union** uses the same table with every offset set to 0 — see §5.4.
+**union** uses the same table with every offset set to 0 — see §5.5.
 
 v0.23.77-dev (audit A-18): the rule is C's, but the *sizes* it is fed with are
 the ones in the table above — and `bool` is 4 bytes here, not C's 1. A `struct`
@@ -186,7 +186,7 @@ C compiler. A struct whose fields are `u8`/`u16`/`i32`/`u64`/`char`/`ptr`/
 arrays/unions is byte-for-byte C's.
 
 There is **no** `float`/`double`. `typedef` is spelled `type Name = T ;`
-(v0.23.67-dev, §8) and `union U { … }` is a real union (v0.23.70-dev, §5.4);
+(v0.23.67-dev, §8) and `union U { … }` is a real union (v0.23.70-dev, §5.5);
 both exist. `void` exists
 as a **return type only** (v0.23.68-dev) — it names the absence of a result on a
 function (`fn f() -> void`) and can never be a value, a parameter, a local, a
@@ -195,11 +195,11 @@ field, an alias or an array element; see §5.0. There is a **character literal**
 `char` *type* (v0.23.69-dev) — `char` is an unsigned 8-bit integer type
 (`Ty::Char`), byte-for-byte ABI-identical to C `unsigned char`, and a *separate*
 spelling from the `Char` literal token: `let c: char = 'a';` is the typed story,
-while `let c: i32 = 'a';` (the literal folded to `i32`) still works; see §5.1.
-(Enumerations **do** exist — see §5.3 — but they are a thin, nominal wrapper
+while `let c: i32 = 'a';` (the literal folded to `i32`) still works; see §5.2.
+(Enumerations **do** exist — see §5.4 — but they are a thin, nominal wrapper
 over `i32`, not a separate numeric kind.) An explicit
 conversion is the **cast** `T(x)` (integers since v0.23.48-dev; `bool`, `ptr`
-and `ptr<T>` since v0.23.60-dev — see §5.2); no other conversion is
+and `ptr<T>` since v0.23.60-dev — see §5.3); no other conversion is
 expressible. (`sizeof` and `len` are operators since v0.23.35-dev — see §6.)
 
 ### 5.0 `void` — a return type only (v0.23.68-dev)
@@ -236,7 +236,7 @@ point is C-ABI interop: an Aster `void` function takes its argument in `W0` and
 returns nothing, exactly as C does, so a C `main` can link one with no shim on
 either side.
 
-### 5.0 `f64` — an IEEE-754 double, first slice (v0.23.77-dev)
+### 5.1 `f64` — an IEEE-754 double, first slice (v0.23.77-dev)
 
 ```aster
 fn main() -> i32 {
@@ -288,7 +288,7 @@ fn main() -> i32 {
   them — and returns the byte count, the same contract `fmt_i32` and `fmt_hex`
   keep. There is no printf: formatting is a family of typed writers.
 
-### 5.1 `char` — an unsigned 8-bit integer type (v0.23.69-dev)
+### 5.2 `char` — an unsigned 8-bit integer type (v0.23.69-dev)
 
 `char` is a real, first-class integer type of its own (`Ty::Char`), **distinct**
 from the `'a'` character *literal*. The literal still folds to `i32` (§3.2,
@@ -317,9 +317,9 @@ Narrowing into a `char` follows the same discipline as `u8`: a compile-time
 constant that fits 0..255 assigns directly (`let c: char = 'q';` — `'q'` is 113,
 in range), but a value that does not fit is refused — `char = 300` and
 `char = -1` both fail with `does not fit in char: c (…)`. The spelled-out
-truncation is the cast `char(x)` (§5.2): `char(300)` is `44`.
+truncation is the cast `char(x)` (§5.3): `char(300)` is `44`.
 
-### 5.2 The cast: `T(x)`
+### 5.3 The cast: `T(x)`
 
 ```
 cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "char"
@@ -355,7 +355,7 @@ cast  ::= ( "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "char"
 - `i32` ↔ `u32` interconvert (one 32-bit representation).
 - A narrower integer widens losslessly to a wider one.
 - Everything else is an error. **A narrowing must be asked for** with a cast
-  (§5.2): silently dropping bits would be a bug in the program.
+  (§5.3): silently dropping bits would be a bug in the program.
 
 #### Where an implicit narrowing is refused (v0.23.63-dev)
 
@@ -408,7 +408,7 @@ v0.23.48-dev `u64` outranks `i64`, so a mixed pair with a `u64` side is
 compared unsigned (`u64 + i64` answers `u64`, not `i64`); a mixed pair widens
 to 32 bits, taking the unsigned reading when either side is unsigned.
 
-### 5.3 Enumerations (v0.23.61-dev, hardened v0.23.63-dev)
+### 5.4 Enumerations (v0.23.61-dev, hardened v0.23.63-dev)
 
 A `enum` declaration introduces a **nominal integer type** backed by `i32`. It
 names a set of `i32` constants so the source can read `Red`/`Green`/`Blue`
@@ -489,7 +489,7 @@ vs non-zero — and a legal arithmetic operand alongside `i32`).
 of `DW_AT_byte_size 4`, `DW_AT_type_encoding 0x05` (signed), so a debugger
 shows the named constants rather than bare integers.
 
-### 5.4 `union` — overlapping members (v0.23.70-dev)
+### 5.5 `union` — overlapping members (v0.23.70-dev)
 
 `union U { f1: T1, f2: T2, … }` declares an aggregate whose **every member
 sits at offset 0**. It is the struct layout with one rule changed: the
@@ -621,6 +621,53 @@ c` the same. Write `a < b && b < c`. Until v0.23.27-dev the check asked whether
 - An array name decays to its address in a `ptr` context.
 - `p.f` on a `ptr<S>` dereferences automatically.
 
+### Indirect calls through a bare `ptr` (v0.23.24-dev)
+
+A function's name in a value position is its address (a `ptr`): it can be
+stored in a variable, passed as an argument and handed to C. As of
+v0.23.24-dev it can also be *called* — `fp(args)` where `fp` is a `ptr`
+variable is an indirect call, compiled to `BLR X9`:
+
+```aster
+fn inc(x: i32) -> i32 { return x + 1; }
+
+fn main() -> i32 {
+    let fp: ptr = inc;
+    return fp(41);                  // 42 — BLR X9, not BL
+}
+```
+
+- **No signature, so no checking.** A bare `ptr` carries an address, not a
+  signature: no arity check, no parameter types, and the call always answers
+  `i32` — a callee returning `i64` delivers only its low half, so wrap the
+  value in the callee if the whole 64 bits matter.
+- **Every scalar argument rides at 64-bit width.** An `i32`-declaring callee
+  reads the low half — exactly the bits a 32-bit stage would have put there —
+  and an `i64`-declaring one reads a properly extended full register, because
+  AAPCS64 leaves a sub-64-bit argument's upper half unspecified. One staging
+  width serves both callees.
+- **A struct argument is refused** — a composite needs a signature to lay it
+  out (register class, copy area, hidden result pointer), and a `ptr` variable
+  has none.
+- **A memory-resident pointer is loaded first.** A pointer stored in a struct
+  field (a framework's callback table) is read into a variable and called
+  through that — the `dlsym` shape. Calling through a *computed* pointer
+  (`tbl[0](x)`) is still refused: pointer indexing/assignment is not
+  supported yet.
+- **The callee address is materialized into X9** after the arguments are in
+  their registers and before SP moves; X0–X7 hold the arguments, X8 the hidden
+  result pointer when there is one, and nothing live sits in X9–X15.
+- **Static images may materialize a function address directly** — in
+  `build-elf`/`build-pie`/`link-obj`/`link-pie`, `let fp: ptr = f;` links,
+  because a static image knows function addresses at link time and ADRP/ADD
+  is PC-relative. In `.so` output a function address still travels through a
+  GOT slot, because a shared object's text cannot carry load-time relocations.
+
+Sema refuses, each with a diagnostic naming the offending thing: a non-`ptr`
+callee (an `i32`, `bool` or struct local; a local or global array; an `i32`
+global), an undeclared name in call position, a struct argument, and the
+address of an `extern` function ("its location is another object's business").
+
 ### Function types (v0.23.37-dev)
 
 A function pointer may be declared **with its signature**:
@@ -638,7 +685,7 @@ gains the direct call's contract:
 - **Staged by the signature**: an `i32` argument in a `W` register, an `i64`
   one in a full `X` register, a struct laid out as a composite (a 12-byte
   `Tri` splits across two registers — a bare `ptr` refuses a struct argument,
-  having no signature to lay one out with). The result is read at the
+  having no signature to lay one out with). A typed call supersedes the bare-`ptr` rule that every scalar rides at 64-bit width; the two coincide for scalars, so only the struct case is load-bearing. The result is read at the
   signature's **return type** (`i64`/`ptr`/`bool`/`u32`, default `i32`), so
   `let r: i64 = fp(x);` type-checks where a bare-`ptr` call answered `i32`.
 - **Every scope**: a local (`let fp: fn(i32) -> i32 = inc;`), a global
@@ -1092,7 +1139,7 @@ be labeled like `while`/`for` (`outer: do { … } while (c);`), and a `break` or
 - At least one field; no self-containment, no duplicate field names, and the
   same 1024-byte size limit as a struct (checked against the widest member).
 - Every field sits at **offset 0**; the size is the widest member's size
-  rounded up to the widest member's alignment (§5.4).
+  rounded up to the widest member's alignment (§5.5).
 - Shares the struct tag namespace: a `union U` and a `struct U` collide.
 - Literal: `U { v }` — **one** value, initializing the first member and
   zeroing the rest. An array in a later member does not block it.
@@ -1319,7 +1366,7 @@ not fit is a range error rather than a type mismatch.
 
 *(v0.23.63-dev changed the sentence that used to follow: narrowing a **value**
 was "silently accepted" at a `let` or assignment site and no longer is — see
-§5.2's "Where an implicit narrowing is refused". The two argument paths were
+§5.3's "Where an implicit narrowing is refused". The two argument paths were
 never the only guarded ones; the guard now covers a `let`, an assignment, a
 global assignment and a `return`.)*
 
@@ -1415,29 +1462,81 @@ under `readelf --version-info`, exactly as a `gcc -shared` link with a
 version script does.
 
 
-## 11d. `aster doctor` — check the host and the project (v0.23.77-dev)
+## 11b. Building a program from several files (and what is incremental)
 
-`aster doctor` answers "will this machine and this directory build what I think
-they will" before anything is compiled. It prints one line per check with
-`[ok  ]`, `[warn]` or `[fail]`, a summary, and exits 1 when anything failed
-(`--strict` also fails on warnings):
+Aster has no module system, but since v0.23.77-dev the three link-producing
+commands compile several files in one invocation (`build-elf main.ast defs.ast
+-o demo`); `build-obj` still compiles exactly **one** file, because one command
+cannot write two outputs without a naming rule. The explicit shape — a file that
+owns a definition compiles to an object, and the objects are linked — is what the
+shortcut does under the hood, and what an incremental build tool should drive:
 
-* the compiler itself — version, word size, endianness;
-* the host — `uname`, and whether that host can **run** AArch64 output itself or
-  needs `qemu-aarch64`;
-* the kernel/loader page size, and the `--page-size` it implies (4096 default;
-  16384 for Android 15+ 16 KB pages);
-* on Android: `pm`, so an APK can be installed;
-* a writable scratch directory (`TMPDIR` or `/tmp`);
-* the optional tools the suites and C interop use — `cc`, `python3`, `openssl`,
-  `readelf`, `objdump`, `llvm-dwarfdump` — as warnings, never failures;
-* the project, when `aster.proj` is here: `kind`, the sources (each present),
-  whether exactly one defines `main` for an exe project, the `test` sources, the
-  signing configuration (release keys actually load, or where the debug key is),
-  free space for `build/`, and how many files the object cache holds.
+```sh
+aster build-obj defs.ast -o defs.o        # definitions live here
+aster build-obj main.ast -o main.o        # includes defs.ast for the declarations
+aster link-obj main.o defs.o -o demo      # link-pie for ET_DYN, link-so for a .so
+```
 
-It never writes to the project and never needs one: outside a project it simply
-says so.
+There are two ways for `main.ast` to know `defs.ast`'s declarations, and they
+differ in what a rebuild can catch:
+
+* `include "defs.ast";` reads the declarations out of the file that holds the
+  body (§8), so the consumer's view cannot drift from the definition. Its body
+  and any global initializer stay in `defs.o`.
+* `extern fn add2(x: i32) -> i32;` declares it by hand. Nothing checks it
+  against the definition; the linker matches symbols **by name only** — not by
+  signature, not by arity, not by width.
+
+That name-only link is exactly why the incremental rule below is "rebuild a
+consumer whenever a file it includes changes", and not "rebuild only what the
+change touched". Retargeting `add2` from one `i32` to two, rebuilding only
+`defs.o` and relinking, links cleanly and **runs wrong** (the stale call passes
+one argument); the same change with the consumer rebuilt fails to compile
+(`wrong argument count calling add2: expected 2, got 1`), because the include
+re-read the declaration.
+
+### What is and is not incremental
+
+| Mechanism | Status |
+| --- | --- |
+| separate compilation into `.o`, linked afterwards | **supported** |
+| recompiling only the objects whose inputs changed | **your build tool's job** — the compiler has no mtime check, no object cache, no `-M` depfile |
+| one command over several sources | **supported** for `build-elf` / `build-pie` / `build-so` since v0.23.77-dev (each source becomes a temporary object, then they link); **not** for `build-obj` |
+| static archives (`.a`) | **not supported** — `link-*` takes `.o` files |
+| link time signature checking | **not supported** — names only, see above |
+| linking in the same command as compiling | **not supported** — always `build-obj` then `link-*` |
+
+An object depends on **the file it compiles, every file that file includes
+(transitively), and every file it `@embed`s** — `@embed` copies the bytes at
+compile time, so editing an embedded asset needs that object rebuilt. Compiling
+is a pure function of those bytes, which is what makes a timestamp-based build
+correct without a cache: relinking is cheap (a two-object link is a few
+milliseconds), so the usual Make shape works unchanged:
+
+```make
+ASTER := aster
+OBJS  := main.o defs.o
+
+demo: $(OBJS)
+	$(ASTER) link-obj $(OBJS) -o $@
+
+main.o: main.ast defs.ast           # includes defs.ast
+	$(ASTER) build-obj main.ast -o $@
+defs.o: defs.ast
+	$(ASTER) build-obj defs.ast -o $@
+```
+
+Two rules of the linker apply to such a build and are worth stating where the
+build is described (both were silent before v0.23.77-dev, see A-21/A-22 in
+`AUDIT-v0.23.76-dev.md`): run-time global initializers run in **link order**, so
+an initializer that reads another object's initialized global needs that object
+listed first (the link is refused otherwise), and the initializer chain is
+entered from the object holding `_start`, so at least one runtime-initialized
+global must live in the object that holds `main` (the link is refused
+otherwise too).
+
+A `-g` build is per-object: each `build-obj -g` carries its own unit and line
+program, and `link-obj` merges them (§11).
 
 ## 11c. Projects: `aster new`, `add`, `build`, `run`, `deps` (v0.23.77-dev)
 
@@ -1559,81 +1658,29 @@ build/util.o: src/util.ast
 describes. The command parses each file — that is how `include` and `@embed`
 are discovered — but emits no object.
 
-## 11b. Building a program from several files (and what is incremental)
+## 11d. `aster doctor` — check the host and the project (v0.23.77-dev)
 
-Aster has no module system, but since v0.23.77-dev the three link-producing
-commands compile several files in one invocation (`build-elf main.ast defs.ast
--o demo`); `build-obj` still compiles exactly **one** file, because one command
-cannot write two outputs without a naming rule. The explicit shape — a file that
-owns a definition compiles to an object, and the objects are linked — is what the
-shortcut does under the hood, and what an incremental build tool should drive:
+`aster doctor` answers "will this machine and this directory build what I think
+they will" before anything is compiled. It prints one line per check with
+`[ok  ]`, `[warn]` or `[fail]`, a summary, and exits 1 when anything failed
+(`--strict` also fails on warnings):
 
-```sh
-aster build-obj defs.ast -o defs.o        # definitions live here
-aster build-obj main.ast -o main.o        # includes defs.ast for the declarations
-aster link-obj main.o defs.o -o demo      # link-pie for ET_DYN, link-so for a .so
-```
+* the compiler itself — version, word size, endianness;
+* the host — `uname`, and whether that host can **run** AArch64 output itself or
+  needs `qemu-aarch64`;
+* the kernel/loader page size, and the `--page-size` it implies (4096 default;
+  16384 for Android 15+ 16 KB pages);
+* on Android: `pm`, so an APK can be installed;
+* a writable scratch directory (`TMPDIR` or `/tmp`);
+* the optional tools the suites and C interop use — `cc`, `python3`, `openssl`,
+  `readelf`, `objdump`, `llvm-dwarfdump` — as warnings, never failures;
+* the project, when `aster.proj` is here: `kind`, the sources (each present),
+  whether exactly one defines `main` for an exe project, the `test` sources, the
+  signing configuration (release keys actually load, or where the debug key is),
+  free space for `build/`, and how many files the object cache holds.
 
-There are two ways for `main.ast` to know `defs.ast`'s declarations, and they
-differ in what a rebuild can catch:
-
-* `include "defs.ast";` reads the declarations out of the file that holds the
-  body (§8), so the consumer's view cannot drift from the definition. Its body
-  and any global initializer stay in `defs.o`.
-* `extern fn add2(x: i32) -> i32;` declares it by hand. Nothing checks it
-  against the definition; the linker matches symbols **by name only** — not by
-  signature, not by arity, not by width.
-
-That name-only link is exactly why the incremental rule below is "rebuild a
-consumer whenever a file it includes changes", and not "rebuild only what the
-change touched". Retargeting `add2` from one `i32` to two, rebuilding only
-`defs.o` and relinking, links cleanly and **runs wrong** (the stale call passes
-one argument); the same change with the consumer rebuilt fails to compile
-(`wrong argument count calling add2: expected 2, got 1`), because the include
-re-read the declaration.
-
-### What is and is not incremental
-
-| Mechanism | Status |
-| --- | --- |
-| separate compilation into `.o`, linked afterwards | **supported** |
-| recompiling only the objects whose inputs changed | **your build tool's job** — the compiler has no mtime check, no object cache, no `-M` depfile |
-| one command over several sources | **supported** for `build-elf` / `build-pie` / `build-so` since v0.23.77-dev (each source becomes a temporary object, then they link); **not** for `build-obj` |
-| static archives (`.a`) | **not supported** — `link-*` takes `.o` files |
-| link time signature checking | **not supported** — names only, see above |
-| linking in the same command as compiling | **not supported** — always `build-obj` then `link-*` |
-
-An object depends on **the file it compiles, every file that file includes
-(transitively), and every file it `@embed`s** — `@embed` copies the bytes at
-compile time, so editing an embedded asset needs that object rebuilt. Compiling
-is a pure function of those bytes, which is what makes a timestamp-based build
-correct without a cache: relinking is cheap (a two-object link is a few
-milliseconds), so the usual Make shape works unchanged:
-
-```make
-ASTER := aster
-OBJS  := main.o defs.o
-
-demo: $(OBJS)
-	$(ASTER) link-obj $(OBJS) -o $@
-
-main.o: main.ast defs.ast           # includes defs.ast
-	$(ASTER) build-obj main.ast -o $@
-defs.o: defs.ast
-	$(ASTER) build-obj defs.ast -o $@
-```
-
-Two rules of the linker apply to such a build and are worth stating where the
-build is described (both were silent before v0.23.77-dev, see A-21/A-22 in
-`AUDIT-v0.23.76-dev.md`): run-time global initializers run in **link order**, so
-an initializer that reads another object's initialized global needs that object
-listed first (the link is refused otherwise), and the initializer chain is
-entered from the object holding `_start`, so at least one runtime-initialized
-global must live in the object that holds `main` (the link is refused
-otherwise too).
-
-A `-g` build is per-object: each `build-obj -g` carries its own unit and line
-program, and `link-obj` merges them (§11).
+It never writes to the project and never needs one: outside a project it simply
+says so.
 
 ## 11e. `static` locals
 
@@ -1788,7 +1835,7 @@ pointer must fit the pointee's type.
 
 ## 11f. What is not in the language
 
-There is no gap left in the statement grammar: `static let` (11b) covers state
+There is no gap left in the statement grammar: `static let` (11e) covers state
 that outlives a call, and floating-point literals take an exponent form. What
 the language still does not offer is deliberate — variadic *definitions*,
 closures, generics, and a module system beyond `include` — and each one is a

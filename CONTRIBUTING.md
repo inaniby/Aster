@@ -106,3 +106,31 @@ those.
   other is how a shared bug stays invisible to the gate.
 - Do not pick a license. The project has none yet; that decision belongs
   to the maintainer.
+
+## 发版仪式 (release ritual)
+
+A release bump is mechanical positions plus human narrative — never the
+other way round. `tests/bump-version.sh` moves only the mechanical
+positions; it writes no prose. Follow the steps in order:
+
+1. 跑全量门禁：`sh tests/ci.sh` 全绿且不跳过 APK 门——发版只给已验证的树升版。
+2. 人工写叙事：在 `VERSION_HISTORY.md` 顶部加新版本条目，并写出
+   `VALIDATION-v<新版>.md`（本轮改了什么、证据在哪里）；发版脚本不生成
+   这些文字，`tests/bump-version.sh` 跑完也会再提醒一次去哪里写。
+3. 先 `--dry-run` 核对：`sh tests/bump-version.sh --dry-run <新版> "<一句话摘要>"`，
+   逐项对改动清单——4 处版本位置、21 个套件守卫钉、1 份新基线——确认无多余项。
+4. 正式跑脚本：`sh tests/bump-version.sh <新版> "<一句话摘要>"`；脚本每处只改
+   一处（多改或零改都会报错退出），并从最新基线复制出
+   `tests/baseline/v<新版>/example-hashes.txt`，校验行数一致且逐字节相同。
+5. 核对 diff：`git status` / `git diff` 逐项对照 a53ca33 的 26 文件清单
+   （`src/aster.cpp`、`CMakeLists.txt`、`README.md` 标题、
+   `docs/language-reference.md` 的 "Applies to"、21 个套件、新基线），
+   确认版本号已是新版、没有其他文件被改动。
+6. 严格重编并跑版本检查：`g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o aster`，
+   再跑 `sh tests/version-checks.sh`——它还要求第 2 步的叙事文件就位
+   （`VALIDATION-v<新版>.md` 与 `VERSION_HISTORY.md` 顶部条目），缺了就会失败。
+7. 跑发版脚本自检：`sh tests/bump-version.sh selftest`——它把工作树复制到
+   `/tmp` 的临时目录，在副本里升到假版本 0.23.99-dev，核对 21 个守卫钉与
+   新基线（393 行），工作树本身不被升版。
+8. 提交推送：`git commit -m "Bump version to v<新版>"`（正文放第 3 步那句摘要），
+   然后 push；不要把自检用的假版本留在任何地方。
