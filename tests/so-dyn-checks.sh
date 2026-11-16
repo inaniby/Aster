@@ -225,7 +225,10 @@ print('PASS: imported global counter has an R_AARCH64_GLOB_DAT relocation into .
 lb = load('tmp-dyn-import-linked.so'); lsec = sections(lb); ldyn = dynamic(lb, lsec)
 lstrsec = lsec['.dynstr']; lstrs = lb[lstrsec[4]:lstrsec[4]+lstrsec[5]]
 lneeded = [lstrs[v:].split(b'\0')[0].decode() for v in ldyn.get(1, [])]
-assert lneeded == ['libdyn.so'], lneeded
+# v0.23.82-dev: link-so now derives DT_NEEDED from imports the same way
+# build-so does (449ad2a), so the libc.so fallback for non-NDK imports
+# appears here too, matching the build-so expectation above.
+assert lneeded == ['libdyn.so', 'libc.so'], lneeded
 lsyms = dynsyms(lb, lsec)
 lundef = {n: i for i, (n, info, sh, v, z) in enumerate(lsyms) if i and sh == 0}
 assert all(n in lundef for n in ('add', 'mul', 'counter')), lundef
