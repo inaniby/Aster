@@ -10,7 +10,7 @@
 #   [5] main(argc, argv): argc is the real count, argv[i] is the argument
 #   [6] main(argc, argv, envp): the three-parameter form runs
 #   [7] main refusals: one parameter, wrong first type
-#   [8] the token generator agrees with the compiler (`do`, 84 kinds, 33 words)
+#   [8] the token generator agrees with the compiler (`do`, 86 kinds, 35 words)
 #   [9] mutation: a `continue` pointed at the body instead of the condition is
 #       caught by layer [2]
 set -eu
@@ -112,15 +112,15 @@ assert 'else if(x=="do")k=TK::Do;' in src, 'the lexer does not map `do`'
 gen = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', gen, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 33, ('reserved-word count moved', len(entries))
+assert len(entries) == 35, ('reserved-word count moved', len(entries))
 assert 'do' in entries, 'do is not a reserved word'
 assert 'Do' in re.search(r'TOKENS = \[(.*?)\]', gen, re.S).group(1), 'the Do kind is not in TOKENS'
 hdr = open('tests/lexer_names.h').read()
-assert '#define TK_COUNT 84' in hdr, 'TK_COUNT did not move to 84'
-print('PASS: do is reserved, 84 token kinds, 33 keywords')
+assert '#define TK_COUNT 86' in hdr, 'TK_COUNT did not move to 86'
+print('PASS: do is reserved, 86 token kinds, 35 keywords')
 PY
 python3 bootstrap/gen_lexer_names.py --check >/dev/null || fail 'the generated region drifted'
-printf '  %-40s %s\n' '83 -> 84 kinds, 33 reserved words, --check clean' 'ok'
+printf '  %-40s %s\n' '84 -> 86 kinds, 35 reserved words, --check clean' 'ok'
 
 printf '%s\n' '[9/9] mutation: continue in a do-while must reach the condition'
 sed 's|for(size_t at:loops.back().continues)patchBranch(at,condAt);|for(size_t at:loops.back().continues)patchBranch(at,bodyStart);|' \

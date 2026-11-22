@@ -108,6 +108,66 @@ fn strcmp(a: ptr<u8>, b: ptr<u8>) -> i32 {
     return 0;
 }
 
+// Unsigned UTF-8 bytewise ordering. Null sorts before every non-null string.
+fn __aster_cn_str_order(a: ptr<u8>, b: ptr<u8>) -> i32 {
+    if (a == b) { return 0; }
+    if (a == 0) { return 0 - 1; }
+    if (b == 0) { return 1; }
+    let i: i32 = 0;
+    while (true) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x < y) { return 0 - 1; }
+        if (x > y) { return 1; }
+        if (x == 0) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+struct AsterStringView { data: ptr<u8>, len: i64 }
+
+fn __aster_cn_str_view(s: ptr<u8>) -> AsterStringView {
+    let view: AsterStringView;
+    view.data = s;
+    view.len = 0;
+    if (s != 0) { view.len = i64(strlen(s)); }
+    return view;
+}
+
+fn __aster_cn_string_from_view(view: AsterStringView) -> ptr<u8> {
+    if (view.len < 0 || view.len > 67108863) { return 0; }
+    if (view.len > 0 && view.data == 0) { return 0; }
+    let length: i32 = i32(view.len);
+    let i: i32 = 0;
+    while (i < length) {
+        if (load_u8(view.data + i) == 0) { return 0; }
+        i = i + 1;
+    }
+    let output: ptr<u8> = ptr<u8>(alloc(length + 1));
+    if (output == 0) { return 0; }
+    if (length > 0) { memcpy(output, view.data, length); }
+    store_u8(output + length, 0);
+    return output;
+}
+
+// The Chinese frontend's string `+` uses the growable arena. Null operands
+// act as empty strings; 0 means the allocation limit or mmap was reached.
+fn __aster_cn_str_concat(a: ptr<u8>, b: ptr<u8>) -> ptr<u8> {
+    let a_len: i32 = 0;
+    let b_len: i32 = 0;
+    if (a != 0) { a_len = strlen(a); }
+    if (b != 0) { b_len = strlen(b); }
+    if (a_len > 67108863 || b_len > 67108863 - a_len) { return 0; }
+    let total: i32 = a_len + b_len;
+    let output: ptr<u8> = ptr<u8>(alloc(total + 1));
+    if (output == 0) { return 0; }
+    if (a_len > 0) { memcpy(output, a, a_len); }
+    if (b_len > 0) { memcpy(output + a_len, b, b_len); }
+    store_u8(output + total, 0);
+    return output;
+}
+
 // C's strncpy: copy at most n bytes, NUL-pad when src is shorter, no
 // terminator when src runs to n or beyond. Returns min(strlen(src), n) — the
 // number of source characters actually copied — so a truncation shows up in
@@ -732,7 +792,8 @@ const kArenaMaxChunk: i32 = 67108864;   // 64 MiB
 fn arena_new_chunk(n: i32) -> ptr {
     let want: i32 = n < 65536 ? 65536 : n;
     let p: ptr = mmap(ptr(0), want, 3, 34, 0 - 1, 0);
-    if (p == 0) { return 0; }
+    let result: i64 = i64(p);
+    if (result < 0 && result >= 0 - 4095) { return 0; }
     arena_base = p;
     arena_used = 0;
     arena_size = want;

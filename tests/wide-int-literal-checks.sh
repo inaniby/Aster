@@ -255,15 +255,16 @@ guard 'wideOp arithmetic sites'           'const bool wide=wideOp(want,ta,tb,*e.
 guard 'shift/bitnot width sites'          'const bool wide=tyIs64(want)||tyIs64(ta)||constExceedsI32(*e.a);' 2
 guard 'genBool comparison width'          'const bool wide=tyIs64(ta)||tyIs64(tb)||constExceedsI32(*e.a)||constExceedsI32(*e.b);' 1
 guard 'emitCondition comparison width'    'const bool wide=tyIs64(ta)||tyIs64(tb)||constExceedsI32(*c.a)||constExceedsI32(*c.b);' 1
-guard 'local Var leaf SXTW'               'if(tyIs64(want)&&slotType(slot)==Ty::I32)emit(0x93407c00u'  1
-guard 'global Var leaf SXTW'              'if(tyIs64(want)&&globalTypeOf(e.name)==Ty::I32)emit(0x93407c00u' 1
+guard 'signed narrow SXTW helper'         'static bool tyNeedsSignExtend64(Ty t) { return tyIsSignedNarrow(t) || t.k == Ty::I32; }' 1
+guard 'local Var leaf SXTW'               'tyNeedsSignExtend64(slotType(slot))'  1
+guard 'global Var leaf SXTW'              'tyNeedsSignExtend64(globalTypeOf(e.name))' 1
 # v0.23.37-dev: a typed indirect call gained the same leaf — its rt is the
 # signature's return type (i32 for a bare ptr, which is the old rule), so the
 # sign-extension a direct call's i32 result has always had now covers a typed
 # fn-pointer's i32 result too. Two sites, one rule.
-guard 'Call leaf SXTW'                    'if(tyIs64(want)&&rt==Ty::I32)emit(0x93407c00u'              2
-guard 'Deref leaf SXTW'                   'if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));' 1
-guard 'Field leaf SXTW'                   'if(tyIs64(want)&&f->ty==Ty::I32)emit(0x93407c00u'           1
+guard 'Call leaf SXTW'                    'tyNeedsSignExtend64(rt)'              2
+guard 'Deref leaf SXTW'                   'if(tyIs64(want)&&tyNeedsSignExtend64(elem))emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));' 1
+guard 'Field leaf SXTW'                   'tyNeedsSignExtend64(f->ty)'           1
 # v0.23.28-dev: the local, global and ptr index paths compute their address in
 # one place (emitElemAddr) and read it through one leaf, so the three SXTW
 # sites this guard used to count are now one statement — a ptr local indexes
@@ -277,12 +278,12 @@ guard 'Field leaf SXTW'                   'if(tyIs64(want)&&f->ty==Ty::I32)emit(
 # an i32 element through a ptr-to-elem base whose address emitPtrElemAddr
 # materializes, so that read sign-extends through its own copy of the same leaf.
 # The count is 4 with this third shape named rather than merged.
-guard 'Index leaf SXTW (named+chain+field+ptrToElem)' 'if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)'  4
+guard 'Index leaf SXTW (named+chain+field+ptrToElem)' 'if(tyIs64(want)&&tyNeedsSignExtend64(elem))emit(0x93407c00u|(uint32_t(d)<<5)'  4
 guard 'Index leaf SXTW (chain read)'      'const Ty elem=ch.elem;'                                          1
 # v0.23.37-dev: the indirect leaf gained the rt test — its rt is the
 # signature's return type for a typed callee and i32 for a bare ptr, which is
 # the old rule — so its text is now the direct call's, one rule at two sites.
-guard 'indirect-call leaf SXTW'          'if(tyIs64(want)&&rt==Ty::I32)emit(0x93407c00u'              2
+guard 'indirect-call leaf SXTW'          'tyNeedsSignExtend64(rt)'              2
 # v0.23.34-dev: the ptr-index path no longer hard-codes i32 — it derives the
 # element from the slot's pointer type and reaches the shared emitElemIndex leaf
 # with it, so a typed pointer strides at its real width while an untyped ptr
@@ -326,12 +327,13 @@ guard 'array init store width by esz'     'const uint32_t strBase=esz==1?0x39000
 # v0.23.48-dev added the twelfth and thirteenth: the cast `T(x)` reads an i32
 # operand at 64 bits with the same leaf — once as the narrowing block's i32
 # form (`i32` of something wider) and once as the consumer-width extension an
-# i32 cast needs when it is consumed at 64 bits.
-guard 'total SXTW sites'                  '0x93407c00u'                                                13
+# i32 cast needs when it is consumed at 64 bits. The float round added the
+# fourteenth site for a narrow integer result consumed at 64 bits.
+guard 'total SXTW sites'                  '0x93407c00u'                                                14
 if grep -qF 'extendTo64' src/aster.cpp; then
     echo 'FAIL: extendTo64 (the post-hoc widening helper) must stay deleted' >&2; exit 1
 fi
-printf '%s\n' 'PASS: three width rules, thirteen SXTW sites (eleven leaves plus the cast'"'"'s two), slotElemTypes write and no post-hoc widening'
+printf '%s\n' 'PASS: three width rules, fourteen SXTW sites (eleven leaves, two integer-cast sites, one float-cast site), slotElemTypes write and no post-hoc widening'
 
 # ---------------------------------------------------------------------------
 # [3] Rejection matrix: the width rules must not have loosened typing.
@@ -512,19 +514,19 @@ done <<'MUT_EOF'
 M1 wideOp drops const~sed~s/||constExceedsI32(a)||constExceedsI32(b)//~36 37
 M2a genBool cmp drops const~sed~s/constExceedsI32(\*e\.a)||constExceedsI32(\*e\.b)/false/~47
 M2b cond cmp drops const~sed~s/constExceedsI32(\*c\.a)||constExceedsI32(\*c\.b)/false/~38
-M3 call leaf SXTW removed~sed~/if(tyIs64(want)&&rt==Ty::I32)emit(0x93407c00u/d~51
-M4 deref leaf SXTW removed~sed~/if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));/d~55
-M5 field leaf SXTW removed~sed~/if(tyIs64(want)&&f->ty==Ty::I32)emit(0x93407c00u/d~53
-M6 idx leaf SXTW removed~sed~/if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u/d~54 57 58
+M3 call leaf SXTW removed~sed~s/tyNeedsSignExtend64(rt)/false/~51
+M4 deref leaf SXTW removed~sed~/uint32_t(a)<<5/s/tyNeedsSignExtend64(elem)/false/~55
+M5 field leaf SXTW removed~sed~s/tyNeedsSignExtend64(f->ty)/false/~53
+M6 idx leaf SXTW removed~sed~/uint32_t(d)<<5/s/tyNeedsSignExtend64(elem)/false/~54 57 58
 M7 slotElemTypes removed~sed~s/slotElemTypes\[slot\]=elem;//~81 82 83
 M8 cond armTy reverted~sed~s/const Ty armTy=tyIs64(want)?Ty::I64:e.type;/const Ty armTy=e.type;/~61 62 63 64
 M9 array esz forced to 4~sed~s/const uint32_t esz=tySize(elem);/const uint32_t esz=4u;/~82 86
-M10 global var SXTW removed~sed~/if(tyIs64(want)&&globalTypeOf(e.name)==Ty::I32)emit(0x93407c00u/d~56
+M10 global var SXTW removed~sed~s/tyNeedsSignExtend64(globalTypeOf(e.name))/false/~56
 M11 element load width ignored~sed~s/emit(loadGlobalT(d,elem));/emit(loadGlobalT(d,Ty::I32));/~81 82 87
 M12 Neg want passthrough~sed~s/int a=gen(\*e.a,want);/int a=gen(*e.a);/~59
 M13 pos threshold raised~sed~s/(p->n>0x7fffffffull)/(p->n>0x80000000ull)/~60
 M14 neg peel removed~sed~s/if(p->k==Expr::Neg){ neg=true; p=p->a.get(); }//~65
-M15 local var SXTW removed~sed~/if(tyIs64(want)&&slotType(slot)==Ty::I32)emit(0x93407c00u/d~66 59
+M15 local var SXTW removed~sed~s/tyNeedsSignExtend64(slotType(slot))/false/~66 59
 MUT_EOF
 drain
 i=0; missing=""

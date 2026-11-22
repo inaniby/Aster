@@ -35,7 +35,7 @@ printf '%s\n' '[2/8] Source guard: the type lattice, the layout pass and the ABI
 # v0.23.77-dev: the second half used to pin the enum's closing brace (`Void };`),
 # which the float round invalidated by appending F32/F64 after Void. Pin the
 # members instead - the same stale-guard trap the union suite hit.
-grep -qF 'enum Kind { I32,' src/aster.cpp \
+grep -qF 'enum Kind { I8, I16, I32,' src/aster.cpp \
     && grep -qF ', Struct,' src/aster.cpp \
     && grep -qF 'Void,' src/aster.cpp \
     || { echo 'FAIL: Ty::Kind no longer carries Struct' >&2; exit 1; }
@@ -87,7 +87,7 @@ reject(){
         *) echo "FAIL: $name not rejected as expected: want '$want', got: $msg" >&2; exit 1 ;;
     esac
 }
-reject unknown-struct  'expected i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name' 'fn main() -> i32 { let p: Nope = Nope { 1 }; return p.x; }'
+reject unknown-struct  'expected i8, i16, i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name' 'fn main() -> i32 { let p: Nope = Nope { 1 }; return p.x; }'
 reject unknown-field   "struct 'P' has no field named 'y'"                 'struct P { x: i32 }
 fn main() -> i32 { let p: P = P { 1 }; return p.y; }'
 reject literal-count   "struct literal for 'P' has 2 values but the struct has 1 fields" 'struct P { x: i32 }

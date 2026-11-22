@@ -125,20 +125,20 @@ grep -qF '0x17: "UNION_TYPE"' tests/debuginfo-decode.py \
     || { echo 'FAIL: debuginfo-decode.py cannot name a union' >&2; exit 1; }
 grep -qF '{ "union", TK_Union }' tests/lexer_names.h \
     || { echo 'FAIL: the generated C twin does not carry TK_Union' >&2; exit 1; }
-grep -qF 'let K_Union: i32 = 82;' bootstrap/aster.ast \
+grep -qF 'let K_Union: i32 = 84;' bootstrap/aster.ast \
     || { echo 'FAIL: the bootstrap lexer does not carry K_Union' >&2; exit 1; }
 guard_count=$((guard_count + 3))
-# The reserved-word list is generated, not hand-written: 32 words now that
-# `union` joined it, and `tls` is still a context keyword.
+# The reserved-word list is generated, not hand-written: 35 words including
+# the narrow integer types, and `tls` is still a context keyword.
 python3 - <<'PY' || exit 1
 import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 33, ('reserved-word count moved', len(entries), entries)
+assert len(entries) == 35, ('reserved-word count moved', len(entries), entries)
 assert 'union' in entries, 'union is not a reserved word'
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 33 reserved words, union among them, tls still a context keyword')
+print('PASS: 35 reserved words, union among them, tls still a context keyword')
 PY
 guard_count=$((guard_count + 1))
 printf '  %-30s %s\n' "guards passed" "$guard_count"

@@ -1,0 +1,19 @@
+// aster:language=en
+package 标准库.文本 = standard.text;
+
+fn length(value: string): i64 {
+    let view: string_view = string_view(value);
+    return view.len;
+}
+
+fn concat(left: string, right: string): string {
+    return left + right;
+}
+
+fn equals(left: string, right: string): bool {
+    return left == right;
+}
+
+fn less(left: string, right: string): bool {
+    return left < right;
+}

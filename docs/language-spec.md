@@ -1239,8 +1239,8 @@ v0.17.0 shared-object layout.
 Example:
 
 ```sh
-./aster build-so examples/so_link_lib.ast    -o libdyn.so        --soname libdyn.so
-./aster build-so examples/so_link_import.ast -o libdyn-import.so --needed libdyn.so
+aster build-so examples/so_link_lib.ast    -o libdyn.so        --soname libdyn.so
+aster build-so examples/so_link_import.ast -o libdyn-import.so --needed libdyn.so
 readelf -dW libdyn-import.so
 readelf -rW libdyn-import.so
 ```

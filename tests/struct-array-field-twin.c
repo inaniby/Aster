@@ -22,7 +22,7 @@ static struct Buffers gb;   /* zero-filled in .bss, like the Aster global */
 
 int main(void) {
     int32_t r = 0;
-    struct Buffers b;        /* local, zero-filled */
+    struct Buffers b = {0};  /* local, zero-filled like the Aster default */
     struct Vec3 anchor = { 1, 2, 3 };
 
     /* (1) scalar element write/read */

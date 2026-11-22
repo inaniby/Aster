@@ -21,7 +21,7 @@ printf '%s\n' '[2/6] Source guard: a semantic pass exists and runs before codege
 # not move this guard — the lattice itself is what this suite owns (the same
 # discipline pins FieldCall in callback-table-checks.sh and SizeOf/Len in
 # sizeof-len-checks.sh).
-grep -qF 'enum Kind { I32,' src/aster.cpp \
+grep -qF 'enum Kind { I8, I16, I32,' src/aster.cpp \
     && grep -qF 'Void,' src/aster.cpp \
     || { echo 'FAIL: semantic type lattice missing' >&2; exit 1; }
 # v0.23.28-dev: a binding also carries the array's element type, which is what

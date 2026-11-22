@@ -1,0 +1,63 @@
+(* Core declaration and statement grammar for en files. The English parser
+   retains the established semicolon and brace syntax. Function returns use
+   ':'; '->' is reserved for foreach/enumloop object separators. *)
+
+program       = [ package_header ], { declaration | comment } ;
+package_header = "package", package_name, { "=", package_name }, ";" ;
+package_name = identifier, { ".", identifier } ;
+declaration   = variable | constant | function | external_function | structure | enum | class | interface_class | alias | include ;
+variable      = "let", identifier, [ ":", type, [ "[", integer, "]" ] ], [ "=", expression ], ";" ;
+constant      = "const", identifier, ":", type, "=", expression, ";" ;
+function      = "fn", identifier, "(", [ parameters ], ")", ":", type, block ;
+external_function = "extern", "fn", identifier, "(", [ parameters ], ")", [ ":", type ], ";" ;
+closure       = "fn", [ capture_list ], "(", [ parameters ], ")", [ ":", type ], block ;
+capture_list  = "[", capture_name, { ",", capture_name }, "]" ;
+capture_name  = identifier | "this" ;
+parameters    = parameter, { ",", parameter } ;
+parameter     = identifier, ":", type ;
+structure     = "struct", identifier, "{", [ field, { ( "," | newline ), field }, [ "," ] ], "}" ;
+field         = identifier, ":", type, [ "[", integer, "]" ] ;
+class         = "class", identifier, [ ":", identifier ], "{", { class_member }, "}" ;
+class_member  = { class_member_annotation, [ newline ] }, ( class_field | function ) ;
+class_member_annotation = "@", ( "private" | "protected" | "static" | "constructor" | "override" ) ;
+top_visibility_annotation = "@private" ;
+class_field   = "let", identifier, ":", type, [ "[", integer, "]" ], [ "=", expression ], ";" ;
+interface_class = "interface class", identifier, "{", { method_signature }, "}" ;
+method_signature = "fn", identifier, "(", [ parameters ], ")", ":", type, ";" ;
+enum          = "enum", identifier, "{", enum_items, "}" ;
+enum_items    = enum_member, { ("," | newline), enum_member }, [ "," | newline ] ;
+enum_member   = identifier, [ "=", expression ] ;
+alias         = "type", identifier, "=", type, ";" ;
+include       = "include", string, ";" ;
+top_annotation = "@import", "(", string, ")", [ ".", "alias", "(", string, ")" ] ;
+block         = "{", { statement }, "}" ;
+statement     = variable | constant | return | if | switch | while | for | foreach | enumloop | break | continue | expression ;
+return        = "return", [ expression ], ";" ;
+if            = "if", "(", expression, ")", block, [ "else", ( if | block ) ] ;
+switch        = "switch", "(", expression, ")", "{", newline, { switch_arm }, [ switch_else ], "}" ;
+switch_arm    = "case", expression_list, newline, { statement }, ? until "case" | "else" | "}" ? ;
+switch_else   = "else", newline, { statement }, ? until "}" ? ;
+expression_list = expression, { ",", expression } ;
+primary       = identifier | closure | integer | floating | string | character | boolean | "null" | "(", expression, ")"
+              | "[", [ expression_list ], "]" ;
+struct_literal = identifier, "{", [ expression_list ], "}" ;
+postfix       = primary, { "(", [ expression_list ], ")" | "[", expression, "]" | ".", identifier } ;
+while         = "while", "(", expression, ")", block ;
+for           = "for", "(", [ identifier, "=" ], expression, ",", expression, [ ",", expression ], ")", block ;
+foreach       = "foreach", [ identifier, "," ], identifier, "in", expression, block ;
+enumloop      = "enumloop", identifier, "in", expression, block ;
+break         = "break", [ identifier ], ";" ;
+continue      = "continue", [ identifier ], ";" ;
+identifier    = ? ASCII letter / underscore / CJK U+4E00..U+9FFF, then those or digits ? ;
+type          = "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+              | "f32" | "f64" | "bool" | "char" | "string" | "ptr" | identifier | closure_type ;
+closure_type  = "closure", "(", [ type, { ",", type } ], ")", ":", type ;
+floating      = ? decimal floating-point literal containing "." or "e"/"E" ? ;
+(* Class member annotations may stack; visibility annotations are mutually
+   exclusive. @static applies to fields and methods; @constructor/@override
+   are valid only on methods.
+   An omitted method return type means void. A constructor may begin with
+   super(args) to pass arguments to its direct base constructor.
+   @override requires an inherited method with an exact signature. Instance
+   calls dispatch through the runtime class table; super.Method(...) calls
+   the parent directly. *)

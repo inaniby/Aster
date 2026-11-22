@@ -71,8 +71,8 @@ guard() { # $1 = description, $2 = pattern, $3 = expected count
     fi
 }
 guard 'stackOffFits helper'            'static bool stackOffFits(uint32_t off,Ty t){'  1
-guard 'U8/char unscaled 12-bit range'  'if(t==Ty::U8||t==Ty::Char) return off<=4095u;'  1
-guard 'U16 range, scaled by 2'         'if(t==Ty::U16)return off<=8190u&&(off&1u)==0u;' 1
+guard 'I8/U8/char unscaled 12-bit range' 'if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return off<=4095u;' 1
+guard 'I16/U16 range, scaled by 2'     'if(t==Ty::I16||t==Ty::U16)return off<=8190u&&(off&1u)==0u;' 1
 guard '64-bit range, scaled by 8'      'if(tyIs64(t)) return off<=32760u&&(off&7u)==0u;' 1
 # Two sites since v0.23.77-dev: the f32 arm spells this range out and the
 # default arm repeats it - the same predicate, reached from two types.
@@ -417,8 +417,8 @@ while IFS='~' read -r label kind program codes; do
     pids="$pids $!"
     if [ $((n % 4)) -eq 0 ]; then drain; fi
 done <<'MUT_EOF'
-M1 U8/char range test always true~sed~s/if(t==Ty::U8||t==Ty::Char) return off<=4095u;/if(t==Ty::U8||t==Ty::Char) return true;/~11 12
-M2 U8/char limit raised past the range~sed~s/if(t==Ty::U8||t==Ty::Char) return off<=4095u;/if(t==Ty::U8||t==Ty::Char) return off<=8190u;/~11 12
+M1 I8/U8/char range test always true~sed~s/if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return off<=4095u;/if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return true;/~11 12
+M2 I8/U8/char limit raised past range~sed~s/if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return off<=4095u;/if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return off<=8190u;/~11 12
 M3 store fallback uses the wrong base~sed~s/emitAddOff(kGlobalBase,31,off);emit(storeGlobalT(reg,t));/emitAddOff(kGlobalBase,30,off);emit(storeGlobalT(reg,t));/~11 12 35
 M4 store fallback stages the wrong offset~sed~s/emitAddOff(kGlobalBase,31,off);emit(storeGlobalT(reg,t));/emitAddOff(kGlobalBase,31,off+8);emit(storeGlobalT(reg,t));/~11 12 35
 M5 load fallback reads past the staged address~sed~s/emitAddOff(17,31,off);emit(loadAtT(reg,17,0,t));return;/emitAddOff(17,31,off);emit(loadAtT(reg,17,8,t));return;/~21 23 24

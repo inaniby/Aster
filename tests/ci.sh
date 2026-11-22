@@ -251,7 +251,7 @@ command -v llvm-dwarfdump >/dev/null 2>&1 && export ASTER_HAVE_LLVM_DWARFDUMP=1
 # 2. Strict build — once
 # ---------------------------------------------------------------------------
 printf '\n=== Building aster (strict: -Wall -Wextra -pedantic -Werror) ===\n'
-SOURCE_HASH=$(sha256sum src/aster.cpp | awk '{print $1}')
+SOURCE_HASH=$(sha256sum src/aster.cpp src/cn_parser.cpp src/cn_parser.hpp src/cn_lexer.cpp src/cn_lexer.hpp src/cn_keywords.def src/cn_formatter.cpp src/cn_formatter.hpp src/cn_diagnostics.hpp | sha256sum | awk '{print $1}')
 STAMP="$OUT/aster.sha256"
 ASTER_BIN=${ASTER_BIN:-$OUT/aster}
 case "$ASTER_BIN" in
@@ -299,6 +299,7 @@ printf 'CACHE     : compiler builds through %s\n' "$CXX"
 # 3. Suites
 # ---------------------------------------------------------------------------
 DEFAULT_SUITES="
+cn-lexer-checks.sh cn-parser-checks.sh cn-format-checks.sh cn-backend-checks.sh cn-module-checks.sh cn-runtime-checks.sh cn-diag-checks.sh cn-constructor-checks.sh cn-override-checks.sh
 string-symbol-checks.sh
 f64-short-circuit-checks.sh
 library-core-checks.sh

@@ -59,7 +59,7 @@ enum {
     S_Switch = 75,
     S_Expr = 76,
     S_DoWhile = 77,
-    S_Nop = 78,
+    S_Nop = 79,
 };
 
 /* The 7 structural kinds (§2.3). */
@@ -136,7 +136,7 @@ static const char *const EK_NAMES[EK_COUNT] = {
     "Cast",
 };
 
-#define SK_COUNT 15
+#define SK_COUNT 16
 static const char *const SK_NAMES[SK_COUNT] = {
     "Let",
     "Assign",
@@ -152,6 +152,7 @@ static const char *const SK_NAMES[SK_COUNT] = {
     "Switch",
     "Expr",
     "DoWhile",
+    "Trap",
     "Nop",
 };
 

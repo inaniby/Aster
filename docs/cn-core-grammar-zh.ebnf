@@ -1,0 +1,64 @@
+(* Core declaration and statement grammar for zh files. Semantic checks and
+   S3 constructs are specified in ASTER-CN-DESIGN.md. Newlines terminate
+   statements unless the previous line ends in a continuation token. *)
+
+program       = [ package_header ], { declaration | newline } ;
+package_header = "包名", package_name, { "=", package_name }, terminator ;
+package_name = identifier, { ".", identifier } ;
+declaration   = variable | constant | method | external_method | structure | enum | class | interface_class | alias | include ;
+variable      = "变量", identifier, [ ":", type, [ "[", integer, "]" ] ], [ "=", expression ], terminator ;
+constant      = "常量", identifier, ":", type, "=", expression, terminator ;
+method        = "方法", ( "启动方法" | identifier ), "(", [ parameters ], ")", [ ":", type ], block ;
+external_method = "外部", "(", external_symbol, ")", "方法", identifier, "(", [ parameters ], ")", [ ":", type ], terminator ;
+external_symbol = string ; (* required plain non-empty ASCII string; it is the emitted C ABI symbol *)
+closure       = "方法", [ capture_list ], "(", [ parameters ], ")", [ ":", type ], block ;
+capture_list  = "[", capture_name, { ",", capture_name }, "]" ;
+capture_name  = identifier | "本对象" ;
+parameters    = parameter, { ",", parameter } ;
+parameter     = identifier, ":", type ;
+structure     = "结构", identifier, newline, { field }, "结束", "结构" ;
+field         = identifier, ":", type, [ "[", integer, "]" ], terminator ;
+class         = "类", identifier, [ ":", identifier ], newline, { class_member }, "结束", "类" ;
+class_member  = { class_member_annotation, [ newline ] }, ( class_field | method ) ;
+class_member_annotation = "@", ( "隐藏" | "受限" | "受限.类" | "静态" | "构造" | "重写" ) ;
+class_field   = "变量", identifier, ":", type, [ "[", integer, "]" ], [ "=", expression ], terminator ;
+interface_class = "接口类", identifier, newline, { method_signature }, "结束", "接口类" ;
+method_signature = "方法", identifier, "(", [ parameters ], ")", ":", type, terminator ;
+enum          = "枚举", identifier, newline, { enum_member, terminator }, "结束", "枚举" ;
+enum_member   = identifier, [ "=", expression ] ;
+alias         = "类型", identifier, "=", type, terminator ;
+include       = "导入", string, terminator ;
+top_annotation = "@导入", "(", string, ")", [ ".", "别名", "(", string, ")" ] ;
+block         = newline, { statement | newline }, "结束", block_kind, newline ;
+statement     = variable | constant | return | if | match | while | count_loop | foreach | enum_loop | break | continue | expression ;
+return        = "返回", [ expression ], terminator ;
+if            = "如果", expression, block, [ "否则如果", expression, block ], [ "否则", block ] ;
+match         = "假如", expression, newline, { match_arm }, [ match_else ], "结束", "假如" ;
+match_arm     = "是", expression_list, newline, { statement | newline }, ? until "是" | "否则" | "结束 假如" ? ;
+match_else    = "否则", newline, { statement | newline }, ? until "结束 假如" ? ;
+expression_list = expression, { ",", expression } ;
+primary       = identifier | closure | integer | floating | string | character | boolean | "空" | "(", expression, ")"
+              | "[", [ expression_list ], "]" ;
+struct_literal = identifier, "{", [ expression_list ], "}" ;
+postfix       = primary, { "(", [ expression_list ], ")" | "[", expression, "]" | ".", identifier } ;
+while         = "循环", expression, block ;
+count_loop    = "计次循环", "(", [ identifier, "=" ], expression, ",", expression, [ ",", expression ], ")", block ;
+foreach       = "遍历循环", "(", identifier, [ ",", identifier ], "->", expression, ")", block ;
+enum_loop     = "枚举循环", "(", identifier, "->", expression, ")", block ;
+break         = "退出循环", [ identifier ], terminator ;
+continue      = "跳过循环", [ identifier ], terminator ;
+block_kind    = "方法" | "如果" | "循环" | "计次循环" | "遍历循环" | "枚举循环" | "结构" | "类" | "接口类" ;
+terminator    = newline | ";" ;
+newline       = ? line-feed outside parentheses/brackets ? ;
+identifier    = ? ASCII letter / underscore / CJK U+4E00..U+9FFF, then those or digits ? ;
+type          = "字节" | "短整数" | "整数" | "长整数" | "逻辑型"
+              | "单精度" | "小数" | "字符" | "字符串" | "指针" | identifier | closure_type ;
+closure_type  = "闭包", "(", [ type, { ",", type } ], ")", ":", type ;
+floating      = ? decimal floating-point literal containing "." or "e"/"E" ? ;
+(* Class member annotations may stack; visibility annotations are mutually
+   exclusive. @静态 applies to fields and methods; @构造/@重写 are valid only
+   on methods. Omitted method return types mean 空. A constructor may begin
+   with 父对象(args) to pass arguments to its direct base constructor.
+   @重写 requires an inherited
+   method with an exact signature. Instance calls dispatch through the runtime
+   class table; 父对象.Method(...) calls the parent directly. *)

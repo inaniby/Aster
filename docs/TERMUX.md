@@ -98,7 +98,7 @@ with the scratch directory. With them you get a PNG to open and an APK to tap.
 ## 4. Just build the APK
 
 ```sh
-./aster build-apk examples/icon_text_demo.ast -o icon-text-demo.apk \
+aster build-apk examples/icon_text_demo.ast -o icon-text-demo.apk \
     --package com.aster.icontext --libname icontext --abi arm64-v8a \
     --label "Aster 图标文字" \
     --string app_subtitle="ICON + TEXT" \
@@ -109,8 +109,8 @@ with the scratch directory. With them you get a PNG to open and an APK to tap.
 Two-step, if you want to keep the object for `readelf`/`objdump`:
 
 ```sh
-./aster build-so examples/icon_text_demo.ast -o libicontext.so
-./aster build-apk libicontext.so -o icon-text-demo.apk --package com.aster.icontext ...
+aster build-so examples/icon_text_demo.ast -o libicontext.so
+aster build-apk libicontext.so -o icon-text-demo.apk --package com.aster.icontext ...
 ```
 
 or pass `--emit-so libicontext.so` to the one-step form.
@@ -118,7 +118,7 @@ or pass `--emit-so libicontext.so` to the one-step form.
 ## 5. Verify it
 
 ```sh
-./aster verify-apk icon-text-demo.apk
+aster verify-apk icon-text-demo.apk
 #   aster: verify-apk: icon-text-demo.apk: OK (v1 + v2 signatures verified)
 
 python3 tests/validate_apk.py icon-text-demo.apk \
@@ -160,7 +160,7 @@ default is the literal.
 `--label-as-reference` asks for the aapt spelling back:
 
 ```sh
-./aster build-apk examples/icon_text_demo.ast -o icon-text-demo-ref.apk \
+aster build-apk examples/icon_text_demo.ast -o icon-text-demo-ref.apk \
     --package com.aster.icontext --libname icontext \
     --label "Aster 图标文字" --label-as-reference
 ```

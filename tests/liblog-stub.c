@@ -20,3 +20,11 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
     fputc('\n', stderr);
     return 0;
 }
+
+int __android_log_buf_write(int buf_id, int prio, const char *tag, const char *text) {
+    (void)buf_id;
+    (void)prio;
+    (void)tag;
+    (void)text;
+    return 0;
+}

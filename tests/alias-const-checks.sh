@@ -111,7 +111,7 @@ guard 'bool isConst=false;' 'the const flag in a Sema binding'
 guard 'bool isConstName(const std::string& n) const {' 'the one read-only question'
 guard 'const std::set<std::string>& constGlobals;' 'the const globals reaching Sema'
 guard 'if(b->isConst)throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.name));' 'the refusal at an assignment'
-guard 'if(isConstName(s.name))throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.name));' 'the refusal at an element store'
+guard 'if(isConstName(s.name)&&!s.isArrayInit)throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.name));' 'the refusal at an element store'
 guard 'if(s.idx->a&&s.idx->a->k==Expr::Var&&isConstName(s.idx->a->name))' 'the refusal at a field store'
 guard '"cannot take the address of a const: "+e.a->name' 'the refusal at address-of'
 guard '"a const must have an initializer: "+id.s' 'the initializer requirement'
@@ -123,18 +123,17 @@ guard_count=$((guard_count + 1))
 [ "$(grep -c 'a const must have an initializer: ' src/aster.cpp)" = 3 ] \
     || { echo 'FAIL: expected three "a const must have an initializer" sites' >&2; exit 1; }
 guard_count=$((guard_count + 1))
-# The reserved-word list is generated, not hand-written: 32 words now that
-# `type`, `const`, `void` and `char` joined it, and `tls` is still a context
-# keyword.
+# The reserved-word list is generated, not hand-written: 35 words including
+# the narrow integer types, and `tls` is still a context keyword.
 python3 - <<'PY' || exit 1
 import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 33, ('reserved-word count moved', len(entries), entries)
+assert len(entries) == 35, ('reserved-word count moved', len(entries), entries)
 assert 'type' in entries and 'const' in entries, 'type/const are not reserved words'
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 33 reserved words, type and const among them, tls still a context keyword')
+print('PASS: 35 reserved words, type and const among them, tls still a context keyword')
 PY
 guard_count=$((guard_count + 1))
 printf '  %-30s %s\n' "guards passed" "$guard_count"
@@ -408,7 +407,7 @@ fn main() -> i32 { return 0; }' \
 r 'alias: undeclared use' \
 'let g: P = 1;
 fn main() -> i32 { return 0; }' \
-'expected i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool' ''
+'expected i8, i16, i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool' ''
 r 'const: plain assignment' \
 "${CONST_PRE}const k: i32 = 1; k = 2; return k; }" \
 'cannot assign to a const: k' \

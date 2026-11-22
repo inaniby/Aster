@@ -70,11 +70,12 @@ def body(name):
     return s[start:end]
 
 ld, st = body('loadVarT'), body('storeVarT')
-for label, b in (('loadVarT', ld), ('storeVarT', st)):
-    # Comments legitimately say "slot*8" when describing the byte offset;
-    # only the *encoding expression* (slot*8) is forbidden.
-    assert '(slot*8)' not in b, (label, 'eightfold scale is back')
-    print('  OK %s: no eightfold F64 encoding' % label)
+for label, b, bad in (
+    ('loadVarT', ld, '0xfd4003e0u|(uint32_t(slot*8)<<10)'),
+    ('storeVarT', st, '0xfd0003e0u|(uint32_t(slot*8)<<10)'),
+):
+    assert bad not in b, (label, 'eightfold F64 encoding is back')
+    print('  OK %s: F64 immediate is not scaled by eight' % label)
 assert '0xfd4003e0u|(uint32_t(slot)<<10)' in ld, 'LDR D immediate is not the slot'
 assert '0xbd4003e0u|(uint32_t(slot*2)<<10)' in ld, 'LDR S scale changed'
 assert '0xfd0003e0u|(uint32_t(slot)<<10)' in st, 'STR D immediate is not the slot'

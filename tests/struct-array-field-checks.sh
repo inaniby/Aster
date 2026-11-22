@@ -207,7 +207,7 @@ struct V3 { int32_t a, b, c; };
 struct B { int32_t nums[4]; int8_t flags[3]; void *ptrs[4]; struct V3 pts[2]; };
 static struct B gb;
 int main(void) {
-    struct B b;
+    struct B b = {0};
     struct V3 anchor = { 1, 2, 3 };
     int32_t r = 0;
     b.nums[0] = 11; b.nums[3] = 33;
@@ -413,13 +413,10 @@ struct B { ptrs: ptr[4] }
 fn main() -> i32 { let cell: P = P { 42 };
     let b: B;
     if (b.ptrs[0] == 0) { return 4; } return 0; }'
-# m7: the field path's i32 element is not sign-extended when the consumer wants
-# 64 bits, so `let x: i64 = b.nums[0];` reads 0x00000000FFFFFFFB instead of -5
-# and the equality against -5 fails. The sed is anchored on the site's own
-# indentation (24 spaces) because the named-array path carries the same rule one
-# level out (16 spaces) and must keep it.
+# m7: disabling the shared signed-widening predicate makes an i32 field element
+# read as zero-extended when the consumer wants 64 bits.
 mutate 'm7: i32 field element not widened' \
-    's/^                        if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));$/                        ;/' \
+    's/static bool tyNeedsSignExtend64(Ty t) { return tyIsSignedNarrow(t) || t.k == Ty::I32; }/static bool tyNeedsSignExtend64(Ty t) { return false; }/' \
     must_differ 'i32 field element into i64' 64 'struct B { nums: i32[4] }
 fn main() -> i32 { let b: B; b.nums[0] = 0 - 5;
     let x: i64 = b.nums[0];

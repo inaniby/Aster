@@ -364,7 +364,7 @@ let calls: i32 = 0;
 let gb: u8[8] = 0;
 let gp: ptr = 0;
 fn main() -> i32 {
-    gp = &gb;
+    gp = ptr(&gb);
     let p: ptr = mmap(gp, 4096, 3, 34, -1, 0);
     return calls;
 }' \
@@ -378,7 +378,7 @@ let hits: i32 = 0;
 let gb: u8[8] = 0;
 let gp: ptr = 0;
 fn main() -> i32 {
-    gp = &gb;
+    gp = ptr(&gb);
     let r: ptr = brk(gp);
     return hits;
 }' \

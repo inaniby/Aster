@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <cerrno>
 #include <sys/stat.h>
@@ -26,6 +27,24 @@
 #include <vector>
 #include <functional>            // AXML builder uses std::function
 #include <cassert>              // Typed IR guard (P3.1 follow-up)
+#include <filesystem>
+#if __has_include("cn_parser.hpp") && __has_include("cn_lexer.hpp") && \
+    __has_include("cn_lexer.cpp") && __has_include("cn_parser.cpp") && \
+    __has_include("cn_formatter.hpp") && __has_include("cn_formatter.cpp") && \
+    __has_include("cn_diagnostics.hpp")
+#define ASTER_CN_FRONTEND_AVAILABLE 1
+#include "cn_parser.hpp"
+#include "cn_lexer.hpp"
+#include "cn_formatter.hpp"
+#include "cn_diagnostics.hpp"
+// Keep the established single-file compiler build working while exposing the
+// frontend as separate modules to the lexer and parser tools.
+#include "cn_lexer.cpp"
+#include "cn_parser.cpp"
+#include "cn_formatter.cpp"
+#else
+#define ASTER_CN_FRONTEND_AVAILABLE 0
+#endif
 
 
 // The directory a path lives in, or "" when it has none. A relative path
@@ -167,6 +186,12 @@ std::vector<std::string> g_srcLines;
 // undone before anyone read it.
 std::string g_diagFile;
 std::vector<std::string> g_diagLines;
+// CN semantic and package errors are raised after parsing, where the source
+// language is still known only by the CN command path.  Keep that context for
+// the common top-level reporter so those errors receive the same code and
+// localized summary as lexer/parser errors.
+bool g_cnDiagnosticActive = false;
+aster_cn::Language g_cnDiagnosticLanguage = aster_cn::Language::Zh;
 static void setSourceCache(const std::string& path, const std::string& text) {
     g_srcFile = path;
     g_srcLines.clear();
@@ -206,14 +231,17 @@ static std::string loc(unsigned line,unsigned col,std::string msg){
     return msg;
 }
 static void reportError(const std::string& msg) {
+    const std::string rendered = g_cnDiagnosticActive
+        ? aster_cn::decorateDiagnostic(msg, g_cnDiagnosticLanguage) : msg;
+    const std::string& diagnostic = rendered;
     const bool fromInclude = !g_diagFile.empty();
     const char* file = fromInclude ? g_diagFile.c_str()
                                    : (g_srcFile.empty() ? "<source>" : g_srcFile.c_str());
     const std::vector<std::string>& srcLines = fromInclude ? g_diagLines : g_srcLines;
-    size_t at = msg.rfind(" at ");
+    size_t at = diagnostic.rfind(" at ");
     unsigned ln = 0, col = 0; bool haveLoc = false;
     if (at != std::string::npos) {
-        const char* p = msg.c_str() + at + 4;
+        const char* p = diagnostic.c_str() + at + 4;
         char* end = nullptr;
         unsigned long L = std::strtoul(p, &end, 10);
         if (end && *end == ':') {
@@ -223,7 +251,7 @@ static void reportError(const std::string& msg) {
         }
     }
     if (haveLoc) {
-        std::cerr << "aster: " << file << ":" << ln << ":" << col << ": error: " << msg << "\n";
+        std::cerr << "aster: " << file << ":" << ln << ":" << col << ": error: " << diagnostic << "\n";
         if (ln > 0 && ln - 1 < srcLines.size()) {
             const std::string& raw = srcLines[ln - 1];
             std::string disp = expandTabs(raw);
@@ -240,7 +268,7 @@ static void reportError(const std::string& msg) {
             std::cerr << pointer << "\n";
         }
     } else {
-        std::cerr << "aster: error: " << msg << "\n";
+        std::cerr << "aster: error: " << diagnostic << "\n";
     }
 }
 uint64_t alignUp(uint64_t n,uint64_t a){return (n+a-1u)&~(a-1u);}
@@ -249,7 +277,7 @@ enum class TK { End, Ident, Number, String,
     Char,                // v0.23.50-dev: the character literal — 'a' lexes to a Char token carrying its byte value (0..255)
     Fn, Extern, Main, Let, Return, If, Else, While, For, Break, Continue, I32, Ptr, Bool, Void,
     Switch, Case, Default, // v0.23.49-dev: the switch statement — Pascal semantics, so no fallthrough and no per-case break
-    I64, U8, U16, U32,   // v0.23.2-dev (P3.2): wider integer type keywords
+    I8, I16, I64, U8, U16, U32,   // integer type keywords
     U64,                 // v0.23.48-dev: the 64-bit unsigned integer — the cast target the language was missing
     True, False,         // v0.23.25-dev: Bool literals — the first the language has had
     Struct,              // v0.23.5-dev (P3.3): struct declarations
@@ -406,7 +434,7 @@ public:
                 TK k=TK::Ident;
                 if(x=="fn")k=TK::Fn; else if(x=="extern")k=TK::Extern; else if(x=="main")k=TK::Main; else if(x=="let")k=TK::Let;
                 else if(x=="return")k=TK::Return; else if(x=="if")k=TK::If; else if(x=="else")k=TK::Else; else if(x=="while")k=TK::While; else if(x=="for")k=TK::For; else if(x=="break")k=TK::Break; else if(x=="continue")k=TK::Continue; else if(x=="switch")k=TK::Switch; else if(x=="case")k=TK::Case; else if(x=="default")k=TK::Default; else if(x=="i32")k=TK::I32; else if(x=="ptr")k=TK::Ptr; else if(x=="bool")k=TK::Bool; else if(x=="void")k=TK::Void;
-                else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct; else if(x=="enum")k=TK::Enum;
+                else if(x=="i8")k=TK::I8; else if(x=="i16")k=TK::I16; else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct; else if(x=="enum")k=TK::Enum;
                 // v0.23.67-dev: `type` and `const`. Neither is an identifier
                 // anywhere in the shipped corpus — the byte baseline's examples,
                 // stdlib and the self-hosting source all spell their own names
@@ -646,7 +674,7 @@ public:
 // The Kind keeps the spelling `Ty::I32`, so every site that asks "is this a
 // pointer?" or "how wide is it?" reads exactly as it did before.
 struct Ty {
-    enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void,
+    enum Kind { I8, I16, I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void,
                 // v0.23.77-dev: the floating-point family. f64 is an eight-byte
                 // IEEE-754 double; it lives in the FP register bank, never in the
                 // integer bank, so every width rule names it explicitly.
@@ -654,6 +682,7 @@ struct Ty {
                 F32, F64 };
     Kind k = I32;
     int sid = -1;                      // struct-table index; see above
+    bool isString = false;             // first-class CN UTF-8 string, stored as a ptr
     // v0.23.34-dev: a pointer may carry the *element* it strides over, so
     // `p[i]` can scale by the element's real width instead of a hard-coded 4
     // and `&arr` can hand over an array of any element width (i64/u8/u16/ptr/S).
@@ -669,6 +698,7 @@ struct Ty {
     static Ty ofStruct(int id) { Ty t(Struct); t.sid = id; return t; }
     static Ty ofEnum(int id) { Ty t(Enum); t.sid = id; return t; }
     static Ty ptrTo(int id) { Ty t(Ptr); t.sid = id; return t; }
+    static Ty string() { Ty t(Ptr); t.isString = true; return t; }
 };
 // Comparing a Ty against a Kind is what nearly every call site does. Both
 // argument orders are spelled out so no call ever resolves through the
@@ -682,9 +712,13 @@ struct Ty {
 [[maybe_unused]] inline bool operator==(Ty::Kind a, const Ty& b) { return b.k == a; }
 [[maybe_unused]] inline bool operator!=(const Ty& a, Ty::Kind b) { return a.k != b; }
 [[maybe_unused]] inline bool operator!=(Ty::Kind a, const Ty& b) { return b.k != a; }
-[[maybe_unused]] inline bool operator==(const Ty& a, const Ty& b) { return a.k == b.k && a.sid == b.sid; }
+[[maybe_unused]] inline bool operator==(const Ty& a, const Ty& b) { return a.k == b.k && a.sid == b.sid && a.isString == b.isString; }
 [[maybe_unused]] inline bool operator!=(const Ty& a, const Ty& b) { return !(a == b); }
-[[maybe_unused]] inline bool operator<(const Ty& a, const Ty& b) { return a.k != b.k ? a.k < b.k : a.sid < b.sid; }
+[[maybe_unused]] inline bool operator<(const Ty& a, const Ty& b) {
+    if (a.k != b.k) return a.k < b.k;
+    if (a.sid != b.sid) return a.sid < b.sid;
+    return a.isString < b.isString;
+}
 // v0.23.37-dev: a function type, carried *beside* a ptr variable rather than
 // as a distinct Ty. A fn-pointer keeps the storage type Ty::Ptr, so gen(Var)
 // addressing and the default byte width are untouched; this parallel record
@@ -724,7 +758,8 @@ struct ParamSig { bool isFunc=false; FuncSig sig; };
 // ptr — but a call through the field can now be checked and staged by the
 // signature, which is the whole point of writing the type down.
 struct StructField { std::string name; Ty ty; uint32_t offset = 0; uint32_t len = 0; std::vector<uint32_t> dims;
-                     FuncSig funcSig; bool isFunc = false; };
+                     FuncSig funcSig; bool isFunc = false; bool isString = false;
+                     int cnVisibility = 0; int cnOwnerClassId = -1; std::string cnSourceFile = {}; };
 struct StructDef {
     std::string name;
     std::vector<StructField> fields;
@@ -812,7 +847,7 @@ static uint32_t tySize(Ty t) {
     if (t.k == Ty::F64) return 8u;    // v0.23.77-dev: an IEEE-754 double
     if (t.k == Ty::F32) return 4u;    // and the four-byte single beside it
     if (t.k == Ty::Char) return 1u;   // v0.23.69-dev: unsigned 8-bit
-    return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
+    return (t.k == Ty::I8 || t.k == Ty::U8) ? 1u : (t.k == Ty::I16 || t.k == Ty::U16) ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
 // Alignment in bytes. Structs carry their own; every scalar is naturally
 // aligned. This is the number AAPCS64 rounds a field offset up to.
@@ -822,7 +857,7 @@ static uint32_t tyAlign(Ty t) {
     if (t.k == Ty::F64) return 8u;
     if (t.k == Ty::F32) return 4u;
     if (t.k == Ty::Char) return 1u;   // v0.23.69-dev: unsigned 8-bit
-    return t.k == Ty::U8 ? 1u : t.k == Ty::U16 ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
+    return (t.k == Ty::I8 || t.k == Ty::U8) ? 1u : (t.k == Ty::I16 || t.k == Ty::U16) ? 2u : (t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr) ? 8u : 4u;
 }
 static bool tyIsStruct(Ty t) { return t.k == Ty::Struct; }
 // v0.23.77-dev: the floating-point family, one query for every rule that treats
@@ -869,7 +904,9 @@ static uint64_t sizeofTypeValue(Ty t, const std::vector<uint32_t>& dims) {
 static bool tyIs64(Ty t) { return t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Ptr; }
 // I32/U32/U8/U16/I64/U64: arithmetic and comparison operands that are not bool,
 // not an address, and not a composite.
-static bool tyIsInteger(Ty t) { return t.k == Ty::I32 || t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Char || t.k == Ty::Enum; }
+static bool tyIsSignedNarrow(Ty t) { return t.k == Ty::I8 || t.k == Ty::I16; }
+static bool tyNeedsSignExtend64(Ty t) { return tyIsSignedNarrow(t) || t.k == Ty::I32; }
+static bool tyIsInteger(Ty t) { return tyIsSignedNarrow(t) || t.k == Ty::I32 || t.k == Ty::U32 || t.k == Ty::U8 || t.k == Ty::U16 || t.k == Ty::I64 || t.k == Ty::U64 || t.k == Ty::Char || t.k == Ty::Enum; }
 // U32/U8/U16/U64 compare with the unsigned condition codes (LO/LS/HI/HS) and divide
 // with UDIV, unlike i32/i64. For a mixed pair the promoted result type decides —
 // see opIsUnsigned (v0.23.75-dev, F-07).
@@ -895,8 +932,10 @@ static int elemShiftOf(Ty t){
 }
 static const char* tyName(Ty t) {
     switch (t.k) {
+        case Ty::I8: return "i8"; case Ty::I16: return "i16";
         case Ty::I32: return "i32"; case Ty::U32: return "u32"; case Ty::U8: return "u8";
-        case Ty::U16: return "u16"; case Ty::I64: return "i64"; case Ty::U64: return "u64"; case Ty::Ptr: return "ptr";
+        case Ty::U16: return "u16"; case Ty::I64: return "i64"; case Ty::U64: return "u64";
+        case Ty::Ptr: return t.isString ? "string" : "ptr";
         case Ty::Bool: return "bool";
         case Ty::Void: return "void";   // v0.23.68-dev
         case Ty::Char: return "char";   // v0.23.69-dev
@@ -1002,7 +1041,7 @@ static void layoutStruct(StructDef& s,const Token& id) {
 }
 // The single spelling of "this is not a type name", shared by the parameter,
 // return, local and global declaration sites so they cannot drift apart.
-static const char* kTypeExpected="expected i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name";
+static const char* kTypeExpected="expected i8, i16, i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name";
 struct Expr {
     // Field   : a.field   — a is a struct lvalue or a ptr<S>; name is the field
     // AddrOf  : &a        — the address of an lvalue, typed ptr<S> for a struct
@@ -1061,6 +1100,7 @@ struct Expr {
     // answer the named width so operations and codegen see it directly.
     enum LitSuffix { LSNone, LSU, LSL, LSUL } suffix=LSNone;
     bool boolLit=false;
+    bool isStringValue=false;           // CN string literal/default, distinct from native ptr literals
     // v0.23.61-dev: a Num that came from an enumerated constant. It behaves
     // exactly like an i32 literal downstream (the nominal type is the enum
     // *name*, not the constant), but the flag lets diagnostics name it.
@@ -1103,6 +1143,8 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
         // A bare literal's low bits are what gets stored. It fits a narrow slot
         // only when its value is inside that slot's range; the 32-bit-and-wider
         // slots accept any literal (their low bits are stored, as i32 always did).
+        if(t==Ty::I8) return (uint64_t)e.n<=127u;
+        if(t==Ty::I16)return (uint64_t)e.n<=32767u;
         if(t==Ty::U8) return (uint64_t)e.n<=255u;
         if(t==Ty::Char)return (uint64_t)e.n<=255u;   // v0.23.69-dev
         if(t==Ty::U16)return (uint64_t)e.n<=65535u;
@@ -1124,6 +1166,8 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
         return true;
     }
     switch(t.k){
+        case Ty::I8:  return folded>=-128&&folded<=127;
+        case Ty::I16: return folded>=-32768&&folded<=32767;
         case Ty::U8:  return folded>=0&&folded<=255;
         case Ty::Char:return folded>=0&&folded<=255;   // v0.23.69-dev
         case Ty::U16: return folded>=0&&folded<=65535;
@@ -1149,6 +1193,8 @@ static bool initializerFits(Ty t,const Expr& e,int64_t folded){
 // label that does not fit the subject is refused instead of folded away.
 static bool caseValueFits(Ty t,int64_t folded){
     switch(t.k){
+        case Ty::I8:  return folded>=-128&&folded<=127;
+        case Ty::I16: return folded>=-32768&&folded<=32767;
         case Ty::U8:  return folded>=0&&folded<=255;
         case Ty::Char:return folded>=0&&folded<=255;   // v0.23.69-dev
         case Ty::U16: return folded>=0&&folded<=65535;
@@ -1214,7 +1260,7 @@ static Ty constExprType(const Expr& e){
     }
 }
 struct Stmt {
-    enum Kind { Let, Assign, FieldAssign, IndexAssign, DerefAssign, Return, If, While, For, Break, Continue, Switch, Expr, DoWhile,
+    enum Kind { Let, Assign, FieldAssign, IndexAssign, DerefAssign, Return, If, While, For, Break, Continue, Switch, Expr, DoWhile, Trap,
                  // v0.23.77-dev: a `static` declaration is consumed by the parser
                  // (it defines a global); the statement that stands in its place
                  // generates nothing and binds nothing.
@@ -1244,6 +1290,9 @@ struct Stmt {
     // shape it built — a chain and a bare subscript are not told apart by
     // looking at the expression alone.
     unsigned subs=1;
+    // Internal list-initializer stores are the one permitted writes that build
+    // a const array before user code can observe the binding.
+    bool isArrayInit=false;
     std::vector<Stmt> thenBody, elseBody;
     // for (init; cond; step) body: forInit/forStep hold 0 or 1 statement each
     // (a let declaration is only legal in the initializer); thenBody is the loop body.
@@ -1265,6 +1314,7 @@ struct Stmt {
     Stmt(const Stmt&)=delete; Stmt& operator=(const Stmt&)=delete;
 };
 struct Global { std::string name; bool external=false; int32_t init=0; uint64_t wideInit=0; Ty ty=Ty::I32; bool isArray=false; uint32_t count=1; uint64_t align=4; bool runtimeInit=false; E initExpr; bool isString=false; bool isBool=false; FuncSig funcSig; bool isFunc=false;
+    std::vector<Stmt> runtimeInitStatements;
     // v0.23.51-dev: thread-local storage. A `tls let x : T = …` global lives in
     // a per-thread block addressed through TPIDR_EL0 (local-exec), so each
     // thread sees its own copy and there is no need for a dynamic loader's
@@ -1275,6 +1325,9 @@ struct Global { std::string name; bool external=false; int32_t init=0; uint64_t 
     // the guarantee is the compiler's (every store is refused at check time),
     // not the image's (nothing marks the bytes read-only).
     bool isConst=false;
+    // Compiler-generated immutable byte tables (for example CN enumloop
+    // metadata).  They are arrays rather than strings, but belong in rodata.
+    bool readOnlyData=false;
     std::vector<uint8_t> rawData;
     // v0.23.31-dev: the per-dimension lengths of a multi-dimensional global
     // (`T[N][M]`), outermost first. `count` stays the total element count, so
@@ -1396,6 +1449,8 @@ struct IncludeState {
 // time and run time answers cannot drift apart.
 static int64_t castConstValue(int64_t v,Ty to){
     switch(to.k){
+        case Ty::I8:  return (int64_t)(int8_t)(uint8_t)(uint64_t)v;
+        case Ty::I16: return (int64_t)(int16_t)(uint16_t)(uint64_t)v;
         case Ty::U8:  return (int64_t)(uint64_t)(uint8_t)(uint64_t)v;
         case Ty::Char:return (int64_t)(uint64_t)(uint8_t)(uint64_t)v;   // v0.23.69-dev: truncate to low 8 bits like u8
         case Ty::U16: return (int64_t)(uint64_t)(uint16_t)(uint64_t)v;
@@ -1490,6 +1545,8 @@ class Parser {
         // Guard the nesting itself; sequential types do not accumulate.
         DepthGuard depthGuard(typeDepth,256,"type");
         switch(cur().k){
+            case TK::I8:  out=Ty::I8;   ++p; return true;
+            case TK::I16: out=Ty::I16;  ++p; return true;
             case TK::I32: out=Ty::I32;  ++p; return true;
             case TK::I64: out=Ty::I64;  ++p; return true;
             case TK::U8:  out=Ty::U8;   ++p; return true;
@@ -1788,7 +1845,7 @@ class Parser {
             x->ty=kw.s=="f32"?Ty::F32:Ty::F64; x->a=std::move(inner); x->line=kw.line; x->col=kw.col;
             return x;
         }
-        if(cur().k==TK::I32||cur().k==TK::I64||cur().k==TK::U8||cur().k==TK::U16||cur().k==TK::U32||cur().k==TK::U64||cur().k==TK::CharType||cur().k==TK::Bool||cur().k==TK::Ptr){
+        if(cur().k==TK::I8||cur().k==TK::I16||cur().k==TK::I32||cur().k==TK::I64||cur().k==TK::U8||cur().k==TK::U16||cur().k==TK::U32||cur().k==TK::U64||cur().k==TK::CharType||cur().k==TK::Bool||cur().k==TK::Ptr){
             const Token kw=t[p++];
             // Parse the target type first — for `ptr` this may consume a
             // `<T>`/`<S>` argument that precedes the operand's '(' — then the
@@ -1796,6 +1853,8 @@ class Parser {
             // `ptr<i32>(x)` reads the angle brackets before it looks for it.)
             Ty t=Ty::I32;
             switch(kw.k){
+                case TK::I8:  t=Ty::I8; break;
+                case TK::I16: t=Ty::I16; break;
                 case TK::I32: t=Ty::I32; break;
                 case TK::I64: t=Ty::I64; break;
                 case TK::U8:  t=Ty::U8;  break;
@@ -3813,6 +3872,9 @@ static bool opIsUnsigned(Ty a,Ty b){return tyIsUnsigned(promoteInt(a,b));}
 //   * everything else — narrowing a value, mixing in a bool or a pointer — is
 //     an error. There is no *implicit* truncation: a cast is how a program asks
 //     for one (v0.23.48-dev), and silently dropping bits would be a bug.
+#if ASTER_CN_FRONTEND_AVAILABLE
+static bool cnClassPointerCanUpcast(Ty target, Ty source);
+#endif
 static bool tyAssignable(Ty to,Ty from,const Expr& e){
     if(to==from)return true;
     // v0.23.61-dev: enum nominal isolation, built on the i32 representation.
@@ -3827,6 +3889,11 @@ static bool tyAssignable(Ty to,Ty from,const Expr& e){
         if(to.k==Ty::Enum)return from.k==Ty::I32&&constantInteger(e,v)&&initializerFits(to,e,v);
         return from.k==Ty::Enum&&to.k==Ty::I32;
     }
+    // CN class references are nominal pointers. A subclass reference may flow
+    // to an ancestor slot; unrelated class references remain incompatible.
+#if ASTER_CN_FRONTEND_AVAILABLE
+    if(cnClassPointerCanUpcast(to,from))return true;
+#endif
     // v0.23.26-dev: the null pointer constant is the one integer a ptr slot
     // accepts. Everything else about pointers is unchanged — no cast, no
     // truncation, no address arithmetic into a value.
@@ -4127,6 +4194,8 @@ struct Codegen {
         // double in slot 1 - a later local could overwrite a double.
         if(t==Ty::F64)return 0xfd4003e0u|(uint32_t(slot)<<10)|uint32_t(reg);   // LDR Dt, [SP, #slot*8]
         if(tyIs64(t))return loadVar64(reg,slot);
+        if(t==Ty::I8)return 0x39c003e0u|(uint32_t(slot*8)<<10)|uint32_t(reg);   // LDRSB Wt, [SP, #slot*8]
+        if(t==Ty::I16)return 0x79c003e0u|(uint32_t(slot*4)<<10)|uint32_t(reg); // LDRSH Wt, [SP, #slot*8]
         if(t==Ty::U8||t==Ty::Char)return loadVar8(reg,slot);
         if(t==Ty::U16)return loadVar16(reg,slot);
         return loadVar32(reg,slot);
@@ -4135,8 +4204,8 @@ struct Codegen {
         if(t==Ty::F32)return 0xbd0003e0u|(uint32_t(slot*2)<<10)|uint32_t(reg);   // STR St, [SP, #slot*8] (imm = bytes/4)
         if(t==Ty::F64)return 0xfd0003e0u|(uint32_t(slot)<<10)|uint32_t(reg);   // STR Dt, [SP, #slot*8]
         if(tyIs64(t))return storeVar64(reg,slot);
-        if(t==Ty::U8||t==Ty::Char)return storeVar8(reg,slot);
-        if(t==Ty::U16)return storeVar16(reg,slot);
+        if(t==Ty::I8||t==Ty::U8||t==Ty::Char)return storeVar8(reg,slot);
+        if(t==Ty::I16||t==Ty::U16)return storeVar16(reg,slot);
         return storeVar32(reg,slot);
     }
     // The declared type of a frame slot (a parameter, a local, or — for a local
@@ -4337,7 +4406,7 @@ struct Codegen {
                     case Expr::LSUL: return Ty::U64;
                     default:      return Ty::I32;
                 }
-            case Expr::String: return Ty::Ptr;   // a string literal is its rodata address
+            case Expr::String: return e.isStringValue ? Ty::string() : Ty::Ptr; // native literals remain plain ptr values
             case Expr::Embed: return Ty::Ptr;    // @embed is likewise the address of its bytes
             case Expr::SizeOf: case Expr::Len: return Ty::I32;   // v0.23.35-dev: a folded compile-time i32 constant
             // v0.23.48-dev: a cast answers its target type — the one the
@@ -4520,9 +4589,22 @@ struct Codegen {
     // type question above and the emission below, so the two cannot disagree
     // about what `h.onClick(x)` is.
     const FuncSig* fieldSigOf(const Expr& e) const {
-        const Expr& field=*e.a;
-        const Ty base=exprType(*field.a);
-        const StructField* f=structFieldOf(base,field.name);
+        const Expr& target=*e.a;
+        if (target.k==Expr::Index) {
+            if (!target.name.empty()) {
+                auto global=globalFuncSig.find(target.name);
+                if (global!=globalFuncSig.end()) return &global->second;
+            }
+            if (target.a && target.a->k==Expr::Field) {
+                const Ty base=exprType(*target.a->a);
+                const StructField* f=structFieldOf(base,target.a->name);
+                if (f&&f->isFunc) return &f->funcSig;
+            }
+            return nullptr;
+        }
+        if (target.k!=Expr::Field) return nullptr;
+        const Ty base=exprType(*target.a);
+        const StructField* f=structFieldOf(base,target.name);
         return (f&&f->isFunc)?&f->funcSig:nullptr;
     }
     // v0.23.24-dev: does this name denote a ptr variable an indirect call can
@@ -4671,6 +4753,8 @@ struct Codegen {
     static uint32_t loadGlobalT(int reg,Ty t){
         if(t==Ty::F32) return 0xbd400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);              // LDR St, [X16]
         if(t==Ty::F64) return 0xfd400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);              // LDR Dt, [X16]
+        if(t==Ty::I8) return 0x39c00000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);               // LDRSB Wt, [X16]
+        if(t==Ty::I16)return 0x79c00000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);               // LDRSH Wt, [X16]
         if(t==Ty::U8||t==Ty::Char) return 0x39400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDRB Wt, [X16]
         if(t==Ty::U16)return 0x79400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDRH Wt, [X16]
         if(tyIs64(t)) return 0xf9400000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // LDR  Xt, [X16]
@@ -4679,8 +4763,8 @@ struct Codegen {
     static uint32_t storeGlobalT(int reg,Ty t){
         if(t==Ty::F32) return 0xbd000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);              // STR St, [X16]
         if(t==Ty::F64) return 0xfd000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);              // STR Dt, [X16]
-        if(t==Ty::U8||t==Ty::Char) return 0x39000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STRB Wt, [X16]
-        if(t==Ty::U16)return 0x79000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STRH Wt, [X16]
+        if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return 0x39000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg); // STRB Wt, [X16]
+        if(t==Ty::I16||t==Ty::U16)return 0x79000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STRH Wt, [X16]
         if(tyIs64(t)) return 0xf9000000u|(uint32_t(kGlobalBase)<<5)|uint32_t(reg);   // STR  Xt, [X16]
         return storeGlobal(reg);
     }
@@ -4690,6 +4774,8 @@ struct Codegen {
         if(t==Ty::F32)return 0xbd4003e0u|((off/4)<<10)|uint32_t(reg);   // LDR St, [SP, #off]
         if(t==Ty::F64)return 0xfd4003e0u|((off/8)<<10)|uint32_t(reg);   // LDR Dt, [SP, #off]
         if(tyIs64(t))return 0xf94003e0u|((off/8)<<10)|uint32_t(reg);
+        if(t==Ty::I8)return 0x39c003e0u|(off<<10)|uint32_t(reg);       // LDRSB Wt, [SP, #off]
+        if(t==Ty::I16)return 0x79c003e0u|((off/2)<<10)|uint32_t(reg);  // LDRSH Wt, [SP, #off]
         if(t==Ty::U8||t==Ty::Char) return 0x394003e0u|(off<<10)|uint32_t(reg);
         if(t==Ty::U16)return 0x794003e0u|((off/2)<<10)|uint32_t(reg);
         return 0xb94003e0u|((off/4)<<10)|uint32_t(reg);
@@ -4698,8 +4784,8 @@ struct Codegen {
         if(t==Ty::F32)return 0xbd0003e0u|((off/4)<<10)|uint32_t(reg);   // STR St, [SP, #off]
         if(t==Ty::F64)return 0xfd0003e0u|((off/8)<<10)|uint32_t(reg);   // STR Dt, [SP, #off]
         if(tyIs64(t))return 0xf90003e0u|((off/8)<<10)|uint32_t(reg);
-        if(t==Ty::U8||t==Ty::Char) return 0x390003e0u|(off<<10)|uint32_t(reg);
-        if(t==Ty::U16)return 0x790003e0u|((off/2)<<10)|uint32_t(reg);
+        if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return 0x390003e0u|(off<<10)|uint32_t(reg);
+        if(t==Ty::I16||t==Ty::U16)return 0x790003e0u|((off/2)<<10)|uint32_t(reg);
         return 0xb90003e0u|((off/4)<<10)|uint32_t(reg);
     }
     // ----------------------------------------------------------------------
@@ -4727,8 +4813,8 @@ struct Codegen {
     // Struct fields cannot reach it either — a struct is capped at 1024 bytes.
     // ----------------------------------------------------------------------
     static bool stackOffFits(uint32_t off,Ty t){
-        if(t==Ty::U8||t==Ty::Char) return off<=4095u;                     // unscaled 12 bits
-        if(t==Ty::U16)return off<=8190u&&(off&1u)==0u;       // imm12 << 1
+        if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return off<=4095u;          // unscaled 12 bits
+        if(t==Ty::I16||t==Ty::U16)return off<=8190u&&(off&1u)==0u;        // imm12 << 1
         if(t==Ty::F32)return off<=16380u&&(off&3u)==0u;      // imm12 << 2
         if(t==Ty::F64)return off<=32760u&&(off&7u)==0u;      // imm12 << 3, same as a qword
         if(tyIs64(t)) return off<=32760u&&(off&7u)==0u;      // imm12 << 3
@@ -4779,6 +4865,8 @@ struct Codegen {
         if(tyIs64(t))return 0xf9400210u|((off/8)<<10);          // LDR  X16, [X16, #off]
         if(t==Ty::F32)return 0xbd400210u|((off/4)<<10);         // LDR  S16, [X16, #off]
         if(t==Ty::F64)return 0xfd400210u|((off/8)<<10);         // LDR  D16, [X16, #off]
+        if(t==Ty::I8)return 0x39c00000u|(off<<10)|0x210u;        // LDRSB W16, [X16, #off]
+        if(t==Ty::I16)return 0x79c00000u|((off/2)<<10)|0x210u;  // LDRSH W16, [X16, #off]
         if(t==Ty::U8||t==Ty::Char) return 0x39400000u|(off<<10)|0x210u;      // LDRB W16, [X16, #off]
         if(t==Ty::U16)return 0x79400000u|((off/2)<<10)|0x210u;  // LDRH W16, [X16, #off]
         return 0xb9400210u|((off/4)<<10);                       // LDR  W16, [X16, #off]
@@ -4986,7 +5074,7 @@ struct Codegen {
                     // An i32 local widening into an i64 context must be sign-extended, or a
                     // negative value becomes a huge unsigned i64. The unsigned widths already
                     // zero-extend into the full X register through their load form.
-                    if(tyIs64(want)&&slotType(slot)==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                    if(tyIs64(want)&&tyNeedsSignExtend64(slotType(slot)))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                     return d;
                 }
                 if(globals.count(e.name)){
@@ -4994,7 +5082,7 @@ struct Codegen {
                     if(tyIsStruct(globalTypeOf(e.name)))
                         throw Error("cannot use a whole struct as a value: '"+e.name+"' (read its fields, or pass &"+e.name+")");
                     emitGlobalAddress(e.name);int d=temp();emit(loadGlobalT(d,globalTypeOf(e.name)));
-                    if(tyIs64(want)&&globalTypeOf(e.name)==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                    if(tyIs64(want)&&tyNeedsSignExtend64(globalTypeOf(e.name)))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                     return d;
                 }
                 // A non-extern function name in a non-call position is its address (ptr):
@@ -5024,7 +5112,7 @@ struct Codegen {
                 // A 32-bit return read at 64-bit width is sign-extended, as it
                 // is for a direct call and for a call through a fn-pointer
                 // variable: AAPCS64 leaves the upper half of X0 unspecified.
-                if(fs&&tyIs64(want)&&fs->ret==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                if(fs&&tyIs64(want)&&tyNeedsSignExtend64(fs->ret))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                 return d;
             }
             case Expr::Call:{
@@ -5265,7 +5353,7 @@ struct Codegen {
                     // W already zeroed the upper half, which is their 64-bit
                     // value. For a bare ptr rt is i32, so this is the same test
                     // it has always been.
-                    if(tyIs64(want)&&rt==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                    if(tyIs64(want)&&tyNeedsSignExtend64(rt))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                     return d;
                 }
                 if(sig->second!=e.args.size())throw Error(loc(e.line,e.col,"wrong argument count calling "+e.name+": expected "+std::to_string(sig->second)+", got "+std::to_string(e.args.size())));
@@ -5293,7 +5381,7 @@ struct Codegen {
                 // zeroed the upper half, which is exactly their 64-bit value.
                 const Ty rt=returnTypeOf(e.name);
                 int d=emitCallSeq(e);
-                if(tyIs64(want)&&rt==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                if(tyIs64(want)&&tyNeedsSignExtend64(rt))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                 return d;
             }
             case Expr::Deref:{
@@ -5307,7 +5395,7 @@ struct Codegen {
                 // for a local, a field and an array element: LDR W zeroes the
                 // upper half of X, and a negative pointee would otherwise
                 // widen into a huge positive i64.
-                if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));
+                if(tyIs64(want)&&tyNeedsSignExtend64(elem))emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));
                 return a;
             }
             case Expr::Field:{
@@ -5324,7 +5412,7 @@ struct Codegen {
                 // like an i32 local (see Expr::Var): the 32-bit load zeroes the
                 // upper half of X, and a negative field would otherwise widen
                 // into a huge positive i64.
-                if(tyIs64(want)&&f->ty==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                if(tyIs64(want)&&tyNeedsSignExtend64(f->ty))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                 return d;
             }
             case Expr::AddrOf:{
@@ -5356,7 +5444,7 @@ struct Codegen {
                     if(tyIsStruct(elem))
                         throw Error("cannot use a whole struct as a value: '"+chainBaseName(e)+"[...]' (read its fields, or pass &"+chainBaseName(e)+"[i])");
                     int d=temp();emit(loadGlobalT(d,elem));
-                    if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                    if(tyIs64(want)&&tyNeedsSignExtend64(elem))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                     return d;
                 }
                 // v0.23.29-dev: a struct array field element (`s.xs[i]`) — the
@@ -5372,7 +5460,7 @@ struct Codegen {
                             throw Error("cannot use a whole struct as a value: '"+e.a->name+"[...]' (read its fields, or pass &"+e.a->name+"[i])");
                         emitElemAddrField(*e.a,*e.b);
                         int d=temp();emit(loadGlobalT(d,elem));
-                        if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                        if(tyIs64(want)&&tyNeedsSignExtend64(elem))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                         return d;
                     }
                 }
@@ -5393,7 +5481,7 @@ struct Codegen {
                             throw Error("cannot use a whole struct as a value: read its fields, or pass &a[i]");
                         emitPtrElemAddr(*e.a,*e.b,elem);
                         int d=temp();emit(loadGlobalT(d,elem));
-                        if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                        if(tyIs64(want)&&tyNeedsSignExtend64(elem))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                         return d;
                     }
                 }
@@ -5410,7 +5498,7 @@ struct Codegen {
                 int d=temp();emit(loadGlobalT(d,elem));
                 // An i32 element read into an i64 context is sign-extended,
                 // like an i32 local and an i32 struct field.
-                if(tyIs64(want)&&elem==Ty::I32)emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
+                if(tyIs64(want)&&tyNeedsSignExtend64(elem))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                 return d;
             }
             case Expr::Neg:{
@@ -5545,8 +5633,11 @@ struct Codegen {
                     int a=gen(*e.a,from);
                     // FCVTZS: bit 22 selects the double source, sf selects the 64-bit result.
                     emit((tyIs64(e.ty)?0x9e380000u:0x1e380000u)|((from==Ty::F64)?0x00400000u:0u)|(uint32_t(a)<<5)|uint32_t(a));
-                    if(e.ty==Ty::U8||e.ty==Ty::Char)      emit(0x53001c00u|(uint32_t(a)<<5)|uint32_t(a));
+                    if(e.ty==Ty::I8)                      emit(0x13001c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTB Wa, Wa
+                    else if(e.ty==Ty::I16)                emit(0x13003c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTH Wa, Wa
+                    else if(e.ty==Ty::U8||e.ty==Ty::Char) emit(0x53001c00u|(uint32_t(a)<<5)|uint32_t(a));
                     else if(e.ty==Ty::U16)                emit(0x53003c00u|(uint32_t(a)<<5)|uint32_t(a));
+                    if(tyIs64(want)&&tyNeedsSignExtend64(e.ty))emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a));
                     return a;
                 }
                 int a=gen(*e.a,e.ty);
@@ -5568,11 +5659,14 @@ struct Codegen {
                 }
                 const uint32_t wf=tySize(from),wt=tySize(e.ty);
                 if(wf>wt){
-                    if(e.ty==Ty::U8||e.ty==Ty::Char)       emit(0x53001c00u|(uint32_t(a)<<5)|uint32_t(a)); // UXTB Wa, Wa
+                    if(e.ty==Ty::U8||e.ty==Ty::Char) emit(0x53001c00u|(uint32_t(a)<<5)|uint32_t(a)); // UXTB Wa, Wa
                     else if(e.ty==Ty::U16) emit(0x53003c00u|(uint32_t(a)<<5)|uint32_t(a)); // UXTH Wa, Wa
                     else if(e.ty==Ty::U32) emit(0x2a0003e0u|(uint32_t(a)<<16)|uint32_t(a)); // MOV Wa, Wa (the UXTW form)
-                    else                   emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa
+                    else if(e.ty!=Ty::I8&&e.ty!=Ty::I16)
+                        emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa
                 }
+                if(e.ty==Ty::I8)emit(0x13001c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTB Wa, Wa
+                else if(e.ty==Ty::I16)emit(0x13003c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTH Wa, Wa
                 // Answer at the width the consumer asked for, the way every
                 // other producer does: a Var load sign-extends an i32 into an
                 // i64 context, a BinOp reruns itself at 64 bits (wideOp), a
@@ -5581,7 +5675,7 @@ struct Codegen {
                 // reading of those bits, but not the i32 one, so an i32 cast
                 // consumed at 64 bits extends here. The SXTW above already
                 // answered at 64 bits when it ran (and only it did).
-                if(tyIs64(want)&&e.ty==Ty::I32&&!(wf>wt))
+                if(tyIs64(want)&&tyNeedsSignExtend64(e.ty)&&!(wf>wt&&e.ty==Ty::I32))
                     emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa
                 return a;
             }
@@ -5844,6 +5938,8 @@ struct Codegen {
         if(t==Ty::F32)return 0xbd400000u|((off/4)<<10)|(uint32_t(base)<<5)|uint32_t(reg);   // LDR St
         if(t==Ty::F64)return 0xfd400000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);   // LDR Dt
         if(tyIs64(t))return 0xf9400000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
+        if(t==Ty::I8)return 0x39c00000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);         // LDRSB Wt
+        if(t==Ty::I16)return 0x79c00000u|((off/2)<<10)|(uint32_t(base)<<5)|uint32_t(reg);   // LDRSH Wt
         if(t==Ty::U8||t==Ty::Char) return 0x39400000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         if(t==Ty::U16)return 0x79400000u|((off/2)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         return 0xb9400000u|((off/4)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
@@ -5852,8 +5948,8 @@ struct Codegen {
         if(t==Ty::F32)return 0xbd000000u|((off/4)<<10)|(uint32_t(base)<<5)|uint32_t(reg);   // STR St
         if(t==Ty::F64)return 0xfd000000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);   // STR Dt
         if(tyIs64(t))return 0xf9000000u|((off/8)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
-        if(t==Ty::U8||t==Ty::Char) return 0x39000000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);
-        if(t==Ty::U16)return 0x79000000u|((off/2)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
+        if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return 0x39000000u|(off<<10)|(uint32_t(base)<<5)|uint32_t(reg);
+        if(t==Ty::I16||t==Ty::U16)return 0x79000000u|((off/2)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
         return 0xb9000000u|((off/4)<<10)|(uint32_t(base)<<5)|uint32_t(reg);
     }
     // v0.23.73-dev (F-02): X16 += Widx * scale — the one scaling rule behind
@@ -6457,10 +6553,16 @@ struct Codegen {
             if(tyIsFloat(rt))emit((rt==Ty::F64?0x1e604000u:0x1e204000u)|uint32_t(d));   // FMOV D/Sd, D/S0
             // A struct result is eight bytes a register even when the struct
             // is narrower, so it moves at full width.
-            else if(d!=0)emit(((tyIs64(rt)||tyIsStruct(rt))?0xaa0003e0u:0x2a0003e0u)|uint32_t(d));
             if(!tyIsFloat(rt)&&aapcs64Slots(rt)==2u){
                 int d2=temp();                               // X1 carries the second half
+                // Preserve X1 before moving X0 when the first destination is
+                // live (for example, a struct call on the right side of an
+                // expression whose left side occupies X0). Moving X0 first
+                // would overwrite the second return half before it is copied.
                 if(d2!=1)emit(movX(d2,1));
+                if(d!=0)emit(movX(d,0));
+            } else if(!tyIsFloat(rt) && d!=0) {
+                emit(((tyIs64(rt)||tyIsStruct(rt))?0xaa0003e0u:0x2a0003e0u)|uint32_t(d));
             }
         }
         if(total){emit(0x910003ffu|(total<<10));spAdj=0;}
@@ -6514,8 +6616,10 @@ struct Codegen {
             --structStoreDepth;
             return;
         }
-        if(e.k==Expr::Call){
-            const Ty rt=returnTypeOf(e.name);
+        if(e.k==Expr::Call||e.k==Expr::FieldCall){
+            const bool indirect=e.k==Expr::FieldCall;
+            const FuncSig* signature=indirect?fieldSigOf(e):nullptr;
+            const Ty rt=indirect?fieldCallType(e):returnTypeOf(e.name);
             // The destination lives in X16, which the call itself is free to
             // clobber, so it is parked in the frame for the duration.
             if(structCallDepth>=4)throw Error("struct-returning calls nested more than 4 levels deep");
@@ -6528,7 +6632,7 @@ struct Codegen {
                 // area and the result is copied out of it. (A struct-returning
                 // callee is a named function — a direct call — so no signature
                 // rides along here.)
-                emitCallSeq(e,nullptr,size,dstSlot);
+                emitCallSeq(e,signature,size,dstSlot,indirect);
             } else {
                 // One or two registers. gen() hands back the first one and the
                 // next temporary along, which is where X1 was put.
@@ -6560,6 +6664,44 @@ struct Codegen {
     // Materialize a bool expression as 0/1 in a temporary register. && and ||
     // short-circuit: the right operand is evaluated only when the left one does
     // not already decide the result (a false left of &&, a true left of ||).
+    int genStringComparison(const Expr& e){
+        const Ty stringType=Ty::string();
+        int a=gen(*e.a,stringType),b=gen(*e.b,stringType);
+        int ca=temp(),cb=temp();
+        emit(0xeb00001fu|(uint32_t(b)<<16)|(uint32_t(a)<<5)); // CMP Xa, Xb
+        const size_t sameAddress=code.size();emit(0);
+        emit(cmpZeroX(a));
+        const size_t nullA=code.size();emit(0);
+        emit(cmpZeroX(b));
+        const size_t nullB=code.size();emit(0);
+
+        const size_t loop=code.size();
+        emit(0x39400000u|(uint32_t(a)<<5)|uint32_t(ca)); // LDRB Wca, [Xa]
+        emit(0x39400000u|(uint32_t(b)<<5)|uint32_t(cb)); // LDRB Wcb, [Xb]
+        emit(0x6b00001fu|(uint32_t(cb)<<16)|(uint32_t(ca)<<5)); // CMP Wca, Wcb
+        const size_t differentByte=code.size();emit(0);
+        emit(cmpZero(ca));
+        const size_t terminator=code.size();emit(0);
+        emit(addImm(a,a,1));
+        emit(addImm(b,b,1));
+        const size_t repeat=code.size();emit(0);
+        patchBranch(repeat,loop);
+
+        const size_t different=code.size();
+        emit(movInt(a,e.k==Expr::Ne?1u:0u));
+        const size_t differentDone=code.size();emit(0);
+        const size_t equal=code.size();
+        emit(movInt(a,e.k==Expr::Ne?0u:1u));
+        const size_t done=code.size();
+        patchCond(sameAddress,0,equal);
+        patchCond(nullA,0,different);
+        patchCond(nullB,0,different);
+        patchCond(differentByte,1,different);
+        patchCond(terminator,0,equal);
+        patchBranch(differentDone,done);
+        releaseTemp(cb);releaseTemp(ca);releaseTemp(b);
+        return a;
+    }
     int genBool(const Expr& e){
         // v0.23.60-dev: a cast to bool is itself a bool expression — `(bool)x`
         // normalizes to 0/1 inside gen(Cast), so materializing it at the bool
@@ -6586,6 +6728,13 @@ struct Codegen {
                 int d=temp();
                 emit(csetBool(d,comparisonCond(e.k,false)));              // CSET Wd, <cond>
                 return d;
+            }
+            if(ta.isString||tb.isString){
+                if(e.k!=Expr::Eq&&e.k!=Expr::Ne)
+                    throw Error("only == and != are defined for strings");
+                if(ta.isString&&tb.isString)return genStringComparison(e);
+                if(ta.isString?!isNullConstant(*e.b):!isNullConstant(*e.a))
+                    throw Error("a string may only be compared with another string or the literal 0");
             }
             // A comparison runs at 64 bits when either side is i64 or when a
             // constant side does not fit in 32 bits: C types such a constant
@@ -6691,6 +6840,13 @@ struct Codegen {
                 at=code.size();emit(0);
                 return comparisonCond(c.k,false)^1;
             }
+            if(ta.isString||tb.isString){
+                int value=genBool(c);
+                emit(cmpZero(value));
+                releaseTemp(value);
+                at=code.size();emit(0);
+                return 0; // string comparison is materialized, then false branches on EQ
+            }
             // Same width rule as genBool above: a constant side that does not
             // fit in 32 bits makes the comparison 64-bit, and the operand is
             // generated at that width so the exemption below holds.
@@ -6766,7 +6922,9 @@ struct Codegen {
     bool scratchFixable=true;
     uint32_t scratchHigh=0;      // highest absolute grid byte touched
     static int scratchStride(Ty t){
+        if(t==Ty::I8)return 1;
         if(t==Ty::U8||t==Ty::Char)return 1;
+        if(t==Ty::I16)return 2;
         if(t==Ty::U16)return 2;
         if(t==Ty::U32||t==Ty::I32||t==Ty::Bool)return 4;
         return 8;
@@ -6830,6 +6988,8 @@ struct Codegen {
         // can consume it, exactly as a u8/u16 store is (v0.23.61-dev).
         if(retTy==Ty::U8||retTy==Ty::Char)emit(0x53001c00u);       // UXTB W0, W0
         else if(retTy==Ty::U16)emit(0x53003c00u); // UXTH W0, W0
+        else if(retTy==Ty::I8)emit(0x13001c00u);    // SXTB W0, W0
+        else if(retTy==Ty::I16)emit(0x13003c00u);   // SXTH W0, W0
         }
         retVoid();
     }
@@ -6936,12 +7096,18 @@ struct Codegen {
                         throw Error("local array '"+s.name+"' is too large: length "+std::to_string(s.count)+" exceeds the frame limit (1000 elements)");
                     const int slot=nextSlot;nextSlot+=(int)slots;
                     if(tyIsStruct(elem)){
-                        // Every element receives a copy of the same aggregate —
-                        // the fill an integer array has always done, at the
-                        // element's own size instead of a register width.
-                        for(uint32_t i=0;i<s.count;++i){
-                            emitAddOff(kGlobalBase,31,uint32_t(slot*8)+i*esz);
-                            emitStructStore(*s.expr);
+                        // A provided aggregate is broadcast as before; a
+                        // missing one zero-fills storage before element stores.
+                        if(s.expr){
+                            for(uint32_t i=0;i<s.count;++i){
+                                emitAddOff(kGlobalBase,31,uint32_t(slot*8)+i*esz);
+                                emitStructStore(*s.expr);
+                            }
+                        } else {
+                            // Chinese array literals lower to one indexed
+                            // aggregate store per element, after this zero fill.
+                            for(uint32_t i=0;i<slots;++i)
+                                emit(0xf90003e0u|31u|((uint32_t(slot+i))<<10));
                         }
                         pointerSlots[slot]=true;localArrayLength[slot]=s.dims[0];slotDims[slot]=s.dims;slotElemTypes[slot]=elem;scopes.back()[s.name]=slot;
                     // v0.23.32-dev: a local array is one variable whose type is an
@@ -7190,6 +7356,8 @@ struct Codegen {
                 else if(exprIsPtr(*s.expr))emit(0xf9000000u|(uint32_t(address)<<5)|uint32_t(value)); // STR Xt, [Xn] (ptr store)
                 else emit(0xb9000000u|(uint32_t(address)<<5)|uint32_t(value)); // STR Wt, [Xn] (i32 store)
                 releaseTemp(value);releaseTemp(address);
+            } else if(s.k==Stmt::Trap){
+                emit(brk(1));
             } else if(s.k==Stmt::Expr){
                 // v0.23.39-dev: a discarded call. Compute it (the callee's side
                 // effects run) but drop the result — the register gen() returns
@@ -8083,6 +8251,17 @@ struct Sema {
                     if(f->isFunc){out=f->funcSig;return true;}
                 return false;
             }
+            case Expr::Index: {
+                if (!e.name.empty()) {
+                    if (const FuncSig* fs=funcSigOf(e.name)) { out=*fs; return true; }
+                }
+                if (e.a && e.a->k==Expr::Field) {
+                    const Ty base=typeOf(*e.a->a);
+                    const StructField* f=structFieldOf(base,e.a->name);
+                    if (f && f->isFunc) { out=f->funcSig; return true; }
+                }
+                return false;
+            }
             case Expr::Call: {
                 auto it=returnFuncSig.find(e.name);
                 if(it!=returnFuncSig.end()){out=it->second;return true;}
@@ -8156,6 +8335,10 @@ struct Sema {
     // is 0 too.
     static bool ptrToAssignable(Ty to,Ty from,const Expr& e){
         if(from!=Ty::Ptr)return isNullConstant(e);
+        if(to.isString!=from.isString)return false;
+#if ASTER_CN_FRONTEND_AVAILABLE
+        if(cnClassPointerCanUpcast(to,from))return true;
+#endif
         // v0.23.34-dev: a strided pointer must not land in a slot that cannot
         // carry its stride. The mis-scaling the 4-byte gate used to refuse at
         // the `&` itself is now refused where it would happen: at the store.
@@ -8507,7 +8690,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     case Expr::LSUL: return Ty::U64;
                     default:      return Ty::I32;
                 }
-            case Expr::String: return Ty::Ptr;   // a string literal is its rodata address
+            case Expr::String: return e.isStringValue ? Ty::string() : Ty::Ptr; // native literals remain plain ptr values
             case Expr::Embed: return Ty::Ptr;    // @embed: the address of the embedded bytes
             case Expr::SizeOf: case Expr::Len:
                 // v0.23.35-dev: the type-form folded at parse time; the
@@ -8846,6 +9029,17 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         throw Error(loc(e.line,e.col,"comparing floating-point values needs two of the same type"));
                     return Ty::Bool;
                 }
+                if(a.isString||b.isString){
+                    if(e.k!=Expr::Eq&&e.k!=Expr::Ne)
+                        throw Error(loc(e.line,e.col,"only == and != are defined for strings"));
+                    if(a.isString&&b.isString){
+                        // String values compare by UTF-8 byte content.
+                    } else if(a.isString?isNullConstant(*e.b):isNullConstant(*e.a)){
+                        // A string may still be null; this comparison is pointer identity.
+                    } else {
+                        throw Error(loc(e.line,e.col,"a string may only be compared with another string or the literal 0"));
+                    }
+                }
                 // v0.23.26-dev: a ptr answers == and != — against another ptr,
                 // or against the null constant. Ordering two addresses answers
                 // a question Aster has no business answering here (which of two
@@ -9077,20 +9271,15 @@ static bool semaTypeIsPlaceholder(const Expr& e){
     // the call answers. Nothing here is looked up by name, which is exactly
     // what keeps a `fn onClick` in scope from capturing the call.
     Ty checkFieldCall(const Expr& e){
-        const Expr& field=*e.a;
-        const Ty base=typeOf(*field.a);
-        const int sid=structBaseId(base,field.name);
-        const StructField* f=structOf(sid).find(field.name);
-        if(!f)throw Error(loc(field.line,field.col,noFieldMsg(structOf(sid),field.name)));
-        if(!f->isFunc)
-            throw Error(loc(e.line,e.col,"cannot call field '"+field.name+"': its type is "
-                            +tyNameFull(f->ty)+", not a function type"));
-        if(e.args.size()!=f->funcSig.params.size())
-            throw Error(loc(e.line,e.col,"wrong argument count calling field '"+field.name+"': expected "
-                            +std::to_string(f->funcSig.params.size())+", got "+std::to_string(e.args.size())));
+        FuncSig signature;
+        if(!funcSigOfExpr(*e.a,signature))
+            throw Error(loc(e.line,e.col,"cannot call this expression: it does not carry a function signature"));
+        if(e.args.size()!=signature.params.size())
+            throw Error(loc(e.line,e.col,"wrong argument count calling function pointer: expected "
+                            +std::to_string(signature.params.size())+", got "+std::to_string(e.args.size())));
         for(size_t i=0;i<e.args.size();++i)
-            checkArgument("field '"+field.name+"'",i+1,f->funcSig.params[i],*e.args[i],typeOf(*e.args[i]));
-        return f->funcSig.ret;
+            checkArgument("function pointer",i+1,signature.params[i],*e.args[i],typeOf(*e.args[i]));
+        return signature.ret;
     }
     // if / while / for conditions: a comparison, any bool expression (the
     // true/false literals included), or any integer — v0.23.25-dev added the
@@ -9105,7 +9294,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
         switch(s.k){
             // v0.23.77-dev: a static declaration's storage is already a global;
             // there is nothing to bind and nothing to check here.
-            case Stmt::Nop: return;
+            case Stmt::Nop: case Stmt::Trap: return;
             case Stmt::Let: {
                 if(scopes.empty())scopes.emplace_back();
                 if(scopes.back().count(s.name))throw Error(loc(s.line,s.col,"duplicate variable in scope: "+s.name));
@@ -9119,8 +9308,12 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     // Everything else is the constant-integer path, range
                     // checked exactly as a global array initializer is.
                     if(tyIsStruct(s.ty)){
-                        const Ty actual=annotateExpr(*s.expr);
-                        checkValue(s.ty,*s.expr,actual,"array initializer type mismatch");
+                        // A missing struct-array fill is used by the Chinese
+                        // frontend before it emits per-element aggregate stores.
+                        if(s.expr){
+                            const Ty actual=annotateExpr(*s.expr);
+                            checkValue(s.ty,*s.expr,actual,"array initializer type mismatch");
+                        }
                     } else if(s.ty==Ty::Ptr){
                         const Ty actual=annotateExpr(*s.expr);
                         if(actual.k!=Ty::Ptr&&!isNullConstant(*s.expr))
@@ -9175,25 +9368,26 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                             throw Error(loc(s.line,s.col,"type mismatch initializing '"+s.name+"': expected bool"));
                     } else if(s.isPtr){
                         // v0.23.26-dev: `let p: ptr = 0;` — the null constant.
-                        if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))
+                        if(!ptrToAssignable(s.ty,actual,*s.expr)){
+                            // v0.23.34-dev: the diagnostic for the stride rule
+                            // ptrToAssignable enforces. `let p: ptr = &w;` on an
+                            // i64[2] would index at four bytes; `ptr<i64>` (or an
+                            // array parameter) keeps the stride, so say which.
+                            if(tyIsPtrToElem(actual)){
+                                // The stride the slot would apply: its own element
+                                // width, a ptr<S>'s sizeof(S), or an untyped ptr's
+                                // four bytes. Naming the real number is the point —
+                                // "would index it at 4 bytes" is only true of one
+                                // of the three.
+                                const uint32_t slotStride=tyIsPtrToElem(s.ty)?ptrElemWidth(s.ty)
+                                                        :tyIsPtrToStruct(s.ty)?tySize(Ty::ofStruct(s.ty.sid))
+                                                        :4u;
+                                throw Error(loc(s.line,s.col,"cannot store a pointer to "+tyNameFull(ptrElemType(actual))
+                                                +" elements in "+tyNameFull(s.ty)+": '"+s.name+"' would index it at "
+                                                +std::to_string(slotStride)
+                                                +" bytes — declare it ptr<"+tyNameFull(ptrElemType(actual))+">, or take the array as a parameter"));
+                            }
                             throw Error(loc(s.line,s.col,"type mismatch initializing '"+s.name+"': expected ptr"));
-                        // v0.23.34-dev: the diagnostic for the stride rule
-                        // ptrToAssignable enforces. `let p: ptr = &w;` on an
-                        // i64[2] would index at four bytes; `ptr<i64>` (or an
-                        // array parameter) keeps the stride, so say which.
-                        if(tyIsPtrToElem(actual)&&!ptrToAssignable(s.ty,actual,*s.expr)){
-                            // The stride the slot would apply: its own element
-                            // width, a ptr<S>'s sizeof(S), or an untyped ptr's
-                            // four bytes. Naming the real number is the point —
-                            // "would index it at 4 bytes" is only true of one
-                            // of the three.
-                            const uint32_t slotStride=tyIsPtrToElem(s.ty)?ptrElemWidth(s.ty)
-                                                    :tyIsPtrToStruct(s.ty)?tySize(Ty::ofStruct(s.ty.sid))
-                                                    :4u;
-                            throw Error(loc(s.line,s.col,"cannot store a pointer to "+tyNameFull(ptrElemType(actual))
-                                            +" elements in "+tyNameFull(s.ty)+": '"+s.name+"' would index it at "
-                                            +std::to_string(slotStride)
-                                            +" bytes — declare it ptr<"+tyNameFull(ptrElemType(actual))+">, or take the array as a parameter"));
                         }
                         // v0.23.38-dev: `let f: fn(i32) -> i32 = inc;` — the
                         // slot named a signature, so the value has to match
@@ -9267,7 +9461,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                             throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected bool)"));
                     } else if(b->ty==Ty::Ptr){
                         // v0.23.26-dev: `p = 0;` clears a pointer.
-                        if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
+                        if(!ptrToAssignable(b->ty,actual,*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
                     } else if(actual==Ty::Ptr||actual==Ty::Bool){
                         throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
                     // v0.23.61-dev: enum nominal isolation on assignment. An enum
@@ -9312,7 +9506,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         // here, so `g = &x` stored a truncated address and
                         // `g = 12345` turned an integer into a pointer. Mirror
                         // the local rule.
-                        if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))
+                        if(!ptrToAssignable(want,actual,*s.expr))
                             throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected ptr)"));
                     } else if(actual==Ty::Bool){
                         throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected i32)"));
@@ -9364,7 +9558,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 // v0.23.67-dev: a const array is read-only element by element,
                 // not only as a whole — `const a : i32 [ 3 ]` promises every one
                 // of its three slots.
-                if(isConstName(s.name))throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.name));
+                if(isConstName(s.name)&&!s.isArrayInit)throw Error(loc(s.line,s.col,"cannot assign to a const: "+s.name));
                 const Binding* b=find(s.name);
                 if(b){
                     if(b->len)checkArrayBounds(s.name,*s.idx);
@@ -9380,6 +9574,12 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                 // through a subscript keeps the element's width; the narrowing
                 // rule covers a `let`, an assignment and a `return`.
                 checkValue(elem,*s.expr,actual,"type mismatch assigning array element of '"+s.name+"'",false);
+                if (elem==Ty::Ptr) {
+                    auto functionArray = globalFuncSig.find(s.name);
+                    if (functionArray != globalFuncSig.end())
+                        checkPtrSig(&functionArray->second, *s.expr,
+                                    "type mismatch assigning function pointer array element '" + s.name + "'");
+                }
                 return;
             }
             case Stmt::FieldAssign: {
@@ -9688,7 +9888,15 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
             // rejected while the same statement inside a function worked.
             if(g.ty!=Ty::Ptr&&g.initExpr&&exprYieldsPtr(*g.initExpr,pointerReturnFunctions,arrayGlobals))
                 throw Error("type mismatch initializing global '"+g.name+"': expected "+tyNameFull(g.ty)+", got ptr");
-            Stmt st(Stmt::Assign);st.name=g.name;st.expr=std::move(g.initExpr);init.body.push_back(std::move(st));g.runtimeInit=false;}
+            if (!g.runtimeInitStatements.empty()) {
+                for (auto& statement : g.runtimeInitStatements)
+                    init.body.push_back(std::move(statement));
+                g.runtimeInitStatements.clear();
+            } else {
+                Stmt st(Stmt::Assign);st.name=g.name;st.expr=std::move(g.initExpr);
+                init.body.push_back(std::move(st));
+            }
+            g.runtimeInit=false;}
         Stmt r(Stmt::Return);
         if(chainTail){E c(new Expr(Expr::Call));c->name=kInitNextSymbol;r.expr=std::move(c);}
         else r.expr=E(new Expr(Expr::Num,0));
@@ -9795,6 +10003,16 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
         // of all requests, and the zero padding that reaches it is emitted
         // into .rodata itself.
         const uint64_t a=g.isString?(g.fromEmbed?g.align:1):std::max<uint64_t>(g.align<4?4:g.align,tySize(g.ty));
+        if(g.readOnlyData){
+            if(g.isArray && g.rawData.size()!=uint64_t(g.count)*tySize(g.ty))
+                throw Error("internal compiler error: read-only array initializer size mismatch: "+g.name);
+            if(a>L.rodataAlign)L.rodataAlign=a;
+            L.rodata.resize((size_t)alignUp(L.rodata.size(),a),0);
+            const uint64_t off=L.rodata.size();
+            L.globals.push_back({g.name,3,off,g.rawData.size()});
+            L.rodata.insert(L.rodata.end(),g.rawData.begin(),g.rawData.end());
+            continue;
+        }
         if(g.isString){if(a>L.rodataAlign)L.rodataAlign=a;L.rodata.resize((size_t)alignUp(L.rodata.size(),a),0);uint64_t off=L.rodata.size();L.globals.push_back({g.name,3,off,g.rawData.size()});L.rodata.insert(L.rodata.end(),g.rawData.begin(),g.rawData.end());continue;}
         const uint64_t esz=tySize(g.ty);                       // bytes per element
         const uint64_t sz=g.isArray?uint64_t(g.count)*esz:esz;
@@ -9816,7 +10034,21 @@ ObjectLayout layoutObject(const std::vector<CompiledFunction>& funcs,const std::
             L.data.resize((size_t)alignUp(L.data.size(),a),0);
             const uint64_t off=L.data.size();
             L.globals.push_back({g.name,1,off,slot});
-            for(uint64_t i=0;i<n;++i)L.data.insert(L.data.end(),g.rawData.begin(),g.rawData.end());
+            if(g.isArray && g.rawData.size()==sz)
+                L.data.insert(L.data.end(),g.rawData.begin(),g.rawData.end());
+            else
+                for(uint64_t i=0;i<n;++i)
+                    L.data.insert(L.data.end(),g.rawData.begin(),g.rawData.end());
+            L.data.resize((size_t)(off+slot),0);
+            continue;
+        }
+        if(g.isArray&&!g.rawData.empty()){
+            if(g.rawData.size()!=sz)throw Error("internal compiler error: global array initializer size mismatch: "+g.name);
+            bool allZero=true;for(const uint8_t b:g.rawData)if(b){allZero=false;break;}
+            if(allZero){L.bssSize=alignUp(L.bssSize,a);L.globals.push_back({g.name,2,L.bssSize,slot});L.bssSize+=slot;continue;}
+            L.data.resize((size_t)alignUp(L.data.size(),a),0);const uint64_t off=L.data.size();
+            L.globals.push_back({g.name,1,off,slot});
+            L.data.insert(L.data.end(),g.rawData.begin(),g.rawData.end());
             L.data.resize((size_t)(off+slot),0);
             continue;
         }
@@ -10158,6 +10390,8 @@ struct DwarfDieWriter {
         }
         const char* nm="i32";uint8_t size=4,enc=0x05;   // DW_ATE_signed
         switch(t.k){
+            case Ty::I8:   nm="i8";  size=1;enc=0x05;break;
+            case Ty::I16:  nm="i16"; size=2;enc=0x05;break;
             case Ty::I32:  nm="i32"; size=4;enc=0x05;break;
             case Ty::U32:  nm="u32"; size=4;enc=0x07;break;   // DW_ATE_unsigned
             case Ty::U8:   nm="u8";  size=1;enc=0x07;break;
@@ -10999,6 +11233,101 @@ ParsedObject parseObject(const std::string& input){
         if(result.ehFrameCie.empty())throw Error(input+": malformed .eh_frame: no CIE");
     }
     return result;
+}
+
+// v0.23.79-dev: bilingual project links carry the standard library and the
+// program in one ET_REL object. Keep only functions reachable from _start so
+// an import of a large library does not make every helper part of the image.
+// This pass is deliberately conservative: debug objects and objects whose
+// relocations cannot be mapped to a complete function are left untouched.
+static void pruneUnreachableFunctions(std::vector<ParsedObject>& objects){
+    struct FunctionRef { size_t object=0; std::string name; uint64_t start=0,size=0; bool live=false; };
+    std::vector<FunctionRef> functions;
+    std::map<std::string,size_t> owner;
+    std::vector<std::vector<size_t>> byObject(objects.size());
+    bool valid=true; size_t root=SIZE_MAX;
+    for(size_t oi=0;oi<objects.size();++oi){
+        ParsedObject& obj=objects[oi];
+        if(!obj.debugLine.empty()||!obj.debugInfo.empty()||!obj.ehFrameFdes.empty())return;
+        for(const auto& s:obj.symbols){
+            if((s.info>>4)!=1||(s.info&0xfu)!=2||s.shndx==0||s.shndx!=(uint16_t)obj.textIndex||s.name.empty())continue;
+            if(s.size==0||s.value>obj.text.size()||s.size>obj.text.size()-s.value){valid=false;continue;}
+            if(owner.count(s.name)){valid=false;continue;}
+            const size_t index=functions.size();
+            owner[s.name]=index;
+            functions.push_back({oi,s.name,s.value,s.size,false});
+            byObject[oi].push_back(index);
+            if(s.name=="_start")root=index;
+        }
+        std::sort(byObject[oi].begin(),byObject[oi].end(),[&](size_t a,size_t b){
+            return functions[a].start<functions[b].start;
+        });
+        uint64_t end=0;
+        for(size_t fi:byObject[oi]){
+            const auto& f=functions[fi];
+            if(f.start<end){valid=false;break;}
+            end=f.start+f.size;
+        }
+        for(const auto& r:obj.relocs){
+            bool covered=false;
+            for(size_t fi:byObject[oi]){
+                const auto& f=functions[fi];
+                const uint64_t need=r.type==kRelTlsOff?8u:4u;
+                if(r.offset>=f.start&&r.offset<=f.start+f.size&&need<=f.start+f.size-r.offset){covered=true;break;}
+            }
+            if(!covered)valid=false;
+        }
+    }
+    if(!valid||root==SIZE_MAX)return;
+    std::vector<size_t> work{root};functions[root].live=true;
+    while(!work.empty()){
+        const size_t fi=work.back();work.pop_back();
+        const FunctionRef& f=functions[fi];
+        for(const auto& r:objects[f.object].relocs){
+            const uint64_t need=r.type==kRelTlsOff?8u:4u;
+            if(r.offset<f.start||r.offset>f.start+f.size||need>f.start+f.size-r.offset)continue;
+            auto it=owner.find(r.symbol);
+            if(it!=owner.end()&&!functions[it->second].live){
+                functions[it->second].live=true;
+                work.push_back(it->second);
+            }
+        }
+    }
+    for(size_t oi=0;oi<objects.size();++oi){
+        ParsedObject& obj=objects[oi];
+        const auto& indexes=byObject[oi];
+        if(indexes.empty())continue;
+        bool changed=false;
+        for(size_t fi:indexes)if(!functions[fi].live){changed=true;break;}
+        if(!changed)continue;
+        struct Segment { uint64_t oldStart=0,oldEnd=0,newStart=0; };
+        std::vector<Segment> segments;
+        std::vector<uint8_t> text;
+        for(size_t fi:indexes){
+            const auto& f=functions[fi];
+            if(!f.live)continue;
+            segments.push_back({f.start,f.start+f.size,text.size()});
+            text.insert(text.end(),obj.text.begin()+f.start,obj.text.begin()+f.start+f.size);
+        }
+        auto remap=[&](uint64_t old)->uint64_t{
+            for(const auto& s:segments)if(old>=s.oldStart&&old<s.oldEnd)return s.newStart+(old-s.oldStart);
+            return UINT64_MAX;
+        };
+        for(auto& s:obj.symbols){
+            if((s.info>>4)==1&&(s.info&0xfu)==2&&s.shndx==(uint16_t)obj.textIndex){
+                auto it=owner.find(s.name);
+                if(it==owner.end()||!functions[it->second].live){s.shndx=0;s.value=0;s.size=0;}
+                else s.value=remap(s.value);
+            }
+        }
+        std::vector<ParsedReloc> relocs;
+        for(const auto& r:obj.relocs){
+            const uint64_t mapped=remap(r.offset);
+            if(mapped==UINT64_MAX)continue;
+            ParsedReloc copy=r;copy.offset=mapped;relocs.push_back(std::move(copy));
+        }
+        obj.text.swap(text);obj.relocs.swap(relocs);
+    }
 }
 // Relocation bookkeeping shared by the executable linker and the shared-object writer.
 struct LinkPending { uint64_t patch; std::string symbol; int64_t addend; uint32_t type; size_t inputIndex=0; };
@@ -12339,6 +12668,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
     auto remapPrivateStringSymbol=[](const std::string& name,size_t inputIndex){
         const std::string direct="__aster_string_";
         const std::string got="__aster_gat___aster_string_";
+        if(name=="__aster_empty_string")return std::string("__aster_empty_string_obj")+std::to_string(inputIndex);
         if(name.compare(0,got.size(),got)==0)return std::string("__aster_gat___aster_string_obj")+std::to_string(inputIndex)+"_"+name.substr(got.size());
         if(name.compare(0,direct.size(),direct)==0)return std::string("__aster_string_obj")+std::to_string(inputIndex)+"_"+name.substr(direct.size());
         return name;
@@ -12572,7 +12902,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
 void linkObjects(const std::vector<std::string>& inputs,const std::string& output,uint64_t base=0x400000,uint16_t etype=2,
                   // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
                   // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
-                  uint64_t pageSize=4096){
+                  uint64_t pageSize=4096,bool gcSections=false){
     if(base%pageSize)throw Error("internal error: link base must be page aligned");
     if(inputs.empty())throw Error("link-obj requires at least one input object");
     std::vector<uint8_t> mergedText,mergedData,mergedRodata;uint64_t mergedBss=0;
@@ -12614,11 +12944,16 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     auto remapPrivateStringSymbol=[](const std::string& name,size_t inputIndex){
         const std::string direct="__aster_string_";
         const std::string got="__aster_gat___aster_string_";
+        if(name=="__aster_empty_string")return std::string("__aster_empty_string_obj")+std::to_string(inputIndex);
         if(name.compare(0,got.size(),got)==0)return std::string("__aster_gat___aster_string_obj")+std::to_string(inputIndex)+"_"+name.substr(got.size());
         if(name.compare(0,direct.size(),direct)==0)return std::string("__aster_string_obj")+std::to_string(inputIndex)+"_"+name.substr(direct.size());
         return name;
     };
-    for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
+    std::vector<ParsedObject> parsedObjects;
+    parsedObjects.reserve(inputs.size());
+    for(const auto& input:inputs)parsedObjects.push_back(parseObject(input));
+    if(gcSections)pruneUnreachableFunctions(parsedObjects);
+    for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];const ParsedObject& obj=parsedObjects[i];
         // v0.23.79-dev (D-03): only a data symbol can be the subject of the A-21
         // order rule; a function definition is not global state an initializer reads.
         for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty()&&(s.info&0xfu)!=2)ownerOf.emplace(remapPrivateStringSymbol(s.name,i),i);
@@ -12892,23 +13227,32 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
 const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "Usage: aster build-elf|build-pie [-g] <source.ast|input.o> [more...] -o <output>\n"
     "       aster build-obj [--pic] [-g] <source.ast> -o <output.o>\n"
+    "       aster build-cn-obj [--language zh|en] [--project FILE] [--module-dir DIR] [-g] [--bounds-check] [--no-count-check] <source.ast> -o <output.o>\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
 "       aster new [--apk] <dir>              scaffold a program or APK project\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
-"       aster build|run [-g] [--bounds-check] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [-- args]\n"
-"       aster test  [-g] [--bounds-check] [--page-size N] [--no-cache] [--timeout SECONDS] [filter]\n"
+"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [-- args]\n"
+"       aster test  [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [--no-cache] [--timeout SECONDS] [filter]\n"
 "       aster doctor [--strict]             check the host and the project it is run in\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
-    "       aster link-obj|link-pie <input.o> [input2.o ...] -o <output>\n"
+"       aster fmt [--language zh|en] [--check|--write] <source.ast>\n"
+    "       aster link-obj|link-pie [--gc-sections] <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
     "       aster keygen [--dir DIR] [--bits 2048] [--force]\n"
     "       aster verify-apk [--expect-sha256 <hex>] <app.apk>\n"
+"  中文别名（选项仍使用英文）：帮助=help、新建=new、添加源码=add、依赖=deps、\n"
+"    构建项目=build、运行=run、测试=test、环境检查=doctor、编译双语对象=build-cn-obj、\n"
+"    编译对象=build-obj、构建可执行文件=build-elf、构建PIE=build-pie、编译共享库=build-so、\n"
+"    构建APK=build-apk、链接可执行文件=link-obj、链接PIE=link-pie、链接共享库=link-so、\n"
+"    格式化源码=fmt、生成密钥=keygen、验证APK=verify-apk（英文命令仍可照常使用）\n"
     "  build-elf  fixed-address AArch64 ET_EXEC executable (link base 0x400000)\n"
     "  build-pie  static PIE: AArch64 ET_DYN executable, no interpreter (link base 0)\n"
     "  build-obj  relocatable AArch64 ET_REL object (--pic: position-independent, for link-so)\n"
     "  build-so   shared object: AArch64 ET_DYN with SysV DT_HASH + GNU DT_GNU_HASH (link base 0)\n"
     "  link-obj   link ET_REL objects into a fixed-address ET_EXEC\n"
     "  link-pie   link ET_REL objects into a static PIE (ET_DYN)\n"
+    "  --gc-sections  keep only functions reachable from _start (link-obj/link-pie;\n"
+    "                 bilingual build/test enables this automatically without -g)\n"
     "  link-so    link ET_REL PIC objects into one shared object (cross-.so imports via PLT/GOT)\n"
     "  --page-size N  load-segment page size for build*/link* (4096 default; 16384 for\n"
     "               Android 15+ 16 KB-page devices, required when targetSdk >= 35)\n"
@@ -13865,6 +14209,41 @@ static std::string mkTempPath(const std::string& dir,const std::string& prefix){
     ::close(fd);
     return std::string(name.data());
 }
+#if ASTER_CN_FRONTEND_AVAILABLE
+static void writeFormattedSourceAtomic(const std::string& path, const std::string& data) {
+    struct stat info;
+    if (::lstat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
+        throw Error("cannot format-write a non-regular source file: " + path);
+    std::string tmpl = path + ".tmp.XXXXXX";
+    std::vector<char> name(tmpl.begin(), tmpl.end()); name.push_back('\0');
+    const int fd = ::mkstemp(name.data());
+    if (fd < 0)
+        throw Error("cannot create a temporary file next to " + path + ": " + std::strerror(errno));
+    const std::string tmp(name.data());
+    bool ok = ::fchmod(fd, info.st_mode & 07777) == 0;
+    int saved = ok ? 0 : errno;
+    size_t off = 0;
+    while (ok && off < data.size()) {
+        const ssize_t n = ::write(fd, data.data() + off, data.size() - off);
+        if (n < 0) { if (errno == EINTR) continue; ok = false; saved = errno; break; }
+        if (n == 0) { ok = false; saved = EIO; break; }
+        off += static_cast<size_t>(n);
+    }
+    if (ok && ::fsync(fd) != 0) { ok = false; saved = errno; }
+    if (::close(fd) != 0 && ok) { ok = false; saved = errno; }
+    if (!ok) {
+        ::unlink(tmp.c_str());
+        throw Error("cannot write " + tmp + ": " + std::strerror(saved));
+    }
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        saved = errno; ::unlink(tmp.c_str());
+        throw Error("cannot move " + tmp + " into place: " + std::strerror(saved));
+    }
+    const std::string dir = dirNameOf(path);
+    const int dfd = ::open(dir.empty() ? "." : dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd >= 0) { ::fsync(dfd); ::close(dfd); }
+}
+#endif
 static void writeKeyPair(const std::string& projectDir, const SigningKey& k) {
     const std::string kd = keyDirOf(projectDir);
     if (!dirExists(kd) && mkdir(kd.c_str(), 0700) != 0 && !dirExists(kd))
@@ -15867,18 +16246,39 @@ struct ProjectSpec {
     std::vector<std::string> tests;  // `test <path>` lines
 };
 // v0.23.77-dev: aster.proj is line-oriented. `kind`, `package`, `name`, `abi`,
+// v0.23.77-dev: aster.proj is line-oriented. `kind`, `package`, `name`, `abi`,
 // `label`, `version-code`, `version-name`, `min-sdk`, `target-sdk` and
-// `page-size` are settings; every other non-comment line is a source path, in
-// link order.
+// `page-size` are settings; `test <path>` lines are test metadata and every
+// other non-comment line is a source path, in link order. The language
+// section may appear before either kind of path.
 static ProjectSpec parseProjectFile(const std::string& path){
     const std::string txt=readFile(path);
-    ProjectSpec spec; std::string cur;
+    ProjectSpec spec; std::string cur; bool inLanguage=false;
     auto handle=[&](const std::string& raw){
         const std::string l=trimWs(raw);
         if(l.empty()||l[0]=='#')return;
+        if(l.front()=='['&&l.back()==']'){
+            inLanguage=trimWs(l.substr(1,l.size()-2))=="language";
+            return;
+        }
         const size_t sp=l.find_first_of(" \t");
         const std::string k=sp==std::string::npos?l:l.substr(0,sp);
         const std::string v=sp==std::string::npos?std::string():trimWs(l.substr(sp+1));
+        // Test entries are project metadata even when the language section
+        // appears before them.  Keep reading language keys after a test line;
+        // the first plain source path still closes the section as before.
+        if(inLanguage && k=="test"){
+            spec.tests.push_back(v);
+            return;
+        }
+        if(inLanguage && (l.find('/')!=std::string::npos ||
+                          (l.size()>=4 && l.substr(l.size()-4)==".ast"))) {
+            inLanguage=false;
+            spec.sources.push_back(l);
+            return;
+        }
+        if(inLanguage&&(k=="default"||k=="allowed"))return;
+        if(inLanguage)inLanguage=false;
         if(k=="kind"){
             if(v!="exe"&&v!="apk")throw Error(path+": kind must be exe or apk (got \""+v+"\")");
             spec.kind=v;
@@ -16041,10 +16441,8141 @@ static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,b
     } else ++reused;
     return objPath;
 }
+#if ASTER_CN_FRONTEND_AVAILABLE
+static std::map<std::string, int> g_cnClassIndex;
+static std::map<int, int> g_cnClassBase;
+static std::map<int, std::string> g_cnClassInterface;
+static std::set<std::string> g_cnInterfaceNames;
+static std::map<std::string, int> g_cnInterfaceIndex;
+static std::map<std::string, int> g_cnInterfaceVtableIndex;
+static std::map<std::pair<int, std::string>, std::string> g_cnInterfaceTableGlobals;
+static std::map<std::string, std::vector<std::string>> g_cnInterfaceMethodOrder;
+
+struct CnClassMethodInfo {
+    std::string functionName;
+    int ownerClassId = -1;
+    Ty returnType = Ty::I32;
+    std::vector<Ty> parameterTypes;
+    std::vector<std::string> parameterNames;
+    std::vector<std::vector<uint32_t>> parameterDims;
+    std::vector<FuncSig> parameterFuncSigs;
+    std::vector<bool> parameterIsFunc;
+    std::vector<aster_cn::Expression> parentConstructorArguments;
+    int visibility = 0;
+    bool isStatic = false;
+    bool isConstructor = false;
+    bool hasExplicitParentConstructorCall = false;
+    bool isOverride = false;
+    std::string sourceFile;
+};
+
+struct CnStaticClassFieldInfo {
+    Ty type = Ty::I32;
+    uint32_t arrayLength = 0;
+    bool isFunc = false;
+    FuncSig funcSig;
+    int ownerClassId = -1;
+    int visibility = 0;
+    bool isString = false;
+    std::string globalName;
+    std::string sourceFile;
+};
+
+static bool cnIsParentConstructorCall(const aster_cn::Expression& expression) {
+    return expression.kind == "Call" && !expression.children.empty() &&
+        expression.children.front().kind == "SuperExpression";
+}
+
+static bool cnParentConstructorArgumentUsesThisOrSuper(
+    const aster_cn::Expression& expression) {
+    if (expression.kind == "ThisExpression" || expression.kind == "SuperExpression")
+        return true;
+    if (expression.closure &&
+        std::find(expression.closure->captures.begin(), expression.closure->captures.end(), "this") !=
+            expression.closure->captures.end())
+        return true;
+    for (const auto& child : expression.children)
+        if (cnParentConstructorArgumentUsesThisOrSuper(child)) return true;
+    return false;
+}
+
+static size_t cnCountParentConstructorCalls(const aster_cn::Expression& expression) {
+    size_t count = cnIsParentConstructorCall(expression) ? 1 : 0;
+    for (const auto& child : expression.children)
+        count += cnCountParentConstructorCalls(child);
+    return count;
+}
+
+static size_t cnCountParentConstructorCalls(const aster_cn::Statement& statement) {
+    size_t count = statement.hasExpression
+        ? cnCountParentConstructorCalls(statement.expression) : 0;
+    for (const auto& expression : statement.expressions)
+        count += cnCountParentConstructorCalls(expression);
+    for (const auto& expression : statement.conditions)
+        count += cnCountParentConstructorCalls(expression);
+    for (const auto& values : statement.caseValues)
+        for (const auto& expression : values)
+            count += cnCountParentConstructorCalls(expression);
+    for (const auto& nested : statement.body)
+        count += cnCountParentConstructorCalls(nested);
+    for (const auto& branch : statement.branches)
+        for (const auto& nested : branch)
+            count += cnCountParentConstructorCalls(nested);
+    for (const auto& nested : statement.elseBody)
+        count += cnCountParentConstructorCalls(nested);
+    return count;
+}
+
+static bool cnExtractParentConstructorCall(const aster_cn::MethodDeclaration& method,
+                                           CnClassMethodInfo& info) {
+    size_t callCount = 0;
+    for (const auto& statement : method.body)
+        callCount += cnCountParentConstructorCalls(statement);
+    if (callCount == 0) return false;
+    const bool firstStatementIsCall = !method.body.empty() &&
+        method.body.front().kind == "ExpressionStatement" &&
+        method.body.front().hasExpression &&
+        cnIsParentConstructorCall(method.body.front().expression);
+    if (!info.isConstructor || !firstStatementIsCall || callCount != 1)
+        throw Error(loc(method.line, method.column,
+                        "a parent constructor call must be the first statement of a constructor"));
+    const auto& call = method.body.front().expression;
+    info.hasExplicitParentConstructorCall = true;
+    info.parentConstructorArguments.assign(call.children.begin() + 1, call.children.end());
+    return true;
+}
+
+struct CnTopLevelMethodInfo {
+    int visibility = 0;
+    std::string sourceFile;
+};
+
+struct CnFunctionSignature {
+    Ty returnType = Ty::I32;
+    std::vector<Ty> parameterTypes;
+    std::vector<std::vector<uint32_t>> parameterDims;
+    std::vector<FuncSig> parameterFuncSigs;
+    std::vector<bool> parameterIsFunc;
+};
+
+struct CnTopLevelGlobalInfo {
+    int visibility = 0;
+    std::string sourceFile;
+};
+
+static std::map<int, std::map<std::string, CnClassMethodInfo>> g_cnClassMethods;
+static std::map<int, std::map<std::string, CnStaticClassFieldInfo>> g_cnClassStaticFields;
+static std::map<int, int> g_cnClassVtableIndex;
+static std::map<int, std::string> g_cnClassVtableGlobals;
+static std::map<std::string, std::string> g_cnInterfaceBase;
+static std::map<std::string, std::map<std::string, CnClassMethodInfo>> g_cnInterfaceMethods;
+static std::map<std::string, CnTopLevelMethodInfo> g_cnTopLevelMethods;
+static std::map<std::string, CnTopLevelGlobalInfo> g_cnTopLevelGlobals;
+static std::map<std::string, CnFunctionSignature> g_cnFunctionSignatures;
+static std::map<std::string, std::string> g_cnExternalMethodNames;
+static std::map<std::string, std::string> g_cnExternalGlobalNames;
+
+static std::string cnFunctionSymbolName(const std::string& sourceName) {
+    const auto found = g_cnExternalMethodNames.find(sourceName);
+    return found == g_cnExternalMethodNames.end() ? sourceName : found->second;
+}
+
+static std::string cnGlobalSymbolName(const std::string& sourceName) {
+    const auto found = g_cnExternalGlobalNames.find(sourceName);
+    return found == g_cnExternalGlobalNames.end() ? sourceName : found->second;
+}
+
+static bool cnIsInterfaceType(Ty type) {
+    return tyIsStruct(type) && g_cnInterfaceNames.count(structOf(type.sid).name) != 0;
+}
+
+namespace {
+static bool cnClassPointerCanUpcast(Ty target, Ty source) {
+    if (target.k != Ty::Ptr || source.k != Ty::Ptr || target.sid < 0 || source.sid < 0 ||
+        target.isString || source.isString) return false;
+    auto isClassPointer = [](Ty type) {
+        if (type.sid < 0) return false;
+        const auto found = g_cnClassIndex.find(structOf(type.sid).name);
+        return found != g_cnClassIndex.end() && found->second == type.sid;
+    };
+    if (!isClassPointer(target) || !isClassPointer(source)) return false;
+    for (int current = source.sid; g_cnClassBase.count(current); ) {
+        current = g_cnClassBase.at(current);
+        if (current == target.sid) return true;
+    }
+    return false;
+}
+
+static bool cnMemberAccessible(int visibility, int ownerClassId, int currentClassId,
+                               const std::string& sourceFile,
+                               const std::string& memberSourceFile) {
+    switch (visibility) {
+        case 0: return true;
+        case 1: return ownerClassId >= 0 && ownerClassId == currentClassId;
+        case 2: return sourceFile == memberSourceFile;
+        case 3:
+            return ownerClassId >= 0 && currentClassId >= 0 &&
+                (ownerClassId == currentClassId ||
+                 cnClassPointerCanUpcast(Ty::ptrTo(ownerClassId), Ty::ptrTo(currentClassId)));
+        default: return false;
+    }
+}
+
+static int cnVisibilityCode(const std::string& visibility, unsigned line, unsigned column) {
+    if (visibility == "public") return 0;
+    if (visibility == "hidden") return 1;
+    if (visibility == "restricted") return 2;
+    if (visibility == "restricted_class") return 3;
+    throw Error(loc(line, column, "internal error: unknown class member visibility"));
+}
+}
+
+static const CnClassMethodInfo* cnFindClassMethod(int sid, const std::string& name) {
+    const auto methods = g_cnClassMethods.find(sid);
+    if (methods != g_cnClassMethods.end()) {
+        const auto method = methods->second.find(name);
+        if (method != methods->second.end()) return &method->second;
+    }
+    const auto base = g_cnClassBase.find(sid);
+    return base == g_cnClassBase.end() ? nullptr : cnFindClassMethod(base->second, name);
+}
+
+static const CnStaticClassFieldInfo* cnFindClassStaticField(int sid,
+                                                             const std::string& name) {
+    const auto fields = g_cnClassStaticFields.find(sid);
+    if (fields != g_cnClassStaticFields.end()) {
+        const auto field = fields->second.find(name);
+        if (field != fields->second.end()) return &field->second;
+    }
+    const auto base = g_cnClassBase.find(sid);
+    return base == g_cnClassBase.end()
+        ? nullptr : cnFindClassStaticField(base->second, name);
+}
+
+static const CnClassMethodInfo* cnFindClassConstructor(int sid) {
+    const auto methods = g_cnClassMethods.find(sid);
+    if (methods == g_cnClassMethods.end()) return nullptr;
+    for (const auto& entry : methods->second)
+        if (entry.second.isConstructor) return &entry.second;
+    return nullptr;
+}
+
+static Ty cnClosureType(const std::vector<Ty>& parameters, Ty returnType,
+                        unsigned line, unsigned column);
+static std::string cnTrimTypeName(const std::string& name);
+static Ty cnBackendType(const std::string& name, unsigned line, unsigned column);
+
+static bool cnFunctionTypeSignature(const std::string& name, FuncSig& signature,
+                                    unsigned line, unsigned column) {
+    // CN parser type names use ':' in both the source spelling and this key.
+    if (name.compare(0, 3, "fn(") != 0) return false;
+    size_t close = std::string::npos;
+    unsigned depth = 1;
+    for (size_t index = 3; index < name.size(); ++index) {
+        if (name[index] == '(') ++depth;
+        else if (name[index] == ')' && --depth == 0) {
+            close = index;
+            break;
+        }
+    }
+    if (close == std::string::npos || name.compare(close, 2, "):") != 0)
+        throw Error(loc(line, column, "invalid function type signature"));
+
+    signature = FuncSig();
+    const std::string parameterText = name.substr(3, close - 3);
+    size_t start = 0;
+    depth = 0;
+    for (size_t index = 0; index <= parameterText.size(); ++index) {
+        if (index < parameterText.size() && parameterText[index] == '(') ++depth;
+        else if (index < parameterText.size() && parameterText[index] == ')') --depth;
+        if (index == parameterText.size() ||
+            (parameterText[index] == ',' && depth == 0)) {
+            const std::string parameter = cnTrimTypeName(parameterText.substr(start, index - start));
+            if (!parameter.empty())
+                signature.params.push_back(cnBackendType(parameter, line, column));
+            start = index + 1;
+        }
+    }
+    const std::string returnName = cnTrimTypeName(name.substr(close + 2));
+    if (returnName.empty())
+        throw Error(loc(line, column, "function type signature requires a return type"));
+    signature.ret = cnBackendType(returnName, line, column);
+    return true;
+}
+
+static Ty cnBackendType(const std::string& name, unsigned line, unsigned column) {
+    FuncSig functionSignature;
+    if (cnFunctionTypeSignature(name, functionSignature, line, column)) return Ty::Ptr;
+    if (name.compare(0, 8, "closure(") == 0) {
+        size_t close = std::string::npos;
+        unsigned depth = 1;
+        for (size_t index = 8; index < name.size(); ++index) {
+            if (name[index] == '(') ++depth;
+            else if (name[index] == ')' && --depth == 0) {
+                close = index;
+                break;
+            }
+        }
+        if (close == std::string::npos || name.compare(close, 2, "):") != 0)
+            throw Error(loc(line, column, "invalid closure type signature"));
+
+        std::vector<Ty> parameters;
+        const std::string parameterText = name.substr(8, close - 8);
+        size_t start = 0;
+        depth = 0;
+        for (size_t index = 0; index <= parameterText.size(); ++index) {
+            if (index < parameterText.size() && parameterText[index] == '(') ++depth;
+            else if (index < parameterText.size() && parameterText[index] == ')') --depth;
+            if (index == parameterText.size() ||
+                (parameterText[index] == ',' && depth == 0)) {
+                const std::string parameter = cnTrimTypeName(parameterText.substr(start, index - start));
+                if (!parameter.empty())
+                    parameters.push_back(cnBackendType(parameter, line, column));
+                start = index + 1;
+            }
+        }
+        const std::string returnName = cnTrimTypeName(name.substr(close + 2));
+        if (returnName.empty())
+            throw Error(loc(line, column, "closure type signature requires a return type"));
+        return cnClosureType(parameters, cnBackendType(returnName, line, column), line, column);
+    }
+    if (name == "i8") return Ty::I8;
+    if (name == "i16") return Ty::I16;
+    if (name == "i32") return Ty::I32;
+    if (name == "u32") return Ty::U32;
+    if (name == "i64") return Ty::I64;
+    if (name == "u64") return Ty::U64;
+    if (name == "u8") return Ty::U8;
+    if (name == "u16") return Ty::U16;
+    if (name == "bool") return Ty::Bool;
+    if (name == "char") return Ty::Char;
+    if (name == "string") return Ty::string();
+    if (name == "ptr") return Ty::Ptr;
+    if (name == "f32") return Ty::F32;
+    if (name == "f64") return Ty::F64;
+    if (name == "void") return Ty::Void;
+    const auto enumeration = g_enumIndex.find(name);
+    if (enumeration != g_enumIndex.end()) return Ty::ofEnum(enumeration->second);
+    const auto structure = g_structIndex.find(name);
+    if (structure != g_structIndex.end()) {
+        if (g_cnClassIndex.count(name)) return Ty::ptrTo(structure->second);
+        return Ty::ofStruct(structure->second);
+    }
+    throw Error(loc(line, column, "type '" + name + "' is not supported by the current compiler backend"));
+}
+
+static uint64_t cnIntegerValue(const std::string& spelling, Expr::LitSuffix& suffix,
+                               unsigned line, unsigned column);
+
+static std::vector<uint32_t> cnParameterArrayDimensions(
+    const aster_cn::Parameter& parameter, unsigned line, unsigned column) {
+    if (parameter.arrayDimensions.empty()) return {};
+    if (parameter.arrayDimensions.size() > 1)
+        throw Error(loc(line, column,
+                        "the current compiler backend supports one-dimensional array parameters"));
+    Expr::LitSuffix suffix = Expr::LSNone;
+    const uint64_t length = cnIntegerValue(parameter.arrayDimensions.front(), suffix,
+                                           line, column);
+    if (suffix != Expr::LSNone || length == 0 || length > 1000)
+        throw Error(loc(line, column,
+                        "array parameter length must be between 1 and 1000"));
+    return {static_cast<uint32_t>(length)};
+}
+
+static Ty cnParameterType(const aster_cn::Parameter& parameter,
+                          unsigned line, unsigned column,
+                          std::vector<uint32_t>* dimensions = nullptr) {
+    const Ty elementType = cnBackendType(parameter.typeName, line, column);
+    const std::vector<uint32_t> dims = cnParameterArrayDimensions(parameter, line, column);
+    if (dimensions) *dimensions = dims;
+    if (dims.empty()) return elementType;
+    FuncSig functionSignature;
+    if (cnFunctionTypeSignature(parameter.typeName, functionSignature, line, column))
+        throw Error(loc(line, column,
+                        "function-pointer array parameters are not supported by the current compiler backend"));
+    if (elementType.isString)
+        throw Error(loc(line, column,
+                        "string array parameters are not supported by the current compiler backend"));
+    return tyPtrToElem(elementType);
+}
+
+static bool cnIsStringView(Ty type) {
+    return tyIsStruct(type) && structOf(type.sid).name == "string_view";
+}
+
+static std::string cnMangleSymbolPart(const std::string& value) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string encoded;
+    encoded.reserve(value.size() * 2);
+    for (unsigned char byte : value) {
+        encoded.push_back(digits[byte >> 4]);
+        encoded.push_back(digits[byte & 0x0f]);
+    }
+    return encoded;
+}
+
+static std::string cnClassConstructorName(int sid) {
+    return "__aster_cn_new_class_" + cnMangleSymbolPart(structOf(sid).name);
+}
+
+static std::string cnClassInitializerName(int sid) {
+    return "__aster_cn_init_class_" + cnMangleSymbolPart(structOf(sid).name);
+}
+
+static std::string cnClassMethodName(int sid, const std::string& method) {
+    return "__aster_cn_method_" + cnMangleSymbolPart(structOf(sid).name) + "_" +
+        cnMangleSymbolPart(method);
+}
+
+static std::string cnClassStaticFieldName(int sid, const std::string& field) {
+    return "__aster_cn_static_field_" + cnMangleSymbolPart(structOf(sid).name) + "_" +
+        cnMangleSymbolPart(field);
+}
+
+static std::string cnClassVtableTypeName(int sid) {
+    return "__aster_cn_class_vtable_" + cnMangleSymbolPart(structOf(sid).name);
+}
+
+static std::string cnClassVtableGlobalName(int sid) {
+    return "__aster_cn_class_vtable_value_" + cnMangleSymbolPart(structOf(sid).name);
+}
+
+static std::string cnClassVtableMethodFieldName(const std::string& method) {
+    return "__aster_cn_slot_" + cnMangleSymbolPart(method);
+}
+
+static std::string cnClassVtableThunkName(int classSid, const std::string& method) {
+    return "__aster_cn_class_thunk_" + cnMangleSymbolPart(structOf(classSid).name) + "_" +
+        cnMangleSymbolPart(method);
+}
+
+static std::string cnInterfaceTableTypeName(int classSid, const std::string& interfaceName) {
+    return "__aster_cn_vtable_" + cnMangleSymbolPart(structOf(classSid).name) + "_" +
+        cnMangleSymbolPart(interfaceName);
+}
+
+static std::string cnInterfaceTableGlobalName(int classSid, const std::string& interfaceName) {
+    return "__aster_cn_vtable_value_" + cnMangleSymbolPart(structOf(classSid).name) + "_" +
+        cnMangleSymbolPart(interfaceName);
+}
+
+static std::string cnInterfaceThunkName(int classSid, const std::string& interfaceName,
+                                        const std::string& method) {
+    return "__aster_cn_iface_thunk_" + cnMangleSymbolPart(structOf(classSid).name) + "_" +
+        cnMangleSymbolPart(interfaceName) + "_" + cnMangleSymbolPart(method);
+}
+
+static std::string cnInterfaceMethodFieldName(const std::string& method) {
+    return "__aster_cn_method_" + cnMangleSymbolPart(method);
+}
+
+static std::string cnCanonicalFieldName(Ty base, const std::string& fieldName) {
+    if (cnIsStringView(base)) {
+        if (fieldName == "data") return "数据";
+        if (fieldName == "len") return "长度";
+    }
+    return fieldName;
+}
+
+static uint64_t cnIntegerValue(const std::string& spelling, Expr::LitSuffix& suffix,
+                               unsigned line, unsigned column) {
+    size_t end = spelling.size();
+    while (end > 0 && (spelling[end - 1] == 'u' || spelling[end - 1] == 'U' ||
+                       spelling[end - 1] == 'l' || spelling[end - 1] == 'L')) --end;
+    std::string digits = spelling.substr(0, end);
+    std::string suffixText;
+    for (size_t i = end; i < spelling.size(); ++i)
+        suffixText.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(spelling[i]))));
+    if (suffixText == "u") suffix = Expr::LSU;
+    else if (suffixText == "l") suffix = Expr::LSL;
+    else if (suffixText == "ul" || suffixText == "lu") suffix = Expr::LSUL;
+    else if (!suffixText.empty())
+        throw Error(loc(line, column, "invalid integer suffix '" + suffixText + "'"));
+    const bool hexadecimal = digits.size() > 1 && digits[0] == '0' &&
+        (digits[1] == 'x' || digits[1] == 'X');
+    const bool binary = digits.size() > 1 && digits[0] == '0' &&
+        (digits[1] == 'b' || digits[1] == 'B');
+    if (!hexadecimal && !binary &&
+        (digits.find('.') != std::string::npos || digits.find('e') != std::string::npos ||
+         digits.find('E') != std::string::npos))
+        throw Error(loc(line, column, "floating-point literals are not supported by the current compiler backend"));
+    digits.erase(std::remove(digits.begin(), digits.end(), '_'), digits.end());
+    int base = 10;
+    if (hexadecimal) base = 16;
+    if (binary) { digits.erase(0, 2); base = 2; }
+    if (digits.empty()) throw Error(loc(line, column, "invalid integer literal"));
+    errno = 0;
+    char* parsedEnd = nullptr;
+    const unsigned long long value = std::strtoull(digits.c_str(), &parsedEnd, base);
+    if (errno == ERANGE || parsedEnd == digits.c_str() || *parsedEnd != '\0')
+        throw Error(loc(line, column, "integer literal is out of range or malformed"));
+    return static_cast<uint64_t>(value);
+}
+
+static uint8_t cnCharacterValue(const std::string& spelling, unsigned line, unsigned column) {
+    if (spelling.size() < 3 || spelling.front() != '\'' || spelling.back() != '\'')
+        throw Error(loc(line, column, "invalid character literal"));
+    const std::string value = spelling.substr(1, spelling.size() - 2);
+    if (value.size() == 1 && value[0] != '\\')
+        return static_cast<uint8_t>(value[0]);
+    if (value.size() == 2 && value[0] == '\\') {
+        switch (value[1]) {
+            case 'n': return '\n';
+            case 'r': return '\r';
+            case 't': return '\t';
+            case '0': return 0;
+            case '\\': return '\\';
+            case '\'': return '\'';
+            case '"': return '"';
+            case 'a': return '\a';
+            case 'b': return '\b';
+            case 'f': return '\f';
+            case 'v': return '\v';
+        }
+    }
+    if (value.size() == 4 && value[0] == '\\' && value[1] == 'x') {
+        const std::string hex = value.substr(2);
+        char* parsedEnd = nullptr;
+        const unsigned long parsed = std::strtoul(hex.c_str(), &parsedEnd, 16);
+        if (parsedEnd && *parsedEnd == '\0' && parsed <= 255) return static_cast<uint8_t>(parsed);
+    }
+    throw Error(loc(line, column, "invalid character escape"));
+}
+
+static std::vector<uint8_t> cnStringValue(const std::string& spelling,
+                                          unsigned line, unsigned column) {
+    if (spelling.size() < 2 || spelling.front() != '"' || spelling.back() != '"')
+        throw Error(loc(line, column, "invalid string literal"));
+    std::vector<uint8_t> bytes;
+    const std::string value = spelling.substr(1, spelling.size() - 2);
+    for (size_t i = 0; i < value.size(); ++i) {
+        const unsigned char ch = static_cast<unsigned char>(value[i]);
+        if (ch != '\\') { bytes.push_back(ch); continue; }
+        if (++i >= value.size()) throw Error(loc(line, column, "invalid string escape"));
+        switch (value[i]) {
+            case 'n': bytes.push_back('\n'); break;
+            case 'r': bytes.push_back('\r'); break;
+            case 't': bytes.push_back('\t'); break;
+            case '0': bytes.push_back(0); break;
+            case '\\': bytes.push_back('\\'); break;
+            case '"': bytes.push_back('"'); break;
+            case '\'': bytes.push_back('\''); break;
+            case 'a': bytes.push_back('\a'); break;
+            case 'b': bytes.push_back('\b'); break;
+            case 'f': bytes.push_back('\f'); break;
+            case 'v': bytes.push_back('\v'); break;
+            case 'x': {
+                if (i + 2 >= value.size() || !std::isxdigit(static_cast<unsigned char>(value[i + 1])) ||
+                    !std::isxdigit(static_cast<unsigned char>(value[i + 2])))
+                    throw Error(loc(line, column, "invalid string hex escape"));
+                const auto hex = [](char c) -> unsigned {
+                    if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+                    if (c >= 'a' && c <= 'f') return static_cast<unsigned>(c - 'a' + 10);
+                    return static_cast<unsigned>(c - 'A' + 10);
+                };
+                bytes.push_back(static_cast<uint8_t>((hex(value[i + 1]) << 4) | hex(value[i + 2])));
+                i += 2;
+                break;
+            }
+            default: throw Error(loc(line, column, "unsupported string escape"));
+        }
+    }
+    if (std::find(bytes.begin(), bytes.end(), static_cast<uint8_t>(0)) != bytes.end())
+        throw Error(loc(line, column, "string literals cannot contain NUL"));
+    bytes.push_back(0);
+    return bytes;
+}
+
+static void cnValidateStringLiteralsStatement(const aster_cn::Statement& statement);
+
+static void cnValidateStringLiterals(const aster_cn::Expression& source) {
+    if (source.kind == "StringLiteral") {
+        (void)cnStringValue(source.value, source.line, source.column);
+        return;
+    }
+    for (const auto& child : source.children)
+        cnValidateStringLiterals(child);
+    if (source.closure)
+        for (const auto& statement : source.closure->body)
+            cnValidateStringLiteralsStatement(statement);
+}
+
+static void cnValidateStringLiteralsStatement(const aster_cn::Statement& statement) {
+    if (statement.hasExpression)
+        cnValidateStringLiterals(statement.expression);
+    for (const auto& expression : statement.expressions)
+        cnValidateStringLiterals(expression);
+    for (const auto& expression : statement.conditions)
+        cnValidateStringLiterals(expression);
+    for (const auto& values : statement.caseValues)
+        for (const auto& value : values)
+            cnValidateStringLiterals(value);
+    for (const auto& nested : statement.body)
+        cnValidateStringLiteralsStatement(nested);
+    for (const auto& branch : statement.branches)
+        for (const auto& nested : branch)
+            cnValidateStringLiteralsStatement(nested);
+    for (const auto& nested : statement.elseBody)
+        cnValidateStringLiteralsStatement(nested);
+}
+
+static void cnValidateStringLiteralsProgram(const aster_cn::Program& program) {
+    for (const auto& global : program.globals)
+        if (global.hasExpression) cnValidateStringLiterals(global.expression);
+    for (const auto& enumeration : program.enums)
+        for (const auto& member : enumeration.members)
+            if (member.hasExpression) cnValidateStringLiterals(member.expression);
+    for (const auto& declaration : program.classes) {
+        for (const auto& field : declaration.fields)
+            if (field.hasInitializer) cnValidateStringLiterals(field.initializer);
+        for (const auto& method : declaration.methods)
+            for (const auto& statement : method.body)
+                cnValidateStringLiteralsStatement(statement);
+    }
+    for (const auto& method : program.methods)
+        for (const auto& statement : method.body)
+            cnValidateStringLiteralsStatement(statement);
+}
+
+struct CnStringPool {
+    std::vector<Global>* globals = nullptr;
+    std::vector<Function>* functions = nullptr;
+    uint64_t next = 0;
+    uint64_t nextClosure = 0;
+    uint64_t nextInterfaceUpcast = 0;
+    std::map<std::pair<int, int>, std::string> interfaceUpcasts;
+    std::string emptyStringName;
+    bool usesConcat = false;
+    bool usesStringOrder = false;
+    bool usesStringView = false;
+    bool usesStringFromView = false;
+    bool usesClosureEnv = false;
+    bool usesClosureAdapter = false;
+    std::set<int> classConstructors;
+    uint64_t nextEnumTable = 0;
+    std::map<int, std::pair<std::string, std::string>> enumTables;
+};
+
+struct CnClosureTypeInfo {
+    int sid = -1;
+    std::vector<Ty> parameters;
+    Ty returnType = Ty::Void;
+    FuncSig codeSignature;
+};
+
+static std::map<int, CnClosureTypeInfo> g_cnClosureTypes;
+static std::map<std::string, int> g_cnClosureTypesBySignature;
+static std::set<std::string> g_cnReservedSourceNames;
+static uint64_t g_cnNextClosureType = 0;
+
+static std::string cnClosureSignatureKey(const std::vector<Ty>& parameters, Ty returnType) {
+    std::string key;
+    auto append = [&](Ty type) {
+        key += std::to_string(static_cast<int>(type.k)) + ":" +
+            std::to_string(type.sid) + ":" + (type.isString ? "1;" : "0;");
+    };
+    for (Ty parameter : parameters) append(parameter);
+    key += "->";
+    append(returnType);
+    return key;
+}
+
+static Ty cnClosureType(const std::vector<Ty>& parameters, Ty returnType,
+                       unsigned line, unsigned column) {
+    const std::string key = cnClosureSignatureKey(parameters, returnType);
+    const auto existing = g_cnClosureTypesBySignature.find(key);
+    if (existing != g_cnClosureTypesBySignature.end())
+        return Ty::ofStruct(existing->second);
+
+    std::string name;
+    do {
+        name = "__aster_cn_closure_type_" + std::to_string(g_cnNextClosureType++);
+    } while (g_structIndex.count(name) || g_enumIndex.count(name) ||
+             g_cnReservedSourceNames.count(name));
+
+    StructDef definition;
+    definition.name = name;
+    StructField code;
+    code.name = "__code";
+    code.ty = Ty::Ptr;
+    code.isFunc = true;
+    code.funcSig.params.push_back(Ty::Ptr);
+    code.funcSig.params.insert(code.funcSig.params.end(), parameters.begin(), parameters.end());
+    code.funcSig.ret = returnType;
+    definition.fields.push_back(std::move(code));
+    StructField environment;
+    environment.name = "__env";
+    environment.ty = Ty::Ptr;
+    definition.fields.push_back(std::move(environment));
+
+    const int sid = static_cast<int>(g_structs.size());
+    Token token{TK::Ident, name, line, column};
+    layoutStruct(definition, token);
+    g_structs.push_back(std::move(definition));
+    g_structIndex.emplace(name, sid);
+
+    CnClosureTypeInfo info;
+    info.sid = sid;
+    info.parameters = parameters;
+    info.returnType = returnType;
+    info.codeSignature.params.push_back(Ty::Ptr);
+    info.codeSignature.params.insert(info.codeSignature.params.end(),
+                                     parameters.begin(), parameters.end());
+    info.codeSignature.ret = returnType;
+    g_cnClosureTypes.emplace(sid, std::move(info));
+    g_cnClosureTypesBySignature.emplace(key, sid);
+    return Ty::ofStruct(sid);
+}
+
+static std::string cnTrimTypeName(const std::string& name) {
+    const size_t first = name.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const size_t last = name.find_last_not_of(" \t\r\n");
+    return name.substr(first, last - first + 1);
+}
+
+struct CnLoweringContext;
+static E cnClosureCapturedValue(const CnLoweringContext& context,
+                                const std::string& name,
+                                unsigned line, unsigned column);
+static E cnClosureCapturedArrayAddress(const CnLoweringContext& context,
+                                       const std::string& name,
+                                       unsigned line, unsigned column);
+static E cnNamedValue(const std::string& name, unsigned line, unsigned column);
+static Ty cnExpressionType(const aster_cn::Expression& source,
+                           const CnLoweringContext& context);
+static E cnClosureExpressionToAster(const aster_cn::Expression& source,
+                                    CnStringPool* strings,
+                                    const CnLoweringContext* context);
+static E cnExpressionToAsterAs(const aster_cn::Expression& source, Ty target,
+                               CnStringPool* strings, const CnLoweringContext* context,
+                               const std::vector<uint32_t>* expectedArrayDimensions = nullptr);
+static bool cnExpectedCallParameterType(const CnLoweringContext* context,
+                                        const std::string& name, size_t index, Ty& type,
+                                        const std::vector<uint32_t>** dimensions = nullptr);
+static E cnLowerStatementExpressionAs(const aster_cn::Expression& source, Ty target,
+                                       CnStringPool* strings, CnLoweringContext& context,
+                                       std::vector<Stmt>& prefix,
+                                       const std::vector<uint32_t>* expectedArrayDimensions = nullptr);
+static E cnLowerStatementExpression(const aster_cn::Expression& source,
+                                     CnStringPool* strings,
+                                     CnLoweringContext& context,
+                                     std::vector<Stmt>& prefix);
+static bool cnIsClassQualifier(const aster_cn::Expression& source,
+                               const CnLoweringContext& context);
+static bool cnTryMaterializeInterfaceReceiver(const aster_cn::Expression& source,
+                                               CnStringPool* strings,
+                                               CnLoweringContext& context,
+                                               std::vector<Stmt>& prefix,
+                                               aster_cn::Expression& replacement);
+static bool cnTryMaterializeClassReceiver(const aster_cn::Expression& source,
+                                          CnStringPool* strings,
+                                          CnLoweringContext& context,
+                                          std::vector<Stmt>& prefix,
+                                          aster_cn::Expression& replacement);
+static bool cnTryMaterializeClassFieldReceiver(const aster_cn::Expression& source,
+                                                CnStringPool* strings,
+                                                CnLoweringContext& context,
+                                                std::vector<Stmt>& prefix,
+                                                aster_cn::Expression& replacement);
+static E cnClosureCallToAster(const aster_cn::Expression& source,
+                              CnStringPool* strings,
+                              const CnLoweringContext* context);
+static void cnValidateClosureCaptures(const aster_cn::Expression& source,
+                                      const CnLoweringContext& context);
+static bool cnIsClassQualifier(const aster_cn::Expression& source,
+                              const CnLoweringContext& context);
+static bool cnClosureValueType(const aster_cn::Expression& source,
+                               const CnLoweringContext& context, Ty& type);
+static bool cnFunctionValueSignature(const aster_cn::Expression& source,
+                                     const CnLoweringContext& context, FuncSig& signature);
+static void cnRequireMemberAccess(int visibility, int ownerClassId, int currentClassId,
+                                  const std::string& sourceFile,
+                                  const std::string& memberSourceFile,
+                                  const char* memberKind, const std::string& memberName,
+                                  unsigned line, unsigned column);
+static E cnThisValue(const CnLoweringContext* context, unsigned line, unsigned column);
+static E cnSuperValue(const CnLoweringContext* context, unsigned line, unsigned column);
+static void cnRequireMethodCall(const CnClassMethodInfo& method, bool classQualified,
+                                const CnLoweringContext* context,
+                                const std::string& methodName, unsigned line, unsigned column);
+static void cnRequireConstructorAccess(const CnClassMethodInfo* constructor,
+                                       int classId, const CnLoweringContext* context,
+                                       unsigned line, unsigned column);
+static void cnRequireTopLevelMethodAccess(const std::string& name,
+                                          const CnLoweringContext* context,
+                                          unsigned line, unsigned column);
+static void cnRequireTopLevelGlobalAccess(const std::string& name,
+                                          const CnLoweringContext* context,
+                                          unsigned line, unsigned column);
+static void cnRequireMethodArity(const CnClassMethodInfo& method,
+                                 const aster_cn::Expression& call,
+                                 const std::string& methodName);
+static E cnDefaultValue(Ty type, unsigned line, unsigned column);
+static bool cnInterfaceExtendsOrSame(const std::string& derived,
+                                     const std::string& target);
+
+static E cnEmptyStringValue(CnStringPool* strings, unsigned line, unsigned column) {
+    if (!strings || !strings->globals)
+        throw Error(loc(line, column, "string default initialization has no global storage context"));
+    if (strings->emptyStringName.empty()) {
+        Global global;
+        global.name = "__aster_empty_string";
+        global.isString = true;
+        global.align = 1;
+        global.rawData.push_back(0);
+        strings->globals->push_back(std::move(global));
+        strings->emptyStringName = strings->globals->back().name;
+    }
+    E value(new Expr(Expr::String));
+    value->name = strings->emptyStringName;
+    value->isStringValue = true;
+    value->line = line;
+    value->col = column;
+    return value;
+}
+
+static double cnFloatValue(const std::string& spelling, unsigned line, unsigned column) {
+    std::string normalized;
+    normalized.reserve(spelling.size());
+    for (char ch : spelling) if (ch != '_') normalized.push_back(ch);
+    char* end = nullptr;
+    const double value = std::strtod(normalized.c_str(), &end);
+    if (!end || *end != '\0' || !std::isfinite(value))
+        throw Error(loc(line, column, "invalid floating-point literal"));
+    return value;
+}
+
+static bool cnConstantFloatValue(const Expr& expression, double& value) {
+    switch (expression.k) {
+        case Expr::Num:
+            if (!expression.isFloat) return false;
+            value = expression.fv;
+            return true;
+        case Expr::Neg: {
+            double operand = 0;
+            if (!cnConstantFloatValue(*expression.a, operand)) return false;
+            value = -operand;
+            return true;
+        }
+        case Expr::Add: case Expr::Sub: case Expr::Mul: case Expr::Div: {
+            double left = 0, right = 0;
+            if (!cnConstantFloatValue(*expression.a, left) ||
+                !cnConstantFloatValue(*expression.b, right)) return false;
+            if (expression.k == Expr::Add) value = left + right;
+            else if (expression.k == Expr::Sub) value = left - right;
+            else if (expression.k == Expr::Mul) value = left * right;
+            else value = left / right;
+            return true;
+        }
+        case Expr::Cast: {
+            if (expression.ty != Ty::F32 && expression.ty != Ty::F64) return false;
+            double floating = 0;
+            if (cnConstantFloatValue(*expression.a, floating)) {
+                value = expression.ty == Ty::F32 ? double(float(floating)) : floating;
+                return true;
+            }
+            int64_t integer = 0;
+            if (!constantInteger(*expression.a, integer)) return false;
+            value = expression.ty == Ty::F32 ? double(float(integer)) : double(integer);
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+static uint64_t cnConstantScalarBits(Ty target, Ty actual, const Expr& value,
+                                     unsigned line, unsigned column) {
+    if (target.isString)
+        throw Error(loc(line, column, "string constants are not supported by the current compiler backend"));
+    if (target == Ty::F32 || target == Ty::F64) {
+        if (actual != target)
+            throw Error(loc(line, column, "global initializer type mismatch: expected " +
+                            tyNameFull(target) + ", got " + tyNameFull(actual)));
+        double folded = 0;
+        if (!cnConstantFloatValue(value, folded))
+            throw Error(loc(line, column, "global initializer must be a compile-time floating-point value"));
+        if (target == Ty::F32) {
+            const float narrowed = static_cast<float>(folded);
+            uint32_t bits = 0;
+            std::memcpy(&bits, &narrowed, sizeof bits);
+            return bits;
+        }
+        uint64_t bits = 0;
+        std::memcpy(&bits, &folded, sizeof folded);
+        return bits;
+    }
+    if (target == Ty::Bool) {
+        int64_t folded = 0;
+        if (actual != Ty::Bool)
+            throw Error(loc(line, column, "bool global initializer must have type bool"));
+        if (value.boolLit) folded = static_cast<int64_t>(value.n);
+        else if (!constantInteger(value, folded))
+            throw Error(loc(line, column, "bool global initializer must be a compile-time bool value"));
+        if (folded != 0 && folded != 1)
+            throw Error(loc(line, column, "bool global initializer must be 0 or 1"));
+        return static_cast<uint64_t>(folded);
+    }
+    if (target.k == Ty::Ptr) {
+        if (!isNullConstant(value))
+            throw Error(loc(line, column, "a pointer global initializer must be null"));
+        return 0;
+    }
+    int64_t folded = 0;
+    if (!tyAssignable(target, actual, value) || !constantInteger(value, folded))
+        throw Error(loc(line, column, "global initializer must be a compatible compile-time integer value"));
+    folded = foldAtExprType(constExprType(value), target, folded);
+    if (!initializerFits(target, value, folded))
+        throw Error(loc(line, column, "global initializer does not fit " + tyNameFull(target)));
+    return static_cast<uint64_t>(folded);
+}
+
+static E cnExpressionToAster(const aster_cn::Expression& source,
+                             CnStringPool* strings = nullptr,
+                             const CnLoweringContext* context = nullptr) {
+    const unsigned line = source.line;
+    const unsigned column = source.column;
+    E result;
+    if (source.kind == "Identifier") {
+        const auto enumerator = g_enumConsts.find(source.value);
+        if (enumerator != g_enumConsts.end()) {
+            result.reset(new Expr(Expr::Num, static_cast<uint64_t>(enumerator->second)));
+            result->enumConst = true;
+        } else {
+            if (context)
+                cnRequireTopLevelGlobalAccess(source.value, context, line, column);
+            if (context) {
+                E captured = cnClosureCapturedValue(*context, source.value, line, column);
+                if (captured) {
+                    E arrayAddress = cnClosureCapturedArrayAddress(
+                        *context, source.value, line, column);
+                    result = arrayAddress ? std::move(arrayAddress) : std::move(captured);
+                }
+            }
+            if (!result) {
+                result.reset(new Expr(Expr::Var));
+                result->name = source.value;
+                if (g_cnExternalGlobalNames.count(source.value))
+                    result->name = cnGlobalSymbolName(source.value);
+            }
+        }
+    } else if (source.kind == "IntegerLiteral") {
+        Expr::LitSuffix suffix = Expr::LSNone;
+        const uint64_t value = cnIntegerValue(source.value, suffix, line, column);
+        result.reset(new Expr(Expr::Num, value));
+        result->suffix = suffix;
+    } else if (source.kind == "FloatLiteral") {
+        result.reset(new Expr(Expr::Num));
+        result->isFloat = true;
+        result->fv = cnFloatValue(source.value, line, column);
+    } else if (source.kind == "BooleanLiteral") {
+        result.reset(new Expr(Expr::Num, source.value == "true" ? 1u : 0u));
+        result->boolLit = true;
+    } else if (source.kind == "NullLiteral") {
+        result.reset(new Expr(Expr::Num, 0));
+    } else if (source.kind == "ThisExpression") {
+        result = cnThisValue(context, line, column);
+    } else if (source.kind == "SuperExpression") {
+        result = cnSuperValue(context, line, column);
+    } else if (source.kind == "CharacterLiteral") {
+        result.reset(new Expr(Expr::Num, cnCharacterValue(source.value, line, column)));
+    } else if (source.kind == "Binary") {
+        if (source.children.size() != 2) throw Error(loc(line, column, "invalid binary expression"));
+        // Validate literal escapes before operand-type diagnostics so an
+        // invalid string is never hidden by an unrelated binary mismatch.
+        cnValidateStringLiterals(source.children[0]);
+        cnValidateStringLiterals(source.children[1]);
+        const bool orderedStringComparison = source.value == "<" || source.value == "<=" ||
+            source.value == ">" || source.value == ">=";
+        if (orderedStringComparison && context) {
+            const Ty leftType = cnExpressionType(source.children[0], *context);
+            const Ty rightType = cnExpressionType(source.children[1], *context);
+            if (leftType.isString || rightType.isString) {
+                if (!(leftType.isString && rightType.isString))
+                    throw Error(loc(line, column, "string ordering requires two string operands"));
+                if (!strings)
+                    throw Error(loc(line, column, "string ordering has no runtime context"));
+                strings->usesStringOrder = true;
+                Expr::Kind kind;
+                if (source.value == "<") kind = Expr::Lt;
+                else if (source.value == "<=") kind = Expr::Le;
+                else if (source.value == ">") kind = Expr::Gt;
+                else kind = Expr::Ge;
+                E call(new Expr(Expr::Call));
+                call->name = "__aster_cn_str_order";
+                call->line = line;
+                call->col = column;
+                for (const auto& child : source.children) {
+                    E argument(new Expr(Expr::Cast));
+                    argument->ty = tyPtrToElem(Ty::U8);
+                    argument->a = cnExpressionToAster(child, strings, context);
+                    argument->line = child.line;
+                    argument->col = child.column;
+                    call->args.push_back(std::move(argument));
+                }
+                E comparison(new Expr(kind));
+                comparison->a = std::move(call);
+                comparison->b.reset(new Expr(Expr::Num, 0));
+                comparison->line = line;
+                comparison->col = column;
+                return comparison;
+            }
+        }
+        if (source.value == "+" && context) {
+            const Ty leftType = cnExpressionType(source.children[0], *context);
+            const Ty rightType = cnExpressionType(source.children[1], *context);
+            if (leftType.isString || rightType.isString) {
+                if (!(leftType.isString && rightType.isString))
+                    throw Error(loc(line, column, "string concatenation requires two string operands"));
+                if (!strings)
+                    throw Error(loc(line, column, "string concatenation has no runtime context"));
+                strings->usesConcat = true;
+                E call(new Expr(Expr::Call));
+                call->name = "__aster_cn_str_concat";
+                call->line = line;
+                call->col = column;
+                for (const auto& child : source.children) {
+                    E argument(new Expr(Expr::Cast));
+                    argument->ty = tyPtrToElem(Ty::U8);
+                    argument->a = cnExpressionToAster(child, strings, context);
+                    argument->line = child.line;
+                    argument->col = child.column;
+                    call->args.push_back(std::move(argument));
+                }
+                result.reset(new Expr(Expr::Cast));
+                result->ty = Ty::string();
+                result->a = std::move(call);
+                result->line = line;
+                result->col = column;
+                return result;
+            }
+        }
+        Expr::Kind kind;
+        if (source.value == "+") kind = Expr::Add;
+        else if (source.value == "-") kind = Expr::Sub;
+        else if (source.value == "*") kind = Expr::Mul;
+        else if (source.value == "/") kind = Expr::Div;
+        else if (source.value == "%") kind = Expr::Mod;
+        else if (source.value == "==") kind = Expr::Eq;
+        else if (source.value == "!=") kind = Expr::Ne;
+        else if (source.value == "<") kind = Expr::Lt;
+        else if (source.value == "<=") kind = Expr::Le;
+        else if (source.value == ">") kind = Expr::Gt;
+        else if (source.value == ">=") kind = Expr::Ge;
+        else if (source.value == "&&") kind = Expr::And;
+        else if (source.value == "||") kind = Expr::Or;
+        else throw Error(loc(line, column, "operator '" + source.value + "' is not supported by the current compiler backend"));
+        result.reset(new Expr(kind));
+        result->a = cnExpressionToAster(source.children[0], strings, context);
+        result->b = cnExpressionToAster(source.children[1], strings, context);
+    } else if (source.kind == "Unary") {
+        if (source.children.size() != 1) throw Error(loc(line, column, "invalid unary expression"));
+        Expr::Kind kind;
+        if (source.value == "-") kind = Expr::Neg;
+        else if (source.value == "!") kind = Expr::Not;
+        else if (source.value == "~") kind = Expr::BitNot;
+        else if (source.value == "&") kind = Expr::AddrOf;
+        else if (source.value == "*") kind = Expr::Deref;
+        else throw Error(loc(line, column, "unary operator '" + source.value + "' is not supported"));
+        result.reset(new Expr(kind));
+        result->a = cnExpressionToAster(source.children[0], strings, context);
+    } else if (source.kind == "Call") {
+        if (context) {
+            E closureCall = cnClosureCallToAster(source, strings, context);
+            if (closureCall) return closureCall;
+            FuncSig functionSignature;
+            if (cnFunctionValueSignature(source.children.front(), *context,
+                                         functionSignature) &&
+                (source.children.front().kind == "Member" ||
+                 source.children.front().kind == "Index")) {
+                const auto& member = source.children.front();
+                if (member.kind == "Member" && cnIsClassQualifier(member.children[0], *context)) {
+                    const CnStaticClassFieldInfo* staticField = cnFindClassStaticField(
+                        g_cnClassIndex.at(member.children[0].value), member.children[1].value);
+                    if (staticField && staticField->isFunc && staticField->arrayLength == 0) {
+                        E call(new Expr(Expr::Call));
+                        call->name = staticField->globalName;
+                        for (size_t index = 1; index < source.children.size(); ++index)
+                            call->args.push_back(cnExpressionToAsterAs(
+                                source.children[index], functionSignature.params[index - 1],
+                                strings, context));
+                        call->line = line;
+                        call->col = column;
+                        return call;
+                    }
+                }
+                E call(new Expr(Expr::FieldCall));
+                call->a = cnExpressionToAster(member, strings, context);
+                for (size_t index = 1; index < source.children.size(); ++index)
+                    call->args.push_back(cnExpressionToAsterAs(source.children[index],
+                        functionSignature.params[index - 1], strings, context));
+                call->line = line;
+                call->col = column;
+                return call;
+            }
+        }
+        if (source.children.empty() || (source.children.front().kind != "Identifier" &&
+                                        source.children.front().kind != "TypeName" &&
+                                        source.children.front().kind != "Member" &&
+                                        source.children.front().kind != "Index"))
+            throw Error(loc(line, column, "only direct function calls are supported by the current compiler backend"));
+        if (source.children.front().kind == "Member") {
+            const auto& member = source.children.front();
+            if (!context)
+                throw Error(loc(line, column, "class method calls require a lowering context"));
+            if (member.children.size() != 2 || member.children[1].kind != "Identifier")
+                throw Error(loc(line, column, "invalid class method call"));
+            const bool classQualified = cnIsClassQualifier(member.children[0], *context);
+            const Ty receiver = classQualified
+                ? Ty::ptrTo(g_cnClassIndex.at(member.children[0].value))
+                : cnExpressionType(member.children[0], *context);
+            if (!classQualified && tyIsStruct(receiver) &&
+                g_cnInterfaceNames.count(structOf(receiver.sid).name)) {
+                const std::string& interfaceName = structOf(receiver.sid).name;
+                const auto interfaceMethods = g_cnInterfaceMethods.find(interfaceName);
+                if (interfaceMethods == g_cnInterfaceMethods.end())
+                    throw Error(loc(line, column, "unknown interface: " + interfaceName));
+                const auto interfaceMethod = interfaceMethods->second.find(member.children[1].value);
+                if (interfaceMethod == interfaceMethods->second.end())
+                    throw Error(loc(line, column, "unknown interface method: " + member.children[1].value));
+                if (!g_cnInterfaceVtableIndex.count(interfaceName))
+                    throw Error(loc(line, column,
+                                    "interface method table is unavailable for " + interfaceName));
+                cnRequireMethodArity(interfaceMethod->second, source, member.children[1].value);
+                if (member.children[0].kind != "Identifier" ||
+                    member.children[0].value.rfind(
+                        "__aster_cn_interface_receiver_", 0) != 0)
+                    throw Error(loc(member.children[0].line, member.children[0].column,
+                                    "interface receiver must be materialized before dispatch"));
+                E interfaceValue = cnExpressionToAster(member.children[0], strings, context);
+                E objectField(new Expr(Expr::Field));
+                objectField->a = std::move(interfaceValue);
+                objectField->name = "__aster_cn_object";
+                E tableField(new Expr(Expr::Field));
+                tableField->a.reset(new Expr(Expr::Cast));
+                tableField->a->ty = Ty::ptrTo(g_cnInterfaceVtableIndex.at(interfaceName));
+                tableField->a->a.reset(new Expr(Expr::Field));
+                tableField->a->a->name = "__aster_cn_vtable";
+                tableField->a->a->a = cnExpressionToAster(member.children[0], strings, context);
+                tableField->name = cnInterfaceMethodFieldName(member.children[1].value);
+                result.reset(new Expr(Expr::FieldCall));
+                result->a = std::move(tableField);
+                result->args.push_back(std::move(objectField));
+                for (size_t i = 1; i < source.children.size(); ++i) {
+                    const Ty expected = interfaceMethod->second.parameterTypes[i - 1];
+                    result->args.push_back(cnExpressionToAsterAs(source.children[i], expected,
+                                                                  strings, context,
+                                                                  &interfaceMethod->second.parameterDims[i - 1]));
+                }
+                result->line = line;
+                result->col = column;
+                return result;
+            }
+            if (!tyIsPtrToStruct(receiver) || !g_cnClassIndex.count(structOf(receiver.sid).name))
+                throw Error(loc(line, column, "member calls require a class object"));
+            const CnClassMethodInfo* method = cnFindClassMethod(receiver.sid, member.children[1].value);
+            if (!method)
+                throw Error(loc(line, column, "unknown class method: " + member.children[1].value));
+            cnRequireMethodCall(*method, classQualified, context,
+                                member.children[1].value, line, column);
+            cnRequireMethodArity(*method, source, member.children[1].value);
+            const bool directMethod = method->isStatic || method->isConstructor ||
+                member.children[0].kind == "SuperExpression";
+            if (!directMethod) {
+                E receiverForTable = cnExpressionToAster(member.children[0], strings, context);
+                E vptr(new Expr(Expr::Field));
+                vptr->a = std::move(receiverForTable);
+                vptr->name = "__aster_cn_vptr";
+                E table(new Expr(Expr::Cast));
+                table->ty = Ty::ptrTo(g_cnClassVtableIndex.at(receiver.sid));
+                table->a = std::move(vptr);
+                E slot(new Expr(Expr::Field));
+                slot->a = std::move(table);
+                slot->name = cnClassVtableMethodFieldName(member.children[1].value);
+                result.reset(new Expr(Expr::FieldCall));
+                result->a = std::move(slot);
+                E receiverValue = cnExpressionToAster(member.children[0], strings, context);
+                E genericReceiver(new Expr(Expr::Cast));
+                genericReceiver->ty = Ty::Ptr;
+                genericReceiver->a = std::move(receiverValue);
+                result->args.push_back(std::move(genericReceiver));
+            } else {
+                result.reset(new Expr(Expr::Call));
+                result->name = method->functionName;
+                if (!method->isStatic) {
+                    E receiverValue = cnExpressionToAster(member.children[0], strings, context);
+                    if (method->ownerClassId != receiver.sid) {
+                        E baseValue(new Expr(Expr::Cast));
+                        baseValue->ty = Ty::ptrTo(method->ownerClassId);
+                        baseValue->a = std::move(receiverValue);
+                        baseValue->line = member.children[0].line;
+                        baseValue->col = member.children[0].column;
+                        receiverValue = std::move(baseValue);
+                    }
+                    result->args.push_back(std::move(receiverValue));
+                }
+            }
+            for (size_t i = 1; i < source.children.size(); ++i) {
+                const Ty expected = method->parameterTypes[i - 1];
+                result->args.push_back(cnExpressionToAsterAs(source.children[i], expected,
+                                                              strings, context,
+                                                              &method->parameterDims[i - 1]));
+            }
+            result->line = line;
+            result->col = column;
+            return result;
+        }
+        if (source.children.front().kind == "Identifier") {
+            const auto classIt = g_cnClassIndex.find(source.children.front().value);
+            if (classIt != g_cnClassIndex.end()) {
+                if (!strings)
+                    throw Error(loc(line, column, "class construction has no lowering context"));
+                const CnClassMethodInfo* constructor = cnFindClassConstructor(classIt->second);
+                cnRequireConstructorAccess(constructor, classIt->second, context,
+                                           line, column);
+                const size_t actual = source.children.size() - 1;
+                const size_t expected = constructor ? constructor->parameterTypes.size() : 0;
+                if (actual != expected)
+                    throw Error(loc(line, column,
+                                    "class constructor for '" + source.children.front().value +
+                                    "' expects " + std::to_string(expected) +
+                                    " argument(s), got " + std::to_string(actual)));
+                strings->classConstructors.insert(classIt->second);
+                result.reset(new Expr(Expr::Call));
+                result->name = cnClassConstructorName(classIt->second);
+                result->line = line;
+                result->col = column;
+                if (constructor) {
+                    for (size_t index = 1; index < source.children.size(); ++index)
+                        result->args.push_back(cnExpressionToAsterAs(
+                            source.children[index], constructor->parameterTypes[index - 1],
+                            strings, context,
+                            &constructor->parameterDims[index - 1]));
+                }
+                return result;
+            }
+        }
+        if (source.children.front().kind == "TypeName") {
+            const std::string& targetName = source.children.front().value;
+            const auto classIt = g_cnClassIndex.find(targetName);
+            if (classIt != g_cnClassIndex.end()) {
+                if (!strings)
+                    throw Error(loc(line, column, "class construction has no lowering context"));
+                const CnClassMethodInfo* constructor = cnFindClassConstructor(classIt->second);
+                cnRequireConstructorAccess(constructor, classIt->second, context,
+                                           line, column);
+                const size_t actual = source.children.size() - 1;
+                const size_t expected = constructor ? constructor->parameterTypes.size() : 0;
+                if (actual != expected)
+                    throw Error(loc(line, column,
+                                    "class constructor for '" + targetName +
+                                    "' expects " + std::to_string(expected) +
+                                    " argument(s), got " + std::to_string(actual)));
+                strings->classConstructors.insert(classIt->second);
+                result.reset(new Expr(Expr::Call));
+                result->name = cnClassConstructorName(classIt->second);
+                result->line = line;
+                result->col = column;
+                if (constructor) {
+                    for (size_t index = 1; index < source.children.size(); ++index)
+                        result->args.push_back(cnExpressionToAsterAs(
+                            source.children[index], constructor->parameterTypes[index - 1],
+                            strings, context,
+                            &constructor->parameterDims[index - 1]));
+                }
+                return result;
+            }
+            if (source.children.size() != 2)
+                throw Error(loc(line, column, "a type cast requires exactly one argument"));
+            Ty target = cnBackendType(targetName, line, column);
+            if (target == Ty::Void)
+                throw Error(loc(line, column, "void cannot be used as a cast target"));
+            if (targetName == "string" && context && strings) {
+                const Ty sourceType = cnExpressionType(source.children[1], *context);
+                if (cnIsStringView(sourceType)) {
+                    strings->usesStringFromView = true;
+                    E call(new Expr(Expr::Call));
+                    call->name = "__aster_cn_string_from_view";
+                    call->line = line;
+                    call->col = column;
+                    call->args.push_back(cnExpressionToAster(source.children[1], strings, context));
+                    result.reset(new Expr(Expr::Cast));
+                    result->ty = target;
+                    result->a = std::move(call);
+                    result->line = line;
+                    result->col = column;
+                    return result;
+                }
+            }
+            if (targetName == "string_view") {
+                if (!context || !strings)
+                    throw Error(loc(line, column, "string_view conversion has no lowering context"));
+                const Ty sourceType = cnExpressionType(source.children[1], *context);
+                if (!sourceType.isString)
+                    throw Error(loc(source.children[1].line, source.children[1].column,
+                                    "string_view conversion requires a string operand"));
+                strings->usesStringView = true;
+                E call(new Expr(Expr::Call));
+                call->name = "__aster_cn_str_view";
+                call->line = line;
+                call->col = column;
+                E argument(new Expr(Expr::Cast));
+                argument->ty = tyPtrToElem(Ty::U8);
+                argument->a = cnExpressionToAster(source.children[1], strings, context);
+                argument->line = source.children[1].line;
+                argument->col = source.children[1].column;
+                call->args.push_back(std::move(argument));
+                return call;
+            }
+            result.reset(new Expr(Expr::Cast));
+            result->ty = target;
+            result->a = cnExpressionToAster(source.children[1], strings, context);
+            result->line = line;
+            result->col = column;
+            return result;
+        }
+        result.reset(new Expr(Expr::Call));
+        const std::string sourceName = source.children.front().value;
+        if (source.children.front().kind == "Identifier")
+            cnRequireTopLevelMethodAccess(sourceName, context, line, column);
+        result->name = sourceName;
+        FuncSig valueSignature;
+        const bool hasValueSignature = context &&
+            cnFunctionValueSignature(source.children.front(), *context, valueSignature);
+        for (size_t i = 1; i < source.children.size(); ++i) {
+            Ty expected;
+            const std::vector<uint32_t>* expectedDimensions = nullptr;
+            if (cnExpectedCallParameterType(context, result->name, i - 1, expected,
+                                             &expectedDimensions))
+                result->args.push_back(cnExpressionToAsterAs(source.children[i], expected,
+                                                              strings, context,
+                                                              expectedDimensions));
+            else if (hasValueSignature && i - 1 < valueSignature.params.size())
+                result->args.push_back(cnExpressionToAsterAs(source.children[i],
+                    valueSignature.params[i - 1], strings, context));
+            else
+                result->args.push_back(cnExpressionToAster(source.children[i], strings, context));
+        }
+        // A function-pointer global is called through its object symbol, while
+        // a top-level method is called through its function symbol. External
+        // globals use the same source-to-ASCII mapping as identifier loads.
+        result->name = g_cnExternalGlobalNames.count(sourceName)
+            ? cnGlobalSymbolName(sourceName) : cnFunctionSymbolName(sourceName);
+    } else if (source.kind == "Index") {
+        if (source.children.size() != 2)
+            throw Error(loc(line, column, "invalid array index expression"));
+        if (!context)
+            throw Error(loc(line, column, "array index expression has no type context"));
+        (void)cnExpressionType(source, *context);
+        result.reset(new Expr(Expr::Index));
+        if (source.children[0].kind == "Identifier") {
+            E captured = cnClosureCapturedValue(*context, source.children[0].value,
+                                                source.children[0].line,
+                                                source.children[0].column);
+            if (captured) {
+                // A captured fixed-size array lives inline in the closure
+                // environment. Keep the array base as a Field expression so
+                // the existing struct-array address and bounds paths handle
+                // both reads and writes.
+                result->a = std::move(captured);
+                result->b = cnExpressionToAster(source.children[1], strings, context);
+            } else {
+                result->name = source.children[0].value;
+                if (g_cnExternalGlobalNames.count(result->name))
+                    result->name = cnGlobalSymbolName(result->name);
+                result->a = cnExpressionToAster(source.children[1], strings, context);
+            }
+        } else if (source.children[0].kind == "Member") {
+            const auto& array = source.children[0];
+            if (array.children.size() == 2 &&
+                cnIsClassQualifier(array.children[0], *context)) {
+                const CnStaticClassFieldInfo* field = cnFindClassStaticField(
+                    g_cnClassIndex.at(array.children[0].value), array.children[1].value);
+                if (!field || field->arrayLength == 0)
+                    throw Error(loc(line, column, "static field is not an array"));
+                result->name = field->globalName;
+                result->a = cnExpressionToAster(source.children[1], strings, context);
+            } else {
+                result->a = cnExpressionToAster(source.children[0], strings, context);
+                result->b = cnExpressionToAster(source.children[1], strings, context);
+            }
+        } else {
+            throw Error(loc(line, column, "array indexing currently requires a named array or structure field"));
+        }
+    } else if (source.kind == "ArrayLiteral") {
+        throw Error(loc(line, column, "array literals are only supported as local variable initializers"));
+    } else if (source.kind == "StructLiteral") {
+        const Ty literalType = cnBackendType(source.value, line, column);
+        if (cnIsStringView(literalType))
+            throw Error(loc(line, column,
+                            "string_view values must come from an explicit string conversion or a function return"));
+        result.reset(new Expr(Expr::StructLit));
+        result->name = source.value;
+        const StructDef& definition = structOf(literalType.sid);
+        const size_t expectedFields = definition.isUnion ? 1u : definition.fields.size();
+        if (source.children.size() != expectedFields)
+            throw Error(loc(line, column, "struct literal for '" + source.value + "' has " +
+                                   std::to_string(source.children.size()) +
+                                   " values but the struct has " +
+                                   std::to_string(expectedFields) + " fields"));
+        for (size_t index = 0; index < source.children.size(); ++index) {
+            if (definition.isUnion)
+                result->args.push_back(cnExpressionToAster(source.children[index], strings, context));
+            else
+                result->args.push_back(cnExpressionToAsterAs(source.children[index],
+                    definition.fields[index].ty, strings, context));
+        }
+    } else if (source.kind == "StringLiteral") {
+        if (!strings || !strings->globals)
+            throw Error(loc(line, column, "string literal lowering has no global storage context"));
+        Global global;
+        global.name = "__aster_string_" + std::to_string(strings->next++);
+        global.isString = true;
+        global.align = 1;
+        global.rawData = cnStringValue(source.value, line, column);
+        strings->globals->push_back(std::move(global));
+        result.reset(new Expr(Expr::String));
+        result->name = strings->globals->back().name;
+        result->isStringValue = true;
+    } else if (source.kind == "Member") {
+        if (source.children.size() != 2 || source.children[1].kind != "Identifier")
+            throw Error(loc(line, column, "invalid member expression"));
+        if (!context)
+            throw Error(loc(line, column, "member expression has no type context"));
+        (void)cnExpressionType(source, *context);
+        if (cnIsClassQualifier(source.children[0], *context)) {
+            const CnStaticClassFieldInfo* field = cnFindClassStaticField(
+                g_cnClassIndex.at(source.children[0].value), source.children[1].value);
+            if (!field)
+                throw Error(loc(line, column, "unknown static class field: " +
+                                               source.children[1].value));
+            result.reset(new Expr(Expr::Var));
+            result->name = field->globalName;
+            result->line = line;
+            result->col = column;
+            return result;
+        }
+        const Ty baseType = cnExpressionType(source.children[0], *context);
+        result.reset(new Expr(Expr::Field));
+        result->a = cnExpressionToAster(source.children[0], strings, context);
+        result->name = cnCanonicalFieldName(baseType, source.children[1].value);
+    } else if (source.kind == "ClosureExpression") {
+        if (!context)
+            throw Error(loc(line, column, "closure expression has no semantic context"));
+        result = cnClosureExpressionToAster(source, strings, context);
+    } else {
+        throw Error(loc(line, column, "expression '" + source.kind + "' is not supported by the current compiler backend"));
+    }
+    result->line = line;
+    result->col = column;
+    if (result->line == 0 && !source.children.empty()) {
+        result->line = source.children.front().line;
+        result->col = source.children.front().column;
+    }
+    return result;
+}
+
+struct CnBinding {
+    Ty type = Ty::I32;
+    bool isArray = false;
+    uint32_t arrayLength = 0;
+    bool isClosureCapture = false;
+    bool isFunc = false;
+    FuncSig funcSig;
+    CnBinding() = default;
+    CnBinding(Ty valueType, bool array, uint32_t length,
+              bool closureCapture = false)
+        : type(valueType), isArray(array), arrayLength(length),
+          isClosureCapture(closureCapture) {}
+};
+
+struct CnLoweringContext {
+    std::vector<std::map<std::string, CnBinding>> scopes;
+    const std::map<std::string, CnBinding>* globals = nullptr;
+    const std::map<std::string, Ty>* methodReturns = nullptr;
+    const std::map<std::string, CnFunctionSignature>* methodSignatures = nullptr;
+    CnStringPool* strings = nullptr;
+    bool countCheck = true;
+    bool validatingClosureBody = false;
+    Ty thisType = Ty::Void;
+    Ty superType = Ty::Void;
+    Ty returnType = Ty::Void;
+    int currentClassId = -1;
+    std::string sourceFile;
+    std::string closureEnvName;
+    Ty closureEnvType = Ty::Void;
+    std::map<std::string, std::string> closureCaptureFields;
+
+    Ty find(const std::string& name, unsigned line, unsigned column) const {
+        for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
+            const auto found = scope->find(name);
+            if (found != scope->end()) return found->second.type;
+        }
+        if (globals) {
+            const auto found = globals->find(name);
+            if (found != globals->end()) return found->second.type;
+        }
+        throw Error(loc(line, column, "unknown variable: " + name));
+    }
+
+    CnBinding findBinding(const std::string& name, unsigned line, unsigned column) const {
+        for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
+            const auto found = scope->find(name);
+            if (found != scope->end()) return found->second;
+        }
+        if (globals) {
+            const auto found = globals->find(name);
+            if (found != globals->end()) return found->second;
+        }
+        throw Error(loc(line, column, "unknown variable: " + name));
+    }
+
+    bool findLocalBinding(const std::string& name, CnBinding& binding) const {
+        for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
+            const auto found = scope->find(name);
+            if (found != scope->end()) {
+                binding = found->second;
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+static bool cnExpectedCallParameterType(const CnLoweringContext* context,
+                                        const std::string& name, size_t index, Ty& type,
+                                        const std::vector<uint32_t>** dimensions) {
+    if (!context || !context->methodSignatures) return false;
+    const auto found = context->methodSignatures->find(name);
+    if (found == context->methodSignatures->end() || index >= found->second.parameterTypes.size())
+        return false;
+    type = found->second.parameterTypes[index];
+    if (dimensions) *dimensions = &found->second.parameterDims[index];
+    return true;
+}
+
+static std::vector<Stmt> cnStatementsToAster(
+    const std::vector<aster_cn::Statement>& source, CnLoweringContext& context);
+
+static E cnClosureCapturedValue(const CnLoweringContext& context,
+                                const std::string& name,
+                                unsigned line, unsigned column) {
+    const auto field = context.closureCaptureFields.find(name);
+    if (field == context.closureCaptureFields.end()) return {};
+    if (name != "this") {
+        CnBinding binding;
+        if (!context.findLocalBinding(name, binding) || !binding.isClosureCapture) return {};
+    }
+    E environment(new Expr(Expr::Var));
+    environment->name = context.closureEnvName;
+    environment->line = line;
+    environment->col = column;
+    E typedEnvironment(new Expr(Expr::Cast));
+    typedEnvironment->ty = context.closureEnvType;
+    typedEnvironment->a = std::move(environment);
+    typedEnvironment->line = line;
+    typedEnvironment->col = column;
+    E value(new Expr(Expr::Field));
+    value->a = std::move(typedEnvironment);
+    value->name = field->second;
+    value->line = line;
+    value->col = column;
+    return value;
+}
+
+static E cnClosureCapturedArrayAddress(const CnLoweringContext& context,
+                                       const std::string& name,
+                                       unsigned line, unsigned column) {
+    CnBinding binding;
+    if (!context.findLocalBinding(name, binding) || !binding.isClosureCapture ||
+        !binding.isArray) return {};
+    E address(new Expr(Expr::AddrOf));
+    address->a = cnClosureCapturedValue(context, name, line, column);
+    address->line = line;
+    address->col = column;
+    return address;
+}
+
+static Ty cnClosureExpressionType(const aster_cn::Expression& source) {
+    if (!source.closure)
+        throw Error(loc(source.line, source.column, "invalid closure expression AST"));
+    std::vector<Ty> parameters;
+    parameters.reserve(source.closure->parameters.size());
+    for (const auto& parameter : source.closure->parameters) {
+        if (!parameter.arrayDimensions.empty())
+            throw Error(loc(source.line, source.column,
+                            "array parameters are not supported in closures"));
+        const Ty type = cnBackendType(parameter.typeName, source.line, source.column);
+        if (type == Ty::Void)
+            throw Error(loc(source.line, source.column,
+                            "void cannot be used as a closure parameter type"));
+        parameters.push_back(type);
+    }
+    const Ty returnType = cnBackendType(source.closure->returnType,
+                                        source.line, source.column);
+    return cnClosureType(parameters, returnType, source.line, source.column);
+}
+
+static E cnClosureCallToAster(const aster_cn::Expression& source,
+                              CnStringPool* strings,
+                              const CnLoweringContext* context) {
+    if (!context || source.children.empty()) return {};
+    const auto& calleeSource = source.children.front();
+    Ty calleeType;
+    if (!cnClosureValueType(calleeSource, *context, calleeType)) return {};
+    const auto closure = g_cnClosureTypes.find(calleeType.sid);
+    if (closure == g_cnClosureTypes.end()) return {};
+    const size_t actual = source.children.size() - 1;
+    if (actual != closure->second.parameters.size())
+        throw Error(loc(source.line, source.column,
+                        "closure expects " + std::to_string(closure->second.parameters.size()) +
+                        " argument(s), got " + std::to_string(actual)));
+
+    E code(new Expr(Expr::Field));
+    code->a = cnExpressionToAster(calleeSource, strings, context);
+    code->name = "__code";
+    code->line = source.line;
+    code->col = source.column;
+
+    E call(new Expr(Expr::FieldCall));
+    call->a = std::move(code);
+    E environment(new Expr(Expr::Field));
+    environment->a = cnExpressionToAster(calleeSource, strings, context);
+    environment->name = "__env";
+    environment->line = source.line;
+    environment->col = source.column;
+    call->args.push_back(std::move(environment));
+    for (size_t index = 1; index < source.children.size(); ++index)
+        call->args.push_back(cnExpressionToAsterAs(source.children[index],
+            closure->second.parameters[index - 1], strings, context));
+    call->line = source.line;
+    call->col = source.column;
+    return call;
+}
+
+static E cnClosureExpressionToAster(const aster_cn::Expression& source,
+                                    CnStringPool* strings,
+                                    const CnLoweringContext* context) {
+    if (!context || !strings || !strings->functions)
+        throw Error(loc(source.line, source.column,
+                        "closure lowering has no function storage context"));
+    cnValidateClosureCaptures(source, *context);
+    const Ty closureType = cnClosureExpressionType(source);
+    const CnClosureTypeInfo& closure = g_cnClosureTypes.at(closureType.sid);
+    if (context->validatingClosureBody) {
+        E placeholder(new Expr(Expr::StructLit));
+        placeholder->name = structOf(closureType.sid).name;
+        placeholder->args.push_back(E(new Expr(Expr::Num, 0)));
+        placeholder->args.push_back(E(new Expr(Expr::Num, 0)));
+        placeholder->line = source.line;
+        placeholder->col = source.column;
+        return placeholder;
+    }
+
+    Ty environmentType = Ty::Void;
+    std::map<std::string, std::string> captureFields;
+    std::map<std::string, CnBinding> captureBindings;
+    int environmentSid = -1;
+    std::string factoryName;
+    if (!source.closure->captures.empty()) {
+        StructDef environment;
+        do {
+            environment.name = "__aster_cn_closure_env_" + std::to_string(strings->nextClosure++);
+        } while (g_structIndex.count(environment.name) || g_enumIndex.count(environment.name) ||
+                 g_cnReservedSourceNames.count(environment.name));
+        for (const std::string& capture : source.closure->captures) {
+            CnBinding binding;
+            Ty type;
+            if (capture == "this") {
+                if (context->thisType == Ty::Void)
+                    throw Error(loc(source.line, source.column,
+                                    "this can only be captured inside an instance method"));
+                type = context->thisType;
+                binding = CnBinding{type, false, 0};
+            } else {
+                if (!context->findLocalBinding(capture, binding))
+                    throw Error(loc(source.line, source.column,
+                                    "unknown closure capture: " + capture));
+                type = binding.type;
+            }
+            if (type == Ty::Void)
+                throw Error(loc(source.line, source.column,
+                                "closure capture has no storable type: " + capture));
+            const std::string fieldName = "__capture_" + std::to_string(captureFields.size());
+            StructField field;
+            field.name = fieldName;
+            field.ty = type;
+            if (capture != "this" && binding.isArray) {
+                field.len = binding.arrayLength;
+                field.dims.push_back(binding.arrayLength);
+            }
+            field.isString = type.isString;
+            environment.fields.push_back(std::move(field));
+            captureFields.emplace(capture, fieldName);
+            captureBindings.emplace(capture, binding);
+        }
+        environmentSid = static_cast<int>(g_structs.size());
+        Token token{TK::Ident, environment.name, source.line, source.column};
+        layoutStruct(environment, token);
+        g_structs.push_back(std::move(environment));
+        g_structIndex.emplace(g_structs.back().name, environmentSid);
+        environmentType = Ty::ptrTo(environmentSid);
+        strings->usesClosureEnv = true;
+    }
+
+    std::string functionName;
+    do {
+        functionName = "__aster_cn_closure_" + std::to_string(strings->nextClosure++);
+    } while (g_cnReservedSourceNames.count(functionName) ||
+             (context->methodReturns && context->methodReturns->count(functionName)));
+
+    Function function;
+    function.name = functionName;
+    function.line = source.line;
+    function.col = source.column;
+    function.retType = closure.returnType;
+    function.returnPtr = function.retType.k == Ty::Ptr;
+    function.returnBool = function.retType == Ty::Bool;
+    auto addParameter = [&](const std::string& name, Ty type) {
+        function.params.push_back(name);
+        function.paramTypes.push_back(type);
+        function.paramPtr.push_back(type.k == Ty::Ptr);
+        function.paramBool.push_back(type == Ty::Bool);
+        function.paramDims.emplace_back();
+        function.paramFuncSig.emplace_back();
+        function.paramIsFunc.push_back(false);
+    };
+    const std::string functionEnvironmentName = "__aster_cn_closure_env";
+    addParameter(functionEnvironmentName, Ty::Ptr);
+
+    CnLoweringContext closureContext = *context;
+    closureContext.scopes.clear();
+    closureContext.scopes.emplace_back();
+    closureContext.validatingClosureBody = false;
+    closureContext.thisType = Ty::Void;
+    closureContext.superType = Ty::Void;
+    closureContext.closureEnvName = functionEnvironmentName;
+    closureContext.closureEnvType = environmentType;
+    closureContext.closureCaptureFields = captureFields;
+    for (const auto& capture : captureBindings) {
+        CnBinding binding = capture.second;
+        binding.isClosureCapture = true;
+        closureContext.scopes.back().emplace(capture.first, binding);
+        if (capture.first == "this") closureContext.thisType = capture.second.type;
+    }
+    for (size_t index = 0; index < source.closure->parameters.size(); ++index) {
+        const auto& parameter = source.closure->parameters[index];
+        if (!parameter.arrayDimensions.empty())
+            throw Error(loc(source.line, source.column,
+                            "array parameters are not supported in closures"));
+        const Ty type = closure.parameters[index];
+        closureContext.scopes.back().emplace(parameter.name, CnBinding{type, false, 0});
+        addParameter(parameter.name, type);
+    }
+    function.body = cnStatementsToAster(source.closure->body, closureContext);
+    strings->functions->push_back(std::move(function));
+
+    E environmentValue(new Expr(Expr::Num, 0));
+    if (!captureFields.empty()) {
+        do {
+            factoryName = "__aster_cn_make_closure_" + std::to_string(strings->nextClosure++);
+        } while (g_cnReservedSourceNames.count(factoryName) ||
+                 (context->methodReturns && context->methodReturns->count(factoryName)));
+        Function factory;
+        factory.name = factoryName;
+        factory.line = source.line;
+        factory.col = source.column;
+        factory.retType = closureType;
+        std::map<std::string, std::string> captureParameterNames;
+        for (size_t index = 0; index < source.closure->captures.size(); ++index) {
+            const std::string& capture = source.closure->captures[index];
+            const CnBinding& binding = captureBindings.at(capture);
+            const Ty type = binding.isArray ? tyPtrToElem(binding.type) : binding.type;
+            const std::string parameterName = "__aster_cn_capture_" + std::to_string(index);
+            captureParameterNames.emplace(capture, parameterName);
+            factory.params.push_back(parameterName);
+            factory.paramTypes.push_back(type);
+            factory.paramPtr.push_back(type.k == Ty::Ptr);
+            factory.paramBool.push_back(type == Ty::Bool);
+            factory.paramDims.push_back(binding.isArray
+                ? std::vector<uint32_t>{binding.arrayLength}
+                : std::vector<uint32_t>{});
+            factory.paramFuncSig.emplace_back();
+            factory.paramIsFunc.push_back(false);
+        }
+        Stmt environmentAllocation(Stmt::Let);
+        environmentAllocation.name = "__aster_cn_closure_env_value";
+        environmentAllocation.line = source.line;
+        environmentAllocation.col = source.column;
+        environmentAllocation.ty = environmentType;
+        environmentAllocation.isPtr = true;
+        environmentAllocation.expr.reset(new Expr(Expr::Call));
+        environmentAllocation.expr->name = "alloc";
+        environmentAllocation.expr->line = source.line;
+        environmentAllocation.expr->col = source.column;
+        environmentAllocation.expr->args.push_back(E(new Expr(Expr::Num, structOf(environmentSid).size)));
+        factory.body.push_back(std::move(environmentAllocation));
+
+        Stmt allocationFailed(Stmt::If);
+        allocationFailed.line = source.line;
+        allocationFailed.col = source.column;
+        allocationFailed.expr.reset(new Expr(Expr::Eq));
+        allocationFailed.expr->a = cnNamedValue("__aster_cn_closure_env_value", source.line, source.column);
+        allocationFailed.expr->b.reset(new Expr(Expr::Num, 0));
+        allocationFailed.expr->line = source.line;
+        allocationFailed.expr->col = source.column;
+        Stmt failedReturn(Stmt::Return);
+        failedReturn.line = source.line;
+        failedReturn.col = source.column;
+        failedReturn.expr.reset(new Expr(Expr::StructLit));
+        failedReturn.expr->name = structOf(closureType.sid).name;
+        failedReturn.expr->args.push_back(E(new Expr(Expr::Num, 0)));
+        failedReturn.expr->args.push_back(E(new Expr(Expr::Num, 0)));
+        allocationFailed.thenBody.push_back(std::move(failedReturn));
+        factory.body.push_back(std::move(allocationFailed));
+
+        for (const std::string& capture : source.closure->captures) {
+            const CnBinding& binding = captureBindings.at(capture);
+            if (binding.isArray) {
+                const std::string indexName = "__aster_cn_capture_copy_index_" +
+                    std::to_string(strings->nextClosure++);
+                Stmt copyLoop(Stmt::For);
+                copyLoop.line = source.line;
+                copyLoop.col = source.column;
+                Stmt indexStart(Stmt::Let);
+                indexStart.name = indexName;
+                indexStart.line = source.line;
+                indexStart.col = source.column;
+                indexStart.ty = Ty::I32;
+                indexStart.expr.reset(new Expr(Expr::Num, 0));
+                copyLoop.forInit.push_back(std::move(indexStart));
+
+                copyLoop.expr.reset(new Expr(Expr::Lt));
+                copyLoop.expr->a = cnNamedValue(indexName, source.line, source.column);
+                copyLoop.expr->b.reset(new Expr(Expr::Num, binding.arrayLength));
+                copyLoop.expr->line = source.line;
+                copyLoop.expr->col = source.column;
+
+                Stmt advance(Stmt::Assign);
+                advance.name = indexName;
+                advance.line = source.line;
+                advance.col = source.column;
+                advance.expr.reset(new Expr(Expr::Add));
+                advance.expr->a = cnNamedValue(indexName, source.line, source.column);
+                advance.expr->b.reset(new Expr(Expr::Num, 1));
+                advance.expr->line = source.line;
+                advance.expr->col = source.column;
+                copyLoop.forStep.push_back(std::move(advance));
+
+                E environmentBase(new Expr(Expr::Var));
+                environmentBase->name = "__aster_cn_closure_env_value";
+                environmentBase->line = source.line;
+                environmentBase->col = source.column;
+                E environmentField(new Expr(Expr::Field));
+                environmentField->a = std::move(environmentBase);
+                environmentField->name = captureFields.at(capture);
+                environmentField->line = source.line;
+                environmentField->col = source.column;
+
+                Stmt copyElement(Stmt::FieldAssign);
+                copyElement.line = source.line;
+                copyElement.col = source.column;
+                copyElement.idx.reset(new Expr(Expr::Index));
+                copyElement.idx->a = std::move(environmentField);
+                copyElement.idx->b = cnNamedValue(indexName, source.line, source.column);
+                copyElement.idx->line = source.line;
+                copyElement.idx->col = source.column;
+                copyElement.expr.reset(new Expr(Expr::Index));
+                copyElement.expr->name = captureParameterNames.at(capture);
+                copyElement.expr->a = cnNamedValue(indexName, source.line, source.column);
+                copyElement.expr->line = source.line;
+                copyElement.expr->col = source.column;
+                copyLoop.thenBody.push_back(std::move(copyElement));
+                factory.body.push_back(std::move(copyLoop));
+                continue;
+            }
+            Stmt assignment(Stmt::FieldAssign);
+            assignment.line = source.line;
+            assignment.col = source.column;
+            E base(new Expr(Expr::Var));
+            base->name = "__aster_cn_closure_env_value";
+            base->line = source.line;
+            base->col = source.column;
+            assignment.idx.reset(new Expr(Expr::Field));
+            assignment.idx->a = std::move(base);
+            assignment.idx->name = captureFields.at(capture);
+            assignment.idx->line = source.line;
+            assignment.idx->col = source.column;
+            assignment.expr = cnNamedValue(captureParameterNames.at(capture),
+                                           source.line, source.column);
+            factory.body.push_back(std::move(assignment));
+        }
+
+        Stmt factoryReturn(Stmt::Return);
+        factoryReturn.line = source.line;
+        factoryReturn.col = source.column;
+        factoryReturn.expr.reset(new Expr(Expr::StructLit));
+        factoryReturn.expr->name = structOf(closureType.sid).name;
+        E code(new Expr(Expr::Var));
+        code->name = functionName;
+        code->line = source.line;
+        code->col = source.column;
+        factoryReturn.expr->args.push_back(std::move(code));
+        factoryReturn.expr->args.push_back(cnNamedValue("__aster_cn_closure_env_value",
+                                                         source.line, source.column));
+        factory.body.push_back(std::move(factoryReturn));
+        strings->functions->push_back(std::move(factory));
+
+        E factoryCall(new Expr(Expr::Call));
+        factoryCall->name = factoryName;
+        factoryCall->line = source.line;
+        factoryCall->col = source.column;
+        for (const std::string& capture : source.closure->captures) {
+            if (capture == "this") {
+                factoryCall->args.push_back(cnThisValue(context, source.line, source.column));
+            } else {
+                aster_cn::Expression value;
+                const CnBinding& binding = captureBindings.at(capture);
+                if (binding.isArray) {
+                    // A captured array identifier already lowers to the
+                    // address of its environment field, matching ordinary
+                    // local-array decay. Do not add a second explicit '&'.
+                    value.kind = "Identifier";
+                    value.value = capture;
+                } else {
+                    value.kind = "Identifier";
+                    value.value = capture;
+                }
+                value.line = source.line;
+                value.column = source.column;
+                factoryCall->args.push_back(cnExpressionToAster(value, strings, context));
+            }
+        }
+        return factoryCall;
+    }
+
+    E value(new Expr(Expr::StructLit));
+    value->name = structOf(closureType.sid).name;
+    E code(new Expr(Expr::Var));
+    code->name = functionName;
+    code->line = source.line;
+    code->col = source.column;
+    value->args.push_back(std::move(code));
+    value->args.push_back(std::move(environmentValue));
+    value->line = source.line;
+    value->col = source.column;
+    return value;
+}
+
+// A callback parameter in the bilingual frontend has the ordinary function
+// ABI, while a closure value is a pair of code and environment pointers.  For
+// the first adapter slice we support the common registration shape
+//
+//     register(fn(ptr): R, user: ptr)
+//
+// when the function argument is a closure value.  The value and the original
+// user pointer are copied into a freshly allocated adapter context; a static
+// thunk receives that context pointer, reads its closure code/environment and
+// user fields, and invokes the closure.  This keeps each registration
+// independent, including delayed callbacks and repeated execution of one call
+// site, while still presenting an ordinary function pointer to the backend.
+// Contexts use the standard library's grow-only arena: the compiler cannot
+// know when a registration is removed, so it never emits an automatic free.
+static bool cnTryLowerClosureCallbackAdapter(
+    const aster_cn::Expression& source, CnStringPool* strings,
+    CnLoweringContext& context, std::vector<Stmt>& prefix, E& lowered) {
+    if (!strings || !strings->globals || !strings->functions ||
+        !context.methodSignatures || source.kind != "Call" ||
+        source.children.empty())
+        return false;
+
+    const auto& calleeSource = source.children.front();
+    std::string callName;
+    const CnClassMethodInfo* memberMethod = nullptr;
+    Ty memberReceiver = Ty::Void;
+    bool memberCall = false;
+    if (calleeSource.kind == "Identifier") {
+        callName = calleeSource.value;
+    } else if (calleeSource.kind == "Member" && calleeSource.children.size() == 2 &&
+               calleeSource.children[1].kind == "Identifier") {
+        memberCall = true;
+        const bool classQualified = cnIsClassQualifier(calleeSource.children[0], context);
+        memberReceiver = classQualified
+            ? Ty::ptrTo(g_cnClassIndex.at(calleeSource.children[0].value))
+            : cnExpressionType(calleeSource.children[0], context);
+        if (!tyIsPtrToStruct(memberReceiver) ||
+            !g_cnClassIndex.count(structOf(memberReceiver.sid).name))
+            return false;
+        memberMethod = cnFindClassMethod(memberReceiver.sid, calleeSource.children[1].value);
+        if (!memberMethod) return false;
+        cnRequireMethodCall(*memberMethod, classQualified, &context,
+                            calleeSource.children[1].value, source.line, source.column);
+        cnRequireMethodArity(*memberMethod, source, calleeSource.children[1].value);
+        callName = memberMethod->functionName;
+    } else {
+        return false;
+    }
+
+    const auto signatureIt = context.methodSignatures->find(callName);
+    if (signatureIt == context.methodSignatures->end()) return false;
+    const CnFunctionSignature& signature = signatureIt->second;
+    const size_t argumentCount = source.children.size() - 1;
+    if (argumentCount != signature.parameterTypes.size()) return false;
+
+    struct Adaptation {
+        size_t argumentIndex = 0;
+        size_t userArgumentIndex = 0;
+        Ty closureType = Ty::I32;
+        std::string temporaryName;
+        std::string contextTypeName;
+        int contextSid = -1;
+        std::string contextName;
+        std::string thunkName;
+        std::string callbackParameter;
+    };
+    std::vector<Adaptation> adaptations;
+
+    for (size_t argumentIndex = 1; argumentIndex < source.children.size(); ++argumentIndex) {
+        const auto& argument = source.children[argumentIndex];
+        const size_t parameterIndex = argumentIndex - 1;
+        if (parameterIndex >= signature.parameterIsFunc.size() ||
+            !signature.parameterIsFunc[parameterIndex])
+            continue;
+
+        Ty closureType;
+        const bool directClosure = argument.kind == "ClosureExpression";
+        if (directClosure) {
+            closureType = cnClosureExpressionType(argument);
+        } else if (argument.kind == "Identifier" || argument.kind == "Member" ||
+                   argument.kind == "Index") {
+            if (!cnClosureValueType(argument, context, closureType)) continue;
+        } else {
+            continue;
+        }
+
+        const FuncSig& callbackSignature = signature.parameterFuncSigs[parameterIndex];
+        // The adapter is only needed for a callback that receives one user
+        // pointer.  Other function values remain ordinary function pointers.
+        if (callbackSignature.params.size() != 1 || callbackSignature.params.front() != Ty::Ptr)
+            continue;
+        const size_t environmentIndex = parameterIndex + 1;
+        if (environmentIndex >= signature.parameterTypes.size() ||
+            signature.parameterTypes[environmentIndex] != Ty::Ptr ||
+            signature.parameterIsFunc[environmentIndex])
+            continue;
+
+        const auto closureIt = g_cnClosureTypes.find(closureType.sid);
+        if (closureIt == g_cnClosureTypes.end())
+            throw Error(loc(argument.line, argument.column,
+                            "internal error: missing closure type for callback adapter"));
+        const CnClosureTypeInfo& closure = closureIt->second;
+        if (closure.parameters.size() != 1 || closure.parameters.front() != Ty::Ptr ||
+            closure.returnType != callbackSignature.ret) {
+            throw Error(loc(argument.line, argument.column,
+                            "closure callback adapter requires a closure with one ptr parameter and matching return type"));
+        }
+
+        Adaptation adaptation;
+        adaptation.argumentIndex = argumentIndex;
+        adaptation.userArgumentIndex = argumentIndex + 1;
+        adaptation.closureType = closureType;
+        const uint64_t id = strings->nextClosure++;
+        adaptation.temporaryName = "__aster_cn_adapter_closure_" + std::to_string(id);
+        adaptation.contextTypeName = "__aster_cn_adapter_context_" + std::to_string(id);
+        adaptation.contextName = "__aster_cn_adapter_context_value_" + std::to_string(id);
+        adaptation.thunkName = "__aster_cn_adapter_thunk_" + std::to_string(id);
+        adaptation.callbackParameter = "__aster_cn_adapter_arg_" + std::to_string(id);
+        g_cnReservedSourceNames.insert(adaptation.temporaryName);
+        g_cnReservedSourceNames.insert(adaptation.contextTypeName);
+        g_cnReservedSourceNames.insert(adaptation.contextName);
+        g_cnReservedSourceNames.insert(adaptation.thunkName);
+        g_cnReservedSourceNames.insert(adaptation.callbackParameter);
+
+        Stmt temporary(Stmt::Let);
+        temporary.name = adaptation.temporaryName;
+        temporary.line = argument.line;
+        temporary.col = argument.column;
+        temporary.ty = closureType;
+        temporary.expr = cnExpressionToAster(argument, strings, &context);
+        prefix.push_back(std::move(temporary));
+        if (context.scopes.empty()) context.scopes.emplace_back();
+        context.scopes.back()[adaptation.temporaryName] =
+            CnBinding{closureType, false, 0};
+
+        StructDef adapterContext;
+        adapterContext.name = adaptation.contextTypeName;
+        StructField closureField;
+        closureField.name = "__closure";
+        closureField.ty = closureType;
+        adapterContext.fields.push_back(std::move(closureField));
+        StructField userField;
+        userField.name = "__user";
+        userField.ty = Ty::Ptr;
+        adapterContext.fields.push_back(std::move(userField));
+        adaptation.contextSid = static_cast<int>(g_structs.size());
+        Token contextToken{TK::Ident, adapterContext.name, argument.line, argument.column};
+        layoutStruct(adapterContext, contextToken);
+        g_structs.push_back(std::move(adapterContext));
+        g_structIndex.emplace(g_structs.back().name, adaptation.contextSid);
+
+        strings->usesClosureAdapter = true;
+        Stmt contextAllocation(Stmt::Let);
+        contextAllocation.name = adaptation.contextName;
+        contextAllocation.line = argument.line;
+        contextAllocation.col = argument.column;
+        contextAllocation.ty = Ty::ptrTo(adaptation.contextSid);
+        contextAllocation.isPtr = true;
+        contextAllocation.expr.reset(new Expr(Expr::Call));
+        contextAllocation.expr->name = "alloc";
+        contextAllocation.expr->line = argument.line;
+        contextAllocation.expr->col = argument.column;
+        contextAllocation.expr->args.push_back(
+            E(new Expr(Expr::Num, structOf(adaptation.contextSid).size)));
+        prefix.push_back(std::move(contextAllocation));
+        if (context.scopes.empty()) context.scopes.emplace_back();
+        context.scopes.back()[adaptation.contextName] =
+            CnBinding{Ty::ptrTo(adaptation.contextSid), false, 0};
+
+        auto contextField = [&](const std::string& fieldName) {
+            E base(new Expr(Expr::Cast));
+            base->ty = Ty::ptrTo(adaptation.contextSid);
+            base->a.reset(new Expr(Expr::Var));
+            base->a->name = adaptation.contextName;
+            base->a->line = argument.line;
+            base->a->col = argument.column;
+            base->line = argument.line;
+            base->col = argument.column;
+            E field(new Expr(Expr::Field));
+            field->a = std::move(base);
+            field->name = fieldName;
+            field->line = argument.line;
+            field->col = argument.column;
+            return field;
+        };
+
+        Stmt publishClosure(Stmt::FieldAssign);
+        publishClosure.line = argument.line;
+        publishClosure.col = argument.column;
+        publishClosure.idx = contextField("__closure");
+        publishClosure.expr.reset(new Expr(Expr::Var));
+        publishClosure.expr->name = adaptation.temporaryName;
+        publishClosure.expr->line = argument.line;
+        publishClosure.expr->col = argument.column;
+        prefix.push_back(std::move(publishClosure));
+
+        Stmt publishUser(Stmt::FieldAssign);
+        publishUser.line = argument.line;
+        publishUser.col = argument.column;
+        publishUser.idx = contextField("__user");
+        publishUser.expr = cnExpressionToAster(source.children[adaptation.userArgumentIndex],
+                                               strings, &context);
+        prefix.push_back(std::move(publishUser));
+
+        Function thunk;
+        thunk.name = adaptation.thunkName;
+        thunk.line = argument.line;
+        thunk.col = argument.column;
+        thunk.retType = closure.returnType;
+        thunk.returnPtr = thunk.retType.k == Ty::Ptr;
+        thunk.returnBool = thunk.retType == Ty::Bool;
+        thunk.params.push_back(adaptation.callbackParameter);
+        thunk.paramTypes.push_back(Ty::Ptr);
+        thunk.paramPtr.push_back(true);
+        thunk.paramBool.push_back(false);
+        thunk.paramDims.emplace_back();
+        thunk.paramFuncSig.emplace_back();
+        thunk.paramIsFunc.push_back(false);
+
+        E thunkContext(new Expr(Expr::Cast));
+        thunkContext->ty = Ty::ptrTo(adaptation.contextSid);
+        thunkContext->a.reset(new Expr(Expr::Var));
+        thunkContext->a->name = adaptation.callbackParameter;
+        thunkContext->a->line = argument.line;
+        thunkContext->a->col = argument.column;
+        thunkContext->line = argument.line;
+        thunkContext->col = argument.column;
+
+        E closureValue(new Expr(Expr::Field));
+        closureValue->a = std::move(thunkContext);
+        closureValue->name = "__closure";
+        closureValue->line = argument.line;
+        closureValue->col = argument.column;
+
+        E callbackCode(new Expr(Expr::Field));
+        callbackCode->a = std::move(closureValue);
+        callbackCode->name = "__code";
+        callbackCode->line = argument.line;
+        callbackCode->col = argument.column;
+        E callback(new Expr(Expr::FieldCall));
+        callback->a = std::move(callbackCode);
+        callback->line = argument.line;
+        callback->col = argument.column;
+        E environmentValue(new Expr(Expr::Field));
+        E environmentContext(new Expr(Expr::Cast));
+        environmentContext->ty = Ty::ptrTo(adaptation.contextSid);
+        environmentContext->a.reset(new Expr(Expr::Var));
+        environmentContext->a->name = adaptation.callbackParameter;
+        environmentContext->a->line = argument.line;
+        environmentContext->a->col = argument.column;
+        environmentContext->line = argument.line;
+        environmentContext->col = argument.column;
+        E environmentClosure(new Expr(Expr::Field));
+        environmentClosure->a = std::move(environmentContext);
+        environmentClosure->name = "__closure";
+        environmentClosure->line = argument.line;
+        environmentClosure->col = argument.column;
+        environmentValue->a = std::move(environmentClosure);
+        environmentValue->name = "__env";
+        environmentValue->line = argument.line;
+        environmentValue->col = argument.column;
+        callback->args.push_back(std::move(environmentValue));
+        E userContext(new Expr(Expr::Cast));
+        userContext->ty = Ty::ptrTo(adaptation.contextSid);
+        userContext->a.reset(new Expr(Expr::Var));
+        userContext->a->name = adaptation.callbackParameter;
+        userContext->a->line = argument.line;
+        userContext->a->col = argument.column;
+        userContext->line = argument.line;
+        userContext->col = argument.column;
+        E userValue(new Expr(Expr::Field));
+        userValue->a = std::move(userContext);
+        userValue->name = "__user";
+        userValue->line = argument.line;
+        userValue->col = argument.column;
+        callback->args.push_back(std::move(userValue));
+
+        Stmt allocationFailed(Stmt::If);
+        allocationFailed.line = argument.line;
+        allocationFailed.col = argument.column;
+        allocationFailed.expr.reset(new Expr(Expr::Eq));
+        allocationFailed.expr->a.reset(new Expr(Expr::Var));
+        allocationFailed.expr->a->name = adaptation.callbackParameter;
+        allocationFailed.expr->a->line = argument.line;
+        allocationFailed.expr->a->col = argument.column;
+        allocationFailed.expr->b.reset(new Expr(Expr::Num, 0));
+        allocationFailed.expr->line = argument.line;
+        allocationFailed.expr->col = argument.column;
+        Stmt failedReturn(Stmt::Return);
+        failedReturn.line = argument.line;
+        failedReturn.col = argument.column;
+        if (closure.returnType != Ty::Void) {
+            if (tyIsStruct(closure.returnType))
+                throw Error(loc(argument.line, argument.column,
+                                "closure callback adapter does not support struct return values"));
+            failedReturn.expr = cnDefaultValue(closure.returnType,
+                                               argument.line, argument.column);
+        }
+        allocationFailed.thenBody.push_back(std::move(failedReturn));
+        thunk.body.push_back(std::move(allocationFailed));
+        if (closure.returnType == Ty::Void) {
+            Stmt invoke(Stmt::Expr);
+            invoke.line = argument.line;
+            invoke.col = argument.column;
+            invoke.expr = std::move(callback);
+            thunk.body.push_back(std::move(invoke));
+            Stmt returnVoid(Stmt::Return);
+            returnVoid.line = argument.line;
+            returnVoid.col = argument.column;
+            thunk.body.push_back(std::move(returnVoid));
+        } else {
+            Stmt returnValue(Stmt::Return);
+            returnValue.line = argument.line;
+            returnValue.col = argument.column;
+            returnValue.expr = std::move(callback);
+            thunk.body.push_back(std::move(returnValue));
+        }
+        strings->functions->push_back(std::move(thunk));
+        adaptations.push_back(std::move(adaptation));
+    }
+
+    if (adaptations.empty()) return false;
+    if (!memberCall)
+        cnRequireTopLevelMethodAccess(callName, &context, source.line, source.column);
+    aster_cn::Expression materializedCall;
+    const aster_cn::Expression* activeCall = &source;
+    if (memberCall && !memberMethod->isStatic &&
+        calleeSource.children[0].kind != "ThisExpression" &&
+        calleeSource.children[0].kind != "SuperExpression" &&
+        calleeSource.children[0].kind != "Identifier" &&
+        cnTryMaterializeClassReceiver(source, strings, context, prefix, materializedCall))
+        activeCall = &materializedCall;
+    const auto& activeCallee = activeCall->children.front();
+    const auto& activeReceiver = memberCall ? activeCallee.children[0] : calleeSource.children[0];
+    const bool directMemberCall = !memberCall || memberMethod->isStatic ||
+        activeReceiver.kind == "SuperExpression";
+    if (directMemberCall) {
+        lowered.reset(new Expr(Expr::Call));
+        lowered->name = callName;
+    } else {
+        E receiverForTable = cnExpressionToAster(activeReceiver, strings, &context);
+        E vptr(new Expr(Expr::Field));
+        vptr->a = std::move(receiverForTable);
+        vptr->name = "__aster_cn_vptr";
+        E table(new Expr(Expr::Cast));
+        table->ty = Ty::ptrTo(g_cnClassVtableIndex.at(memberReceiver.sid));
+        table->a = std::move(vptr);
+        E slot(new Expr(Expr::Field));
+        slot->a = std::move(table);
+        slot->name = cnClassVtableMethodFieldName(calleeSource.children[1].value);
+        lowered.reset(new Expr(Expr::FieldCall));
+        lowered->a = std::move(slot);
+        E genericReceiver(new Expr(Expr::Cast));
+        genericReceiver->ty = Ty::Ptr;
+        genericReceiver->a = cnExpressionToAster(activeReceiver, strings, &context);
+        lowered->args.push_back(std::move(genericReceiver));
+    }
+    lowered->line = source.line;
+    lowered->col = source.column;
+    if (memberCall && memberMethod->isStatic == false && directMemberCall) {
+        E receiverValue = cnExpressionToAster(activeReceiver, strings, &context);
+        if (memberMethod->ownerClassId != memberReceiver.sid) {
+            E baseValue(new Expr(Expr::Cast));
+            baseValue->ty = Ty::ptrTo(memberMethod->ownerClassId);
+            baseValue->a = std::move(receiverValue);
+            baseValue->line = calleeSource.children[0].line;
+            baseValue->col = calleeSource.children[0].column;
+            receiverValue = std::move(baseValue);
+        }
+        lowered->args.push_back(std::move(receiverValue));
+    }
+    for (size_t argumentIndex = 1; argumentIndex < activeCall->children.size(); ++argumentIndex) {
+        const auto adaptation = std::find_if(adaptations.begin(), adaptations.end(),
+            [&](const Adaptation& candidate) { return candidate.argumentIndex == argumentIndex; });
+        if (adaptation != adaptations.end()) {
+            E thunk(new Expr(Expr::Var));
+            thunk->name = adaptation->thunkName;
+            thunk->line = activeCall->children[argumentIndex].line;
+            thunk->col = activeCall->children[argumentIndex].column;
+            lowered->args.push_back(std::move(thunk));
+        } else {
+            const auto owner = std::find_if(adaptations.begin(), adaptations.end(),
+                [&](const Adaptation& candidate) {
+                    return candidate.userArgumentIndex == argumentIndex;
+                });
+            if (owner != adaptations.end()) {
+                E contextValue(new Expr(Expr::Var));
+                contextValue->name = owner->contextName;
+                contextValue->line = activeCall->children[argumentIndex].line;
+                contextValue->col = activeCall->children[argumentIndex].column;
+                lowered->args.push_back(std::move(contextValue));
+            } else {
+                lowered->args.push_back(cnExpressionToAster(activeCall->children[argumentIndex],
+                                                             strings, &context));
+            }
+        }
+    }
+    return true;
+}
+
+static void cnMaterializeNestedAdapter(
+    const aster_cn::Expression& source, E adapted, CnStringPool* strings,
+    CnLoweringContext& context, std::vector<Stmt>& prefix,
+    aster_cn::Expression& replacement) {
+    const Ty type = cnExpressionType(source, context);
+    if (type == Ty::Void)
+        throw Error(loc(source.line, source.column,
+                        "a callback adapter call returning void cannot be used inside an expression"));
+    const uint64_t id = strings->nextClosure++;
+    const std::string name = "__aster_cn_adapter_result_" + std::to_string(id);
+    g_cnReservedSourceNames.insert(name);
+
+    Stmt temporary(Stmt::Let);
+    temporary.name = name;
+    temporary.line = source.line;
+    temporary.col = source.column;
+    temporary.ty = type;
+    temporary.isPtr = type == Ty::Ptr;
+    temporary.isBool = type == Ty::Bool;
+    temporary.expr = std::move(adapted);
+    prefix.push_back(std::move(temporary));
+    if (context.scopes.empty()) context.scopes.emplace_back();
+    context.scopes.back()[name] = CnBinding{type, false, 0};
+
+    replacement.kind = "Identifier";
+    replacement.value = name;
+    replacement.children.clear();
+    replacement.closure.reset();
+    replacement.line = source.line;
+    replacement.column = source.column;
+}
+
+static bool cnTryMaterializeInterfaceReceiver(
+    const aster_cn::Expression& source, CnStringPool* strings,
+    CnLoweringContext& context, std::vector<Stmt>& prefix,
+    aster_cn::Expression& replacement) {
+    if (source.kind != "Call" || source.children.empty() ||
+        source.children.front().kind != "Member" ||
+        source.children.front().children.size() != 2)
+        return false;
+    const aster_cn::Expression& receiver = source.children.front().children[0];
+    if (cnIsClassQualifier(receiver, context)) return false;
+    // An imported class constructor is rewritten to an identifier carrying
+    // its mangled class name. It is necessarily a class pointer, so avoid
+    // asking the general call typer to resolve it as a local variable while
+    // deciding whether this is an interface receiver.
+    if (receiver.kind == "Call" && !receiver.children.empty() &&
+        receiver.children.front().kind == "Identifier" &&
+        g_cnClassIndex.count(receiver.children.front().value))
+        return false;
+    const Ty receiverType = cnExpressionType(receiver, context);
+    if (!cnIsInterfaceType(receiverType)) return false;
+    if (!strings)
+        throw Error(loc(source.line, source.column,
+                        "interface receiver materialization has no lowering context"));
+    const uint64_t id = strings->nextClosure++;
+    const std::string name = "__aster_cn_interface_receiver_" + std::to_string(id);
+    g_cnReservedSourceNames.insert(name);
+    Stmt temporary(Stmt::Let);
+    temporary.name = name;
+    temporary.line = receiver.line;
+    temporary.col = receiver.column;
+    temporary.ty = receiverType;
+    temporary.expr = cnLowerStatementExpression(receiver, strings, context, prefix);
+    prefix.push_back(std::move(temporary));
+    if (context.scopes.empty()) context.scopes.emplace_back();
+    context.scopes.back()[name] = CnBinding{receiverType, false, 0};
+
+    auto interfaceField = [&](const std::string& fieldName) {
+        E value(new Expr(Expr::Field));
+        value->a.reset(new Expr(Expr::Var));
+        value->a->name = name;
+        value->a->line = receiver.line;
+        value->a->col = receiver.column;
+        value->name = fieldName;
+        value->line = receiver.line;
+        value->col = receiver.column;
+        return value;
+    };
+    E objectIsNull(new Expr(Expr::Eq));
+    objectIsNull->a = interfaceField("__aster_cn_object");
+    objectIsNull->b.reset(new Expr(Expr::Num, 0));
+    objectIsNull->line = receiver.line;
+    objectIsNull->col = receiver.column;
+    E tableIsNull(new Expr(Expr::Eq));
+    tableIsNull->a = interfaceField("__aster_cn_vtable");
+    tableIsNull->b.reset(new Expr(Expr::Num, 0));
+    tableIsNull->line = receiver.line;
+    tableIsNull->col = receiver.column;
+    Stmt trap(Stmt::Trap);
+    trap.line = source.line;
+    trap.col = source.column;
+    Stmt rejectNull(Stmt::If);
+    rejectNull.line = source.line;
+    rejectNull.col = source.column;
+    rejectNull.expr.reset(new Expr(Expr::Or));
+    rejectNull.expr->a = std::move(objectIsNull);
+    rejectNull.expr->b = std::move(tableIsNull);
+    rejectNull.expr->line = source.line;
+    rejectNull.expr->col = source.column;
+    rejectNull.thenBody.push_back(std::move(trap));
+    prefix.push_back(std::move(rejectNull));
+
+    replacement = source;
+    replacement.children.front().children[0].kind = "Identifier";
+    replacement.children.front().children[0].value = name;
+    replacement.children.front().children[0].children.clear();
+    replacement.children.front().children[0].closure.reset();
+    replacement.children.front().children[0].line = receiver.line;
+    replacement.children.front().children[0].column = receiver.column;
+    return true;
+}
+
+static bool cnTryMaterializeClassReceiver(
+    const aster_cn::Expression& source, CnStringPool* strings,
+    CnLoweringContext& context, std::vector<Stmt>& prefix,
+    aster_cn::Expression& replacement) {
+    if (!strings || source.kind != "Call" || source.children.empty() ||
+        source.children.front().kind != "Member" ||
+        source.children.front().children.size() != 2)
+        return false;
+    const aster_cn::Expression& receiver = source.children.front().children[0];
+    if (cnIsClassQualifier(receiver, context))
+        return false;
+    const Ty receiverType = cnExpressionType(receiver, context);
+    if (!tyIsPtrToStruct(receiverType) ||
+        !g_cnClassIndex.count(structOf(receiverType.sid).name))
+        return false;
+    const CnClassMethodInfo* method = cnFindClassMethod(
+        receiverType.sid, source.children.front().children[1].value);
+    if (!method || method->isStatic || method->isConstructor)
+        return false;
+    std::string materializedName;
+    if (receiver.kind != "Identifier" && receiver.kind != "ThisExpression" &&
+        receiver.kind != "SuperExpression") {
+        const uint64_t id = strings->nextClosure++;
+        materializedName = "__aster_cn_class_receiver_" + std::to_string(id);
+        g_cnReservedSourceNames.insert(materializedName);
+        Stmt temporary(Stmt::Let);
+        temporary.name = materializedName;
+        temporary.line = receiver.line;
+        temporary.col = receiver.column;
+        temporary.ty = receiverType;
+        temporary.isPtr = true;
+        temporary.expr = cnLowerStatementExpression(receiver, strings, context, prefix);
+        prefix.push_back(std::move(temporary));
+        if (context.scopes.empty()) context.scopes.emplace_back();
+        context.scopes.back()[materializedName] = CnBinding{receiverType, false, 0};
+    }
+
+    // Class references are nullable values. Check the receiver before entering
+    // an instance method so a null call has the same deterministic BRK #1
+    // behavior as a null interface dispatch.
+    E receiverValue;
+    if (!materializedName.empty()) {
+        receiverValue.reset(new Expr(Expr::Var));
+        receiverValue->name = materializedName;
+    } else {
+        receiverValue = cnExpressionToAster(receiver, strings, &context);
+    }
+    Stmt trap(Stmt::Trap);
+    trap.line = source.line;
+    trap.col = source.column;
+    Stmt rejectNull(Stmt::If);
+    rejectNull.line = source.line;
+    rejectNull.col = source.column;
+    rejectNull.expr.reset(new Expr(Expr::Eq));
+    rejectNull.expr->a = std::move(receiverValue);
+    rejectNull.expr->b.reset(new Expr(Expr::Num, 0));
+    rejectNull.expr->line = source.line;
+    rejectNull.expr->col = source.column;
+    rejectNull.thenBody.push_back(std::move(trap));
+    prefix.push_back(std::move(rejectNull));
+
+    replacement = source;
+    if (!materializedName.empty()) {
+        replacement.children.front().children[0].kind = "Identifier";
+        replacement.children.front().children[0].value = materializedName;
+        replacement.children.front().children[0].children.clear();
+        replacement.children.front().children[0].closure.reset();
+        replacement.children.front().children[0].line = receiver.line;
+        replacement.children.front().children[0].column = receiver.column;
+    }
+    return true;
+}
+
+static bool cnTryMaterializeClassFieldReceiver(
+    const aster_cn::Expression& source, CnStringPool* strings,
+    CnLoweringContext& context, std::vector<Stmt>& prefix,
+    aster_cn::Expression& replacement) {
+    if (!strings || source.kind != "Member" || source.children.size() != 2 ||
+        source.children[1].kind != "Identifier")
+        return false;
+    const aster_cn::Expression& receiver = source.children[0];
+    if (cnIsClassQualifier(receiver, context)) return false;
+    const Ty receiverType = cnExpressionType(receiver, context);
+    if (!tyIsPtrToStruct(receiverType) ||
+        !g_cnClassIndex.count(structOf(receiverType.sid).name))
+        return false;
+    const std::string fieldName = cnCanonicalFieldName(
+        receiverType, source.children[1].value);
+    if (!structFieldOf(receiverType, fieldName)) return false;
+
+    std::string materializedName;
+    if (receiver.kind != "Identifier" && receiver.kind != "ThisExpression" &&
+        receiver.kind != "SuperExpression") {
+        const uint64_t id = strings->nextClosure++;
+        materializedName = "__aster_cn_class_field_receiver_" + std::to_string(id);
+        g_cnReservedSourceNames.insert(materializedName);
+        Stmt temporary(Stmt::Let);
+        temporary.name = materializedName;
+        temporary.line = receiver.line;
+        temporary.col = receiver.column;
+        temporary.ty = receiverType;
+        temporary.isPtr = true;
+        temporary.expr = cnLowerStatementExpression(receiver, strings, context, prefix);
+        prefix.push_back(std::move(temporary));
+        if (context.scopes.empty()) context.scopes.emplace_back();
+        context.scopes.back()[materializedName] = CnBinding{receiverType, false, 0};
+    }
+
+    // Class references are nullable values. Check the receiver before reading
+    // or writing an instance field so null access has deterministic BRK #1
+    // behavior instead of dereferencing address zero.
+    E receiverValue;
+    if (!materializedName.empty()) {
+        receiverValue.reset(new Expr(Expr::Var));
+        receiverValue->name = materializedName;
+    } else {
+        receiverValue = cnExpressionToAster(receiver, strings, &context);
+    }
+    Stmt trap(Stmt::Trap);
+    trap.line = source.line;
+    trap.col = source.column;
+    Stmt rejectNull(Stmt::If);
+    rejectNull.line = source.line;
+    rejectNull.col = source.column;
+    rejectNull.expr.reset(new Expr(Expr::Eq));
+    rejectNull.expr->a = std::move(receiverValue);
+    rejectNull.expr->b.reset(new Expr(Expr::Num, 0));
+    rejectNull.expr->line = source.line;
+    rejectNull.expr->col = source.column;
+    rejectNull.thenBody.push_back(std::move(trap));
+    prefix.push_back(std::move(rejectNull));
+
+    replacement = source;
+    if (!materializedName.empty()) {
+        replacement.children[0].kind = "Identifier";
+        replacement.children[0].value = materializedName;
+        replacement.children[0].children.clear();
+        replacement.children[0].closure.reset();
+        replacement.children[0].line = receiver.line;
+        replacement.children[0].column = receiver.column;
+    }
+    return true;
+}
+
+static void cnRewriteNestedAdapters(
+    const aster_cn::Expression& source, CnStringPool* strings,
+    CnLoweringContext& context, std::vector<Stmt>& prefix,
+    aster_cn::Expression& rewritten) {
+    rewritten = source;
+    if (source.kind == "ClosureExpression") return;
+
+    const size_t firstChild = source.kind == "Call" ? 1 : 0;
+    for (size_t index = firstChild; index < source.children.size(); ++index) {
+        const auto& child = source.children[index];
+        if (child.kind == "Call") {
+            aster_cn::Expression materialized;
+            if (cnTryMaterializeInterfaceReceiver(child, strings, context, prefix, materialized)) {
+                aster_cn::Expression nested;
+                cnRewriteNestedAdapters(materialized, strings, context, prefix, nested);
+                rewritten.children[index] = std::move(nested);
+                continue;
+            }
+            if (cnTryMaterializeClassReceiver(child, strings, context, prefix, materialized)) {
+                aster_cn::Expression nested;
+                cnRewriteNestedAdapters(materialized, strings, context, prefix, nested);
+                rewritten.children[index] = std::move(nested);
+                continue;
+            }
+            if (!child.children.empty() && child.children.front().kind == "Member" &&
+                cnTryMaterializeClassFieldReceiver(child.children.front(), strings,
+                                                   context, prefix, materialized)) {
+                aster_cn::Expression rewrittenCall = child;
+                rewrittenCall.children.front() = std::move(materialized);
+                aster_cn::Expression nested;
+                cnRewriteNestedAdapters(rewrittenCall, strings, context, prefix, nested);
+                rewritten.children[index] = std::move(nested);
+                continue;
+            }
+            std::vector<Stmt> childPrefix;
+            E adapted;
+            if (cnTryLowerClosureCallbackAdapter(child, strings, context,
+                                                 childPrefix, adapted)) {
+                for (auto& childStatement : childPrefix)
+                    prefix.push_back(std::move(childStatement));
+                cnMaterializeNestedAdapter(child, std::move(adapted), strings,
+                                           context, prefix, rewritten.children[index]);
+                continue;
+            }
+        } else if (child.kind == "Member") {
+            aster_cn::Expression materialized;
+            if (cnTryMaterializeClassFieldReceiver(child, strings, context, prefix,
+                                                   materialized)) {
+                aster_cn::Expression nested;
+                cnRewriteNestedAdapters(materialized, strings, context, prefix, nested);
+                rewritten.children[index] = std::move(nested);
+                continue;
+            }
+        }
+        aster_cn::Expression childRewritten;
+        cnRewriteNestedAdapters(child, strings, context, prefix, childRewritten);
+        rewritten.children[index] = std::move(childRewritten);
+    }
+}
+
+static E cnLowerStatementExpression(const aster_cn::Expression& source,
+                                    CnStringPool* strings,
+                                    CnLoweringContext& context,
+                                    std::vector<Stmt>& prefix) {
+    E adapted;
+    if (cnTryLowerClosureCallbackAdapter(source, strings, context, prefix, adapted))
+        return adapted;
+    aster_cn::Expression materialized;
+    if (cnTryMaterializeInterfaceReceiver(source, strings, context, prefix, materialized)) {
+        aster_cn::Expression rewritten;
+        cnRewriteNestedAdapters(materialized, strings, context, prefix, rewritten);
+        return cnExpressionToAster(rewritten, strings, &context);
+    }
+    if (cnTryMaterializeClassReceiver(source, strings, context, prefix, materialized)) {
+        aster_cn::Expression rewritten;
+        cnRewriteNestedAdapters(materialized, strings, context, prefix, rewritten);
+        return cnExpressionToAster(rewritten, strings, &context);
+    }
+    if (source.kind == "Call" && !source.children.empty() &&
+        source.children.front().kind == "Member" &&
+        cnTryMaterializeClassFieldReceiver(source.children.front(), strings, context,
+                                           prefix, materialized)) {
+        aster_cn::Expression rewrittenCall = source;
+        rewrittenCall.children.front() = std::move(materialized);
+        aster_cn::Expression rewritten;
+        cnRewriteNestedAdapters(rewrittenCall, strings, context, prefix, rewritten);
+        return cnExpressionToAster(rewritten, strings, &context);
+    }
+    if (cnTryMaterializeClassFieldReceiver(source, strings, context, prefix, materialized)) {
+        aster_cn::Expression rewritten;
+        cnRewriteNestedAdapters(materialized, strings, context, prefix, rewritten);
+        return cnExpressionToAster(rewritten, strings, &context);
+    }
+    aster_cn::Expression rewritten;
+    cnRewriteNestedAdapters(source, strings, context, prefix, rewritten);
+    return cnExpressionToAster(rewritten, strings, &context);
+}
+
+static E cnLowerStatementExpressionAs(const aster_cn::Expression& source, Ty target,
+                                       CnStringPool* strings, CnLoweringContext& context,
+                                       std::vector<Stmt>& prefix,
+                                       const std::vector<uint32_t>* expectedArrayDimensions) {
+    const Ty actual = cnExpressionType(source, context);
+    if (actual == target &&
+        (!expectedArrayDimensions || expectedArrayDimensions->empty()))
+        return cnLowerStatementExpression(source, strings, context, prefix);
+    aster_cn::Expression rewritten;
+    if (cnIsInterfaceType(target) && cnIsInterfaceType(actual) && actual != target &&
+        cnInterfaceExtendsOrSame(structOf(actual.sid).name, structOf(target.sid).name) &&
+        source.kind != "Identifier") {
+        const std::string name = "__aster_cn_interface_upcast_" +
+            std::to_string(strings->nextInterfaceUpcast++);
+        g_cnReservedSourceNames.insert(name);
+        Stmt temporary(Stmt::Let);
+        temporary.name = name;
+        temporary.line = source.line;
+        temporary.col = source.column;
+        temporary.ty = actual;
+        temporary.expr = cnLowerStatementExpression(source, strings, context, prefix);
+        prefix.push_back(std::move(temporary));
+        if (context.scopes.empty()) context.scopes.emplace_back();
+        context.scopes.back()[name] = CnBinding{actual, false, 0};
+        rewritten.kind = "Identifier";
+        rewritten.value = name;
+        rewritten.line = source.line;
+        rewritten.column = source.column;
+    }
+    if (rewritten.kind == "Identifier") {
+        // The interface upcast temporary already contains the source value.
+    } else if (cnTryMaterializeInterfaceReceiver(source, strings, context, prefix, rewritten)) {
+        aster_cn::Expression nested;
+        cnRewriteNestedAdapters(rewritten, strings, context, prefix, nested);
+        rewritten = std::move(nested);
+    } else if (cnTryMaterializeClassReceiver(source, strings, context, prefix, rewritten)) {
+        aster_cn::Expression nested;
+        cnRewriteNestedAdapters(rewritten, strings, context, prefix, nested);
+        rewritten = std::move(nested);
+    } else if (cnTryMaterializeClassFieldReceiver(source, strings, context, prefix, rewritten)) {
+        aster_cn::Expression nested;
+        cnRewriteNestedAdapters(rewritten, strings, context, prefix, nested);
+        rewritten = std::move(nested);
+    } else {
+        cnRewriteNestedAdapters(source, strings, context, prefix, rewritten);
+    }
+    return cnExpressionToAsterAs(rewritten, target, strings, &context,
+                                 expectedArrayDimensions);
+}
+
+static void cnValidateClosureCaptures(const aster_cn::Expression& source,
+                                      const CnLoweringContext& context) {
+    if (!source.closure)
+        throw Error(loc(source.line, source.column, "invalid closure expression AST"));
+
+    std::set<std::string> names;
+    uint64_t envBytes = 0;
+    uint32_t envAlign = 1;
+    for (const std::string& capture : source.closure->captures) {
+        Ty type;
+        uint32_t count = 1;
+        if (capture == "this") {
+            if (context.thisType == Ty::Void)
+                throw Error(loc(source.line, source.column,
+                                "this can only be captured inside an instance method"));
+            type = context.thisType;
+        } else {
+            CnBinding binding;
+            if (!context.findLocalBinding(capture, binding)) {
+                if (context.globals && context.globals->count(capture))
+                    throw Error(loc(source.line, source.column,
+                                    "global variable cannot be captured; access it directly: " + capture));
+                throw Error(loc(source.line, source.column,
+                                "unknown closure capture: " + capture));
+            }
+            type = binding.type;
+            if (binding.isArray) count = binding.arrayLength;
+        }
+        if (type == Ty::Void)
+            throw Error(loc(source.line, source.column,
+                            "closure capture has no storable type: " + capture));
+
+        const uint32_t alignment = tyAlign(type);
+        const uint64_t size = static_cast<uint64_t>(tySize(type)) * count;
+        envBytes = (envBytes + alignment - 1u) & ~static_cast<uint64_t>(alignment - 1u);
+        envBytes += size;
+        envAlign = std::max(envAlign, alignment);
+        const uint64_t finalSize = (envBytes + envAlign - 1u) & ~static_cast<uint64_t>(envAlign - 1u);
+        if (finalSize > 256u)
+            throw Error(loc(source.line, source.column,
+                            "closure environment exceeds 256 bytes at capture '" + capture +
+                            "' (" + std::to_string(finalSize) + " bytes)"));
+        names.insert(capture);
+    }
+
+    CnLoweringContext closureContext = context;
+    closureContext.scopes.clear();
+    closureContext.scopes.emplace_back();
+    closureContext.validatingClosureBody = true;
+    closureContext.thisType = Ty::Void;
+    closureContext.superType = Ty::Void;
+    for (const std::string& capture : source.closure->captures) {
+        if (capture == "this") {
+            closureContext.thisType = context.thisType;
+            continue;
+        }
+        CnBinding binding;
+        if (!context.findLocalBinding(capture, binding))
+            throw Error(loc(source.line, source.column,
+                            "unknown closure capture: " + capture));
+        binding.isClosureCapture = true;
+        closureContext.scopes.back().emplace(capture, binding);
+    }
+
+    for (const auto& parameter : source.closure->parameters) {
+        if (!names.insert(parameter.name).second)
+            throw Error(loc(source.line, source.column,
+                            "closure parameter conflicts with a captured name: " + parameter.name));
+        if (!parameter.arrayDimensions.empty())
+            throw Error(loc(source.line, source.column,
+                            "array parameters are not supported in closures"));
+        const Ty type = cnBackendType(parameter.typeName, source.line, source.column);
+        if (type == Ty::Void)
+            throw Error(loc(source.line, source.column,
+                            "void cannot be used as a closure parameter type"));
+        closureContext.scopes.back().emplace(parameter.name, CnBinding{type, false, 0});
+    }
+    (void)cnBackendType(source.closure->returnType, source.line, source.column);
+    (void)cnStatementsToAster(source.closure->body, closureContext);
+}
+
+static bool cnIsClassQualifier(const aster_cn::Expression& source,
+                              const CnLoweringContext& context) {
+    if (source.kind == "TypeName") return g_cnClassIndex.count(source.value) != 0;
+    if (source.kind != "Identifier") return false;
+    for (auto scope = context.scopes.rbegin(); scope != context.scopes.rend(); ++scope)
+        if (scope->count(source.value)) return false;
+    if (context.globals && context.globals->count(source.value)) return false;
+    return g_cnClassIndex.count(source.value) != 0;
+}
+
+static bool cnClosureValueType(const aster_cn::Expression& source,
+                               const CnLoweringContext& context, Ty& type) {
+    if (source.kind == "Identifier") {
+        CnBinding binding;
+        bool found = false;
+        for (auto scope = context.scopes.rbegin(); scope != context.scopes.rend(); ++scope) {
+            const auto local = scope->find(source.value);
+            if (local != scope->end()) {
+                binding = local->second;
+                found = true;
+                break;
+            }
+        }
+        if (!found && context.globals) {
+            const auto global = context.globals->find(source.value);
+            if (global != context.globals->end()) {
+                binding = global->second;
+                found = true;
+            }
+        }
+        if (!found || binding.isArray) return false;
+        type = binding.type;
+    } else if (source.kind == "Member") {
+        if (source.children.size() != 2 || source.children[1].kind != "Identifier" ||
+            cnIsClassQualifier(source.children[0], context))
+            return false;
+        const Ty receiver = cnExpressionType(source.children[0], context);
+        if (tyIsPtrToStruct(receiver) &&
+            g_cnClassIndex.count(structOf(receiver.sid).name)) {
+            const std::string fieldName = cnCanonicalFieldName(receiver,
+                                                               source.children[1].value);
+            if (!structFieldOf(receiver, fieldName)) return false;
+        }
+        if (tyIsStruct(receiver) && g_cnInterfaceNames.count(structOf(receiver.sid).name))
+            return false;
+        type = cnExpressionType(source, context);
+    } else if (source.kind == "Index") {
+        type = cnExpressionType(source, context);
+    } else {
+        return false;
+    }
+    return tyIsStruct(type) && g_cnClosureTypes.count(type.sid) != 0;
+}
+
+static bool cnFunctionValueSignature(const aster_cn::Expression& source,
+                                     const CnLoweringContext& context, FuncSig& signature) {
+    if (source.kind == "Index" && source.children.size() == 2) {
+        const auto& base = source.children[0];
+        if (base.kind == "Member" && base.children.size() == 2) {
+            if (cnIsClassQualifier(base.children[0], context)) {
+                const int classId = g_cnClassIndex.at(base.children[0].value);
+                const CnStaticClassFieldInfo* field = cnFindClassStaticField(
+                    classId, base.children[1].value);
+                if (!field || !field->isFunc || field->arrayLength == 0) return false;
+                cnRequireMemberAccess(field->visibility, field->ownerClassId,
+                                      context.currentClassId, context.sourceFile,
+                                      field->sourceFile, "field", base.children[1].value,
+                                      source.line, source.column);
+                signature = field->funcSig;
+                return true;
+            }
+            const Ty receiver = cnExpressionType(base.children[0], context);
+            const std::string fieldName = cnCanonicalFieldName(
+                receiver, base.children[1].value);
+            const StructField* field = structFieldOf(receiver, fieldName);
+            if (!field || !field->isFunc || field->len == 0) return false;
+            cnRequireMemberAccess(field->cnVisibility, field->cnOwnerClassId,
+                                  context.currentClassId, context.sourceFile,
+                                  field->cnSourceFile, "field", fieldName,
+                                  source.line, source.column);
+            signature = field->funcSig;
+            return true;
+        }
+    }
+    if (source.kind == "Identifier") {
+        CnBinding binding;
+        if (!context.findLocalBinding(source.value, binding) && context.globals) {
+            const auto global = context.globals->find(source.value);
+            if (global != context.globals->end()) binding = global->second;
+            else {
+                const auto method = g_cnFunctionSignatures.find(source.value);
+                if (method == g_cnFunctionSignatures.end()) return false;
+                cnRequireTopLevelMethodAccess(source.value, &context,
+                                              source.line, source.column);
+                signature.ret = method->second.returnType;
+                signature.params = method->second.parameterTypes;
+                return true;
+            }
+        } else if (!context.findLocalBinding(source.value, binding)) {
+            const auto method = g_cnFunctionSignatures.find(source.value);
+            if (method == g_cnFunctionSignatures.end()) return false;
+            cnRequireTopLevelMethodAccess(source.value, &context,
+                                          source.line, source.column);
+            signature.ret = method->second.returnType;
+            signature.params = method->second.parameterTypes;
+            return true;
+        }
+        if (!binding.isFunc) return false;
+        signature = binding.funcSig;
+        return true;
+    }
+    if (source.kind != "Member" || source.children.size() != 2 ||
+        source.children[1].kind != "Identifier") return false;
+    if (cnIsClassQualifier(source.children[0], context)) {
+        const int classId = g_cnClassIndex.at(source.children[0].value);
+        const CnStaticClassFieldInfo* field =
+            cnFindClassStaticField(classId, source.children[1].value);
+        if (!field || !field->isFunc || field->arrayLength != 0) return false;
+        cnRequireMemberAccess(field->visibility, field->ownerClassId,
+                              context.currentClassId, context.sourceFile,
+                              field->sourceFile, "field", source.children[1].value,
+                              source.line, source.column);
+        signature = field->funcSig;
+        return true;
+    }
+    const Ty receiver = cnExpressionType(source.children[0], context);
+    if (tyIsStruct(receiver) && g_cnInterfaceNames.count(structOf(receiver.sid).name))
+        return false;
+    const std::string fieldName = cnCanonicalFieldName(receiver, source.children[1].value);
+    const StructField* field = structFieldOf(receiver, fieldName);
+    if (!field || !field->isFunc) return false;
+    cnRequireMemberAccess(field->cnVisibility, field->cnOwnerClassId,
+                          context.currentClassId, context.sourceFile,
+                          field->cnSourceFile, "field", fieldName,
+                          source.line, source.column);
+    signature = field->funcSig;
+    return true;
+}
+
+static void cnRequireMemberAccess(int visibility, int ownerClassId, int currentClassId,
+                                  const std::string& sourceFile,
+                                  const std::string& memberSourceFile,
+                                  const char* memberKind, const std::string& memberName,
+                                  unsigned line, unsigned column) {
+    if (cnMemberAccessible(visibility, ownerClassId, currentClassId,
+                           sourceFile, memberSourceFile)) return;
+    const std::string owner = ownerClassId >= 0 ? structOf(ownerClassId).name : "<unknown>";
+    if (visibility == 1)
+        throw Error(loc(line, column, std::string(memberKind) + " '" + memberName +
+                        "' is hidden outside class '" + owner + "'"));
+    if (visibility == 3)
+        throw Error(loc(line, column, std::string(memberKind) + " '" + memberName +
+                        "' is restricted to class '" + owner + "' and its subclasses"));
+    throw Error(loc(line, column, std::string(memberKind) + " '" + memberName +
+                    "' is restricted to its declaring file"));
+}
+
+static void cnRequireTopLevelMethodAccess(const std::string& name,
+                                          const CnLoweringContext* context,
+                                          unsigned line, unsigned column) {
+    const auto found = g_cnTopLevelMethods.find(name);
+    if (found == g_cnTopLevelMethods.end() || found->second.visibility == 0) return;
+    const std::string sourceFile = context ? context->sourceFile : std::string();
+    if (sourceFile == found->second.sourceFile) return;
+    const std::string reason = found->second.visibility == 1
+        ? " is hidden outside its declaring file" : " is restricted to its declaring file";
+    throw Error(loc(line, column, "method '" + name + "'" + reason));
+}
+
+static void cnRequireTopLevelGlobalAccess(const std::string& name,
+                                          const CnLoweringContext* context,
+                                          unsigned line, unsigned column) {
+    const auto found = g_cnTopLevelGlobals.find(name);
+    if (found == g_cnTopLevelGlobals.end() || found->second.visibility == 0) return;
+    const std::string sourceFile = context ? context->sourceFile : std::string();
+    if (sourceFile == found->second.sourceFile) return;
+    const std::string reason = found->second.visibility == 1
+        ? " is hidden outside its declaring file" : " is restricted to its declaring file";
+    throw Error(loc(line, column, "global '" + name + "'" + reason));
+}
+
+static void cnRequireMethodCall(const CnClassMethodInfo& method, bool classQualified,
+                                const CnLoweringContext* context, const std::string& methodName,
+                                unsigned line, unsigned column) {
+    if (method.isConstructor)
+        throw Error(loc(line, column,
+                        "a constructor can only be invoked through its class name"));
+    if (method.isStatic && !classQualified)
+        throw Error(loc(line, column, "static method '" + methodName +
+                        "' must be called through a class name"));
+    if (!method.isStatic && classQualified)
+        throw Error(loc(line, column, "instance method '" + methodName +
+                        "' must be called through an object"));
+    cnRequireMemberAccess(method.visibility, method.ownerClassId,
+                          context ? context->currentClassId : -1,
+                          context ? context->sourceFile : std::string(), method.sourceFile,
+                          "method", methodName, line, column);
+}
+
+static void cnRequireConstructorAccess(const CnClassMethodInfo* constructor,
+                                       int classId, const CnLoweringContext* context,
+                                       unsigned line, unsigned column) {
+    if (!constructor) return;
+    cnRequireMemberAccess(constructor->visibility, classId,
+                          context ? context->currentClassId : -1,
+                          context ? context->sourceFile : std::string(),
+                          constructor->sourceFile, "constructor",
+                          structOf(classId).name, line, column);
+}
+
+static void cnRequireMethodArity(const CnClassMethodInfo& method,
+                                 const aster_cn::Expression& call,
+                                 const std::string& methodName) {
+    const size_t actual = call.children.empty() ? 0 : call.children.size() - 1;
+    const size_t expected = method.parameterTypes.size();
+    if (actual != expected)
+        throw Error(loc(call.line, call.column,
+                        "method '" + methodName + "' expects " + std::to_string(expected) +
+                        " argument(s), got " + std::to_string(actual)));
+}
+
+static E cnSuperValue(const CnLoweringContext* context, unsigned line, unsigned column) {
+    if (!context || context->superType == Ty::Void)
+        throw Error(loc(line, column, "super is only supported inside a class with a base class"));
+    E thisValue(new Expr(Expr::Var));
+    thisValue->name = "__aster_cn_this";
+    thisValue->line = line;
+    thisValue->col = column;
+    E result(new Expr(Expr::Cast));
+    result->ty = context->superType;
+    result->a = std::move(thisValue);
+    result->line = line;
+    result->col = column;
+    return result;
+}
+
+static E cnThisValue(const CnLoweringContext* context, unsigned line, unsigned column) {
+    if (!context || context->thisType == Ty::Void)
+        throw Error(loc(line, column, "this is only supported inside instance methods"));
+    if (context->closureCaptureFields.count("this"))
+        return cnClosureCapturedValue(*context, "this", line, column);
+    E result(new Expr(Expr::Var));
+    result->name = "__aster_cn_this";
+    result->line = line;
+    result->col = column;
+    return result;
+}
+
+static Ty cnExpressionType(const aster_cn::Expression& source,
+                           const CnLoweringContext& context) {
+    if (source.kind == "Identifier") {
+        if (g_enumConsts.count(source.value)) return Ty::I32;
+        for (auto scope = context.scopes.rbegin(); scope != context.scopes.rend(); ++scope) {
+            const auto found = scope->find(source.value);
+            if (found != scope->end())
+                return found->second.isArray ? Ty::Ptr : found->second.type;
+        }
+        if (context.globals) {
+            const auto found = context.globals->find(source.value);
+            if (found != context.globals->end())
+                return found->second.isArray ? Ty::Ptr : found->second.type;
+        }
+        if (g_cnFunctionSignatures.count(source.value)) return Ty::Ptr;
+        throw Error(loc(source.line, source.column, "unknown variable: " + source.value));
+    }
+    if (source.kind == "TypeName") {
+        return cnBackendType(source.value, source.line, source.column);
+    }
+    if (source.kind == "ThisExpression") {
+        if (context.thisType == Ty::Void)
+            throw Error(loc(source.line, source.column, "this is only supported inside instance methods"));
+        return context.thisType;
+    }
+    if (source.kind == "SuperExpression") {
+        if (context.superType == Ty::Void)
+            throw Error(loc(source.line, source.column,
+                            "super is only supported inside a class with a base class"));
+        return context.superType;
+    }
+    if (source.kind == "StructLiteral") {
+        return cnBackendType(source.value, source.line, source.column);
+    }
+    if (source.kind == "ClosureExpression")
+        return cnClosureExpressionType(source);
+    if (source.kind == "Index" && source.children.size() == 2 &&
+        source.children[0].kind == "Identifier") {
+        const CnBinding binding = context.findBinding(source.children[0].value,
+                                                       source.line, source.column);
+        if (!binding.isArray)
+            throw Error(loc(source.line, source.column,
+                            "cannot index non-array variable: " + source.children[0].value));
+        return binding.type;
+    }
+    if (source.kind == "Index" && source.children.size() == 2 &&
+        source.children[0].kind == "Member") {
+        if (source.children[0].children.size() != 2 ||
+            source.children[0].children[1].kind != "Identifier")
+            throw Error(loc(source.line, source.column, "invalid array field access"));
+        if (cnIsClassQualifier(source.children[0].children[0], context)) {
+            const int classId = g_cnClassIndex.at(source.children[0].children[0].value);
+            const std::string& memberName = source.children[0].children[1].value;
+            const CnStaticClassFieldInfo* staticField =
+                cnFindClassStaticField(classId, memberName);
+            if (!staticField) {
+                const Ty classType = Ty::ptrTo(classId);
+                const std::string fieldName = cnCanonicalFieldName(classType, memberName);
+                if (structFieldOf(classType, fieldName))
+                    throw Error(loc(source.line, source.column,
+                                    "instance array field must be accessed through an object: " +
+                                    fieldName));
+                throw Error(loc(source.line, source.column,
+                                "unknown static class field: " + memberName));
+            }
+            cnRequireMemberAccess(staticField->visibility, staticField->ownerClassId,
+                                  context.currentClassId, context.sourceFile,
+                                  staticField->sourceFile, "field", memberName,
+                                  source.line, source.column);
+            if (staticField->arrayLength == 0)
+                throw Error(loc(source.line, source.column,
+                                "cannot index non-array static field: " + memberName));
+            return staticField->type;
+        }
+        const Ty base = cnExpressionType(source.children[0].children[0], context);
+        const std::string fieldName = cnCanonicalFieldName(
+            base, source.children[0].children[1].value);
+        if (tyIsPtrToStruct(base) &&
+            g_cnClassIndex.count(structOf(base.sid).name) &&
+            cnFindClassStaticField(base.sid, source.children[0].children[1].value))
+            throw Error(loc(source.line, source.column,
+                            "static array field must be accessed through a class name: " +
+                            source.children[0].children[1].value));
+        const StructField* field = structFieldOf(base, fieldName);
+        if (!field)
+            throw Error(loc(source.line, source.column,
+                            noFieldMsg(structOf(structBaseId(base, fieldName)), fieldName)));
+        cnRequireMemberAccess(field->cnVisibility, field->cnOwnerClassId,
+                              context.currentClassId, context.sourceFile,
+                              field->cnSourceFile, "field", fieldName,
+                              source.line, source.column);
+        if (field->len == 0)
+            throw Error(loc(source.line, source.column, "cannot index non-array field: " + fieldName));
+        return field->ty;
+    }
+    if (source.kind == "Member" && source.children.size() == 2 &&
+        source.children[1].kind == "Identifier") {
+        if (cnIsClassQualifier(source.children[0], context)) {
+            const int classId = g_cnClassIndex.at(source.children[0].value);
+            const CnStaticClassFieldInfo* field =
+                cnFindClassStaticField(classId, source.children[1].value);
+            if (!field) {
+                const Ty classType = Ty::ptrTo(classId);
+                const std::string fieldName = cnCanonicalFieldName(
+                    classType, source.children[1].value);
+                if (structFieldOf(classType, fieldName))
+                    throw Error(loc(source.line, source.column,
+                                    "instance field must be accessed through an object: " +
+                                    fieldName));
+                throw Error(loc(source.line, source.column,
+                                "unknown static class field: " + source.children[1].value));
+            }
+            cnRequireMemberAccess(field->visibility, field->ownerClassId,
+                                  context.currentClassId, context.sourceFile,
+                                  field->sourceFile, "field", source.children[1].value,
+                                  source.line, source.column);
+            return field->arrayLength == 0 ? field->type : Ty::Ptr;
+        }
+        const Ty base = cnExpressionType(source.children[0], context);
+        const std::string fieldName = cnCanonicalFieldName(base, source.children[1].value);
+        if (tyIsPtrToStruct(base) &&
+            g_cnClassIndex.count(structOf(base.sid).name) &&
+            cnFindClassStaticField(base.sid, source.children[1].value))
+            throw Error(loc(source.line, source.column,
+                            "static field must be accessed through a class name: " +
+                            source.children[1].value));
+        const StructField* field = structFieldOf(base, fieldName);
+        if (!field)
+            throw Error(loc(source.line, source.column,
+                            noFieldMsg(structOf(structBaseId(base, fieldName)), fieldName)));
+        cnRequireMemberAccess(field->cnVisibility, field->cnOwnerClassId,
+                              context.currentClassId, context.sourceFile,
+                              field->cnSourceFile, "field", fieldName,
+                              source.line, source.column);
+        return field->ty;
+    }
+    if (source.kind == "IntegerLiteral") {
+        Expr::LitSuffix suffix = Expr::LSNone;
+        (void)cnIntegerValue(source.value, suffix, source.line, source.column);
+        if (suffix == Expr::LSU) return Ty::U32;
+        if (suffix == Expr::LSL) return Ty::I64;
+        if (suffix == Expr::LSUL) return Ty::U64;
+        return Ty::I32;
+    }
+    if (source.kind == "FloatLiteral") return Ty::F64;
+    if (source.kind == "BooleanLiteral") return Ty::Bool;
+    if (source.kind == "NullLiteral") return Ty::Ptr;
+    if (source.kind == "StringLiteral") return Ty::string();
+    if (source.kind == "CharacterLiteral") return Ty::I32;
+    if (source.kind == "Unary" && source.children.size() == 1) {
+        if (source.value == "!") return Ty::Bool;
+        if (source.value == "&") return Ty::Ptr;
+        if (source.value == "*") return Ty::I32;
+        return cnExpressionType(source.children[0], context);
+    }
+    if (source.kind == "Binary" && source.children.size() == 2) {
+        if (source.value == "==" || source.value == "!=" || source.value == "<" ||
+            source.value == "<=" || source.value == ">" || source.value == ">=" ||
+            source.value == "&&" || source.value == "||") {
+            if (source.value == "<" || source.value == "<=" ||
+                source.value == ">" || source.value == ">=") {
+                const Ty left = cnExpressionType(source.children[0], context);
+                const Ty right = cnExpressionType(source.children[1], context);
+                if (left.isString || right.isString) {
+                    if (!(left.isString && right.isString))
+                        throw Error(loc(source.line, source.column,
+                                        "string ordering requires two string operands"));
+                    return Ty::Bool;
+                }
+            }
+            return Ty::Bool;
+        }
+        const Ty left = cnExpressionType(source.children[0], context);
+        const Ty right = cnExpressionType(source.children[1], context);
+        if (tyIsFloat(left) || tyIsFloat(right)) {
+            if (left != right)
+                throw Error(loc(source.line, source.column,
+                                "floating-point operands must have the same type"));
+            return left;
+        }
+        if (left.isString || right.isString) {
+            if (source.value == "+" && left.isString && right.isString)
+                return Ty::string();
+            throw Error(loc(source.line, source.column,
+                            "string operations require two strings joined with '+'"));
+        }
+        if (source.value == "<<" || source.value == ">>") return left;
+        return promoteInt(left, right);
+    }
+    if (source.kind == "Call" && !source.children.empty() &&
+        source.children.front().kind == "TypeName") {
+        const auto classIt = g_cnClassIndex.find(source.children.front().value);
+        if (classIt != g_cnClassIndex.end()) {
+            const CnClassMethodInfo* constructor = cnFindClassConstructor(classIt->second);
+            cnRequireConstructorAccess(constructor, classIt->second, &context,
+                                       source.line, source.column);
+            const size_t actual = source.children.size() - 1;
+            const size_t expected = constructor ? constructor->parameterTypes.size() : 0;
+            if (actual != expected)
+                throw Error(loc(source.line, source.column,
+                                "class constructor for '" + source.children.front().value +
+                                "' expects " + std::to_string(expected) +
+                                " argument(s), got " + std::to_string(actual)));
+            return Ty::ptrTo(classIt->second);
+        }
+        if (source.children.size() != 2)
+            throw Error(loc(source.line, source.column, "a type cast requires exactly one argument"));
+        return cnBackendType(source.children.front().value, source.line, source.column);
+    }
+    if (source.kind == "Call" && !source.children.empty() &&
+        source.children.front().kind == "Identifier") {
+        const auto classIt = g_cnClassIndex.find(source.children.front().value);
+        if (classIt != g_cnClassIndex.end() &&
+            cnIsClassQualifier(source.children.front(), context)) {
+            const CnClassMethodInfo* constructor = cnFindClassConstructor(classIt->second);
+            cnRequireConstructorAccess(constructor, classIt->second, &context,
+                                       source.line, source.column);
+            const size_t actual = source.children.size() - 1;
+            const size_t expected = constructor ? constructor->parameterTypes.size() : 0;
+            if (actual != expected)
+                throw Error(loc(source.line, source.column,
+                                "class constructor for '" + source.children.front().value +
+                                "' expects " + std::to_string(expected) +
+                                " argument(s), got " + std::to_string(actual)));
+            return Ty::ptrTo(classIt->second);
+        }
+    }
+    if (source.kind == "Call" && !source.children.empty()) {
+        Ty closureType;
+        if (cnClosureValueType(source.children.front(), context, closureType)) {
+            const auto closure = g_cnClosureTypes.at(closureType.sid);
+            const size_t actual = source.children.size() - 1;
+            if (actual != closure.parameters.size())
+                throw Error(loc(source.line, source.column,
+                                "closure expects " + std::to_string(closure.parameters.size()) +
+                                " argument(s), got " + std::to_string(actual)));
+            return closure.returnType;
+        }
+        FuncSig functionSignature;
+        if (cnFunctionValueSignature(source.children.front(), context, functionSignature)) {
+            const size_t actual = source.children.size() - 1;
+            if (actual != functionSignature.params.size())
+                throw Error(loc(source.line, source.column,
+                                "function pointer expects " +
+                                std::to_string(functionSignature.params.size()) +
+                                " argument(s), got " + std::to_string(actual)));
+            return functionSignature.ret;
+        }
+    }
+    if (source.kind == "Call" && !source.children.empty() &&
+        source.children.front().kind == "Member" &&
+        source.children.front().children.size() == 2 &&
+        source.children.front().children[1].kind == "Identifier") {
+        const auto& member = source.children.front();
+        const bool classQualified = cnIsClassQualifier(member.children[0], context);
+        const Ty receiver = classQualified
+            ? Ty::ptrTo(g_cnClassIndex.at(member.children[0].value))
+            : cnExpressionType(member.children[0], context);
+        if (!classQualified && tyIsStruct(receiver) &&
+            g_cnInterfaceNames.count(structOf(receiver.sid).name)) {
+            const auto methods = g_cnInterfaceMethods.find(structOf(receiver.sid).name);
+            if (methods == g_cnInterfaceMethods.end())
+                throw Error(loc(source.line, source.column, "unknown interface"));
+            const auto method = methods->second.find(member.children[1].value);
+            if (method == methods->second.end())
+                throw Error(loc(source.line, source.column,
+                                "unknown interface method: " + member.children[1].value));
+            cnRequireMethodArity(method->second, source, member.children[1].value);
+            return method->second.returnType;
+        }
+        if (!tyIsPtrToStruct(receiver) || !g_cnClassIndex.count(structOf(receiver.sid).name))
+            throw Error(loc(source.line, source.column, "member calls require a class object"));
+        const CnClassMethodInfo* method =
+            cnFindClassMethod(receiver.sid, member.children[1].value);
+        if (!method)
+            throw Error(loc(source.line, source.column,
+                            "unknown class method: " + member.children[1].value));
+        cnRequireMethodCall(*method, classQualified, &context,
+                            member.children[1].value, source.line, source.column);
+        cnRequireMethodArity(*method, source, member.children[1].value);
+        return method->returnType;
+    }
+    if (source.kind == "Call" && !source.children.empty() &&
+        source.children.front().kind == "Identifier" && context.methodReturns) {
+        if (context.methodSignatures) {
+            const auto signature = context.methodSignatures->find(source.children.front().value);
+            if (signature != context.methodSignatures->end()) {
+                const size_t actual = source.children.size() - 1;
+                if (actual != signature->second.parameterTypes.size())
+                    throw Error(loc(source.line, source.column,
+                                    "method '" + source.children.front().value + "' expects " +
+                                    std::to_string(signature->second.parameterTypes.size()) +
+                                    " argument(s), got " + std::to_string(actual)));
+                return signature->second.returnType;
+            }
+        }
+        const auto found = context.methodReturns->find(source.children.front().value);
+        if (found != context.methodReturns->end()) {
+            cnRequireTopLevelMethodAccess(source.children.front().value, &context,
+                                          source.line, source.column);
+            return found->second;
+        }
+    }
+    throw Error(loc(source.line, source.column,
+                    "cannot determine the type of this expression for match lowering"));
+}
+
+static void cnValidateClosureExpression(const aster_cn::Expression& expression,
+                                        const CnLoweringContext& context) {
+    if (expression.kind == "Unary" && expression.value == "&" &&
+        expression.children.size() == 1 &&
+        expression.children[0].kind == "Identifier") {
+        CnBinding binding;
+        if (context.findLocalBinding(expression.children[0].value, binding) &&
+            binding.isClosureCapture)
+            throw Error(loc(expression.line, expression.column,
+                            "cannot take the address of a closure capture: " +
+                            expression.children[0].value));
+    }
+    if (expression.kind == "Assignment" && expression.children.size() == 2) {
+        (void)cnExpressionType(expression.children[0], context);
+        cnValidateClosureExpression(expression.children[1], context);
+        return;
+    }
+    if (expression.kind == "ArrayLiteral") {
+        for (const auto& child : expression.children)
+            cnValidateClosureExpression(child, context);
+        return;
+    }
+    (void)cnExpressionType(expression, context);
+    const size_t firstArgument = expression.kind == "Call" ? 1 : 0;
+    for (size_t index = firstArgument; index < expression.children.size(); ++index)
+        cnValidateClosureExpression(expression.children[index], context);
+}
+
+static void cnRequireCondition(const aster_cn::Expression& expression,
+                              const CnLoweringContext& context) {
+    const Ty type = cnExpressionType(expression, context);
+    if (type != Ty::Bool && !tyIsInteger(type) && type != Ty::Ptr && !tyIsFloat(type))
+        throw Error(loc(expression.line, expression.column,
+                        "condition must be bool, numeric, or pointer"));
+}
+
+static E cnConditionToAster(const aster_cn::Expression& source,
+                            CnLoweringContext& context,
+                            std::vector<Stmt>& prefix) {
+    const Ty type = cnExpressionType(source, context);
+    E value = cnLowerStatementExpression(source, context.strings, context, prefix);
+    if (type != Ty::Ptr && !tyIsFloat(type)) return value;
+
+    E zero;
+    if (type == Ty::Ptr) {
+        zero.reset(new Expr(Expr::Num, 0));
+    } else {
+        zero.reset(new Expr(Expr::Num));
+        zero->isFloat = true;
+        zero->fv = 0.0;
+        if (type == Ty::F32) {
+            E cast(new Expr(Expr::Cast));
+            cast->ty = Ty::F32;
+            cast->a = std::move(zero);
+            zero = std::move(cast);
+        }
+    }
+    zero->line = source.line;
+    zero->col = source.column;
+
+    E condition(new Expr(Expr::Ne));
+    condition->a = std::move(value);
+    condition->b = std::move(zero);
+    condition->line = source.line;
+    condition->col = source.column;
+    return condition;
+}
+
+static E cnEnumDefaultValue(Ty type, unsigned line, unsigned column) {
+    if (type.k != Ty::Enum) throw Error("internal error: enum default requested for a non-enum type");
+    const EnumDef& definition = enumOf(type.sid);
+    if (definition.consts.empty())
+        throw Error(loc(line, column, "enum " + definition.name + " has no default value"));
+    E value(new Expr(Expr::Num, static_cast<uint64_t>(definition.consts.front().value)));
+    value->enumConst = true;
+    value->line = line;
+    value->col = column;
+    return value;
+}
+
+static E cnDefaultValue(Ty type, unsigned line, unsigned column) {
+    if (type.k == Ty::Enum) return cnEnumDefaultValue(type, line, column);
+    if (type == Ty::Ptr) {
+        E value(new Expr(Expr::Num, 0));
+        value->line = line; value->col = column;
+        return value;
+    }
+    if (type == Ty::Bool) {
+        E value(new Expr(Expr::Num, 0));
+        value->boolLit = true; value->line = line; value->col = column;
+        return value;
+    }
+    if (type == Ty::F32 || type == Ty::F64) {
+        E value(new Expr(Expr::Num));
+        value->isFloat = true; value->fv = 0.0; value->line = line; value->col = column;
+        if (type == Ty::F32) {
+            E cast(new Expr(Expr::Cast));
+            cast->ty = Ty::F32;
+            cast->a = std::move(value);
+            cast->line = line; cast->col = column;
+            return cast;
+        }
+        return value;
+    }
+    if (type == Ty::Void)
+        throw Error(loc(line, column, "void cannot be used as a local variable type"));
+    E value(new Expr(Expr::Num, 0));
+    value->line = line; value->col = column;
+    return value;
+}
+
+static bool cnInterfaceExtendsOrSame(const std::string& derived,
+                                     const std::string& target) {
+    std::set<std::string> visited;
+    std::string current = derived;
+    while (!current.empty() && visited.insert(current).second) {
+        if (current == target) return true;
+        const auto base = g_cnInterfaceBase.find(current);
+        if (base == g_cnInterfaceBase.end()) break;
+        current = base->second;
+    }
+    return false;
+}
+
+static int cnClassImplementationForInterface(int classSid, const std::string& interfaceName) {
+    for (int current = classSid;;) {
+        const auto implemented = g_cnClassInterface.find(current);
+        if (implemented != g_cnClassInterface.end() &&
+            cnInterfaceExtendsOrSame(implemented->second, interfaceName))
+            return current;
+        const auto base = g_cnClassBase.find(current);
+        if (base == g_cnClassBase.end()) break;
+        current = base->second;
+    }
+    return -1;
+}
+
+static uint32_t cnClassFieldArrayLength(const aster_cn::StructFieldDeclaration& field) {
+    if (field.arrayDimensions.empty()) return 0;
+    if (field.arrayDimensions.size() != 1)
+        throw Error(loc(field.line, field.column,
+                        "the current compiler backend supports one-dimensional class array fields"));
+    Expr::LitSuffix suffix = Expr::LSNone;
+    const uint64_t length = cnIntegerValue(field.arrayDimensions.front(), suffix,
+                                           field.line, field.column);
+    if (suffix != Expr::LSNone || length == 0 || length > 1000)
+        throw Error(loc(field.line, field.column,
+                        "array field length must be between 1 and 1000"));
+    return static_cast<uint32_t>(length);
+}
+
+static bool cnFunctionSignaturesMatch(const FuncSig& expected, const FuncSig& actual) {
+    if (expected.ret != actual.ret || expected.params.size() != actual.params.size())
+        return false;
+    for (size_t index = 0; index < expected.params.size(); ++index)
+        if (expected.params[index] != actual.params[index]) return false;
+    return true;
+}
+
+static std::string cnClassFieldInitializerTypeError(
+    const aster_cn::StructFieldDeclaration& field, Ty target, Ty actual) {
+    if (field.sourceLanguage == aster_cn::Language::Zh)
+        return "类字段 '" + field.name + "' 的初值类型不匹配：需要 " +
+            tyNameFull(target) + "，实际为 " + tyNameFull(actual);
+    return "type mismatch initializing class field '" + field.name +
+        "': expected " + tyNameFull(target) + ", got " + tyNameFull(actual);
+}
+
+static void cnValidateClassFieldInitializerValue(
+    const aster_cn::Expression& source,
+    const aster_cn::StructFieldDeclaration& field,
+    Ty target,
+    const CnLoweringContext& context) {
+    if (source.kind == "ArrayLiteral")
+        throw Error(loc(source.line, source.column,
+                        "array literals can only initialize fixed array fields"));
+    const Ty actual = cnExpressionType(source, context);
+    FuncSig expectedFuncSig;
+    if (cnFunctionTypeSignature(field.typeName, expectedFuncSig,
+                                field.line, field.column)) {
+        if (source.kind == "NullLiteral") return;
+        FuncSig actualFuncSig;
+        if (!cnFunctionValueSignature(source, context, actualFuncSig) ||
+            !cnFunctionSignaturesMatch(expectedFuncSig, actualFuncSig))
+            throw Error(loc(source.line, source.column,
+                            field.sourceLanguage == aster_cn::Language::Zh
+                                ? "类字段 '" + field.name + "' 的函数签名不匹配"
+                                : "function signature mismatch initializing class field '" +
+                                    field.name + "'"));
+        return;
+    }
+
+    if (cnIsInterfaceType(target) && actual != target &&
+        source.kind != "NullLiteral") {
+        if (tyIsPtrToStruct(actual) && g_cnClassIndex.count(structOf(actual.sid).name) &&
+            cnClassImplementationForInterface(actual.sid, structOf(target.sid).name) >= 0)
+            return;
+        throw Error(loc(source.line, source.column,
+                        cnClassFieldInitializerTypeError(field, target, actual)));
+    }
+
+    // Run the same target conversion path as an emitted initializer, but keep
+    // generated strings, adapters, and constructor requests out of the output.
+    std::vector<Global> validationGlobals;
+    std::vector<Function> validationFunctions;
+    CnStringPool validationStrings;
+    validationStrings.globals = &validationGlobals;
+    validationStrings.functions = &validationFunctions;
+    CnLoweringContext validationContext = context;
+    validationContext.strings = &validationStrings;
+    std::vector<Stmt> prefix;
+    E lowered = cnLowerStatementExpressionAs(source, target, &validationStrings,
+                                               validationContext, prefix);
+
+    if (cnIsInterfaceType(target)) return;
+    if (actual == target || cnClassPointerCanUpcast(target, actual) ||
+        tyAssignable(target, actual, *lowered))
+        return;
+    throw Error(loc(source.line, source.column,
+                    cnClassFieldInitializerTypeError(field, target, actual)));
+}
+
+static bool cnArrayArgumentInfo(const aster_cn::Expression& source,
+                                const CnLoweringContext& context,
+                                Ty& elementType, uint32_t& length) {
+    if (source.kind == "Identifier") {
+        CnBinding binding;
+        bool found = context.findLocalBinding(source.value, binding);
+        if (!found && context.globals) {
+            const auto global = context.globals->find(source.value);
+            if (global != context.globals->end()) {
+                binding = global->second;
+                found = true;
+            }
+        }
+        if (found && binding.isArray) {
+            elementType = binding.type;
+            length = binding.arrayLength;
+            return true;
+        }
+        return false;
+    }
+    if (source.kind != "Member" || source.children.size() != 2 ||
+        source.children[1].kind != "Identifier")
+        return false;
+    const std::string& memberName = source.children[1].value;
+    if (cnIsClassQualifier(source.children[0], context)) {
+        const int classId = g_cnClassIndex.at(source.children[0].value);
+        const CnStaticClassFieldInfo* field =
+            cnFindClassStaticField(classId, memberName);
+        if (!field || field->arrayLength == 0) return false;
+        elementType = field->type;
+        length = field->arrayLength;
+        return true;
+    }
+    const Ty base = cnExpressionType(source.children[0], context);
+    const std::string fieldName = cnCanonicalFieldName(base, memberName);
+    const StructField* field = structFieldOf(base, fieldName);
+    if (!field || field->len == 0) return false;
+    elementType = field->ty;
+    length = field->len;
+    return true;
+}
+
+static E cnExpressionToAsterAs(const aster_cn::Expression& source, Ty target,
+                               CnStringPool* strings, const CnLoweringContext* context,
+                               const std::vector<uint32_t>* expectedArrayDimensions) {
+    const Ty actual = cnExpressionType(source, *context);
+    Ty arrayElementType = Ty::Void;
+    uint32_t arrayLength = 0;
+    if (tyIsPtrToElem(target) && cnArrayArgumentInfo(
+            source, *context, arrayElementType, arrayLength)) {
+        if (arrayElementType != ptrElemType(target))
+            throw Error(loc(source.line, source.column,
+                            "array argument element type mismatch: expected " +
+                            tyNameFull(ptrElemType(target)) + ", got " +
+                            tyNameFull(arrayElementType)));
+        if (expectedArrayDimensions && !expectedArrayDimensions->empty() &&
+            (expectedArrayDimensions->size() != 1 ||
+             arrayLength != expectedArrayDimensions->front()))
+            throw Error(loc(source.line, source.column,
+                            "array argument length mismatch: expected " +
+                            std::to_string(expectedArrayDimensions->front()) +
+                            ", got " + std::to_string(arrayLength)));
+    }
+    if (target == actual) return cnExpressionToAster(source, strings, context);
+    if (cnIsInterfaceType(target)) {
+        E value(new Expr(Expr::StructLit));
+        value->name = structOf(target.sid).name;
+        if (source.kind == "NullLiteral") {
+            value->args.emplace_back(new Expr(Expr::Num, 0));
+            value->args.emplace_back(new Expr(Expr::Num, 0));
+            return value;
+        }
+        if (cnIsInterfaceType(actual)) {
+            if (!cnInterfaceExtendsOrSame(structOf(actual.sid).name,
+                                          structOf(target.sid).name))
+                throw Error(loc(source.line, source.column,
+                                "cannot convert interface " + structOf(actual.sid).name +
+                                " to interface " + structOf(target.sid).name));
+            if (source.kind == "Call") {
+                if (!strings || !strings->functions)
+                    throw Error(loc(source.line, source.column,
+                                    "interface upcast call has no lowering context"));
+                // Aggregate calls return their two words in registers, so the
+                // parent view must be built in a frame before selecting fields.
+                const std::pair<int, int> key{actual.sid, target.sid};
+                auto upcast = strings->interfaceUpcasts.find(key);
+                if (upcast == strings->interfaceUpcasts.end()) {
+                    std::string functionName;
+                    do {
+                        functionName = "__aster_cn_interface_upcast_" +
+                            std::to_string(strings->nextInterfaceUpcast++);
+                    } while (g_cnReservedSourceNames.count(functionName));
+                    g_cnReservedSourceNames.insert(functionName);
+
+                    Function function;
+                    function.name = functionName;
+                    function.line = source.line;
+                    function.col = source.column;
+                    function.retType = target;
+                    const std::string parameterName = "__aster_cn_interface_value";
+                    function.params.push_back(parameterName);
+                    function.paramTypes.push_back(actual);
+                    function.paramPtr.push_back(false);
+                    function.paramBool.push_back(false);
+                    function.paramDims.emplace_back();
+                    function.paramFuncSig.emplace_back();
+                    function.paramIsFunc.push_back(false);
+
+                    E converted(new Expr(Expr::StructLit));
+                    converted->name = structOf(target.sid).name;
+                    for (const char* fieldName : {"__aster_cn_object", "__aster_cn_vtable"}) {
+                        E field(new Expr(Expr::Field));
+                        field->a = cnNamedValue(parameterName, source.line, source.column);
+                        field->name = fieldName;
+                        field->line = source.line;
+                        field->col = source.column;
+                        converted->args.push_back(std::move(field));
+                    }
+                    Stmt returned(Stmt::Return);
+                    returned.line = source.line;
+                    returned.col = source.column;
+                    returned.expr = std::move(converted);
+                    function.body.push_back(std::move(returned));
+                    strings->functions->push_back(std::move(function));
+
+                    CnFunctionSignature signature;
+                    signature.returnType = target;
+                    signature.parameterTypes.push_back(actual);
+                    signature.parameterDims.emplace_back();
+                    signature.parameterFuncSigs.emplace_back();
+                    signature.parameterIsFunc.push_back(false);
+                    g_cnFunctionSignatures.emplace(functionName, std::move(signature));
+                    upcast = strings->interfaceUpcasts.emplace(key, functionName).first;
+                }
+                E call(new Expr(Expr::Call));
+                call->name = upcast->second;
+                call->line = source.line;
+                call->col = source.column;
+                call->args.push_back(cnExpressionToAster(source, strings, context));
+                return call;
+            }
+            E object(new Expr(Expr::Field));
+            object->a = cnExpressionToAster(source, strings, context);
+            object->name = "__aster_cn_object";
+            E table(new Expr(Expr::Field));
+            table->a = cnExpressionToAster(source, strings, context);
+            table->name = "__aster_cn_vtable";
+            value->args.push_back(std::move(object));
+            value->args.push_back(std::move(table));
+            return value;
+        }
+        if (!tyIsPtrToStruct(actual) || !g_cnClassIndex.count(structOf(actual.sid).name))
+            throw Error(loc(source.line, source.column,
+                            "cannot convert " + tyNameFull(actual) + " to interface " +
+                            structOf(target.sid).name));
+        const int implementation = cnClassImplementationForInterface(
+            actual.sid, structOf(target.sid).name);
+        if (implementation < 0)
+            throw Error(loc(source.line, source.column,
+                            "class " + structOf(actual.sid).name + " does not implement interface " +
+                            structOf(target.sid).name));
+        value->args.push_back(cnExpressionToAster(source, strings, context));
+        E table(new Expr(Expr::AddrOf));
+        table->a.reset(new Expr(Expr::Var));
+        table->a->name = g_cnInterfaceTableGlobals.at({implementation, structOf(target.sid).name});
+        value->args.push_back(std::move(table));
+        return value;
+    }
+    return cnExpressionToAster(source, strings, context);
+}
+
+static bool cnExpressionNeedsInterfaceConversion(const aster_cn::Expression& source,
+                                                 Ty target,
+                                                 const CnLoweringContext& context) {
+    const Ty actual = cnExpressionType(source, context);
+    if (cnIsInterfaceType(target) && actual != target) {
+        if (source.kind == "NullLiteral") return true;
+        if (cnIsInterfaceType(actual) &&
+            cnInterfaceExtendsOrSame(structOf(actual.sid).name, structOf(target.sid).name))
+            return true;
+        if (tyIsPtrToStruct(actual) && g_cnClassIndex.count(structOf(actual.sid).name))
+            return true;
+    }
+    if (source.kind != "StructLiteral" || !tyIsStruct(target) || actual.sid != target.sid)
+        return false;
+    const StructDef& definition = structOf(target.sid);
+    if (definition.isUnion || source.children.size() != definition.fields.size()) return false;
+    for (size_t index = 0; index < source.children.size(); ++index)
+        if (cnExpressionNeedsInterfaceConversion(source.children[index],
+                                                 definition.fields[index].ty, context))
+            return true;
+    return false;
+}
+
+static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Statement>& source,
+                                            CnLoweringContext& context);
+
+static E cnCast(E value, Ty target, unsigned line, unsigned column) {
+    E cast(new Expr(Expr::Cast));
+    cast->ty = target;
+    cast->a = std::move(value);
+    cast->line = line;
+    cast->col = column;
+    return cast;
+}
+
+static E cnNamedValue(const std::string& name, unsigned line, unsigned column) {
+    E value(new Expr(Expr::Var));
+    value->name = name;
+    value->line = line;
+    value->col = column;
+    return value;
+}
+
+static E cnStructFieldPath(const std::string& root, const std::vector<std::string>& path,
+                           unsigned line, unsigned column,
+                           const uint32_t* rootIndex = nullptr) {
+    E value;
+    if (rootIndex) {
+        value.reset(new Expr(Expr::Index));
+        value->name = root;
+        value->a.reset(new Expr(Expr::Num, *rootIndex));
+        value->line = line;
+        value->col = column;
+    } else {
+        value = cnNamedValue(root, line, column);
+    }
+    for (const auto& fieldName : path) {
+        E field(new Expr(Expr::Field));
+        field->a = std::move(value);
+        field->name = fieldName;
+        field->line = line;
+        field->col = column;
+        value = std::move(field);
+    }
+    return value;
+}
+
+static E cnStructFieldArrayElement(const std::string& root,
+                                   const std::vector<std::string>& path, uint32_t index,
+                                   unsigned line, unsigned column,
+                                   const uint32_t* rootIndex = nullptr) {
+    E element(new Expr(Expr::Index));
+    element->a = cnStructFieldPath(root, path, line, column, rootIndex);
+    element->b.reset(new Expr(Expr::Num, index));
+    element->line = line;
+    element->col = column;
+    return element;
+}
+
+static void cnAppendStructStringDefaults(std::vector<Stmt>& output, const std::string& root,
+                                         Ty type, std::vector<std::string>& path,
+                                         CnStringPool* strings, unsigned line, unsigned column,
+                                         const uint32_t* rootIndex = nullptr) {
+    if (!tyIsStruct(type)) return;
+    for (const auto& field : structOf(type.sid).fields) {
+        path.push_back(field.name);
+        if (field.isString && field.len == 0) {
+            Stmt assignment(Stmt::FieldAssign);
+            assignment.line = line;
+            assignment.col = column;
+            assignment.idx = cnStructFieldPath(root, path, line, column, rootIndex);
+            assignment.expr = cnEmptyStringValue(strings, line, column);
+            output.push_back(std::move(assignment));
+        } else if (field.isString && field.len != 0) {
+            for (uint32_t index = 0; index < field.len; ++index) {
+                Stmt assignment(Stmt::FieldAssign);
+                assignment.line = line;
+                assignment.col = column;
+                assignment.idx = cnStructFieldArrayElement(root, path, index, line, column,
+                                                          rootIndex);
+                assignment.expr = cnEmptyStringValue(strings, line, column);
+                output.push_back(std::move(assignment));
+            }
+        } else if (tyIsStruct(field.ty)) {
+            cnAppendStructStringDefaults(output, root, field.ty, path, strings,
+                                         line, column, rootIndex);
+        }
+        path.pop_back();
+    }
+}
+
+static void cnAppendStructEnumDefaults(std::vector<Stmt>& output, const std::string& root,
+                                       Ty type, std::vector<std::string>& path,
+                                       unsigned line, unsigned column,
+                                       const uint32_t* rootIndex = nullptr) {
+    if (!tyIsStruct(type)) return;
+    for (const auto& field : structOf(type.sid).fields) {
+        path.push_back(field.name);
+        if (field.ty.k == Ty::Enum) {
+            for (uint32_t index = 0; index < std::max<uint32_t>(field.len, 1); ++index) {
+                Stmt assignment(Stmt::FieldAssign);
+                assignment.line = line;
+                assignment.col = column;
+                assignment.idx = field.len == 0
+                    ? cnStructFieldPath(root, path, line, column, rootIndex)
+                    : cnStructFieldArrayElement(root, path, index, line, column, rootIndex);
+                assignment.expr = cnEnumDefaultValue(field.ty, line, column);
+                output.push_back(std::move(assignment));
+            }
+        } else if (tyIsStruct(field.ty)) {
+            cnAppendStructEnumDefaults(output, root, field.ty, path, line, column, rootIndex);
+        }
+        path.pop_back();
+    }
+}
+
+struct CnObjectPathPart {
+    bool index = false;
+    std::string field;
+    uint32_t element = 0;
+};
+
+static E cnObjectPathExpr(const std::string& root,
+                          const std::vector<CnObjectPathPart>& path,
+                          unsigned line, unsigned column) {
+    E value = cnNamedValue(root, line, column);
+    for (const auto& part : path) {
+        if (part.index) {
+            E element(new Expr(Expr::Index));
+            element->a = std::move(value);
+            element->b.reset(new Expr(Expr::Num, part.element));
+            element->line = line;
+            element->col = column;
+            value = std::move(element);
+        } else {
+            E field(new Expr(Expr::Field));
+            field->a = std::move(value);
+            field->name = part.field;
+            field->line = line;
+            field->col = column;
+            value = std::move(field);
+        }
+    }
+    return value;
+}
+
+static void cnAppendClassDefaultStores(std::vector<Stmt>& output, const std::string& root,
+                                       Ty type, std::vector<CnObjectPathPart>& path,
+                                       CnStringPool* strings, unsigned line, unsigned column) {
+    if (!tyIsStruct(type)) return;
+    for (const auto& field : structOf(type.sid).fields) {
+        path.push_back({false, field.name, 0});
+        const bool stringField = field.isString || field.ty.isString;
+        if (tyIsStruct(field.ty)) {
+            if (field.len == 0) {
+                cnAppendClassDefaultStores(output, root, field.ty, path, strings, line, column);
+            } else {
+                for (uint32_t index = 0; index < field.len; ++index) {
+                    path.push_back({true, {}, index});
+                    cnAppendClassDefaultStores(output, root, field.ty, path, strings, line, column);
+                    path.pop_back();
+                }
+            }
+        } else {
+            for (uint32_t index = 0; index < std::max<uint32_t>(field.len, 1); ++index) {
+                if (field.len != 0) path.push_back({true, {}, index});
+                Stmt assignment(Stmt::FieldAssign);
+                assignment.line = line;
+                assignment.col = column;
+                assignment.idx = cnObjectPathExpr(root, path, line, column);
+                assignment.expr = stringField
+                    ? cnEmptyStringValue(strings, line, column)
+                    : field.ty.k == Ty::Enum
+                        ? cnEnumDefaultValue(field.ty, line, column)
+                        : cnDefaultValue(field.ty, line, column);
+                output.push_back(std::move(assignment));
+                if (field.len != 0) path.pop_back();
+            }
+        }
+        path.pop_back();
+    }
+}
+
+static void cnRegisterEnums(const aster_cn::Program& program) {
+    std::set<std::string> methodNames;
+    std::set<std::string> structureNames;
+    for (const auto& method : program.methods) methodNames.insert(method.name);
+    for (const auto& structure : program.structures) structureNames.insert(structure.name);
+
+    for (const auto& source : program.enums) {
+        if (source.name == "字段信息" || g_enumIndex.count(source.name) ||
+            g_structIndex.count(source.name) || structureNames.count(source.name))
+            throw Error(loc(source.line, source.column,
+                            "duplicate or conflicting enum declaration: " + source.name));
+        if (methodNames.count(source.name))
+            throw Error(loc(source.line, source.column,
+                            "enum name conflicts with a method: " + source.name));
+
+        const int sid = static_cast<int>(g_enums.size());
+        g_enums.emplace_back();
+        g_enumIndex[source.name] = sid;
+        EnumDef definition;
+        definition.name = source.name;
+        int64_t next = 0;
+        for (const auto& member : source.members) {
+            if (g_enumConsts.count(member.name) || methodNames.count(member.name) ||
+                structureNames.count(member.name) || g_enumIndex.count(member.name))
+                throw Error(loc(member.line, member.column,
+                                "duplicate or conflicting enumerator: " + member.name));
+            int64_t value = next;
+            if (member.hasExpression) {
+                E expression = cnExpressionToAster(member.expression);
+                if (!constantInteger(*expression, value))
+                    throw Error(loc(member.line, member.column,
+                                    "enumerator initializer must be an integer constant: " + member.name));
+                if (!enumValueFits(value))
+                    throw Error(loc(member.line, member.column,
+                                    "enumerator value out of i32 range: " + member.name));
+            } else if (!enumValueFits(value)) {
+                throw Error(loc(member.line, member.column,
+                                "enumerator value out of i32 range: " + member.name));
+            }
+            definition.consts.push_back({member.name, value});
+            g_enumConsts[member.name] = value;
+            next = value + 1;
+        }
+        if (definition.consts.empty())
+            throw Error(loc(source.line, source.column,
+                            "enum " + source.name + " must declare at least one member"));
+        g_enums[static_cast<size_t>(sid)] = std::move(definition);
+    }
+}
+
+static void cnRegisterStructures(const aster_cn::Program& program) {
+    if (g_structIndex.count("字段信息"))
+        throw Error("built-in type conflicts with a structure declaration: 字段信息");
+    StructDef fieldInfo;
+    fieldInfo.name = "字段信息";
+    fieldInfo.fields.push_back({"名称", Ty::string(), 0, 0, {}, {}, false, true});
+    fieldInfo.fields.push_back({"值", Ty::Ptr, 0, 0, {}, {}, false, false});
+    fieldInfo.fields.push_back({"类型", Ty::I32, 0, 0, {}, {}, false, false});
+    const int fieldInfoId = static_cast<int>(g_structs.size());
+    g_structs.push_back(std::move(fieldInfo));
+    g_structIndex["字段信息"] = fieldInfoId;
+    Token fieldInfoToken{TK::Ident, "字段信息", 1, 1};
+    layoutStruct(g_structs.back(), fieldInfoToken);
+    StructField fieldNameAlias{};
+    fieldNameAlias.name = "name";
+    fieldNameAlias.ty = Ty::string();
+    fieldNameAlias.isString = true;
+    fieldNameAlias.offset = g_structs.back().fields[0].offset;
+    g_structs.back().fields.push_back(std::move(fieldNameAlias));
+    StructField fieldValueAlias{};
+    fieldValueAlias.name = "value";
+    fieldValueAlias.ty = Ty::Ptr;
+    fieldValueAlias.offset = g_structs.back().fields[1].offset;
+    g_structs.back().fields.push_back(std::move(fieldValueAlias));
+
+    if (g_structIndex.count("string_view"))
+        throw Error("built-in type conflicts with a structure declaration: string_view");
+    StructDef stringView;
+    stringView.name = "string_view";
+    stringView.fields.push_back({"数据", Ty::Ptr, 0, 0, {}, {}, false, false});
+    stringView.fields.push_back({"长度", Ty::I64, 0, 0, {}, {}, false, false});
+    const int stringViewId = static_cast<int>(g_structs.size());
+    Token stringViewToken{TK::Ident, "string_view", 1, 1};
+    layoutStruct(stringView, stringViewToken);
+    g_structs.push_back(std::move(stringView));
+    g_structIndex["string_view"] = stringViewId;
+    // Keep the built-in view layout bilingual.  The Chinese field names are
+    // the original surface spelling; English library entry points use these
+    // aliases at the same offsets without creating a second runtime type.
+    StructField stringViewDataAlias{};
+    stringViewDataAlias.name = "data";
+    stringViewDataAlias.ty = Ty::Ptr;
+    stringViewDataAlias.offset = g_structs.back().fields[0].offset;
+    g_structs.back().fields.push_back(std::move(stringViewDataAlias));
+    StructField stringViewLengthAlias{};
+    stringViewLengthAlias.name = "len";
+    stringViewLengthAlias.ty = Ty::I64;
+    stringViewLengthAlias.offset = g_structs.back().fields[1].offset;
+    g_structs.back().fields.push_back(std::move(stringViewLengthAlias));
+
+    std::set<std::string> methodNames;
+    for (const auto& method : program.methods) methodNames.insert(method.name);
+    if (methodNames.count("string_view"))
+        throw Error("method name conflicts with a built-in type: string_view");
+    for (const auto& source : program.interfaceClasses) {
+        if (g_structIndex.count(source.name) || g_enumIndex.count(source.name) ||
+            g_cnInterfaceIndex.count(source.name) || methodNames.count(source.name))
+            throw Error(loc(source.line, source.column,
+                            "duplicate or conflicting interface class declaration: " + source.name));
+        const int sid = static_cast<int>(g_structs.size());
+        StructDef definition;
+        definition.name = source.name;
+        StructField objectField{};
+        objectField.name = "__aster_cn_object";
+        objectField.ty = Ty::Ptr;
+        definition.fields.push_back(std::move(objectField));
+        StructField vtableField{};
+        vtableField.name = "__aster_cn_vtable";
+        vtableField.ty = Ty::Ptr;
+        definition.fields.push_back(std::move(vtableField));
+        Token id{TK::Ident, source.name, source.line, source.column};
+        layoutStruct(definition, id);
+        g_structs.push_back(std::move(definition));
+        g_structIndex[source.name] = sid;
+        g_cnInterfaceIndex[source.name] = sid;
+    }
+    for (const auto& source : program.classes) {
+        if (g_structIndex.count(source.name) || g_enumIndex.count(source.name) ||
+            g_cnClassIndex.count(source.name) ||
+            std::any_of(program.interfaceClasses.begin(), program.interfaceClasses.end(),
+                        [&](const aster_cn::InterfaceClassDeclaration& interfaceClass) {
+                            return interfaceClass.name == source.name;
+                        }))
+            throw Error(loc(source.line, source.column,
+                            "duplicate or conflicting class declaration: " + source.name));
+        if (methodNames.count(source.name))
+            throw Error(loc(source.line, source.column,
+                            "class name conflicts with a method: " + source.name));
+        const int sid = static_cast<int>(g_structs.size());
+        g_structs.emplace_back();
+        g_structs.back().name = source.name;
+        g_structIndex[source.name] = sid;
+        g_cnClassIndex[source.name] = sid;
+    }
+    for (const auto& source : program.structures) {
+        if (g_structIndex.count(source.name))
+            throw Error(loc(source.line, source.column,
+                            "duplicate structure declaration: " + source.name));
+        if (methodNames.count(source.name))
+            throw Error(loc(source.line, source.column,
+                            "structure name conflicts with a method: " + source.name));
+
+        StructDef definition;
+        definition.name = source.name;
+        const int sid = static_cast<int>(g_structs.size());
+        g_structs.emplace_back();
+        g_structIndex[source.name] = sid;
+        std::set<std::string> fieldNames;
+        for (const auto& field : source.fields) {
+            if (!fieldNames.insert(field.name).second)
+                throw Error(loc(field.line, field.column,
+                                "duplicate field in structure " + source.name + ": " + field.name));
+            if (field.arrayDimensions.size() > 1)
+                throw Error(loc(field.line, field.column,
+                                "the current compiler backend supports one-dimensional structure array fields"));
+            const Ty fieldType = cnBackendType(field.typeName, field.line, field.column);
+            FuncSig fieldSignature;
+            const bool fieldIsFunc = cnFunctionTypeSignature(field.typeName, fieldSignature,
+                                                             field.line, field.column);
+            if (fieldType == Ty::Void)
+                throw Error(loc(field.line, field.column,
+                                "void cannot be used as a structure field type"));
+            if (tyIsStruct(fieldType) && fieldType.sid == sid)
+                throw Error(loc(field.line, field.column,
+                                "structure " + source.name + " cannot contain itself"));
+            StructField nativeField{};
+            nativeField.name = field.name;
+            nativeField.ty = fieldType;
+            nativeField.isFunc = fieldIsFunc;
+            nativeField.funcSig = fieldSignature;
+            nativeField.isString = field.typeName == "string";
+            nativeField.cnVisibility = cnVisibilityCode(field.visibility, field.line, field.column);
+            nativeField.cnOwnerClassId = sid;
+            nativeField.cnSourceFile = field.sourceFile;
+            if (!field.arrayDimensions.empty()) {
+                Expr::LitSuffix suffix = Expr::LSNone;
+                const uint64_t length = cnIntegerValue(field.arrayDimensions.front(), suffix,
+                                                       field.line, field.column);
+                if (suffix != Expr::LSNone || length == 0 || length > 1000)
+                    throw Error(loc(field.line, field.column,
+                                    "array field length must be between 1 and 1000"));
+                nativeField.len = static_cast<uint32_t>(length);
+                nativeField.dims.push_back(nativeField.len);
+            }
+            definition.fields.push_back(std::move(nativeField));
+        }
+        Token id{TK::Ident, source.name, source.line, source.column};
+        layoutStruct(definition, id);
+        g_structs[static_cast<size_t>(sid)] = std::move(definition);
+    }
+    g_cnClassBase.clear();
+    g_cnClassStaticFields.clear();
+    g_cnClassInterface.clear();
+    std::set<int> completedClassLayouts;
+    for (const auto& source : program.classes) {
+        const int sid = g_cnClassIndex.at(source.name);
+        StructDef definition;
+        definition.name = source.name;
+        std::set<std::string> fieldNames;
+        bool hasClassBase = false;
+        if (!source.baseName.empty()) {
+            const auto base = g_cnClassIndex.find(source.baseName);
+            if (base != g_cnClassIndex.end()) {
+                if (base->second == sid)
+                    throw Error(loc(source.line, source.column,
+                                    "a class cannot inherit from itself: " + source.name));
+                if (!completedClassLayouts.count(base->second))
+                    throw Error(loc(source.line, source.column,
+                                    "base class must be declared before its subclass: " + source.baseName));
+                g_cnClassBase[sid] = base->second;
+                hasClassBase = true;
+                definition.fields = structOf(base->second).fields;
+                for (const auto& inheritedField : definition.fields)
+                    fieldNames.insert(inheritedField.name);
+            } else if (g_cnInterfaceNames.count(source.baseName)) {
+                const auto interfaceDeclaration = std::find_if(
+                    program.interfaceClasses.begin(), program.interfaceClasses.end(),
+                    [&](const aster_cn::InterfaceClassDeclaration& candidate) {
+                        return candidate.name == source.baseName;
+                    });
+                if (interfaceDeclaration == program.interfaceClasses.end() ||
+                    (interfaceDeclaration->sourceFile == source.sourceFile &&
+                     interfaceDeclaration->line >= source.line))
+                    throw Error(loc(source.line, source.column,
+                                    "interface must be declared before the implementing class: " + source.baseName));
+                g_cnClassInterface[sid] = source.baseName;
+            } else {
+                throw Error(loc(source.line, source.column,
+                                "class base must name a previously declared class or interface: " + source.baseName));
+            }
+        }
+        if (!hasClassBase) {
+            StructField vptr{};
+            vptr.name = "__aster_cn_vptr";
+            vptr.ty = Ty::Ptr;
+            vptr.cnOwnerClassId = sid;
+            vptr.cnSourceFile = source.sourceFile;
+            definition.fields.push_back(std::move(vptr));
+            fieldNames.insert("__aster_cn_vptr");
+        }
+        for (const auto& field : source.fields) {
+            const bool inheritedStaticName = g_cnClassBase.count(sid) &&
+                cnFindClassStaticField(g_cnClassBase.at(sid), field.name);
+            if (!fieldNames.insert(field.name).second || inheritedStaticName)
+                throw Error(loc(field.line, field.column,
+                                "duplicate field in class " + source.name + ": " + field.name));
+            const Ty fieldType = cnBackendType(field.typeName, field.line, field.column);
+            FuncSig fieldSignature;
+            const bool fieldIsFunc = cnFunctionTypeSignature(field.typeName, fieldSignature,
+                                                             field.line, field.column);
+            if (fieldType == Ty::Void || cnIsStringView(fieldType))
+                throw Error(loc(field.line, field.column,
+                                "field type is not supported in class " + source.name));
+            if (field.isStatic) {
+                uint32_t arrayLength = 0;
+                if (!field.arrayDimensions.empty()) {
+                    arrayLength = cnClassFieldArrayLength(field);
+                }
+                CnStaticClassFieldInfo staticField;
+                staticField.type = fieldType;
+                staticField.arrayLength = arrayLength;
+                staticField.isFunc = fieldIsFunc;
+                staticField.funcSig = fieldSignature;
+                staticField.ownerClassId = sid;
+                staticField.visibility = cnVisibilityCode(field.visibility,
+                                                          field.line, field.column);
+                staticField.isString = fieldType.isString;
+                staticField.globalName = cnClassStaticFieldName(sid, field.name);
+                staticField.sourceFile = field.sourceFile;
+                g_cnClassStaticFields[sid].emplace(field.name, std::move(staticField));
+                continue;
+            }
+            StructField nativeField{};
+            nativeField.name = field.name;
+            nativeField.ty = fieldType;
+            nativeField.isFunc = fieldIsFunc;
+            nativeField.funcSig = fieldSignature;
+            nativeField.isString = field.typeName == "string";
+            nativeField.cnVisibility = cnVisibilityCode(field.visibility, field.line, field.column);
+            nativeField.cnOwnerClassId = sid;
+            nativeField.cnSourceFile = field.sourceFile;
+            if (!field.arrayDimensions.empty()) {
+                nativeField.len = cnClassFieldArrayLength(field);
+                nativeField.dims.push_back(nativeField.len);
+            }
+            definition.fields.push_back(std::move(nativeField));
+        }
+        if (definition.fields.empty()) {
+            definition.size = 1;
+            definition.align = 1;
+        } else {
+            Token id{TK::Ident, source.name, source.line, source.column};
+            layoutStruct(definition, id);
+        }
+        g_structs[static_cast<size_t>(sid)] = std::move(definition);
+        completedClassLayouts.insert(sid);
+    }
+}
+
+static int32_t cnFieldTypeKind(const StructField& field) {
+    if (field.isString) return 3;
+    switch (field.ty.k) {
+        case Ty::I8: return 15;
+        case Ty::I16: return 16;
+        case Ty::I32: return 1;
+        case Ty::I64: return 2;
+        case Ty::Bool: return 4;
+        case Ty::Ptr: return 5;
+        case Ty::U8: return 6;
+        case Ty::U16: return 7;
+        case Ty::U32: return 8;
+        case Ty::U64: return 9;
+        case Ty::Char: return 10;
+        case Ty::F32: return 11;
+        case Ty::F64: return 12;
+        case Ty::Struct: return 13;
+        case Ty::Enum: return 14;
+        case Ty::Void: break;
+    }
+    throw Error("void fields cannot be enumerated");
+}
+
+static E cnEnumMetadataValue(const std::string& metadata, const std::string& base,
+                             uint32_t component, unsigned line, unsigned column) {
+    E index = cnNamedValue(base, line, column);
+    if (component != 0) {
+        E add(new Expr(Expr::Add));
+        add->a = std::move(index);
+        add->b.reset(new Expr(Expr::Num, component));
+        add->line = line;
+        add->col = column;
+        index = std::move(add);
+    }
+    E value(new Expr(Expr::Index));
+    value->name = metadata;
+    value->a = std::move(index);
+    value->line = line;
+    value->col = column;
+    return value;
+}
+
+static E cnEnumFieldInfoTableLiteral(const std::string& object,
+                                     const std::string& names,
+                                     const std::string& metadata,
+                                     const std::string& metadataBase,
+                                     unsigned line, unsigned column) {
+    const auto makeName = [&]() {
+        E nameBase(new Expr(Expr::String));
+        nameBase->name = names;
+        nameBase->line = line;
+        nameBase->col = column;
+        E nameAdd(new Expr(Expr::Add));
+        nameAdd->a = std::move(nameBase);
+        nameAdd->b = cnEnumMetadataValue(metadata, metadataBase, 0, line, column);
+        nameAdd->line = line;
+        nameAdd->col = column;
+        return cnCast(std::move(nameAdd), Ty::string(), line, column);
+    };
+    const auto makeAddress = [&]() {
+        E addressAdd(new Expr(Expr::Add));
+        addressAdd->a = cnCast(cnNamedValue(object, line, column), Ty::Ptr, line, column);
+        addressAdd->b = cnEnumMetadataValue(metadata, metadataBase, 1, line, column);
+        addressAdd->line = line;
+        addressAdd->col = column;
+        return cnCast(std::move(addressAdd), Ty::Ptr, line, column);
+    };
+    E kind = cnEnumMetadataValue(metadata, metadataBase, 2, line, column);
+
+    E literal(new Expr(Expr::StructLit));
+    literal->name = "字段信息";
+    literal->line = line;
+    literal->col = column;
+    literal->args.push_back(makeName());
+    literal->args.push_back(makeAddress());
+    literal->args.push_back(std::move(kind));
+    literal->args.push_back(makeName());
+    literal->args.push_back(makeAddress());
+    return literal;
+}
+
+static Stmt cnEnumLoopToAster(const aster_cn::Statement& source,
+                              CnLoweringContext& context) {
+    if (!source.hasExpression)
+        throw Error(loc(source.line, source.column, "enumloop requires an object expression"));
+    const Ty objectType = cnExpressionType(source.expression, context);
+    const bool classObject = tyIsPtrToStruct(objectType) &&
+        g_cnClassIndex.count(structOf(objectType.sid).name) != 0;
+    if (!tyIsStruct(objectType) && !classObject)
+        throw Error(loc(source.expression.line, source.expression.column,
+                        "enumloop object must be a structure variable"));
+    if (classObject && source.expression.kind == "TypeName")
+        throw Error(loc(source.expression.line, source.expression.column,
+                        "enumloop requires a class object value, not a class name"));
+    std::vector<Stmt> objectPrefix;
+    E objectValue = cnLowerStatementExpression(source.expression, context.strings,
+                                                context, objectPrefix);
+    if (!classObject && !isLValue(*objectValue))
+        throw Error(loc(source.expression.line, source.expression.column,
+                        "enumloop currently requires a structure lvalue"));
+    const StructDef& definition = structOf(objectType.sid);
+    std::vector<const StructField*> fields;
+    for (const auto& field : definition.fields) {
+        if (definition.name == "字段信息" &&
+            (field.name == "name" || field.name == "value")) continue;
+        if (classObject && field.name == "__aster_cn_vptr") continue;
+        if (classObject && field.cnVisibility != 0) continue;
+        fields.push_back(&field);
+    }
+    static uint64_t nextEnumId = 0;
+    const uint64_t enumId = nextEnumId++;
+    const std::string hiddenId = "__aster_cn_enum_" + std::to_string(enumId);
+    const std::string objectName = hiddenId + "_object";
+    const std::string indexName = hiddenId + "_index";
+    const std::string metadataBase = hiddenId + "_metadata_base";
+    std::string namesGlobal;
+    std::string metadataGlobal;
+    const auto cachedTable = context.strings->enumTables.find(objectType.sid);
+    if (cachedTable != context.strings->enumTables.end()) {
+        namesGlobal = cachedTable->second.first;
+        metadataGlobal = cachedTable->second.second;
+    } else {
+        const auto nameTaken = [&](const std::string& name) {
+            if (context.globals && context.globals->count(name)) return true;
+            if (context.methodReturns && context.methodReturns->count(name)) return true;
+            if (g_enumConsts.count(name)) return true;
+            return std::any_of(context.strings->globals->begin(), context.strings->globals->end(),
+                [&](const Global& global) { return global.name == name; });
+        };
+        do {
+            const std::string tableId = "__aster_string_cn_enum_table_" +
+                std::to_string(context.strings->nextEnumTable++);
+            namesGlobal = tableId + "_names";
+            metadataGlobal = tableId + "_metadata";
+        } while (nameTaken(namesGlobal) || nameTaken(metadataGlobal));
+        Global names;
+        names.name = namesGlobal;
+        names.isString = true;
+        names.align = 1;
+        Global metadata;
+        metadata.name = metadataGlobal;
+        metadata.ty = Ty::U32;
+        metadata.isArray = true;
+        metadata.count = std::max<uint32_t>(3u, static_cast<uint32_t>(fields.size() * 3));
+        metadata.align = 4;
+        metadata.readOnlyData = true;
+        metadata.isConst = true;
+        metadata.dims.push_back(metadata.count);
+        std::vector<uint32_t> nameOffsets;
+        nameOffsets.reserve(fields.size());
+        for (const StructField* field : fields) {
+            nameOffsets.push_back(static_cast<uint32_t>(names.rawData.size()));
+            names.rawData.insert(names.rawData.end(), field->name.begin(), field->name.end());
+            names.rawData.push_back(0);
+        }
+        if (names.rawData.empty()) names.rawData.push_back(0);
+        metadata.rawData.reserve(size_t(metadata.count) * sizeof(uint32_t));
+        auto appendMetadataWord = [&](uint32_t word) {
+            for (unsigned byte = 0; byte < sizeof(uint32_t); ++byte)
+                metadata.rawData.push_back(static_cast<uint8_t>(word >> (byte * 8)));
+        };
+        for (size_t i = 0; i < fields.size(); ++i) {
+            appendMetadataWord(nameOffsets[i]);
+            appendMetadataWord(fields[i]->offset);
+            appendMetadataWord(static_cast<uint32_t>(cnFieldTypeKind(*fields[i])));
+        }
+        while (metadata.rawData.size() < size_t(metadata.count) * sizeof(uint32_t))
+            metadata.rawData.push_back(0);
+        context.strings->globals->push_back(std::move(names));
+        context.strings->globals->push_back(std::move(metadata));
+        context.strings->enumTables.emplace(objectType.sid,
+                                            std::make_pair(namesGlobal, metadataGlobal));
+    }
+
+    Stmt result(Stmt::For);
+    result.line = source.line;
+    result.col = source.column;
+    Stmt objectAddress(Stmt::Let);
+    objectAddress.name = objectName;
+    objectAddress.line = source.line;
+    objectAddress.col = source.column;
+    objectAddress.ty = Ty::ptrTo(objectType.sid);
+    objectAddress.isPtr = true;
+    for (auto& prefixStatement : objectPrefix)
+        result.forInit.push_back(std::move(prefixStatement));
+    if (classObject) {
+        objectAddress.expr = std::move(objectValue);
+    } else {
+        objectAddress.expr.reset(new Expr(Expr::AddrOf));
+        objectAddress.expr->a = std::move(objectValue);
+    }
+    objectAddress.expr->line = source.expression.line;
+    objectAddress.expr->col = source.expression.column;
+    result.forInit.push_back(std::move(objectAddress));
+    if (classObject) {
+        Stmt trap(Stmt::Trap);
+        trap.line = source.expression.line;
+        trap.col = source.expression.column;
+        Stmt rejectNull(Stmt::If);
+        rejectNull.line = source.expression.line;
+        rejectNull.col = source.expression.column;
+        rejectNull.expr.reset(new Expr(Expr::Eq));
+        rejectNull.expr->a = cnNamedValue(objectName, source.expression.line,
+                                           source.expression.column);
+        rejectNull.expr->b.reset(new Expr(Expr::Num, 0));
+        rejectNull.expr->line = source.expression.line;
+        rejectNull.expr->col = source.expression.column;
+        rejectNull.thenBody.push_back(std::move(trap));
+        result.forInit.push_back(std::move(rejectNull));
+    }
+
+    Stmt start(Stmt::Let);
+    start.name = indexName;
+    start.line = source.line;
+    start.col = source.column;
+    start.ty = Ty::I32;
+    start.expr.reset(new Expr(Expr::Num, 0));
+    result.forInit.push_back(std::move(start));
+
+    E condition(new Expr(Expr::Lt));
+    condition->a = cnNamedValue(indexName, source.line, source.column);
+    condition->b.reset(new Expr(Expr::Num, fields.size()));
+    condition->line = source.line;
+    condition->col = source.column;
+    result.expr = std::move(condition);
+
+    Stmt advance(Stmt::Assign);
+    advance.name = indexName;
+    advance.line = source.line;
+    advance.col = source.column;
+    E increment(new Expr(Expr::Add));
+    increment->a = cnNamedValue(indexName, source.line, source.column);
+    increment->b.reset(new Expr(Expr::Num, 1));
+    increment->line = source.line;
+    increment->col = source.column;
+    advance.expr = std::move(increment);
+    result.forStep.push_back(std::move(advance));
+
+    CnLoweringContext bodyContext = context;
+    bodyContext.scopes.emplace_back();
+    bodyContext.scopes.back()[objectName] = CnBinding{Ty::ptrTo(objectType.sid), false, 0};
+    bodyContext.scopes.back()[metadataBase] = CnBinding{Ty::I32, false, 0};
+    const Ty fieldInfoType = cnBackendType("字段信息", source.line, source.column);
+    Stmt metadataIndex(Stmt::Let);
+    metadataIndex.name = metadataBase;
+    metadataIndex.line = source.line;
+    metadataIndex.col = source.column;
+    metadataIndex.ty = Ty::I32;
+    E metadataScale(new Expr(Expr::Mul));
+    metadataScale->a = cnNamedValue(indexName, source.line, source.column);
+    metadataScale->b.reset(new Expr(Expr::Num, 3));
+    metadataScale->line = source.line;
+    metadataScale->col = source.column;
+    metadataIndex.expr = std::move(metadataScale);
+    result.thenBody.push_back(std::move(metadataIndex));
+    Stmt fieldInfo(Stmt::Let);
+    fieldInfo.name = source.name;
+    fieldInfo.line = source.line;
+    fieldInfo.col = source.column;
+    fieldInfo.ty = fieldInfoType;
+    fieldInfo.expr.reset(new Expr(Expr::StructLit));
+    fieldInfo.expr->name = "字段信息";
+    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
+    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
+    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
+    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
+    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
+    result.thenBody.push_back(std::move(fieldInfo));
+    bodyContext.scopes.back()[source.name] = CnBinding{fieldInfoType, false, 0};
+
+    Stmt assign(Stmt::Assign);
+    assign.name = source.name;
+    assign.line = source.line;
+    assign.col = source.column;
+    assign.expr = cnEnumFieldInfoTableLiteral(objectName, namesGlobal, metadataGlobal,
+                                               metadataBase, source.line, source.column);
+    result.thenBody.push_back(std::move(assign));
+
+    std::vector<Stmt> body = cnStatementsToAster(source.body, bodyContext);
+    for (auto& statement : body) result.thenBody.push_back(std::move(statement));
+    return result;
+}
+
+static E cnI64Constant(int64_t value, unsigned line, unsigned column) {
+    if (value < 0) {
+        E magnitude(new Expr(Expr::Num, static_cast<uint64_t>(-value)));
+        magnitude->suffix = Expr::LSL;
+        magnitude->line = line;
+        magnitude->col = column;
+        E negative(new Expr(Expr::Neg));
+        negative->a = std::move(magnitude);
+        negative->line = line;
+        negative->col = column;
+        return negative;
+    }
+    E result(new Expr(Expr::Num, static_cast<uint64_t>(value)));
+    result->suffix = Expr::LSL;
+    result->line = line;
+    result->col = column;
+    return result;
+}
+
+static E cnI32Constant(int32_t value, unsigned line, unsigned column) {
+    if (value < 0) {
+        E magnitude(new Expr(Expr::Num, static_cast<uint64_t>(-int64_t(value))));
+        magnitude->line = line;
+        magnitude->col = column;
+        E negative(new Expr(Expr::Neg));
+        negative->a = std::move(magnitude);
+        negative->line = line;
+        negative->col = column;
+        return negative;
+    }
+    E result(new Expr(Expr::Num, static_cast<uint64_t>(value)));
+    result->line = line;
+    result->col = column;
+    return result;
+}
+
+static bool cnI32ConstantLiteralsFit(const aster_cn::Expression& expression) {
+    if (expression.kind == "IntegerLiteral") {
+        Expr::LitSuffix suffix = Expr::LSNone;
+        const uint64_t value = cnIntegerValue(expression.value, suffix, expression.line, expression.column);
+        return suffix == Expr::LSNone && value <= 2147483648ULL;
+    }
+    for (const auto& child : expression.children)
+        if (!cnI32ConstantLiteralsFit(child)) return false;
+    return true;
+}
+
+static Stmt cnCountLoopToAster(const aster_cn::Statement& source,
+                               CnLoweringContext& context) {
+    if (source.expressions.size() < 2 || source.expressions.size() > 3)
+        throw Error(loc(source.line, source.column, "invalid counting-loop AST"));
+
+    int64_t step = 1;
+    bool dynamicStep = false;
+    E dynamicStepExpr;
+    E startExpr;
+    E endExpr;
+    std::vector<Stmt> startPrefix;
+    std::vector<Stmt> endPrefix;
+    std::vector<Stmt> stepPrefix;
+    if (source.expressions.size() == 3) {
+        const auto& sourceStep = source.expressions[2];
+        if (!cnI32ConstantLiteralsFit(sourceStep))
+            throw Error(loc(sourceStep.line ? sourceStep.line : source.line,
+                            sourceStep.column ? sourceStep.column : source.column,
+                            "counting-loop step must use unsuffixed integer literals fitting i32"));
+        if (cnExpressionType(sourceStep, context) != Ty::I32)
+            throw Error(loc(sourceStep.line ? sourceStep.line : source.line,
+                            sourceStep.column ? sourceStep.column : source.column,
+                            "counting-loop step must have type i32"));
+        // The expression is lowered below, after the for-init container exists,
+        // so nested callback adapters can place setup statements before it.
+    }
+
+    static uint64_t nextHiddenLoopId = 0;
+    const std::string prefix = "__aster_cn_count_" + std::to_string(nextHiddenLoopId++);
+    const std::string startName = prefix + "_start";
+    const std::string endName = prefix + "_end";
+    const std::string indexName = prefix + "_index";
+    const std::string stepName = prefix + "_step";
+
+    Stmt result(Stmt::For);
+    result.line = source.line;
+    result.col = source.column;
+
+    startExpr = cnLowerStatementExpression(source.expressions[0], context.strings,
+                                            context, startPrefix);
+    endExpr = cnLowerStatementExpression(source.expressions[1], context.strings,
+                                          context, endPrefix);
+    if (source.expressions.size() == 3) {
+        dynamicStepExpr = cnLowerStatementExpression(source.expressions[2], context.strings,
+                                                      context, stepPrefix);
+        if (!constantInteger(*dynamicStepExpr, step)) {
+            dynamicStep = true;
+        } else if (step < INT32_MIN || step > INT32_MAX) {
+            const auto& sourceStep = source.expressions[2];
+            throw Error(loc(sourceStep.line ? sourceStep.line : source.line,
+                            sourceStep.column ? sourceStep.column : source.column,
+                            "counting-loop step must fit i32"));
+        }
+    }
+    if (!dynamicStep && step == 0)
+        throw Error(loc(source.line, source.column, "counting-loop step cannot be zero"));
+
+    Stmt start(Stmt::Let);
+    start.name = startName;
+    start.line = source.line;
+    start.col = source.column;
+    start.ty = Ty::I32;
+    for (auto& prefixStatement : startPrefix)
+        result.forInit.push_back(std::move(prefixStatement));
+    start.expr = std::move(startExpr);
+    result.forInit.push_back(std::move(start));
+
+    Stmt end(Stmt::Let);
+    end.name = endName;
+    end.line = source.line;
+    end.col = source.column;
+    end.ty = Ty::I32;
+    for (auto& prefixStatement : endPrefix)
+        result.forInit.push_back(std::move(prefixStatement));
+    end.expr = std::move(endExpr);
+    result.forInit.push_back(std::move(end));
+
+    if (dynamicStep) {
+        for (auto& prefixStatement : stepPrefix)
+            result.forInit.push_back(std::move(prefixStatement));
+        Stmt stepValue(Stmt::Let);
+        stepValue.name = stepName;
+        stepValue.line = source.line;
+        stepValue.col = source.column;
+        stepValue.ty = Ty::I32;
+        stepValue.expr = std::move(dynamicStepExpr);
+        result.forInit.push_back(std::move(stepValue));
+
+        if (context.countCheck) {
+            Stmt trap(Stmt::Trap);
+            trap.line = source.line;
+            trap.col = source.column;
+            Stmt check(Stmt::If);
+            check.line = source.line;
+            check.col = source.column;
+            check.expr.reset(new Expr(Expr::Eq));
+            check.expr->a = cnNamedValue(stepName, source.line, source.column);
+            check.expr->b = cnI32Constant(0, source.line, source.column);
+            check.expr->line = source.line;
+            check.expr->col = source.column;
+            check.thenBody.push_back(std::move(trap));
+            result.forInit.push_back(std::move(check));
+        }
+    }
+
+    Stmt index(Stmt::Let);
+    index.name = indexName;
+    index.line = source.line;
+    index.col = source.column;
+    index.ty = Ty::I64;
+    index.expr = cnCast(cnNamedValue(startName, source.line, source.column), Ty::I64,
+                        source.line, source.column);
+    result.forInit.push_back(std::move(index));
+
+    E endValue = cnCast(cnNamedValue(endName, source.line, source.column), Ty::I64,
+                        source.line, source.column);
+    if (dynamicStep) {
+        auto comparison = [&](Expr::Kind kind, E left, E right) {
+            E value(new Expr(kind));
+            value->a = std::move(left);
+            value->b = std::move(right);
+            value->line = source.line;
+            value->col = source.column;
+            return value;
+        };
+        E positive = comparison(Expr::And,
+            comparison(Expr::Gt, cnNamedValue(stepName, source.line, source.column),
+                       cnI32Constant(0, source.line, source.column)),
+            comparison(Expr::Le, cnNamedValue(indexName, source.line, source.column),
+                       cnCast(cnNamedValue(endName, source.line, source.column), Ty::I64,
+                              source.line, source.column)));
+        E negative = comparison(Expr::And,
+            comparison(Expr::Lt, cnNamedValue(stepName, source.line, source.column),
+                       cnI32Constant(0, source.line, source.column)),
+            comparison(Expr::Ge, cnNamedValue(indexName, source.line, source.column),
+                       std::move(endValue)));
+        result.expr = comparison(Expr::Or, std::move(positive), std::move(negative));
+    } else {
+        E comparisonValue(new Expr(step > 0 ? Expr::Le : Expr::Ge));
+        comparisonValue->a = cnNamedValue(indexName, source.line, source.column);
+        comparisonValue->b = std::move(endValue);
+        comparisonValue->line = source.line;
+        comparisonValue->col = source.column;
+        result.expr = std::move(comparisonValue);
+    }
+
+    Stmt advance(Stmt::Assign);
+    advance.name = indexName;
+    advance.line = source.line;
+    advance.col = source.column;
+    E add(new Expr(Expr::Add));
+    add->a = cnNamedValue(indexName, source.line, source.column);
+    add->b = dynamicStep
+        ? cnCast(cnNamedValue(stepName, source.line, source.column), Ty::I64,
+                 source.line, source.column)
+        : cnI64Constant(step, source.line, source.column);
+    add->line = source.line;
+    add->col = source.column;
+    advance.expr = std::move(add);
+    result.forStep.push_back(std::move(advance));
+
+    if (!source.name.empty()) {
+        Stmt counter(Stmt::Let);
+        counter.name = source.name;
+        counter.line = source.line;
+        counter.col = source.column;
+        counter.ty = Ty::I32;
+        counter.isConst = true;
+        counter.expr = cnCast(cnNamedValue(indexName, source.line, source.column), Ty::I32,
+                              source.line, source.column);
+        result.thenBody.push_back(std::move(counter));
+    }
+    CnLoweringContext bodyContext = context;
+    bodyContext.scopes.emplace_back();
+    if (!source.name.empty()) bodyContext.scopes.back()[source.name] = CnBinding{Ty::I32, false, 0};
+    std::vector<Stmt> body = cnStatementsToAster(source.body, bodyContext);
+    for (auto& statement : body) result.thenBody.push_back(std::move(statement));
+    return result;
+}
+
+static Stmt cnForEachLoopToAster(const aster_cn::Statement& source,
+                                 CnLoweringContext& context) {
+    if (!source.hasExpression)
+        throw Error(loc(source.line, source.column, "foreach source is missing"));
+    const Ty iterableType = cnExpressionType(source.expression, context);
+    if (iterableType.isString) {
+        const bool hasIndex = !source.secondaryName.empty();
+        const std::string indexBinding = hasIndex ? source.name : std::string();
+        const std::string elementBinding = hasIndex ? source.secondaryName : source.name;
+        if (elementBinding.empty() || (hasIndex && indexBinding == elementBinding))
+            throw Error(loc(source.line, source.column, "foreach bindings must have distinct names"));
+
+        static uint64_t nextHiddenStringLoopId = 0;
+        const std::string prefix = "__aster_cn_string_foreach_" +
+                                   std::to_string(nextHiddenStringLoopId++);
+        const std::string stringName = prefix + "_value";
+        const std::string indexName = prefix + "_index";
+        const std::string lengthName = prefix + "_length";
+        Stmt result(Stmt::For);
+        result.line = source.line;
+        result.col = source.column;
+
+        Stmt stringValue(Stmt::Let);
+        stringValue.name = stringName;
+        stringValue.line = source.line;
+        stringValue.col = source.column;
+        stringValue.ty = Ty::string();
+        stringValue.isPtr = true;
+        stringValue.expr = cnExpressionToAster(source.expression, context.strings, &context);
+        result.forInit.push_back(std::move(stringValue));
+
+        Stmt length(Stmt::Let);
+        length.name = lengthName;
+        length.line = source.line;
+        length.col = source.column;
+        length.ty = Ty::I32;
+        length.expr.reset(new Expr(Expr::Num, 0));
+        length.expr->line = source.line;
+        length.expr->col = source.column;
+        result.forInit.push_back(std::move(length));
+
+        E scanAddress(new Expr(Expr::Add));
+        scanAddress->a = cnNamedValue(stringName, source.line, source.column);
+        scanAddress->b = cnNamedValue(lengthName, source.line, source.column);
+        scanAddress->line = source.line;
+        scanAddress->col = source.column;
+        E scanByte(new Expr(Expr::Call));
+        scanByte->name = "load_u8";
+        scanByte->args.push_back(std::move(scanAddress));
+        scanByte->line = source.line;
+        scanByte->col = source.column;
+        E byteNotZero(new Expr(Expr::Ne));
+        byteNotZero->a = std::move(scanByte);
+        byteNotZero->b.reset(new Expr(Expr::Num, 0));
+        byteNotZero->line = source.line;
+        byteNotZero->col = source.column;
+        byteNotZero->b->line = source.line;
+        byteNotZero->b->col = source.column;
+        E pointerNotNull(new Expr(Expr::Ne));
+        pointerNotNull->a = cnNamedValue(stringName, source.line, source.column);
+        pointerNotNull->b.reset(new Expr(Expr::Num, 0));
+        pointerNotNull->line = source.line;
+        pointerNotNull->col = source.column;
+        pointerNotNull->b->line = source.line;
+        pointerNotNull->b->col = source.column;
+        Stmt scan(Stmt::While);
+        scan.line = source.line;
+        scan.col = source.column;
+        scan.expr.reset(new Expr(Expr::And));
+        scan.expr->a = std::move(pointerNotNull);
+        scan.expr->b = std::move(byteNotZero);
+        scan.expr->line = source.line;
+        scan.expr->col = source.column;
+        Stmt scanAdvance(Stmt::Assign);
+        scanAdvance.name = lengthName;
+        scanAdvance.line = source.line;
+        scanAdvance.col = source.column;
+        scanAdvance.expr.reset(new Expr(Expr::Add));
+        scanAdvance.expr->a = cnNamedValue(lengthName, source.line, source.column);
+        scanAdvance.expr->b.reset(new Expr(Expr::Num, 1));
+        scanAdvance.expr->line = source.line;
+        scanAdvance.expr->col = source.column;
+        scanAdvance.expr->b->line = source.line;
+        scanAdvance.expr->b->col = source.column;
+        scan.thenBody.push_back(std::move(scanAdvance));
+        result.forInit.push_back(std::move(scan));
+
+        Stmt start(Stmt::Let);
+        start.name = indexName;
+        start.line = source.line;
+        start.col = source.column;
+        start.ty = Ty::I32;
+        start.expr.reset(new Expr(Expr::Num, 0));
+        start.expr->line = source.line;
+        start.expr->col = source.column;
+        result.forInit.push_back(std::move(start));
+
+        E condition(new Expr(Expr::Lt));
+        condition->a = cnNamedValue(indexName, source.line, source.column);
+        condition->b = cnNamedValue(lengthName, source.line, source.column);
+        condition->line = source.line;
+        condition->col = source.column;
+        result.expr = std::move(condition);
+
+        Stmt advance(Stmt::Assign);
+        advance.name = indexName;
+        advance.line = source.line;
+        advance.col = source.column;
+        advance.expr.reset(new Expr(Expr::Add));
+        advance.expr->a = cnNamedValue(indexName, source.line, source.column);
+        advance.expr->b.reset(new Expr(Expr::Num, 1));
+        advance.expr->line = source.line;
+        advance.expr->col = source.column;
+        advance.expr->b->line = source.line;
+        advance.expr->b->col = source.column;
+        result.forStep.push_back(std::move(advance));
+
+        CnLoweringContext bodyContext = context;
+        bodyContext.scopes.emplace_back();
+        E elementAddress(new Expr(Expr::Add));
+        elementAddress->a = cnNamedValue(stringName, source.line, source.column);
+        elementAddress->b = cnNamedValue(indexName, source.line, source.column);
+        elementAddress->line = source.line;
+        elementAddress->col = source.column;
+        E elementByte(new Expr(Expr::Call));
+        elementByte->name = "load_u8";
+        elementByte->args.push_back(std::move(elementAddress));
+        elementByte->line = source.line;
+        elementByte->col = source.column;
+        Stmt element(Stmt::Let);
+        element.name = elementBinding;
+        element.line = source.line;
+        element.col = source.column;
+        element.ty = Ty::Char;
+        element.isConst = true;
+        element.expr.reset(new Expr(Expr::Cast));
+        element.expr->ty = Ty::Char;
+        element.expr->a = std::move(elementByte);
+        element.expr->line = source.line;
+        element.expr->col = source.column;
+        result.thenBody.push_back(std::move(element));
+        bodyContext.scopes.back()[elementBinding] = CnBinding{Ty::Char, false, 0};
+
+        if (hasIndex) {
+            Stmt visibleIndex(Stmt::Let);
+            visibleIndex.name = indexBinding;
+            visibleIndex.line = source.line;
+            visibleIndex.col = source.column;
+            visibleIndex.ty = Ty::I32;
+            visibleIndex.isConst = true;
+            visibleIndex.expr = cnNamedValue(indexName, source.line, source.column);
+            result.thenBody.push_back(std::move(visibleIndex));
+            bodyContext.scopes.back()[indexBinding] = CnBinding{Ty::I32, false, 0};
+        }
+
+        std::vector<Stmt> body = cnStatementsToAster(source.body, bodyContext);
+        for (auto& statement : body) result.thenBody.push_back(std::move(statement));
+        return result;
+    }
+    if (!source.hasExpression || source.expression.kind != "Identifier")
+        throw Error(loc(source.line, source.column,
+                        "array traversal currently requires a named local array"));
+    const CnBinding array = context.findBinding(source.expression.value,
+                                                source.expression.line, source.expression.column);
+    if (!array.isArray || array.arrayLength == 0)
+        throw Error(loc(source.expression.line, source.expression.column,
+                        "foreach source is not a fixed-size local array: " + source.expression.value));
+
+    const bool hasIndex = !source.secondaryName.empty();
+    const std::string indexBinding = hasIndex ? source.name : std::string();
+    const std::string elementBinding = hasIndex ? source.secondaryName : source.name;
+    if (elementBinding.empty() || (hasIndex && indexBinding == elementBinding))
+        throw Error(loc(source.line, source.column, "foreach bindings must have distinct names"));
+
+    static uint64_t nextHiddenLoopId = 0;
+    const std::string indexName = "__aster_cn_foreach_" + std::to_string(nextHiddenLoopId++) + "_index";
+    Stmt result(Stmt::For);
+    result.line = source.line;
+    result.col = source.column;
+
+    Stmt start(Stmt::Let);
+    start.name = indexName;
+    start.line = source.line;
+    start.col = source.column;
+    start.ty = Ty::I32;
+    start.expr.reset(new Expr(Expr::Num, 0));
+    start.expr->line = source.line;
+    start.expr->col = source.column;
+    result.forInit.push_back(std::move(start));
+
+    E condition(new Expr(Expr::Lt));
+    condition->a = cnNamedValue(indexName, source.line, source.column);
+    condition->b.reset(new Expr(Expr::Num, array.arrayLength));
+    condition->line = source.line;
+    condition->col = source.column;
+    condition->b->line = source.line;
+    condition->b->col = source.column;
+    result.expr = std::move(condition);
+
+    Stmt advance(Stmt::Assign);
+    advance.name = indexName;
+    advance.line = source.line;
+    advance.col = source.column;
+    E increment(new Expr(Expr::Add));
+    increment->a = cnNamedValue(indexName, source.line, source.column);
+    increment->b.reset(new Expr(Expr::Num, 1));
+    increment->line = source.line;
+    increment->col = source.column;
+    increment->b->line = source.line;
+    increment->b->col = source.column;
+    advance.expr = std::move(increment);
+    result.forStep.push_back(std::move(advance));
+
+    CnLoweringContext bodyContext = context;
+    bodyContext.scopes.emplace_back();
+    Stmt element(Stmt::Let);
+    element.name = elementBinding;
+    element.line = source.line;
+    element.col = source.column;
+    element.ty = array.type;
+    element.isPtr = array.type == Ty::Ptr;
+    element.isBool = array.type == Ty::Bool;
+    element.isConst = true;
+    element.expr.reset(new Expr(Expr::Index));
+    element.expr->name = source.expression.value;
+    element.expr->a = cnNamedValue(indexName, source.line, source.column);
+    element.expr->line = source.line;
+    element.expr->col = source.column;
+    result.thenBody.push_back(std::move(element));
+    bodyContext.scopes.back()[elementBinding] = CnBinding{array.type, false, 0};
+
+    if (hasIndex) {
+        Stmt visibleIndex(Stmt::Let);
+        visibleIndex.name = indexBinding;
+        visibleIndex.line = source.line;
+        visibleIndex.col = source.column;
+        visibleIndex.ty = Ty::I32;
+        visibleIndex.isConst = true;
+        visibleIndex.expr = cnNamedValue(indexName, source.line, source.column);
+        result.thenBody.push_back(std::move(visibleIndex));
+        bodyContext.scopes.back()[indexBinding] = CnBinding{Ty::I32, false, 0};
+    }
+
+    std::vector<Stmt> body = cnStatementsToAster(source.body, bodyContext);
+    for (auto& statement : body) result.thenBody.push_back(std::move(statement));
+    return result;
+}
+
+struct CnMatchConstant {
+    E value;
+    int64_t folded = 0;
+};
+
+static CnMatchConstant cnMatchConstantToAster(const aster_cn::Expression& source,
+                                             Ty subjectType,
+                                             CnLoweringContext& context) {
+    if (!tyIsInteger(cnExpressionType(source, context)))
+        throw Error(loc(source.line, source.column, "match values must be integer constants"));
+    E value = cnExpressionToAster(source, context.strings, &context);
+    int64_t folded = 0;
+    if (!constantInteger(*value, folded))
+        throw Error(loc(source.line, source.column,
+                        "match values must be compile-time integer constants"));
+    folded = foldAtExprType(constExprType(*value), subjectType, folded);
+    if (!caseValueFits(subjectType, folded))
+        throw Error(loc(source.line, source.column,
+                        "match value does not fit " + tyNameFull(subjectType)));
+    return {std::move(value), folded};
+}
+
+static std::vector<Stmt> cnMatchToAster(const aster_cn::Statement& source,
+                                        CnLoweringContext& context) {
+    if (!source.hasExpression || source.caseValues.empty() ||
+        source.caseValues.size() != source.branches.size())
+        throw Error(loc(source.line, source.column, "invalid match AST"));
+    const Ty subjectType = cnExpressionType(source.expression, context);
+    if (!tyIsInteger(subjectType))
+        throw Error(loc(source.expression.line ? source.expression.line : source.line,
+                        source.expression.column ? source.expression.column : source.column,
+                        "match subject must be an integer type"));
+
+    std::vector<Stmt> subjectPrefix;
+    E subject = cnLowerStatementExpression(source.expression, context.strings,
+                                             context, subjectPrefix);
+    int64_t subjectConstant = 0;
+    if (constantInteger(*subject, subjectConstant) &&
+        !caseValueFits(subjectType,
+                       foldAtExprType(constExprType(*subject), subjectType, subjectConstant)))
+        throw Error(loc(source.expression.line ? source.expression.line : source.line,
+                        source.expression.column ? source.expression.column : source.column,
+                        "match subject constant does not fit its type"));
+
+    static uint64_t nextHiddenMatchId = 0;
+    const std::string subjectName = "__aster_cn_match_" + std::to_string(nextHiddenMatchId++);
+    Stmt savedSubject(Stmt::Let);
+    savedSubject.name = subjectName;
+    savedSubject.line = source.line;
+    savedSubject.col = source.column;
+    savedSubject.ty = subjectType;
+    savedSubject.expr = std::move(subject);
+
+    std::set<uint64_t> seen;
+    CnLoweringContext elseContext = context;
+    elseContext.scopes.emplace_back();
+    std::vector<Stmt> chain = source.hasElse
+        ? cnStatementsToAster(source.elseBody, elseContext) : std::vector<Stmt>{};
+    for (size_t branch = source.caseValues.size(); branch-- > 0;) {
+        if (source.caseValues[branch].empty())
+            throw Error(loc(source.line, source.column, "a match branch needs at least one value"));
+        E condition;
+        for (const auto& sourceValue : source.caseValues[branch]) {
+            CnMatchConstant matchValue = cnMatchConstantToAster(
+                sourceValue, subjectType, context);
+            if (!seen.insert(static_cast<uint64_t>(matchValue.folded)).second)
+                throw Error(loc(sourceValue.line, sourceValue.column,
+                                "duplicate match value " + std::to_string(matchValue.folded)));
+
+            E equal(new Expr(Expr::Eq));
+            equal->a = cnNamedValue(subjectName, source.line, source.column);
+            equal->b = subjectType.k == Ty::Enum
+                ? std::move(matchValue.value)
+                : cnCast(std::move(matchValue.value), subjectType,
+                         sourceValue.line, sourceValue.column);
+            equal->line = sourceValue.line;
+            equal->col = sourceValue.column;
+            if (!condition) condition = std::move(equal);
+            else {
+                E either(new Expr(Expr::Or));
+                either->a = std::move(condition);
+                either->b = std::move(equal);
+                either->line = sourceValue.line;
+                either->col = sourceValue.column;
+                condition = std::move(either);
+            }
+        }
+
+        Stmt arm(Stmt::If);
+        arm.line = source.line;
+        arm.col = source.column;
+        arm.expr = std::move(condition);
+        CnLoweringContext branchContext = context;
+        branchContext.scopes.emplace_back();
+        arm.thenBody = cnStatementsToAster(source.branches[branch], branchContext);
+        arm.elseBody = std::move(chain);
+        chain.clear();
+        chain.push_back(std::move(arm));
+    }
+
+    std::vector<Stmt> result;
+    result.reserve(subjectPrefix.size() + chain.size() + 1);
+    for (auto& statement : subjectPrefix)
+        result.push_back(std::move(statement));
+    result.push_back(std::move(savedSubject));
+    for (auto& statement : chain) result.push_back(std::move(statement));
+    return result;
+}
+
+static std::vector<Stmt> cnIfToAster(const aster_cn::Statement& source, size_t branch,
+                                     CnLoweringContext& context) {
+    if (branch >= source.conditions.size() || branch >= source.branches.size())
+        throw Error(loc(source.line, source.column, "invalid conditional AST"));
+    cnRequireCondition(source.conditions[branch], context);
+    std::vector<Stmt> lowered;
+    std::vector<Stmt> conditionPrefix;
+    Stmt conditional(Stmt::If);
+    conditional.line = source.line;
+    conditional.col = source.column;
+    conditional.expr = cnConditionToAster(source.conditions[branch], context, conditionPrefix);
+    CnLoweringContext thenContext = context;
+    thenContext.scopes.emplace_back();
+    conditional.thenBody = cnStatementsToAster(source.branches[branch], thenContext);
+    if (branch + 1 < source.conditions.size()) {
+        std::vector<Stmt> nested = cnIfToAster(source, branch + 1, context);
+        for (auto& statement : nested)
+            conditional.elseBody.push_back(std::move(statement));
+    }
+    else if (source.hasElse) {
+        CnLoweringContext elseContext = context;
+        elseContext.scopes.emplace_back();
+        conditional.elseBody = cnStatementsToAster(source.elseBody, elseContext);
+    }
+    for (auto& statement : conditionPrefix)
+        lowered.push_back(std::move(statement));
+    lowered.push_back(std::move(conditional));
+    return lowered;
+}
+
+static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Statement>& source,
+                                            CnLoweringContext& context) {
+    std::vector<Stmt> result;
+    result.reserve(source.size());
+    for (const auto& statement : source) {
+        if (context.validatingClosureBody) {
+            if (statement.hasExpression)
+                cnValidateClosureExpression(statement.expression, context);
+            for (const auto& expression : statement.expressions)
+                cnValidateClosureExpression(expression, context);
+            for (const auto& expression : statement.conditions)
+                cnValidateClosureExpression(expression, context);
+            for (const auto& values : statement.caseValues)
+                for (const auto& expression : values)
+                    cnValidateClosureExpression(expression, context);
+        }
+        if (statement.kind == "VariableDeclaration" || statement.kind == "ConstantDeclaration") {
+            const bool inferredClosure = statement.typeName.empty() && statement.hasExpression &&
+                statement.expression.kind == "ClosureExpression";
+            const Ty declaredType = statement.typeName.empty()
+                ? (inferredClosure ? cnExpressionType(statement.expression, context) : Ty::Void)
+                : cnBackendType(statement.typeName, statement.line, statement.column);
+            if (declaredType == Ty::Void)
+                throw Error(loc(statement.line, statement.column, "void cannot be used as a local variable type"));
+            const bool defaultable = statement.kind == "VariableDeclaration" &&
+                statement.arrayDimensions.empty() && declaredType != Ty::Void;
+            if ((statement.typeName.empty() && !inferredClosure) ||
+                (!statement.hasExpression && statement.arrayDimensions.empty() && !defaultable))
+                throw Error(loc(statement.line, statement.column, "the current compiler backend requires a typed variable with an initializer"));
+            if (statement.arrayDimensions.size() > 1)
+                throw Error(loc(statement.line, statement.column, "the current compiler backend supports one-dimensional Chinese local arrays"));
+            Stmt converted(Stmt::Let);
+            converted.name = statement.name;
+            converted.line = statement.line;
+            converted.col = statement.column;
+            converted.ty = declaredType;
+            converted.isPtr = converted.ty == Ty::Ptr;
+            converted.isBool = converted.ty == Ty::Bool;
+            converted.isConst = statement.kind == "ConstantDeclaration";
+            std::vector<Stmt> expressionPrefix;
+            uint32_t localArrayLength = 0;
+            if (!statement.arrayDimensions.empty()) {
+                Expr::LitSuffix suffix = Expr::LSNone;
+                const uint64_t length = cnIntegerValue(statement.arrayDimensions.front(), suffix,
+                                                       statement.line, statement.column);
+                if (suffix != Expr::LSNone || length == 0 || length > 1000)
+                    throw Error(loc(statement.line, statement.column, "array length must be between 1 and 1000"));
+                converted.isArray = true;
+                converted.count = static_cast<uint32_t>(length);
+                localArrayLength = converted.count;
+                converted.dims.push_back(converted.count);
+                if (statement.expression.kind == "ArrayLiteral") {
+                    if (statement.expression.children.size() != converted.count)
+                        throw Error(loc(statement.line, statement.column,
+                                        "array literal length does not match declared array length"));
+                    // Aggregate elements are materialized by the indexed stores
+                    // below; scalar arrays use the native zero-fill initializer.
+                    if (!tyIsStruct(converted.ty))
+                        converted.expr.reset(new Expr(Expr::Num, 0));
+                } else if (!statement.hasExpression) {
+                    if (statement.typeName == "string")
+                        converted.expr = cnEmptyStringValue(context.strings, statement.line, statement.column);
+                    else if (!tyIsStruct(converted.ty))
+                        converted.expr = converted.ty.k == Ty::Enum
+                            ? cnEnumDefaultValue(converted.ty, statement.line, statement.column)
+                            : E(new Expr(Expr::Num, 0));
+                } else {
+                    converted.expr = cnLowerStatementExpression(statement.expression,
+                                                                  context.strings, context,
+                                                                  expressionPrefix);
+                }
+            } else {
+                if (statement.hasExpression)
+                    converted.expr = cnLowerStatementExpressionAs(statement.expression, declaredType,
+                                                                    context.strings, context,
+                                                                    expressionPrefix);
+                else if (!tyIsStruct(converted.ty))
+                    converted.expr = converted.ty == Ty::Ptr && statement.typeName == "string"
+                        ? cnEmptyStringValue(context.strings, statement.line, statement.column)
+                        : cnDefaultValue(converted.ty, statement.line, statement.column);
+            }
+            CnBinding localBinding{converted.ty, converted.isArray, converted.count};
+            context.scopes.back()[statement.name] = std::move(localBinding);
+            for (auto& prefixStatement : expressionPrefix)
+                result.push_back(std::move(prefixStatement));
+            result.push_back(std::move(converted));
+            if (!statement.hasExpression && statement.arrayDimensions.empty() &&
+                tyIsStruct(declaredType)) {
+                std::vector<std::string> path;
+                cnAppendStructStringDefaults(result, statement.name, declaredType, path,
+                                             context.strings, statement.line, statement.column);
+                path.clear();
+                cnAppendStructEnumDefaults(result, statement.name, declaredType, path,
+                                           statement.line, statement.column);
+            }
+            if (!statement.hasExpression && !statement.arrayDimensions.empty() &&
+                tyIsStruct(declaredType)) {
+                for (uint32_t index = 0; index < localArrayLength; ++index) {
+                    std::vector<std::string> path;
+                    cnAppendStructStringDefaults(result, statement.name, declaredType, path,
+                                                 context.strings, statement.line,
+                                                 statement.column, &index);
+                    path.clear();
+                    cnAppendStructEnumDefaults(result, statement.name, declaredType, path,
+                                               statement.line, statement.column, &index);
+                }
+            }
+            if (!statement.arrayDimensions.empty() && statement.expression.kind == "ArrayLiteral") {
+                for (size_t index = 0; index < statement.expression.children.size(); ++index) {
+                    Stmt element(Stmt::IndexAssign);
+                    element.name = statement.name;
+                    element.line = statement.line;
+                    element.col = statement.column;
+                    element.subs = 1;
+                    element.isArrayInit = statement.kind == "ConstantDeclaration";
+                    element.idx.reset(new Expr(Expr::Num, index));
+                    element.expr = cnExpressionToAsterAs(statement.expression.children[index],
+                        declaredType, context.strings, &context);
+                    result.push_back(std::move(element));
+                }
+            }
+        } else if (statement.kind == "AssignmentStatement") {
+            if (statement.expression.kind != "Assignment" || statement.expression.children.size() != 2)
+                throw Error(loc(statement.line, statement.column, "invalid assignment"));
+            aster_cn::Expression targetExpression = statement.expression.children[0];
+            std::vector<Stmt> targetPrefix;
+            aster_cn::Expression materializedTarget;
+            if (cnTryMaterializeClassFieldReceiver(targetExpression, context.strings,
+                                                   context, targetPrefix, materializedTarget)) {
+                targetExpression = std::move(materializedTarget);
+            } else if (targetExpression.kind == "Index" && targetExpression.children.size() == 2 &&
+                       targetExpression.children[0].kind == "Member" &&
+                       cnTryMaterializeClassFieldReceiver(targetExpression.children[0],
+                                                          context.strings, context,
+                                                          targetPrefix, materializedTarget)) {
+                targetExpression.children[0] = std::move(materializedTarget);
+            }
+            const auto& target = targetExpression;
+            if (target.kind == "Identifier") {
+                cnRequireTopLevelGlobalAccess(target.value, &context,
+                                              target.line, target.column);
+                CnBinding binding;
+                if (context.findLocalBinding(target.value, binding) &&
+                    binding.isArray && binding.isClosureCapture)
+                    throw Error(loc(target.line, target.column,
+                                    "cannot assign to a captured array as a whole: " +
+                                    target.value));
+            }
+            const bool fieldElement = target.kind == "Index" && target.children.size() == 2 &&
+                target.children[0].kind == "Member";
+            const bool staticArrayElementTarget = fieldElement &&
+                target.children[0].children.size() == 2 &&
+                cnIsClassQualifier(target.children[0].children[0], context);
+            const bool staticFieldTarget = target.kind == "Member" &&
+                target.children.size() == 2 &&
+                cnIsClassQualifier(target.children[0], context);
+            const Ty targetType = cnExpressionType(target, context);
+            const CnStaticClassFieldInfo* staticField = staticFieldTarget
+                ? cnFindClassStaticField(g_cnClassIndex.at(target.children[0].value),
+                                         target.children[1].value)
+                : nullptr;
+            if (staticField && staticField->arrayLength != 0)
+                throw Error(loc(target.line, target.column,
+                                "cannot assign to a static array as a whole: " +
+                                target.children[1].value));
+            E capturedTargetValue;
+            if (target.kind == "Identifier")
+                capturedTargetValue = cnClosureCapturedValue(context, target.value,
+                                                              target.line, target.column);
+            const bool capturedTarget = static_cast<bool>(capturedTargetValue);
+            E capturedArrayTargetValue;
+            if (target.kind == "Index" && target.children.size() == 2 &&
+                target.children[0].kind == "Identifier") {
+                capturedArrayTargetValue = cnClosureCapturedValue(
+                    context, target.children[0].value, target.children[0].line,
+                    target.children[0].column);
+            }
+            const bool capturedArrayTarget = static_cast<bool>(capturedArrayTargetValue);
+            Stmt converted(target.kind == "Index" &&
+                               (!fieldElement || staticArrayElementTarget) &&
+                               !capturedArrayTarget
+                               ? Stmt::IndexAssign :
+                           ((!staticFieldTarget && target.kind == "Member") ||
+                            (fieldElement && !staticArrayElementTarget) ||
+                            capturedTarget || capturedArrayTarget)
+                               ? Stmt::FieldAssign : Stmt::Assign);
+            if (target.kind == "Identifier" && capturedTarget)
+                converted.idx = std::move(capturedTargetValue);
+            else if (target.kind == "Identifier") {
+                converted.name = target.value;
+                if (context.globals && context.globals->count(target.value))
+                    converted.name = cnGlobalSymbolName(target.value);
+            }
+            else if (target.kind == "Index" && target.children.size() == 2 &&
+                     target.children[0].kind == "Identifier") {
+                if (capturedArrayTarget) {
+                    converted.idx = cnExpressionToAster(target, context.strings, &context);
+                } else {
+                    converted.name = target.children[0].value;
+                    if (g_cnExternalGlobalNames.count(converted.name))
+                        converted.name = cnGlobalSymbolName(converted.name);
+                    converted.idx = cnExpressionToAster(target.children[1], context.strings, &context);
+                }
+            } else if (target.kind == "Member") {
+                if (staticField) converted.name = staticField->globalName;
+                else converted.idx = cnExpressionToAster(target, context.strings, &context);
+            } else if (staticArrayElementTarget) {
+                const CnStaticClassFieldInfo* staticArray = cnFindClassStaticField(
+                    g_cnClassIndex.at(target.children[0].children[0].value),
+                    target.children[0].children[1].value);
+                if (!staticArray || staticArray->arrayLength == 0)
+                    throw Error(loc(target.line, target.column,
+                                    "assignment target is not a static array element"));
+                converted.name = staticArray->globalName;
+                converted.idx = cnExpressionToAster(target.children[1], context.strings,
+                                                    &context);
+            } else if (fieldElement) {
+                converted.idx = cnExpressionToAster(target, context.strings, &context);
+            } else {
+                throw Error(loc(statement.line, statement.column,
+                                "assignment target must be a variable, field, or named array element"));
+            }
+            converted.line = statement.line;
+            converted.col = statement.column;
+            std::vector<Stmt> expressionPrefix;
+            converted.expr = cnLowerStatementExpressionAs(statement.expression.children[1], targetType,
+                                                           context.strings, context,
+                                                           expressionPrefix);
+            for (auto& prefixStatement : targetPrefix)
+                result.push_back(std::move(prefixStatement));
+            for (auto& prefixStatement : expressionPrefix)
+                result.push_back(std::move(prefixStatement));
+            result.push_back(std::move(converted));
+        } else if (statement.kind == "ReturnStatement") {
+            Stmt converted(Stmt::Return);
+            converted.line = statement.line;
+            converted.col = statement.column;
+            std::vector<Stmt> expressionPrefix;
+            if (statement.hasExpression)
+                converted.expr = cnLowerStatementExpressionAs(statement.expression, context.returnType,
+                                                               context.strings, context,
+                                                               expressionPrefix);
+            for (auto& prefixStatement : expressionPrefix)
+                result.push_back(std::move(prefixStatement));
+            result.push_back(std::move(converted));
+        } else if (statement.kind == "IfStatement") {
+            std::vector<Stmt> lowered = cnIfToAster(statement, 0, context);
+            for (auto& conditional : lowered)
+                result.push_back(std::move(conditional));
+        } else if (statement.kind == "MatchStatement") {
+            std::vector<Stmt> lowered = cnMatchToAster(statement, context);
+            for (auto& matchStatement : lowered) result.push_back(std::move(matchStatement));
+        } else if (statement.kind == "WhileLoopStatement") {
+            cnRequireCondition(statement.expression, context);
+            std::vector<Stmt> conditionPrefix;
+            E condition = cnConditionToAster(statement.expression, context, conditionPrefix);
+            Stmt converted(Stmt::While);
+            converted.line = statement.line;
+            converted.col = statement.column;
+            converted.label = statement.name;
+            CnLoweringContext bodyContext = context;
+            bodyContext.scopes.emplace_back();
+            if (conditionPrefix.empty()) {
+                converted.expr = std::move(condition);
+                converted.thenBody = cnStatementsToAster(statement.body, bodyContext);
+            } else {
+                converted.expr.reset(new Expr(Expr::Num, 1));
+                converted.expr->line = statement.expression.line;
+                converted.expr->col = statement.expression.column;
+                for (auto& prefixStatement : conditionPrefix)
+                    converted.thenBody.push_back(std::move(prefixStatement));
+
+                Stmt stop(Stmt::If);
+                stop.line = statement.expression.line;
+                stop.col = statement.expression.column;
+                stop.expr.reset(new Expr(Expr::Not));
+                stop.expr->a = std::move(condition);
+                stop.expr->line = statement.expression.line;
+                stop.expr->col = statement.expression.column;
+                Stmt breakStatement(Stmt::Break);
+                breakStatement.line = statement.expression.line;
+                breakStatement.col = statement.expression.column;
+                stop.thenBody.push_back(std::move(breakStatement));
+                converted.thenBody.push_back(std::move(stop));
+
+                std::vector<Stmt> body = cnStatementsToAster(statement.body, bodyContext);
+                for (auto& bodyStatement : body)
+                    converted.thenBody.push_back(std::move(bodyStatement));
+            }
+            result.push_back(std::move(converted));
+        } else if (statement.kind == "CountLoopStatement") {
+            result.push_back(cnCountLoopToAster(statement, context));
+        } else if (statement.kind == "ForEachLoopStatement") {
+            result.push_back(cnForEachLoopToAster(statement, context));
+        } else if (statement.kind == "EnumLoopStatement") {
+            result.push_back(cnEnumLoopToAster(statement, context));
+        } else if (statement.kind == "BreakStatement" || statement.kind == "ContinueStatement") {
+            Stmt converted(statement.kind == "BreakStatement" ? Stmt::Break : Stmt::Continue);
+            converted.line = statement.line;
+            converted.col = statement.column;
+            converted.label = statement.name;
+            result.push_back(std::move(converted));
+        } else if (statement.kind == "ExpressionStatement") {
+            if (statement.expression.kind != "Call")
+                throw Error(loc(statement.line, statement.column, "only call expression statements are supported by the current compiler backend"));
+            std::vector<Stmt> adapterPrefix;
+            Stmt converted(Stmt::Expr);
+            converted.line = statement.line;
+            converted.col = statement.column;
+            converted.expr = cnLowerStatementExpression(statement.expression,
+                                                         context.strings, context,
+                                                         adapterPrefix);
+            for (auto& prefixStatement : adapterPrefix)
+                result.push_back(std::move(prefixStatement));
+            result.push_back(std::move(converted));
+        } else {
+            throw Error(loc(statement.line, statement.column, "statement '" + statement.kind + "' is not supported by the current compiler backend"));
+        }
+    }
+    return result;
+}
+
+static bool cnStructHasStringField(Ty type) {
+    if (!tyIsStruct(type)) return false;
+    for (const auto& field : structOf(type.sid).fields) {
+        if (field.isString || field.ty.isString || cnStructHasStringField(field.ty))
+            return true;
+    }
+    return false;
+}
+
+static void cnWriteAggregateBits(std::vector<uint8_t>& image, uint32_t offset,
+                                 Ty type, uint64_t bits) {
+    for (uint32_t byte = 0; byte < tySize(type); ++byte)
+        image[offset + byte] = static_cast<uint8_t>(bits >> (byte * 8));
+}
+
+static std::vector<uint8_t> cnStructDefaultImage(Ty type, unsigned line,
+                                                 unsigned column) {
+    const StructDef& definition = structOf(type.sid);
+    std::vector<uint8_t> image(definition.size, 0);
+    for (const auto& field : definition.fields) {
+        if (field.isString || field.ty.isString || cnStructHasStringField(field.ty))
+            throw Error(loc(line, column,
+                            "an uninitialized global struct cannot contain string fields: " +
+                            definition.name));
+        const uint32_t count = field.len == 0 ? 1 : field.len;
+        const uint32_t elementSize = tySize(field.ty);
+        for (uint32_t element = 0; element < count; ++element) {
+            const uint32_t offset = field.offset + element * elementSize;
+            if (tyIsStruct(field.ty)) {
+                const std::vector<uint8_t> nested =
+                    cnStructDefaultImage(field.ty, line, column);
+                std::memcpy(image.data() + offset, nested.data(), nested.size());
+            } else if (field.ty.k == Ty::Enum) {
+                E value = cnEnumDefaultValue(field.ty, line, column);
+                int64_t folded = 0;
+                if (!constantInteger(*value, folded))
+                    throw Error(loc(line, column,
+                                    "enum has no constant default value in global struct: " +
+                                    definition.name));
+                cnWriteAggregateBits(image, offset, field.ty,
+                                     static_cast<uint64_t>(folded));
+            }
+        }
+    }
+    return image;
+}
+
+static std::vector<uint8_t> cnStructConstantImage(
+    Ty target, const aster_cn::Expression& source, const Expr& value,
+    const CnLoweringContext& context, const std::string& globalName) {
+    if (!tyIsStruct(target) || source.kind != "StructLiteral" || value.k != Expr::StructLit)
+        throw Error(loc(source.line, source.column,
+                        "global struct initializer must be a struct literal: " + globalName));
+    const Ty sourceType = cnBackendType(source.value, source.line, source.column);
+    if (sourceType != target)
+        throw Error(loc(source.line, source.column,
+                        "global struct initializer type mismatch: expected " +
+                        tyNameFull(target) + ", got " + tyNameFull(sourceType)));
+    const StructDef& definition = structOf(target.sid);
+    if (structHasArrayField(target.sid))
+        throw Error(loc(source.line, source.column,
+                        "struct '" + definition.name +
+                        "' contains an array field and cannot be initialized by a literal: " +
+                        globalName));
+    const size_t expected = definition.isUnion ? 1u : definition.fields.size();
+    if (source.children.size() != expected || value.args.size() != expected)
+        throw Error(loc(source.line, source.column,
+                        "struct literal for '" + definition.name + "' has " +
+                        std::to_string(source.children.size()) + " values but requires " +
+                        std::to_string(expected) + ": " + globalName));
+    std::vector<uint8_t> image(definition.size, 0);
+    for (size_t index = 0; index < expected; ++index) {
+        const StructField& field = definition.fields[index];
+        const auto& sourceField = source.children[index];
+        const Expr& fieldValue = *value.args[index];
+        if (field.ty.k == Ty::Ptr || field.isString || field.ty.isString)
+            throw Error(loc(sourceField.line, sourceField.column,
+                            "global struct field '" + definition.name + "." + field.name +
+                            "' cannot be initialized by a constant: " + globalName));
+        if (tyIsStruct(field.ty)) {
+            const std::vector<uint8_t> nested = cnStructConstantImage(
+                field.ty, sourceField, fieldValue, context, globalName);
+            std::memcpy(image.data() + field.offset, nested.data(), nested.size());
+            continue;
+        }
+        const Ty actual = cnExpressionType(sourceField, context);
+        const uint64_t bits = cnConstantScalarBits(field.ty, actual, fieldValue,
+                                                   sourceField.line, sourceField.column);
+        cnWriteAggregateBits(image, field.offset, field.ty, bits);
+    }
+    return image;
+}
+
+namespace {
+namespace fs = std::filesystem;
+
+struct CnImportedMethod {
+    std::string symbol;
+    std::string visibility;
+};
+
+struct CnImportedGlobal {
+    std::string symbol;
+    std::string visibility;
+    std::string sourceFile;
+};
+
+struct CnImportedModule {
+    std::string name;
+    std::string prefix;
+    std::vector<aster_cn::Program> sources;
+    std::map<std::string, CnImportedMethod> methods;
+    std::map<std::string, CnImportedGlobal> globals;
+    std::map<std::string, std::string> classes;
+    std::map<std::string, std::string> structures;
+    std::map<std::string, std::string> interfaces;
+    std::map<std::string, std::string> enums;
+    std::map<std::string, std::string> classBases;
+    std::map<std::string, std::string> interfaceBases;
+    std::map<std::string, std::set<std::string>> classStaticMembers;
+    std::map<std::string, std::string> typeVisibility;
+    std::map<std::string, std::map<std::string, std::string>> enumMembers;
+};
+
+static std::string cnModulePrefix(const std::string& name) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string result = "__aster_mod_";
+    for (unsigned char byte : name) {
+        result.push_back(digits[byte >> 4]);
+        result.push_back(digits[byte & 15]);
+    }
+    return result + "_";
+}
+
+struct CnPackageIndex {
+    std::map<std::string, std::string> canonicalByName;
+    std::map<std::string, std::vector<std::string>> namesByCanonical;
+    std::map<std::string, std::vector<std::string>> filesByCanonical;
+    std::vector<std::string> conflicts;
+};
+
+static CnPackageIndex cnIndexPackages(const fs::path& directory, const fs::path& entry,
+                                      aster_cn::ProjectLanguageConfig projectLanguage) {
+    CnPackageIndex index;
+    std::set<fs::path> paths;
+    std::error_code directoryError;
+    if (!fs::is_directory(directory, directoryError) || directoryError) return index;
+    std::error_code entryError;
+    const fs::path canonicalEntry = fs::canonical(entry, entryError);
+    // Language policy is checked when a package is loaded, so an unrelated
+    // source in a disallowed language does not stop package discovery.
+    projectLanguage.hasAllowed = false;
+    const auto options = fs::directory_options::skip_permission_denied;
+    for (fs::recursive_directory_iterator it(directory, options), end; it != end; ++it) {
+        const fs::directory_entry& candidate = *it;
+        if (candidate.path().filename().string().front() == '.') {
+            it.disable_recursion_pending();
+            continue;
+        }
+        std::error_code error;
+        if (candidate.path().extension() != ".ast" || !candidate.is_regular_file(error)) continue;
+        const fs::path path = fs::canonical(candidate.path(), error);
+        if (!error && (entryError || path != canonicalEntry)) paths.insert(path);
+    }
+    for (const fs::path& path : paths) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) continue;
+        const std::string source(std::istreambuf_iterator<char>(file), {});
+        try {
+            const auto language = aster_cn::selectLanguage(
+                source, false, aster_cn::Language::Zh, projectLanguage);
+            const std::vector<std::string> names = aster_cn::readPackageNames(source, language);
+            if (names.empty()) continue;
+            const std::string& canonical = names.front();
+            auto& packageNames = index.namesByCanonical[canonical];
+            if (packageNames.empty()) packageNames = names;
+            index.filesByCanonical[canonical].push_back(path.string());
+            for (const auto& name : names) {
+                const auto existing = index.canonicalByName.find(name);
+                if (existing != index.canonicalByName.end() && existing->second != canonical)
+                    index.conflicts.push_back(name + " -> " + existing->second + " / " + canonical);
+                else
+                    index.canonicalByName.emplace(name, canonical);
+            }
+        } catch (const std::runtime_error&) {
+            // This is a probe; compilation diagnoses errors in selected files.
+        }
+    }
+    return index;
+}
+
+using CnAliasModules = std::map<std::string, const CnImportedModule*>;
+
+static void cnRequireImportedTypePublic(const CnImportedModule& module,
+                                        const std::string& typeName,
+                                        unsigned line, unsigned column) {
+    const auto visibility = module.typeVisibility.find(typeName);
+    if (visibility != module.typeVisibility.end() && visibility->second != "public")
+        throw Error(loc(line, column, "type '" + typeName +
+                        "' is not public in package '" + module.name + "'"));
+}
+
+static std::string cnRewriteImportedType(const std::string& name,
+                                         const CnImportedModule* owner,
+                                         const CnAliasModules& aliases,
+                                         unsigned line, unsigned column) {
+    const size_t dot = name.find('.');
+    if (dot != std::string::npos) {
+        const auto alias = aliases.find(name.substr(0, dot));
+        if (alias != aliases.end()) {
+            const std::string member = name.substr(dot + 1);
+            cnRequireImportedTypePublic(*alias->second, member, line, column);
+            const auto importedClass = alias->second->classes.find(member);
+            if (importedClass != alias->second->classes.end()) return importedClass->second;
+            const auto importedStruct = alias->second->structures.find(member);
+            if (importedStruct != alias->second->structures.end()) return importedStruct->second;
+            const auto importedInterface = alias->second->interfaces.find(member);
+            if (importedInterface != alias->second->interfaces.end()) return importedInterface->second;
+            const auto importedEnum = alias->second->enums.find(member);
+            if (importedEnum != alias->second->enums.end()) return importedEnum->second;
+            throw Error(loc(line, column, "package '" + alias->second->name +
+                            "' does not export type '" + member + "'"));
+        }
+    }
+    if (!owner) return name;
+    const auto className = owner->classes.find(name);
+    if (className != owner->classes.end()) return className->second;
+    const auto structureName = owner->structures.find(name);
+    if (structureName != owner->structures.end()) return structureName->second;
+    const auto interfaceName = owner->interfaces.find(name);
+    if (interfaceName != owner->interfaces.end()) return interfaceName->second;
+    const auto enumName = owner->enums.find(name);
+    if (enumName != owner->enums.end()) return enumName->second;
+    return name;
+}
+
+static void cnRewriteImportedExpression(aster_cn::Expression& expression,
+                                        const CnImportedModule* owner,
+                                        const CnAliasModules& aliases,
+                                        bool rewriteFunctionValues = false) {
+    using aster_cn::Expression;
+    if (expression.kind == "Call" && !expression.children.empty()) {
+        Expression& callee = expression.children.front();
+        if (callee.kind == "Member" && callee.children.size() == 2 &&
+            callee.children[0].kind == "Identifier" &&
+            callee.children[1].kind == "Identifier") {
+            const auto alias = aliases.find(callee.children[0].value);
+            if (alias != aliases.end()) {
+                const std::string member = callee.children[1].value;
+                const auto method = alias->second->methods.find(member);
+                if (method != alias->second->methods.end()) {
+                    if (method->second.visibility != "public")
+                        throw Error(loc(expression.line, expression.column,
+                            "method '" + member + "' is not public in package '" +
+                            alias->second->name + "'"));
+                    callee.kind = "Identifier";
+                    callee.value = method->second.symbol;
+                    callee.children.clear();
+                } else {
+                    const auto importedClass = alias->second->classes.find(member);
+                    if (importedClass != alias->second->classes.end()) {
+                        cnRequireImportedTypePublic(*alias->second, member,
+                                                    expression.line, expression.column);
+                        callee.kind = "Identifier";
+                        callee.value = importedClass->second;
+                        callee.children.clear();
+                    } else {
+                        const auto importedGlobal = alias->second->globals.find(member);
+                        if (importedGlobal != alias->second->globals.end()) {
+                            if (importedGlobal->second.visibility != "public")
+                                throw Error(loc(expression.line, expression.column,
+                                    "global '" + member + "' is not public in package '" +
+                                    alias->second->name + "'"));
+                            callee.kind = "Identifier";
+                            callee.value = importedGlobal->second.symbol;
+                            callee.children.clear();
+                        } else {
+                            throw Error(loc(expression.line, expression.column,
+                                "package '" + alias->second->name +
+                                "' has no method, global, or class named '" + member + "'"));
+                        }
+                    }
+                }
+            }
+        }
+        if (callee.kind == "Identifier" && owner) {
+            const auto method = owner->methods.find(callee.value);
+            if (method != owner->methods.end()) callee.value = method->second.symbol;
+            else {
+                const auto className = owner->classes.find(callee.value);
+                if (className != owner->classes.end()) callee.value = className->second;
+                else {
+                    const auto global = owner->globals.find(callee.value);
+                    if (global != owner->globals.end()) callee.value = global->second.symbol;
+                }
+            }
+        } else if (callee.kind == "TypeName") {
+            callee.value = cnRewriteImportedType(callee.value, owner, aliases,
+                                                  callee.line, callee.column);
+        } else if (callee.kind != "Identifier") {
+            cnRewriteImportedExpression(callee, owner, aliases, rewriteFunctionValues);
+        }
+        for (size_t i = 1; i < expression.children.size(); ++i)
+            cnRewriteImportedExpression(expression.children[i], owner, aliases,
+                                        rewriteFunctionValues);
+        return;
+    }
+    if (expression.kind == "Member" && expression.children.size() == 2 &&
+        expression.children[0].kind == "Member" &&
+        expression.children[0].children.size() == 2 &&
+        expression.children[0].children[0].kind == "Identifier" &&
+        expression.children[0].children[1].kind == "Identifier" &&
+        expression.children[1].kind == "Identifier") {
+        const auto alias = aliases.find(expression.children[0].children[0].value);
+        if (alias != aliases.end()) {
+            const std::string& enumName = expression.children[0].children[1].value;
+            const auto enumeration = alias->second->enumMembers.find(enumName);
+            if (enumeration != alias->second->enumMembers.end()) {
+                cnRequireImportedTypePublic(*alias->second, enumName,
+                                            expression.line, expression.column);
+                const auto member = enumeration->second.find(expression.children[1].value);
+                if (member == enumeration->second.end())
+                    throw Error(loc(expression.line, expression.column,
+                        "package '" + alias->second->name + "' enum '" + enumName +
+                        "' has no member named '" + expression.children[1].value + "'"));
+                expression.kind = "Identifier";
+                expression.value = member->second;
+                expression.children.clear();
+                return;
+            }
+        }
+    }
+    if (expression.kind == "TypeName") {
+        expression.value = cnRewriteImportedType(expression.value, owner, aliases,
+                                                  expression.line, expression.column);
+        return;
+    }
+    if (expression.kind == "StructLiteral")
+        expression.value = cnRewriteImportedType(expression.value, owner, aliases,
+                                                  expression.line, expression.column);
+    if (expression.kind == "Member" && expression.children.size() == 2 &&
+        expression.children[0].kind == "Identifier" &&
+        expression.children[1].kind == "Identifier") {
+        if (owner) {
+            const auto className = owner->classes.find(expression.children[0].value);
+            const auto staticMembers = owner->classStaticMembers.find(
+                expression.children[0].value);
+            if (className != owner->classes.end() &&
+                staticMembers != owner->classStaticMembers.end() &&
+                staticMembers->second.count(expression.children[1].value))
+                expression.children[0].value = className->second;
+        }
+        const auto alias = aliases.find(expression.children[0].value);
+        if (alias != aliases.end()) {
+            const std::string member = expression.children[1].value;
+            const auto importedMethod = alias->second->methods.find(member);
+            if (importedMethod != alias->second->methods.end()) {
+                if (importedMethod->second.visibility != "public")
+                    throw Error(loc(expression.line, expression.column,
+                        "method '" + member + "' is not public in package '" +
+                        alias->second->name + "'"));
+                expression.kind = "Identifier";
+                expression.value = importedMethod->second.symbol;
+                expression.children.clear();
+                return;
+            }
+            const auto importedClass = alias->second->classes.find(member);
+            if (importedClass != alias->second->classes.end()) {
+                cnRequireImportedTypePublic(*alias->second, member,
+                                            expression.line, expression.column);
+                expression.kind = "Identifier";
+                expression.value = importedClass->second;
+                expression.children.clear();
+                return;
+            }
+            const auto importedStruct = alias->second->structures.find(member);
+            if (importedStruct != alias->second->structures.end()) {
+                cnRequireImportedTypePublic(*alias->second, member,
+                                            expression.line, expression.column);
+                expression.kind = "Identifier";
+                expression.value = importedStruct->second;
+                expression.children.clear();
+                return;
+            }
+            const auto importedGlobal = alias->second->globals.find(member);
+            if (importedGlobal != alias->second->globals.end()) {
+                if (importedGlobal->second.visibility != "public")
+                    throw Error(loc(expression.line, expression.column,
+                        "global '" + member + "' is not public in package '" +
+                        alias->second->name + "'"));
+                expression.kind = "Identifier";
+                expression.value = importedGlobal->second.symbol;
+                expression.children.clear();
+                return;
+            }
+            const auto importedInterface = alias->second->interfaces.find(member);
+            if (importedInterface != alias->second->interfaces.end()) {
+                cnRequireImportedTypePublic(*alias->second, member,
+                                            expression.line, expression.column);
+                expression.kind = "Identifier";
+                expression.value = importedInterface->second;
+                expression.children.clear();
+                return;
+            }
+        }
+    }
+    if (expression.kind == "Identifier" && owner) {
+        if (rewriteFunctionValues) {
+            const auto method = owner->methods.find(expression.value);
+            if (method != owner->methods.end()) {
+                expression.value = method->second.symbol;
+                return;
+            }
+        }
+        const auto global = owner->globals.find(expression.value);
+        if (global != owner->globals.end()) {
+            expression.value = global->second.symbol;
+            return;
+        }
+        for (const auto& enumeration : owner->enumMembers) {
+            const auto member = enumeration.second.find(expression.value);
+            if (member != enumeration.second.end()) {
+                expression.value = member->second;
+                return;
+            }
+        }
+    }
+    for (auto& child : expression.children)
+        cnRewriteImportedExpression(child, owner, aliases, rewriteFunctionValues);
+}
+
+static void cnRewriteImportedStatement(aster_cn::Statement& statement,
+                                       const CnImportedModule* owner,
+                                       const CnAliasModules& aliases) {
+    if (!statement.typeName.empty())
+        statement.typeName = cnRewriteImportedType(statement.typeName, owner, aliases,
+                                                    statement.line, statement.column);
+    if (statement.hasExpression)
+        cnRewriteImportedExpression(statement.expression, owner, aliases);
+    for (auto& expression : statement.expressions)
+        cnRewriteImportedExpression(expression, owner, aliases);
+    for (auto& expression : statement.conditions)
+        cnRewriteImportedExpression(expression, owner, aliases);
+    for (auto& values : statement.caseValues)
+        for (auto& expression : values)
+            cnRewriteImportedExpression(expression, owner, aliases);
+    for (auto& child : statement.body) cnRewriteImportedStatement(child, owner, aliases);
+    for (auto& branch : statement.branches)
+        for (auto& child : branch) cnRewriteImportedStatement(child, owner, aliases);
+    for (auto& child : statement.elseBody) cnRewriteImportedStatement(child, owner, aliases);
+}
+
+static void cnRewriteImportedMethod(aster_cn::MethodDeclaration& method,
+                                     const CnImportedModule* owner,
+                                     const CnAliasModules& aliases,
+                                     bool topLevel) {
+    if (owner && topLevel) {
+        const auto symbol = owner->methods.find(method.name);
+        if (symbol != owner->methods.end()) method.name = symbol->second.symbol;
+    }
+    method.returnType = cnRewriteImportedType(method.returnType, owner, aliases,
+                                               method.line, method.column);
+    for (auto& parameter : method.parameters)
+        parameter.typeName = cnRewriteImportedType(parameter.typeName, owner, aliases,
+                                                    method.line, method.column);
+    for (auto& statement : method.body)
+        cnRewriteImportedStatement(statement, owner, aliases);
+}
+
+static void cnRewriteImportedProgram(aster_cn::Program& program,
+                                      const CnImportedModule* owner,
+                                      const std::map<std::string, CnImportedModule>& modules,
+                                      const std::map<std::string, std::string>& canonicalByName) {
+    CnAliasModules aliases;
+    for (const auto& import : program.imports) {
+        const auto canonical = canonicalByName.find(import.moduleName);
+        if (canonical == canonicalByName.end())
+            throw Error(loc(import.line, import.column,
+                            "cannot find package source declared as '" + import.moduleName + "'"));
+        const auto module = modules.find(canonical->second);
+        if (module == modules.end())
+            throw Error(loc(import.line, import.column,
+                            "internal error: unresolved package '" + import.moduleName + "'"));
+        if (!aliases.emplace(import.alias, &module->second).second)
+            throw Error(loc(import.line, import.column,
+                            "duplicate package alias: " + import.alias));
+    }
+    for (auto& method : program.methods)
+        cnRewriteImportedMethod(method, owner, aliases, true);
+    for (auto& structure : program.structures) {
+        if (owner) {
+            const auto symbol = owner->structures.find(structure.name);
+            if (symbol != owner->structures.end()) structure.name = symbol->second;
+        }
+        for (auto& field : structure.fields)
+            field.typeName = cnRewriteImportedType(field.typeName, owner, aliases,
+                                                    field.line, field.column);
+    }
+    for (auto& declaration : program.classes) {
+        if (owner) {
+            const auto symbol = owner->classes.find(declaration.name);
+            if (symbol != owner->classes.end()) declaration.name = symbol->second;
+        }
+        if (!declaration.baseName.empty())
+            declaration.baseName = cnRewriteImportedType(declaration.baseName, owner, aliases,
+                                                          declaration.line, declaration.column);
+        for (auto& field : declaration.fields)
+            field.typeName = cnRewriteImportedType(field.typeName, owner, aliases,
+                                                    field.line, field.column);
+        for (auto& field : declaration.fields)
+            if (field.hasInitializer)
+                cnRewriteImportedExpression(field.initializer, owner, aliases, true);
+        for (auto& method : declaration.methods)
+            cnRewriteImportedMethod(method, owner, aliases, false);
+    }
+    for (auto& declaration : program.interfaceClasses) {
+        if (owner) {
+            const auto symbol = owner->interfaces.find(declaration.name);
+            if (symbol != owner->interfaces.end()) declaration.name = symbol->second;
+        }
+        if (!declaration.baseName.empty())
+            declaration.baseName = cnRewriteImportedType(declaration.baseName, owner, aliases,
+                                                          declaration.line, declaration.column);
+        for (auto& method : declaration.methods) {
+            method.returnType = cnRewriteImportedType(method.returnType, owner, aliases,
+                                                       method.line, method.column);
+            for (auto& parameter : method.parameters)
+                parameter.typeName = cnRewriteImportedType(parameter.typeName, owner, aliases,
+                                                            method.line, method.column);
+        }
+    }
+    for (auto& enumeration : program.enums) {
+        const std::string originalName = enumeration.name;
+        if (owner) {
+            const auto enumSymbol = owner->enums.find(originalName);
+            if (enumSymbol != owner->enums.end()) enumeration.name = enumSymbol->second;
+            const auto members = owner->enumMembers.find(originalName);
+            if (members != owner->enumMembers.end()) {
+                for (auto& member : enumeration.members) {
+                    const auto memberSymbol = members->second.find(member.name);
+                    if (memberSymbol != members->second.end()) member.name = memberSymbol->second;
+                }
+            }
+        }
+        for (auto& member : enumeration.members)
+            if (member.hasExpression)
+                cnRewriteImportedExpression(member.expression, owner, aliases);
+    }
+    for (auto& global : program.globals) {
+        cnRewriteImportedStatement(global, owner, aliases);
+        if (owner) {
+            const auto symbol = owner->globals.find(global.name);
+            if (symbol != owner->globals.end()) global.name = symbol->second.symbol;
+        }
+    }
+    program.imports.clear();
+}
+
+static aster_cn::Program cnResolvePackageImports(
+    aster_cn::Program root,
+    const aster_cn::ProjectLanguageConfig& projectLanguage,
+    const std::vector<std::string>& searchRoots) {
+    if (root.imports.empty()) return root;
+    CnPackageIndex packageIndex;
+    const fs::path rootDirectory = fs::path(dirNameOf(root.sourceFile)).empty()
+        ? fs::current_path() : fs::path(dirNameOf(root.sourceFile));
+    auto indexFirstFound = [&](const fs::path& directory) {
+        const CnPackageIndex found = cnIndexPackages(directory, fs::path(root.sourceFile),
+                                                      projectLanguage);
+        if (!found.conflicts.empty())
+            throw Error("package alias resolves to multiple canonical names in '" +
+                        directory.string() + "': " + found.conflicts.front());
+        for (const auto& entry : found.filesByCanonical) {
+            const std::string& canonical = entry.first;
+            if (packageIndex.filesByCanonical.count(canonical)) continue;
+            for (const auto& name : found.namesByCanonical.at(canonical)) {
+                const auto existing = packageIndex.canonicalByName.find(name);
+                if (existing != packageIndex.canonicalByName.end() && existing->second != canonical)
+                    throw Error("package alias resolves to multiple canonical names across search roots: " +
+                                name + " -> " + existing->second + " / " + canonical);
+            }
+            packageIndex.filesByCanonical.emplace(canonical, entry.second);
+            packageIndex.namesByCanonical.emplace(canonical,
+                found.namesByCanonical.at(canonical));
+            for (const auto& name : found.namesByCanonical.at(canonical))
+                packageIndex.canonicalByName.emplace(name, canonical);
+        }
+    };
+    indexFirstFound(rootDirectory);
+    for (const std::string& searchRoot : searchRoots) {
+        indexFirstFound(fs::path(searchRoot).empty() ? fs::current_path() : fs::path(searchRoot));
+    }
+    std::map<std::string, CnImportedModule> modules;
+    std::set<std::string> loading;
+    std::vector<std::string> loadOrder;
+    std::function<void(const std::string&)> loadPackage;
+    loadPackage = [&](const std::string& requestedName) {
+        const auto canonicalEntry = packageIndex.canonicalByName.find(requestedName);
+        if (canonicalEntry == packageIndex.canonicalByName.end())
+            throw std::runtime_error("cannot find package source declared as '" + requestedName + "'");
+        const std::string& name = canonicalEntry->second;
+        if (loading.count(name))
+            throw std::runtime_error("cyclic package import involving '" + name + "'");
+        if (modules.count(name)) return;
+        loading.insert(name);
+        CnImportedModule module;
+        module.name = name;
+        module.prefix = cnModulePrefix(name);
+        const auto packageFiles = packageIndex.filesByCanonical.find(name);
+        if (packageFiles == packageIndex.filesByCanonical.end())
+            throw std::runtime_error("cannot find package source declared as '" + name + "'");
+        const std::vector<std::string>& packageNames = packageIndex.namesByCanonical.at(name);
+        for (const std::string& sourcePath : packageFiles->second) {
+            const std::string source = readFile(sourcePath);
+            const aster_cn::Language language = aster_cn::selectLanguage(
+                source, false, aster_cn::Language::Zh, projectLanguage);
+            aster_cn::Program parsed = aster_cn::parseProgram(source, language, sourcePath);
+            if (parsed.packageName != name)
+                throw std::runtime_error(sourcePath + ": package declaration does not match '" + name + "'");
+            std::vector<std::string> sourcePackageNames{parsed.packageName};
+            sourcePackageNames.insert(sourcePackageNames.end(), parsed.packageAliases.begin(),
+                                      parsed.packageAliases.end());
+            if (sourcePackageNames != packageNames)
+                throw std::runtime_error(sourcePath + ": package aliases do not match the other source files for '" + name + "'");
+            for (const auto& method : parsed.methods) {
+                CnImportedMethod symbol;
+                symbol.symbol = module.prefix + method.name;
+                symbol.visibility = method.visibility;
+                if (!module.methods.emplace(method.name, std::move(symbol)).second)
+                    throw std::runtime_error(sourcePath + ": duplicate package method: " + method.name);
+            }
+            for (const auto& declaration : parsed.classes) {
+                if (!module.classes.emplace(declaration.name,
+                        module.prefix + declaration.name).second)
+                    throw std::runtime_error(sourcePath + ": duplicate package class: " + declaration.name);
+                module.typeVisibility.emplace(declaration.name, declaration.visibility);
+                if (!declaration.baseName.empty())
+                    module.classBases.emplace(declaration.name, declaration.baseName);
+                auto& staticMembers = module.classStaticMembers[declaration.name];
+                for (const auto& field : declaration.fields)
+                    if (field.isStatic) staticMembers.insert(field.name);
+                for (const auto& method : declaration.methods)
+                    if (method.isStatic) staticMembers.insert(method.name);
+            }
+            for (const auto& declaration : parsed.structures) {
+                if (!module.structures.emplace(declaration.name,
+                        module.prefix + declaration.name).second)
+                    throw std::runtime_error(sourcePath + ": duplicate package structure: " + declaration.name);
+                module.typeVisibility.emplace(declaration.name, declaration.visibility);
+            }
+            for (const auto& declaration : parsed.globals) {
+                CnImportedGlobal symbol;
+                symbol.symbol = declaration.isExternal
+                    ? declaration.externalName : module.prefix + declaration.name;
+                symbol.visibility = declaration.visibility;
+                symbol.sourceFile = declaration.sourceFile;
+                if (!module.globals.emplace(declaration.name, std::move(symbol)).second)
+                    throw std::runtime_error(sourcePath + ": duplicate package global: " + declaration.name);
+            }
+            for (const auto& declaration : parsed.interfaceClasses) {
+                if (!module.interfaces.emplace(declaration.name,
+                        module.prefix + declaration.name).second)
+                    throw std::runtime_error(sourcePath + ": duplicate package interface class: " + declaration.name);
+                module.typeVisibility.emplace(declaration.name, declaration.visibility);
+                if (!declaration.baseName.empty())
+                    module.interfaceBases.emplace(declaration.name, declaration.baseName);
+            }
+            for (const auto& declaration : parsed.enums) {
+                if (!module.enums.emplace(declaration.name,
+                        module.prefix + declaration.name).second)
+                    throw std::runtime_error(sourcePath + ": duplicate package enum: " + declaration.name);
+                module.typeVisibility.emplace(declaration.name, declaration.visibility);
+                auto& members = module.enumMembers[declaration.name];
+                for (const auto& member : declaration.members)
+                    if (!members.emplace(member.name, module.prefix + member.name).second)
+                        throw std::runtime_error(sourcePath + ": duplicate package enumerator: " + member.name);
+            }
+            module.sources.push_back(std::move(parsed));
+        }
+        for (const auto& source : module.sources) {
+            for (const auto& declaration : source.classes) {
+                std::string baseName = declaration.baseName;
+                std::set<std::string> visited{declaration.name};
+                auto& staticMembers = module.classStaticMembers[declaration.name];
+                while (module.classes.count(baseName) && visited.insert(baseName).second) {
+                    const auto inherited = module.classStaticMembers.find(baseName);
+                    if (inherited != module.classStaticMembers.end())
+                        staticMembers.insert(inherited->second.begin(), inherited->second.end());
+                    const auto base = module.classBases.find(baseName);
+                    if (base == module.classBases.end()) break;
+                    baseName = base->second;
+                }
+            }
+        }
+        modules.emplace(name, std::move(module));
+        const CnImportedModule& loaded = modules.at(name);
+        for (const auto& source : loaded.sources)
+            for (const auto& import : source.imports)
+                loadPackage(import.moduleName);
+        loading.erase(name);
+        loadOrder.push_back(name);
+    };
+
+    for (const auto& import : root.imports) loadPackage(import.moduleName);
+
+    aster_cn::Program merged;
+    merged.sourceFile = root.sourceFile;
+    merged.language = root.language;
+    for (const std::string& name : loadOrder) {
+        CnImportedModule& module = modules.at(name);
+        for (aster_cn::Program& source : module.sources) {
+            cnRewriteImportedProgram(source, &module, modules, packageIndex.canonicalByName);
+            merged.structures.insert(merged.structures.end(), source.structures.begin(), source.structures.end());
+            merged.classes.insert(merged.classes.end(), source.classes.begin(), source.classes.end());
+            merged.interfaceClasses.insert(merged.interfaceClasses.end(),
+                source.interfaceClasses.begin(), source.interfaceClasses.end());
+            merged.enums.insert(merged.enums.end(), source.enums.begin(), source.enums.end());
+            merged.methods.insert(merged.methods.end(), source.methods.begin(), source.methods.end());
+            merged.globals.insert(merged.globals.end(), source.globals.begin(), source.globals.end());
+        }
+    }
+    cnRewriteImportedProgram(root, nullptr, modules, packageIndex.canonicalByName);
+    merged.structures.insert(merged.structures.end(), root.structures.begin(), root.structures.end());
+    merged.classes.insert(merged.classes.end(), root.classes.begin(), root.classes.end());
+    merged.interfaceClasses.insert(merged.interfaceClasses.end(),
+        root.interfaceClasses.begin(), root.interfaceClasses.end());
+    merged.enums.insert(merged.enums.end(), root.enums.begin(), root.enums.end());
+    merged.methods.insert(merged.methods.end(), root.methods.begin(), root.methods.end());
+    merged.globals.insert(merged.globals.end(), root.globals.begin(), root.globals.end());
+    return merged;
+}
+}  // namespace
+
+static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
+                                              std::vector<Global>& globals,
+                                              bool countCheck) {
+    std::vector<Function> functions;
+    // A bilingual project test can lower several independent test programs in
+    // one compiler process.  These legacy tables are the per-program backend
+    // type registry; keeping entries from the previous test makes the built-in
+    // metadata structures look like duplicate user declarations.
+    g_structs.clear();
+    g_structIndex.clear();
+    g_enums.clear();
+    g_enumIndex.clear();
+    g_enumConsts.clear();
+    g_typeAlias.clear();
+    // Validate literal contents before type checking or lowering.  This keeps
+    // malformed string bytes from being hidden by an unrelated surrounding
+    // expression error (for example `0 + "bad\\0"`).
+    cnValidateStringLiteralsProgram(program);
+    std::set<std::string> names;
+    std::set<std::string> methodNames;
+    std::map<std::string, Ty> methodReturns;
+    std::map<std::string, CnBinding> globalBindings;
+    std::map<std::string, size_t> globalIndices;
+    CnStringPool stringPool;
+    stringPool.globals = &globals;
+    stringPool.functions = &functions;
+    bool hasMain = false;
+    functions.reserve(program.methods.size() + 8);
+    g_cnClosureTypes.clear();
+    g_cnClosureTypesBySignature.clear();
+    g_cnReservedSourceNames.clear();
+    g_cnNextClosureType = 0;
+    for (const auto& declaration : program.interfaceClasses)
+        g_cnReservedSourceNames.insert(declaration.name);
+    for (const auto& declaration : program.enums)
+        g_cnReservedSourceNames.insert(declaration.name);
+    for (const auto& declaration : program.structures)
+        g_cnReservedSourceNames.insert(declaration.name);
+    for (const auto& declaration : program.classes) {
+        g_cnReservedSourceNames.insert(declaration.name);
+        for (const auto& method : declaration.methods)
+            g_cnReservedSourceNames.insert(method.name);
+    }
+    for (const auto& method : program.methods)
+        g_cnReservedSourceNames.insert(method.name);
+    for (const auto& global : program.globals)
+        g_cnReservedSourceNames.insert(global.name);
+    g_cnInterfaceNames.clear();
+    g_cnInterfaceMethods.clear();
+    g_cnInterfaceIndex.clear();
+    g_cnInterfaceVtableIndex.clear();
+    g_cnInterfaceTableGlobals.clear();
+    g_cnInterfaceMethodOrder.clear();
+    g_cnClassIndex.clear();
+    g_cnClassVtableIndex.clear();
+    g_cnClassVtableGlobals.clear();
+    g_cnClassMethods.clear();
+    g_cnTopLevelMethods.clear();
+    g_cnTopLevelGlobals.clear();
+    g_cnFunctionSignatures.clear();
+    g_cnExternalMethodNames.clear();
+    g_cnExternalGlobalNames.clear();
+    for (const auto& declaration : program.interfaceClasses)
+        g_cnInterfaceNames.insert(declaration.name);
+    cnRegisterEnums(program);
+    cnRegisterStructures(program);
+    for (const auto& declaration : program.globals) {
+        const auto inserted = g_cnTopLevelGlobals.emplace(declaration.name,
+            CnTopLevelGlobalInfo{cnVisibilityCode(declaration.visibility,
+                                                   declaration.line, declaration.column),
+                                 declaration.sourceFile});
+        if (!inserted.second)
+            throw Error(loc(declaration.line, declaration.column,
+                            "duplicate top-level global declaration: " + declaration.name));
+        if (declaration.isExternal) {
+            if (declaration.externalName.empty())
+                throw Error(loc(declaration.line, declaration.column,
+                                "external global is missing its ASCII symbol name"));
+            g_cnExternalGlobalNames[declaration.name] = declaration.externalName;
+        }
+    }
+    std::set<std::string> declaredMethodNames;
+    for (const auto& method : program.methods) {
+        declaredMethodNames.insert(method.name);
+        if (method.isExternal) {
+            if (method.externalName.empty())
+                throw Error(loc(method.line, method.column,
+                                "external method is missing its ASCII symbol name"));
+            g_cnExternalMethodNames[method.name] = method.externalName;
+        }
+        methodReturns[method.name] = cnBackendType(method.returnType, method.line, method.column);
+        CnFunctionSignature signature;
+        signature.returnType = methodReturns[method.name];
+        g_cnTopLevelMethods[method.name] = CnTopLevelMethodInfo{
+            cnVisibilityCode(method.visibility, method.line, method.column), method.sourceFile};
+        for (const auto& parameter : method.parameters) {
+            std::vector<uint32_t> parameterDims;
+            const Ty type = cnParameterType(parameter, method.line, method.column,
+                                            &parameterDims);
+            if (type == Ty::Void)
+                throw Error(loc(method.line, method.column,
+                                "void cannot be used as a method parameter type"));
+            FuncSig parameterSignature;
+            const bool isFunc = cnFunctionTypeSignature(parameter.typeName, parameterSignature,
+                                                        method.line, method.column);
+            signature.parameterTypes.push_back(type);
+            signature.parameterDims.push_back(std::move(parameterDims));
+            signature.parameterFuncSigs.push_back(parameterSignature);
+            signature.parameterIsFunc.push_back(isFunc);
+        }
+        g_cnFunctionSignatures[method.name] = std::move(signature);
+    }
+    g_cnInterfaceBase.clear();
+    for (const auto& declaration : program.interfaceClasses) {
+        if (g_enumIndex.count(declaration.name) || g_cnClassIndex.count(declaration.name) ||
+            declaredMethodNames.count(declaration.name))
+            throw Error(loc(declaration.line, declaration.column,
+                            "duplicate or conflicting interface class declaration: " + declaration.name));
+        auto& interfaceMethods = g_cnInterfaceMethods[declaration.name];
+        if (!declaration.baseName.empty()) {
+            if (!g_cnInterfaceNames.count(declaration.baseName))
+                throw Error(loc(declaration.line, declaration.column,
+                                "interface base must name a previously declared interface: " +
+                                declaration.baseName));
+            const auto baseMethods = g_cnInterfaceMethods.find(declaration.baseName);
+            if (baseMethods == g_cnInterfaceMethods.end())
+                throw Error(loc(declaration.line, declaration.column,
+                                "base interface must be declared before its derived interface: " +
+                                declaration.baseName));
+            interfaceMethods = baseMethods->second;
+            g_cnInterfaceMethodOrder[declaration.name] =
+                g_cnInterfaceMethodOrder.at(declaration.baseName);
+            g_cnInterfaceBase[declaration.name] = declaration.baseName;
+        }
+        for (const auto& method : declaration.methods) {
+            if (interfaceMethods.count(method.name))
+                throw Error(loc(method.line, method.column,
+                                "duplicate interface method declaration: " + method.name));
+            CnClassMethodInfo info;
+            info.returnType = cnBackendType(method.returnType, method.line, method.column);
+            for (const auto& parameter : method.parameters) {
+                std::vector<uint32_t> parameterDims;
+                const Ty type = cnParameterType(parameter, method.line, method.column,
+                                                &parameterDims);
+                if (type == Ty::Void)
+                    throw Error(loc(method.line, method.column,
+                                    "void cannot be used as an interface method parameter type"));
+                info.parameterTypes.push_back(type);
+                info.parameterDims.push_back(std::move(parameterDims));
+                FuncSig parameterSignature;
+                const bool isFunc = cnFunctionTypeSignature(parameter.typeName,
+                                                            parameterSignature,
+                                                            method.line, method.column);
+                info.parameterFuncSigs.push_back(parameterSignature);
+                info.parameterIsFunc.push_back(isFunc);
+            }
+            interfaceMethods.emplace(method.name, std::move(info));
+            g_cnInterfaceMethodOrder[declaration.name].push_back(method.name);
+        }
+    }
+    for (const auto& declaration : program.classes) {
+        const int sid = g_cnClassIndex.at(declaration.name);
+        auto& classMethods = g_cnClassMethods[sid];
+        for (const auto& method : declaration.methods) {
+            if (classMethods.count(method.name))
+                throw Error(loc(method.line, method.column,
+                                "duplicate class method declaration: " + method.name));
+            CnClassMethodInfo info;
+            info.functionName = cnClassMethodName(sid, method.name);
+            info.ownerClassId = sid;
+            info.returnType = cnBackendType(method.returnType, method.line, method.column);
+            info.visibility = cnVisibilityCode(method.visibility, method.line, method.column);
+            info.isStatic = method.isStatic;
+            info.isConstructor = method.isConstructor;
+            info.isOverride = method.isOverride;
+            info.sourceFile = method.sourceFile;
+            cnExtractParentConstructorCall(method, info);
+            if (info.isConstructor) {
+                if (info.isStatic || info.returnType != Ty::Void)
+                    throw Error(loc(method.line, method.column,
+                                    "a constructor must be an instance method returning void"));
+                if (cnFindClassConstructor(sid))
+                    throw Error(loc(method.line, method.column,
+                                    "a class can declare only one constructor"));
+            }
+            for (const auto& parameter : method.parameters) {
+                std::vector<uint32_t> parameterDims;
+                const Ty type = cnParameterType(parameter, method.line, method.column,
+                                                &parameterDims);
+                if (type == Ty::Void)
+                    throw Error(loc(method.line, method.column,
+                                    "void cannot be used as a class method parameter type"));
+                info.parameterTypes.push_back(type);
+                info.parameterNames.push_back(parameter.name);
+                info.parameterDims.push_back(std::move(parameterDims));
+                FuncSig parameterSignature;
+                const bool isFunc = cnFunctionTypeSignature(parameter.typeName,
+                                                            parameterSignature,
+                                                            method.line, method.column);
+                info.parameterFuncSigs.push_back(parameterSignature);
+                info.parameterIsFunc.push_back(isFunc);
+            }
+            classMethods.emplace(method.name, std::move(info));
+            methodReturns[classMethods.at(method.name).functionName] = classMethods.at(method.name).returnType;
+            CnFunctionSignature signature;
+            signature.returnType = classMethods.at(method.name).returnType;
+            signature.parameterTypes = classMethods.at(method.name).parameterTypes;
+            signature.parameterDims = classMethods.at(method.name).parameterDims;
+            signature.parameterFuncSigs = classMethods.at(method.name).parameterFuncSigs;
+            signature.parameterIsFunc = classMethods.at(method.name).parameterIsFunc;
+            g_cnFunctionSignatures[classMethods.at(method.name).functionName] = std::move(signature);
+        }
+    }
+    for (const auto& declaration : program.classes) {
+        const int sid = g_cnClassIndex.at(declaration.name);
+        const auto implementedInterface = g_cnClassInterface.find(sid);
+        if (implementedInterface == g_cnClassInterface.end()) continue;
+        const auto interfaceMethods = g_cnInterfaceMethods.find(implementedInterface->second);
+        if (interfaceMethods == g_cnInterfaceMethods.end())
+            throw Error("internal error: missing interface signatures for " + implementedInterface->second);
+        for (const auto& required : interfaceMethods->second) {
+            const CnClassMethodInfo* implementation = cnFindClassMethod(sid, required.first);
+            if (!implementation)
+                throw Error(loc(declaration.line, declaration.column,
+                                "class '" + declaration.name + "' does not implement interface '" +
+                                implementedInterface->second + "': missing method '" + required.first + "'"));
+            const CnClassMethodInfo& actual = *implementation;
+            const CnClassMethodInfo& expected = required.second;
+            const bool parametersMatch = actual.parameterTypes == expected.parameterTypes &&
+                actual.parameterDims == expected.parameterDims;
+            bool functionSignaturesMatch = actual.parameterIsFunc == expected.parameterIsFunc &&
+                actual.parameterFuncSigs.size() == expected.parameterFuncSigs.size();
+            if (functionSignaturesMatch) {
+                for (size_t index = 0; index < actual.parameterFuncSigs.size(); ++index) {
+                    const FuncSig& actualSignature = actual.parameterFuncSigs[index];
+                    const FuncSig& expectedSignature = expected.parameterFuncSigs[index];
+                    if (actualSignature.ret != expectedSignature.ret ||
+                        actualSignature.params != expectedSignature.params) {
+                        functionSignaturesMatch = false;
+                        break;
+                    }
+                }
+            }
+            if (actual.returnType != expected.returnType || !parametersMatch ||
+                !functionSignaturesMatch || actual.isStatic || actual.isConstructor ||
+                actual.visibility != 0)
+                throw Error(loc(declaration.line, declaration.column,
+                                "class method signature does not match interface '" +
+                                implementedInterface->second + "': " + required.first));
+        }
+    }
+    for (const auto& declaration : program.classes) {
+        const int sid = g_cnClassIndex.at(declaration.name);
+        const CnClassMethodInfo* constructor = cnFindClassConstructor(sid);
+        const auto base = g_cnClassBase.find(sid);
+        if (base == g_cnClassBase.end()) {
+            if (constructor && constructor->hasExplicitParentConstructorCall)
+                throw Error(loc(declaration.line, declaration.column,
+                                "a class without a base class cannot call a parent constructor"));
+            continue;
+        }
+        const CnClassMethodInfo* baseConstructor = cnFindClassConstructor(base->second);
+        const size_t expected = baseConstructor ? baseConstructor->parameterTypes.size() : 0;
+        const size_t actual = constructor && constructor->hasExplicitParentConstructorCall
+            ? constructor->parentConstructorArguments.size() : 0;
+        CnLoweringContext accessContext;
+        accessContext.currentClassId = sid;
+        accessContext.sourceFile = declaration.sourceFile;
+        cnRequireConstructorAccess(baseConstructor, base->second, &accessContext,
+                                   declaration.line, declaration.column);
+        if (expected != actual) {
+            if (expected != 0 && !constructor)
+                throw Error(loc(declaration.line, declaration.column,
+                                "a derived class must declare a constructor to pass arguments to its base class"));
+            if (expected != 0 && !constructor->hasExplicitParentConstructorCall)
+                throw Error(loc(declaration.line, declaration.column,
+                                "a derived constructor must begin with a parent constructor call"));
+            throw Error(loc(declaration.line, declaration.column,
+                            "base constructor for '" + structOf(base->second).name +
+                            "' expects " + std::to_string(expected) + " argument(s), got " +
+                            std::to_string(actual)));
+        }
+    }
+    for (const auto& declaration : program.classes) {
+        const int sid = g_cnClassIndex.at(declaration.name);
+        const auto base = g_cnClassBase.find(sid);
+        for (const auto& method : declaration.methods) {
+            const CnClassMethodInfo* inherited = base == g_cnClassBase.end()
+                ? nullptr : cnFindClassMethod(base->second, method.name);
+            const CnClassMethodInfo& actual = g_cnClassMethods.at(sid).at(method.name);
+            if (method.isOverride) {
+                if (!inherited)
+                    throw Error(loc(method.line, method.column,
+                                    "method '" + method.name + "' is marked @override but no inherited method exists"));
+                if (actual.isConstructor || actual.isStatic || inherited->isConstructor || inherited->isStatic)
+                    throw Error(loc(method.line, method.column,
+                                    "static methods and constructors cannot be overridden: " + method.name));
+                bool functionSignaturesMatch = actual.parameterFuncSigs.size() ==
+                    inherited->parameterFuncSigs.size();
+                if (functionSignaturesMatch) {
+                    for (size_t index = 0; index < actual.parameterFuncSigs.size(); ++index) {
+                        const FuncSig& left = actual.parameterFuncSigs[index];
+                        const FuncSig& right = inherited->parameterFuncSigs[index];
+                        if (left.ret != right.ret || left.params != right.params) {
+                            functionSignaturesMatch = false;
+                            break;
+                        }
+                    }
+                }
+                if (actual.returnType != inherited->returnType ||
+                    actual.parameterTypes != inherited->parameterTypes ||
+                    actual.parameterDims != inherited->parameterDims ||
+                    !functionSignaturesMatch ||
+                    actual.parameterIsFunc != inherited->parameterIsFunc)
+                    throw Error(loc(method.line, method.column,
+                                    "override signature does not match inherited method: " + method.name));
+                if ((inherited->visibility == 0 && actual.visibility != 0) ||
+                    (actual.visibility != 0 && actual.visibility != inherited->visibility))
+                    throw Error(loc(method.line, method.column,
+                                    "an override cannot reduce method visibility: " + method.name));
+            } else if (inherited && !(actual.isConstructor && inherited->isConstructor)) {
+                throw Error(loc(method.line, method.column,
+                                "inherited method '" + method.name + "' requires @override"));
+            }
+        }
+    }
+    // Every class object carries one pointer to the table for its most-derived
+    // class.  Table entries use a raw receiver pointer, so one thunk per class
+    // and method can cast that pointer to the implementation owner and make the
+    // ordinary typed method call.  This keeps the class method ABI unchanged.
+    for (const auto& declaration : program.classes) {
+        const int classSid = g_cnClassIndex.at(declaration.name);
+        std::vector<int> classChain;
+        for (int current = classSid;;) {
+            classChain.push_back(current);
+            const auto base = g_cnClassBase.find(current);
+            if (base == g_cnClassBase.end()) break;
+            current = base->second;
+        }
+        std::reverse(classChain.begin(), classChain.end());
+        std::vector<std::pair<std::string, const CnClassMethodInfo*>> effective;
+        for (const int current : classChain) {
+            const auto methods = g_cnClassMethods.find(current);
+            if (methods != g_cnClassMethods.end()) {
+                for (const auto& entry : methods->second) {
+                    if (entry.second.isStatic || entry.second.isConstructor) continue;
+                    const auto existing = std::find_if(effective.begin(), effective.end(),
+                        [&](const auto& candidate) { return candidate.first == entry.first; });
+                    if (existing == effective.end())
+                        effective.emplace_back(entry.first, &entry.second);
+                    else
+                        existing->second = &entry.second;
+                }
+            }
+        }
+        StructDef table;
+        table.name = cnClassVtableTypeName(classSid);
+        for (const auto& entry : effective) {
+            const CnClassMethodInfo& method = *entry.second;
+            StructField field{};
+            field.name = cnClassVtableMethodFieldName(entry.first);
+            field.ty = Ty::Ptr;
+            field.isFunc = true;
+            field.funcSig.ret = method.returnType;
+            field.funcSig.params.push_back(Ty::Ptr);
+            field.funcSig.params.insert(field.funcSig.params.end(),
+                                        method.parameterTypes.begin(), method.parameterTypes.end());
+            table.fields.push_back(std::move(field));
+        }
+        const int tableSid = static_cast<int>(g_structs.size());
+        Token tableToken{TK::Ident, table.name, declaration.line, declaration.column};
+        if (table.fields.empty()) {
+            table.size = 1;
+            table.align = 1;
+        } else {
+            layoutStruct(table, tableToken);
+        }
+        g_structs.push_back(std::move(table));
+        g_structIndex[g_structs.back().name] = tableSid;
+        g_cnClassVtableIndex[classSid] = tableSid;
+        const std::string tableGlobalName = cnClassVtableGlobalName(classSid);
+        g_cnClassVtableGlobals[classSid] = tableGlobalName;
+        names.insert(tableGlobalName);
+        Global tableGlobal;
+        tableGlobal.name = tableGlobalName;
+        tableGlobal.ty = Ty::ofStruct(tableSid);
+        tableGlobal.align = tyAlign(tableGlobal.ty);
+        tableGlobal.runtimeInit = true;
+        tableGlobal.initExpr.reset(new Expr(Expr::StructLit));
+        tableGlobal.initExpr->name = g_structs.back().name;
+        for (const auto& entry : effective) {
+            const CnClassMethodInfo& method = *entry.second;
+            const std::string thunkName = cnClassVtableThunkName(classSid, entry.first);
+            Function thunk;
+            thunk.name = thunkName;
+            thunk.line = declaration.line;
+            thunk.col = declaration.column;
+            thunk.retType = method.returnType;
+            thunk.returnPtr = thunk.retType.k == Ty::Ptr;
+            thunk.returnBool = thunk.retType == Ty::Bool;
+            thunk.params.push_back("__aster_cn_vtable_object");
+            thunk.paramTypes.push_back(Ty::Ptr);
+            thunk.paramPtr.push_back(true);
+            thunk.paramBool.push_back(false);
+            thunk.paramDims.emplace_back();
+            thunk.paramFuncSig.emplace_back();
+            thunk.paramIsFunc.push_back(false);
+            E call(new Expr(Expr::Call));
+            call->name = method.functionName;
+            E object(new Expr(Expr::Cast));
+            object->ty = Ty::ptrTo(method.ownerClassId);
+            object->a.reset(new Expr(Expr::Var));
+            object->a->name = "__aster_cn_vtable_object";
+            call->args.push_back(std::move(object));
+            for (size_t index = 0; index < method.parameterTypes.size(); ++index) {
+                const std::string parameterName = "__aster_cn_vtable_arg_" + std::to_string(index);
+                thunk.params.push_back(parameterName);
+                thunk.paramTypes.push_back(method.parameterTypes[index]);
+                thunk.paramPtr.push_back(method.parameterDims[index].empty() &&
+                                         method.parameterTypes[index].k == Ty::Ptr);
+                thunk.paramBool.push_back(method.parameterDims[index].empty() &&
+                                          method.parameterTypes[index] == Ty::Bool);
+                thunk.paramDims.push_back(method.parameterDims[index]);
+                thunk.paramFuncSig.push_back(method.parameterFuncSigs[index]);
+                thunk.paramIsFunc.push_back(method.parameterIsFunc[index]);
+                E argument(new Expr(Expr::Var));
+                argument->name = parameterName;
+                call->args.push_back(std::move(argument));
+            }
+            CnFunctionSignature thunkSignature;
+            thunkSignature.returnType = method.returnType;
+            thunkSignature.parameterTypes.push_back(Ty::Ptr);
+            thunkSignature.parameterDims.emplace_back();
+            thunkSignature.parameterFuncSigs.emplace_back();
+            thunkSignature.parameterIsFunc.push_back(false);
+            thunkSignature.parameterTypes.insert(thunkSignature.parameterTypes.end(),
+                                                  method.parameterTypes.begin(), method.parameterTypes.end());
+            thunkSignature.parameterDims.insert(thunkSignature.parameterDims.end(),
+                                                method.parameterDims.begin(), method.parameterDims.end());
+            thunkSignature.parameterFuncSigs.insert(thunkSignature.parameterFuncSigs.end(),
+                                                     method.parameterFuncSigs.begin(), method.parameterFuncSigs.end());
+            thunkSignature.parameterIsFunc.insert(thunkSignature.parameterIsFunc.end(),
+                                                  method.parameterIsFunc.begin(), method.parameterIsFunc.end());
+            g_cnFunctionSignatures[thunkName] = std::move(thunkSignature);
+            if (method.returnType == Ty::Void) {
+                Stmt invoke(Stmt::Expr);
+                invoke.expr = std::move(call);
+                thunk.body.push_back(std::move(invoke));
+                thunk.body.emplace_back(Stmt::Return);
+            } else {
+                Stmt returned(Stmt::Return);
+                returned.expr = std::move(call);
+                thunk.body.push_back(std::move(returned));
+            }
+            functions.push_back(std::move(thunk));
+            names.insert(thunkName);
+            E thunkValue(new Expr(Expr::Var));
+            thunkValue->name = thunkName;
+            tableGlobal.initExpr->args.push_back(std::move(thunkValue));
+        }
+        globalBindings[tableGlobalName] = CnBinding{Ty::ofStruct(tableSid), false, 0};
+        globals.push_back(std::move(tableGlobal));
+    }
+    // Lower interface references as a two-word value and create one function
+    // table per directly implementing class.  Table entries use a generic
+    // ptr receiver; the generated thunk casts it to the implementation class
+    // pointer before making the ordinary class-method call.
+    for (const auto& declaration : program.interfaceClasses) {
+        const auto interfaceMethods = g_cnInterfaceMethods.find(declaration.name);
+        if (interfaceMethods == g_cnInterfaceMethods.end()) continue;
+        for (const auto& classDeclaration : program.classes) {
+            const int classSid = g_cnClassIndex.at(classDeclaration.name);
+            const auto implemented = g_cnClassInterface.find(classSid);
+            if (implemented == g_cnClassInterface.end() ||
+                !cnInterfaceExtendsOrSame(implemented->second, declaration.name)) continue;
+            StructDef table;
+            table.name = cnInterfaceTableTypeName(classSid, declaration.name);
+            const auto& methodOrder = g_cnInterfaceMethodOrder.at(declaration.name);
+            for (const std::string& methodName : methodOrder) {
+                const auto required = interfaceMethods->second.find(methodName);
+                if (required == interfaceMethods->second.end()) continue;
+                StructField field{};
+                field.name = cnInterfaceMethodFieldName(required->first);
+                field.ty = Ty::Ptr;
+                field.isFunc = true;
+                field.funcSig.ret = required->second.returnType;
+                field.funcSig.params.push_back(Ty::Ptr);
+                field.funcSig.params.insert(field.funcSig.params.end(),
+                                            required->second.parameterTypes.begin(),
+                                            required->second.parameterTypes.end());
+                table.fields.push_back(std::move(field));
+            }
+            const int tableSid = static_cast<int>(g_structs.size());
+            Token tableToken{TK::Ident, table.name, declaration.line, declaration.column};
+            layoutStruct(table, tableToken);
+            g_structs.push_back(std::move(table));
+            g_structIndex[g_structs.back().name] = tableSid;
+            g_cnInterfaceVtableIndex[declaration.name] = tableSid;
+            const std::string tableGlobalName = cnInterfaceTableGlobalName(classSid, declaration.name);
+            g_cnInterfaceTableGlobals[{classSid, declaration.name}] = tableGlobalName;
+            names.insert(tableGlobalName);
+            Global tableGlobal;
+            tableGlobal.name = tableGlobalName;
+            tableGlobal.ty = Ty::ofStruct(tableSid);
+            tableGlobal.align = tyAlign(tableGlobal.ty);
+            tableGlobal.runtimeInit = true;
+            tableGlobal.initExpr.reset(new Expr(Expr::StructLit));
+            tableGlobal.initExpr->name = g_structs.back().name;
+            for (const std::string& methodName : methodOrder) {
+                const auto required = interfaceMethods->second.find(methodName);
+                if (required == interfaceMethods->second.end()) continue;
+                const std::string thunkName = cnInterfaceThunkName(classSid, declaration.name, required->first);
+                Function thunk;
+                thunk.name = thunkName;
+                thunk.line = declaration.line;
+                thunk.col = declaration.column;
+                thunk.retType = required->second.returnType;
+                thunk.returnPtr = thunk.retType.k == Ty::Ptr;
+                thunk.returnBool = thunk.retType == Ty::Bool;
+                thunk.params.push_back("__aster_cn_iface_object");
+                thunk.paramTypes.push_back(Ty::Ptr);
+                thunk.paramPtr.push_back(true);
+                thunk.paramBool.push_back(false);
+                thunk.paramDims.emplace_back();
+                thunk.paramFuncSig.emplace_back();
+                thunk.paramIsFunc.push_back(false);
+                CnLoweringContext thunkContext;
+                thunkContext.globals = &globalBindings;
+                thunkContext.methodReturns = &methodReturns;
+                thunkContext.methodSignatures = &g_cnFunctionSignatures;
+                thunkContext.strings = &stringPool;
+                thunkContext.returnType = thunk.retType;
+                thunkContext.scopes.emplace_back();
+                thunkContext.scopes.back()["__aster_cn_iface_object"] =
+                    CnBinding{Ty::Ptr, false, 0};
+                E receiver(new Expr(Expr::Var));
+                receiver->name = "__aster_cn_iface_object";
+                E typedReceiver(new Expr(Expr::Cast));
+                typedReceiver->ty = Ty::ptrTo(classSid);
+                typedReceiver->a = std::move(receiver);
+                E vptr(new Expr(Expr::Field));
+                vptr->a = std::move(typedReceiver);
+                vptr->name = "__aster_cn_vptr";
+                E classTable(new Expr(Expr::Cast));
+                classTable->ty = Ty::ptrTo(g_cnClassVtableIndex.at(classSid));
+                classTable->a = std::move(vptr);
+                E classSlot(new Expr(Expr::Field));
+                classSlot->a = std::move(classTable);
+                classSlot->name = cnClassVtableMethodFieldName(required->first);
+                E call(new Expr(Expr::FieldCall));
+                call->a = std::move(classSlot);
+                call->line = declaration.line;
+                call->col = declaration.column;
+                E object(new Expr(Expr::Cast));
+                object->ty = Ty::Ptr;
+                object->a.reset(new Expr(Expr::Var));
+                object->a->name = "__aster_cn_iface_object";
+                call->args.push_back(std::move(object));
+                for (size_t i = 0; i < required->second.parameterTypes.size(); ++i) {
+                    const std::string parameterName = "__aster_cn_iface_arg_" + std::to_string(i);
+                    thunk.params.push_back(parameterName);
+                    thunk.paramTypes.push_back(required->second.parameterTypes[i]);
+                    thunk.paramPtr.push_back(required->second.parameterDims[i].empty() &&
+                                             required->second.parameterTypes[i].k == Ty::Ptr);
+                    thunk.paramBool.push_back(required->second.parameterDims[i].empty() &&
+                                              required->second.parameterTypes[i] == Ty::Bool);
+                    thunk.paramDims.push_back(required->second.parameterDims[i]);
+                    thunk.paramFuncSig.push_back(required->second.parameterFuncSigs[i]);
+                    thunk.paramIsFunc.push_back(required->second.parameterIsFunc[i]);
+                    thunkContext.scopes.back()[parameterName] = CnBinding{
+                        required->second.parameterTypes[i], false, 0};
+                    E argument(new Expr(Expr::Var));
+                    argument->name = parameterName;
+                    call->args.push_back(std::move(argument));
+                }
+                CnFunctionSignature thunkSignature;
+                thunkSignature.returnType = thunk.retType;
+                thunkSignature.parameterTypes.push_back(Ty::Ptr);
+                thunkSignature.parameterDims.emplace_back();
+                thunkSignature.parameterFuncSigs.emplace_back();
+                thunkSignature.parameterIsFunc.push_back(false);
+                thunkSignature.parameterTypes.insert(thunkSignature.parameterTypes.end(),
+                                                     required->second.parameterTypes.begin(),
+                                                     required->second.parameterTypes.end());
+                thunkSignature.parameterDims.insert(thunkSignature.parameterDims.end(),
+                                                    required->second.parameterDims.begin(),
+                                                    required->second.parameterDims.end());
+                thunkSignature.parameterFuncSigs.insert(thunkSignature.parameterFuncSigs.end(),
+                                                         required->second.parameterFuncSigs.begin(),
+                                                         required->second.parameterFuncSigs.end());
+                thunkSignature.parameterIsFunc.insert(thunkSignature.parameterIsFunc.end(),
+                                                      required->second.parameterIsFunc.begin(),
+                                                      required->second.parameterIsFunc.end());
+                g_cnFunctionSignatures[thunkName] = std::move(thunkSignature);
+                if (thunk.retType == Ty::Void) {
+                    Stmt invoke(Stmt::Expr);
+                    invoke.expr = std::move(call);
+                    thunk.body.push_back(std::move(invoke));
+                    thunk.body.emplace_back(Stmt::Return);
+                } else {
+                    Stmt returned(Stmt::Return);
+                    returned.expr = std::move(call);
+                    thunk.body.push_back(std::move(returned));
+                }
+                functions.push_back(std::move(thunk));
+                E thunkValue(new Expr(Expr::Var));
+                thunkValue->name = thunkName;
+                tableGlobal.initExpr->args.push_back(std::move(thunkValue));
+            }
+            globalBindings[tableGlobalName] = CnBinding{Ty::ofStruct(tableSid), false, 0};
+            globals.push_back(std::move(tableGlobal));
+        }
+    }
+    // Class methods are lowered before global storage is emitted. Seed global
+    // types now so method bodies can resolve top-level variables and arrays.
+    for (const auto& declaration : program.globals) {
+        if (declaration.typeName.empty())
+            throw Error(loc(declaration.line, declaration.column,
+                            "a global declaration needs an explicit type"));
+        const Ty type = cnBackendType(declaration.typeName, declaration.line, declaration.column);
+        uint32_t arrayLength = 0;
+        if (!declaration.arrayDimensions.empty()) {
+            if (declaration.arrayDimensions.size() > 1)
+                throw Error(loc(declaration.line, declaration.column,
+                                "the current compiler backend supports one-dimensional global arrays"));
+            Expr::LitSuffix suffix = Expr::LSNone;
+            const uint64_t length = cnIntegerValue(declaration.arrayDimensions.front(), suffix,
+                                                   declaration.line, declaration.column);
+            if (suffix != Expr::LSNone || length == 0 || length > 1048576)
+                throw Error(loc(declaration.line, declaration.column,
+                                "global array length must be between 1 and 1048576"));
+            arrayLength = static_cast<uint32_t>(length);
+        }
+        CnBinding globalBinding{type, arrayLength != 0, arrayLength};
+        FuncSig globalSignature;
+        globalBinding.isFunc = cnFunctionTypeSignature(declaration.typeName, globalSignature,
+                                                       declaration.line, declaration.column);
+        globalBinding.funcSig = globalSignature;
+        globalBindings[declaration.name] = globalBinding;
+    }
+    for (const auto& classFields : g_cnClassStaticFields)
+        for (const auto& entry : classFields.second) {
+            CnBinding binding{entry.second.type, entry.second.arrayLength != 0,
+                              entry.second.arrayLength};
+            binding.isFunc = entry.second.isFunc;
+            binding.funcSig = entry.second.funcSig;
+            globalBindings[entry.second.globalName] = std::move(binding);
+        }
+    for (const auto& declaration : program.classes) {
+        const int sid = g_cnClassIndex.at(declaration.name);
+        CnLoweringContext fieldContext;
+        fieldContext.globals = &globalBindings;
+        fieldContext.methodReturns = &methodReturns;
+        fieldContext.methodSignatures = &g_cnFunctionSignatures;
+        fieldContext.strings = &stringPool;
+        fieldContext.countCheck = countCheck;
+        fieldContext.thisType = Ty::ptrTo(sid);
+        fieldContext.currentClassId = sid;
+        fieldContext.sourceFile = declaration.sourceFile;
+        fieldContext.scopes.emplace_back();
+        fieldContext.scopes.back()["__aster_cn_this"] = CnBinding{Ty::ptrTo(sid), false, 0};
+        const auto base = g_cnClassBase.find(sid);
+        if (base != g_cnClassBase.end()) fieldContext.superType = Ty::ptrTo(base->second);
+        for (const auto& field : declaration.fields) {
+            if (!field.hasInitializer) continue;
+            CnLoweringContext initializerContext = fieldContext;
+            initializerContext.sourceFile = field.sourceFile;
+            if (field.isStatic) {
+                initializerContext.thisType = Ty::Void;
+                initializerContext.superType = Ty::Void;
+                initializerContext.scopes.back().erase("__aster_cn_this");
+            }
+            const Ty target = cnBackendType(field.typeName, field.line, field.column);
+            const uint32_t arrayLength = cnClassFieldArrayLength(field);
+            if (arrayLength != 0) {
+                if (field.initializer.kind != "ArrayLiteral")
+                    throw Error(loc(field.line, field.column,
+                                    "a fixed array field initializer must be an array literal"));
+                if (field.initializer.children.size() != arrayLength)
+                    throw Error(loc(field.line, field.column,
+                                    "array field initializer length does not match declared array length"));
+                for (const auto& element : field.initializer.children)
+                    cnValidateClassFieldInitializerValue(element, field, target,
+                                                         initializerContext);
+            } else {
+                cnValidateClassFieldInitializerValue(field.initializer, field, target,
+                                                     initializerContext);
+            }
+        }
+    }
+    for (const auto& declaration : program.classes) {
+        const int sid = g_cnClassIndex.at(declaration.name);
+        for (const auto& method : declaration.methods) {
+            const CnClassMethodInfo& methodInfo = g_cnClassMethods.at(sid).at(method.name);
+            Function function;
+            function.name = methodInfo.functionName;
+            function.line = method.line;
+            function.col = method.column;
+            function.retType = methodInfo.returnType;
+            function.returnPtr = function.retType.k == Ty::Ptr;
+            function.returnBool = function.retType == Ty::Bool;
+            std::set<std::string> parameterNames;
+            if (!methodInfo.isStatic) {
+                function.params.push_back("__aster_cn_this");
+                function.paramTypes.push_back(Ty::ptrTo(sid));
+                function.paramPtr.push_back(true);
+                function.paramBool.push_back(false);
+                function.paramDims.emplace_back();
+                function.paramFuncSig.emplace_back();
+                function.paramIsFunc.push_back(false);
+                parameterNames.insert("__aster_cn_this");
+            }
+            CnLoweringContext loweringContext;
+            loweringContext.globals = &globalBindings;
+            loweringContext.methodReturns = &methodReturns;
+            loweringContext.methodSignatures = &g_cnFunctionSignatures;
+            loweringContext.strings = &stringPool;
+            loweringContext.countCheck = countCheck;
+            loweringContext.returnType = methodInfo.returnType;
+            loweringContext.currentClassId = sid;
+            loweringContext.sourceFile = method.sourceFile;
+            if (!methodInfo.isStatic) {
+                loweringContext.thisType = Ty::ptrTo(sid);
+                const auto base = g_cnClassBase.find(sid);
+                if (base != g_cnClassBase.end())
+                    loweringContext.superType = Ty::ptrTo(base->second);
+            }
+            loweringContext.scopes.emplace_back();
+            if (!methodInfo.isStatic)
+                loweringContext.scopes.back()["__aster_cn_this"] = CnBinding{Ty::ptrTo(sid), false, 0};
+            for (const auto& parameter : method.parameters) {
+                if (!parameterNames.insert(parameter.name).second)
+                    throw Error(loc(method.line, method.column,
+                                    "duplicate parameter name in class method " + method.name + ": " + parameter.name));
+                std::vector<uint32_t> parameterDims;
+                const Ty type = cnParameterType(parameter, method.line, method.column,
+                                                &parameterDims);
+                const bool isArray = !parameterDims.empty();
+                const Ty valueType = isArray ? ptrElemType(type) : type;
+                FuncSig parameterSignature;
+                const bool isFunc = cnFunctionTypeSignature(parameter.typeName,
+                                                            parameterSignature,
+                                                            method.line, method.column);
+                CnBinding binding{valueType, isArray,
+                                  isArray ? parameterDims.front() : 0};
+                binding.isFunc = isFunc;
+                binding.funcSig = parameterSignature;
+                loweringContext.scopes.back()[parameter.name] = binding;
+                function.params.push_back(parameter.name);
+                function.paramTypes.push_back(type);
+                function.paramPtr.push_back(isArray || type.k == Ty::Ptr);
+                function.paramBool.push_back(!isArray && type == Ty::Bool);
+                function.paramDims.push_back(std::move(parameterDims));
+                function.paramFuncSig.push_back(parameterSignature);
+                function.paramIsFunc.push_back(isFunc);
+            }
+            if (methodInfo.hasExplicitParentConstructorCall) {
+                const int baseClassId = g_cnClassBase.at(sid);
+                const CnClassMethodInfo* baseConstructor =
+                    cnFindClassConstructor(baseClassId);
+                for (size_t index = 0;
+                     index < methodInfo.parentConstructorArguments.size(); ++index) {
+                    const auto& argument = methodInfo.parentConstructorArguments[index];
+                    if (cnParentConstructorArgumentUsesThisOrSuper(argument))
+                        throw Error(loc(argument.line, argument.column,
+                                        "parent constructor arguments cannot use this or super"));
+                    const Ty actual = cnExpressionType(argument, loweringContext);
+                    if (baseConstructor &&
+                        cnIsInterfaceType(baseConstructor->parameterTypes[index]) &&
+                        actual != baseConstructor->parameterTypes[index] &&
+                        argument.kind != "NullLiteral" &&
+                        (!tyIsPtrToStruct(actual) ||
+                         !g_cnClassIndex.count(structOf(actual.sid).name) ||
+                         cnClassImplementationForInterface(
+                             actual.sid,
+                             structOf(baseConstructor->parameterTypes[index].sid).name) < 0))
+                        throw Error(loc(argument.line, argument.column,
+                                        "cannot convert " + tyNameFull(actual) + " to interface " +
+                                        structOf(baseConstructor->parameterTypes[index].sid).name));
+                }
+            }
+            std::vector<aster_cn::Statement> methodBody = method.body;
+            if (methodInfo.hasExplicitParentConstructorCall && !methodBody.empty())
+                methodBody.erase(methodBody.begin());
+            function.body = cnStatementsToAster(methodBody, loweringContext);
+            if (function.body.empty() && !method.isConstructor)
+                throw Error(loc(method.line, method.column, "class method body cannot be empty: " + method.name));
+            functions.push_back(std::move(function));
+        }
+    }
+    for (const auto& method : program.methods) {
+        if (!methodNames.insert(method.name).second)
+            throw Error(loc(method.line, method.column, "duplicate method declaration: " + method.name));
+        names.insert(method.name);
+        methodReturns[method.name] = cnBackendType(method.returnType, method.line, method.column);
+    }
+    for (const auto& classEntry : g_cnClassMethods)
+        for (const auto& methodEntry : classEntry.second) {
+            if (methodNames.count(methodEntry.second.functionName))
+                throw Error("class method symbol conflicts with a top-level method: " +
+                            methodEntry.second.functionName);
+            names.insert(methodEntry.second.functionName);
+        }
+    for (const auto& declaration : program.globals) {
+        const bool isConstant = declaration.kind == "ConstantDeclaration";
+        if (!isConstant && declaration.kind != "VariableDeclaration")
+            throw Error(loc(declaration.line, declaration.column,
+                            "unsupported top-level declaration: " + declaration.kind));
+        if (declaration.typeName.empty())
+            throw Error(loc(declaration.line, declaration.column,
+                            "a global declaration needs an explicit type"));
+        if (declaration.arrayDimensions.size() > 1)
+            throw Error(loc(declaration.line, declaration.column,
+                            "the current compiler backend supports one-dimensional global arrays"));
+        if (names.count(declaration.name) || g_enumConsts.count(declaration.name) ||
+            (declaration.isExternal && names.count(declaration.externalName)))
+            throw Error(loc(declaration.line, declaration.column,
+                            "global declaration conflicts with another declaration: " + declaration.name));
+        const Ty type = cnBackendType(declaration.typeName, declaration.line, declaration.column);
+        if (type == Ty::Void || cnIsStringView(type))
+            throw Error(loc(declaration.line, declaration.column,
+                            "global declaration type is not supported by the current compiler backend"));
+        uint32_t arrayLength = 0;
+        if (!declaration.arrayDimensions.empty()) {
+            Expr::LitSuffix suffix = Expr::LSNone;
+            const uint64_t length = cnIntegerValue(declaration.arrayDimensions.front(), suffix,
+                                                   declaration.line, declaration.column);
+            if (suffix != Expr::LSNone || length == 0 || length > 1048576)
+                throw Error(loc(declaration.line, declaration.column,
+                                "global array length must be between 1 and 1048576"));
+            arrayLength = static_cast<uint32_t>(length);
+        }
+        if (isConstant && !declaration.hasExpression)
+            throw Error(loc(declaration.line, declaration.column, "a constant needs an initializer"));
+        if (!declaration.isExternal && tyIsStruct(type) && !declaration.hasExpression &&
+            cnStructHasStringField(type))
+            throw Error(loc(declaration.line, declaration.column,
+                            "an uninitialized global struct cannot contain string fields: " +
+                            declaration.name));
+        Global global;
+        global.name = declaration.isExternal ? declaration.externalName : declaration.name;
+        global.external = declaration.isExternal;
+        global.ty = type;
+        global.align = tyAlign(type);
+        global.isBool = type == Ty::Bool;
+        global.isString = false;
+        global.isConst = isConstant;
+        global.isFunc = cnFunctionTypeSignature(declaration.typeName, global.funcSig,
+                                                declaration.line, declaration.column);
+        if (arrayLength != 0) {
+            global.isArray = true;
+            global.count = arrayLength;
+            global.dims.push_back(arrayLength);
+        }
+        globalIndices[declaration.name] = globals.size();
+        CnBinding globalBinding{type, arrayLength != 0, arrayLength};
+        FuncSig globalSignature;
+        globalBinding.isFunc = cnFunctionTypeSignature(declaration.typeName, globalSignature,
+                                                       declaration.line, declaration.column);
+        globalBinding.funcSig = globalSignature;
+        globalBindings[declaration.name] = globalBinding;
+        names.insert(declaration.name);
+        if (declaration.isExternal) names.insert(global.name);
+        globals.push_back(std::move(global));
+    }
+    for (const auto& declaration : program.classes) {
+        const int sid = g_cnClassIndex.at(declaration.name);
+        for (const auto& field : declaration.fields) {
+            if (!field.isStatic) continue;
+            const CnStaticClassFieldInfo& info =
+                g_cnClassStaticFields.at(sid).at(field.name);
+            if (!names.insert(info.globalName).second)
+                throw Error(loc(field.line, field.column,
+                                "static field storage name conflicts with another declaration"));
+            Global global;
+            global.name = info.globalName;
+            global.ty = info.type;
+            global.align = tyAlign(info.type);
+            global.isBool = info.type == Ty::Bool;
+            global.isFunc = info.isFunc;
+            global.funcSig = info.funcSig;
+            if (info.arrayLength != 0) {
+                global.isArray = true;
+                global.count = info.arrayLength;
+                global.dims.push_back(info.arrayLength);
+            }
+            globalIndices[global.name] = globals.size();
+            globals.push_back(std::move(global));
+            const size_t index = globalIndices.at(info.globalName);
+            if (!field.hasInitializer && info.type.isString) {
+                globals[index].runtimeInit = true;
+                if (info.arrayLength != 0) {
+                    for (uint32_t element = 0; element < info.arrayLength; ++element) {
+                        Stmt assignment(Stmt::IndexAssign);
+                        assignment.name = info.globalName;
+                        assignment.line = field.line;
+                        assignment.col = field.column;
+                        assignment.idx.reset(new Expr(Expr::Num, element));
+                        assignment.expr = cnEmptyStringValue(
+                            &stringPool, field.line, field.column);
+                        assignment.isArrayInit = true;
+                        globals[index].runtimeInitStatements.push_back(
+                            std::move(assignment));
+                    }
+                } else {
+                    globals[index].initExpr = cnEmptyStringValue(
+                        &stringPool, field.line, field.column);
+                }
+            } else if (!field.hasInitializer && info.type.k == Ty::Enum) {
+                E value = cnEnumDefaultValue(info.type, field.line, field.column);
+                int64_t folded = 0;
+                if (!constantInteger(*value, folded))
+                    throw Error(loc(field.line, field.column,
+                                    "enum has no constant default value"));
+                globals[index].init = static_cast<int32_t>(folded);
+            } else if (!field.hasInitializer && tyIsStruct(info.type)) {
+                globals[index].rawData = cnStructDefaultImage(
+                    info.type, field.line, field.column);
+                const bool allZero = std::all_of(
+                    globals[index].rawData.begin(), globals[index].rawData.end(),
+                    [](uint8_t byte) { return byte == 0; });
+                globals[index].init = allZero ? 0 : 1;
+            }
+        }
+    }
+    CnLoweringContext globalContext;
+    globalContext.globals = &globalBindings;
+    globalContext.methodReturns = &methodReturns;
+    globalContext.methodSignatures = &g_cnFunctionSignatures;
+    globalContext.strings = &stringPool;
+    globalContext.countCheck = countCheck;
+    globalContext.returnType = Ty::Void;
+    globalContext.sourceFile = program.sourceFile;
+    globalContext.scopes.emplace_back();
+    for (const auto& declaration : program.classes) {
+        const int sid = g_cnClassIndex.at(declaration.name);
+        for (const auto& field : declaration.fields) {
+            if (!field.isStatic || !field.hasInitializer) continue;
+            const CnStaticClassFieldInfo& info =
+                g_cnClassStaticFields.at(sid).at(field.name);
+            CnLoweringContext initializerContext = globalContext;
+            initializerContext.currentClassId = sid;
+            initializerContext.sourceFile = field.sourceFile;
+            const size_t index = globalIndices.at(info.globalName);
+            if (info.arrayLength != 0) {
+                if (field.initializer.kind != "ArrayLiteral")
+                    throw Error(loc(field.line, field.column,
+                                    "a static array initializer must be an array literal"));
+                if (field.initializer.children.size() != info.arrayLength)
+                    throw Error(loc(field.line, field.column,
+                                    "static array initializer length does not match its declaration"));
+                const uint32_t elementSize = tySize(info.type);
+                if (info.type.isString) {
+                    globals[index].runtimeInit = true;
+                    for (size_t element = 0;
+                         element < field.initializer.children.size(); ++element) {
+                        const auto& sourceElement = field.initializer.children[element];
+                        const Ty actual = cnExpressionType(sourceElement, initializerContext);
+                        if (actual != info.type)
+                            throw Error(loc(sourceElement.line, sourceElement.column,
+                                            "static string array element initializer type mismatch"));
+                        Stmt assignment(Stmt::IndexAssign);
+                        assignment.name = info.globalName;
+                        assignment.line = sourceElement.line;
+                        assignment.col = sourceElement.column;
+                        assignment.idx.reset(new Expr(Expr::Num, element));
+                        assignment.expr = cnExpressionToAster(sourceElement,
+                                                              &stringPool,
+                                                              &initializerContext);
+                        assignment.isArrayInit = true;
+                        globals[index].runtimeInitStatements.push_back(
+                            std::move(assignment));
+                    }
+                    continue;
+                }
+                if (info.isFunc) {
+                    globals[index].runtimeInit = true;
+                    for (size_t element = 0;
+                         element < field.initializer.children.size(); ++element) {
+                        const auto& sourceElement = field.initializer.children[element];
+                        FuncSig actualSignature;
+                        if (!cnFunctionValueSignature(sourceElement, initializerContext,
+                                                      actualSignature) ||
+                            !cnFunctionSignaturesMatch(info.funcSig, actualSignature))
+                            throw Error(loc(sourceElement.line, sourceElement.column,
+                                            "static function pointer array element signature mismatch"));
+                        Stmt assignment(Stmt::IndexAssign);
+                        assignment.name = info.globalName;
+                        assignment.line = sourceElement.line;
+                        assignment.col = sourceElement.column;
+                        assignment.idx.reset(new Expr(Expr::Num, element));
+                        assignment.expr = cnExpressionToAster(sourceElement,
+                                                              &stringPool,
+                                                              &initializerContext);
+                        assignment.isArrayInit = true;
+                        globals[index].runtimeInitStatements.push_back(
+                            std::move(assignment));
+                    }
+                    continue;
+                }
+                if (tyIsStruct(info.type)) {
+                    for (const auto& element : field.initializer.children) {
+                        E value = cnExpressionToAster(element, &stringPool,
+                                                       &initializerContext);
+                        const std::vector<uint8_t> image = cnStructConstantImage(
+                            info.type, element, *value, initializerContext,
+                            info.globalName);
+                        globals[index].rawData.insert(globals[index].rawData.end(),
+                                                      image.begin(), image.end());
+                    }
+                    const bool allZero = std::all_of(
+                        globals[index].rawData.begin(), globals[index].rawData.end(),
+                        [](uint8_t byte) { return byte == 0; });
+                    globals[index].init = allZero ? 0 : 1;
+                    continue;
+                }
+                globals[index].rawData.reserve(size_t(info.arrayLength) * elementSize);
+                for (const auto& element : field.initializer.children) {
+                    E value = cnExpressionToAster(element, &stringPool,
+                                                  &initializerContext);
+                    const Ty actual = cnExpressionType(element, initializerContext);
+                    const uint64_t bits = cnConstantScalarBits(
+                        info.type, actual, *value, element.line, element.column);
+                    for (uint32_t byte = 0; byte < elementSize; ++byte)
+                        globals[index].rawData.push_back(
+                            static_cast<uint8_t>(bits >> (byte * 8)));
+                }
+                continue;
+            }
+            std::vector<Stmt> prefix;
+            E value = cnLowerStatementExpressionAs(
+                field.initializer, info.type, &stringPool, initializerContext, prefix);
+            if (!prefix.empty())
+                throw Error(loc(field.line, field.column,
+                                "static field initializer requires unsupported setup statements"));
+            globals[index].runtimeInit = true;
+            globals[index].initExpr = std::move(value);
+        }
+    }
+    for (const auto& declaration : program.globals) {
+        const size_t index = globalIndices.at(declaration.name);
+        if (declaration.isExternal) continue;
+        if (declaration.hasExpression) {
+            const Ty target = globals[index].ty;
+            if (tyIsStruct(target) && !globals[index].isArray) {
+                if (cnExpressionNeedsInterfaceConversion(declaration.expression, target,
+                                                         globalContext)) {
+                    if (globals[index].isConst)
+                        throw Error(loc(declaration.line, declaration.column,
+                                        "an interface conversion cannot initialize a constant global"));
+                    globals[index].runtimeInit = true;
+                    globals[index].initExpr = cnExpressionToAsterAs(
+                        declaration.expression, target, &stringPool, &globalContext);
+                    continue;
+                }
+                E value = cnExpressionToAster(declaration.expression, &stringPool, &globalContext);
+                globals[index].rawData = cnStructConstantImage(
+                    target, declaration.expression, *value, globalContext, declaration.name);
+                const bool allZero = std::all_of(globals[index].rawData.begin(),
+                                                 globals[index].rawData.end(),
+                                                 [](uint8_t byte) { return byte == 0; });
+                globals[index].init = allZero ? 0 : 1;
+                continue;
+            }
+            if (globals[index].isArray && declaration.expression.kind == "ArrayLiteral") {
+                const auto& elements = declaration.expression.children;
+                if (elements.size() != globals[index].count)
+                    throw Error(loc(declaration.line, declaration.column,
+                                    "global array literal length does not match its declared length"));
+                if (target.isString) {
+                    globals[index].runtimeInit = true;
+                    for (size_t element = 0; element < elements.size(); ++element) {
+                        const auto& sourceElement = elements[element];
+                        const Ty actual = cnExpressionType(sourceElement, globalContext);
+                        if (actual != target)
+                            throw Error(loc(sourceElement.line, sourceElement.column,
+                                            "global string array element initializer type mismatch"));
+                        Stmt assignment(Stmt::IndexAssign);
+                        assignment.name = declaration.name;
+                        assignment.line = sourceElement.line;
+                        assignment.col = sourceElement.column;
+                        assignment.idx.reset(new Expr(Expr::Num, element));
+                        assignment.expr = cnExpressionToAster(sourceElement,
+                                                              &stringPool,
+                                                              &globalContext);
+                        assignment.isArrayInit = true;
+                        globals[index].runtimeInitStatements.push_back(
+                            std::move(assignment));
+                    }
+                    continue;
+                }
+                if (tyIsStruct(target)) {
+                    globals[index].rawData.reserve(
+                        size_t(globals[index].count) * tySize(target));
+                    for (const auto& element : elements) {
+                        E value = cnExpressionToAster(element, &stringPool, &globalContext);
+                        const std::vector<uint8_t> image = cnStructConstantImage(
+                            target, element, *value, globalContext, declaration.name);
+                        globals[index].rawData.insert(globals[index].rawData.end(),
+                                                      image.begin(), image.end());
+                    }
+                    const bool allZero = std::all_of(
+                        globals[index].rawData.begin(), globals[index].rawData.end(),
+                        [](uint8_t byte) { return byte == 0; });
+                    globals[index].init = allZero ? 0 : 1;
+                    continue;
+                }
+                const uint32_t elementSize = tySize(target);
+                globals[index].rawData.reserve(size_t(globals[index].count) * elementSize);
+                for (const auto& element : elements) {
+                    E value = cnExpressionToAster(element, &stringPool, &globalContext);
+                    const Ty actual = cnExpressionType(element, globalContext);
+                    const uint64_t bits = cnConstantScalarBits(target, actual, *value,
+                                                               element.line, element.column);
+                    for (uint32_t byte = 0; byte < elementSize; ++byte)
+                        globals[index].rawData.push_back(static_cast<uint8_t>(bits >> (byte * 8)));
+                }
+            } else {
+                if (!globals[index].isArray && declaration.expression.kind == "ArrayLiteral")
+                    throw Error(loc(declaration.line, declaration.column,
+                                    "array literal requires a fixed-length global array"));
+                E value = cnExpressionToAster(declaration.expression, &stringPool, &globalContext);
+                if (!globals[index].isConst && !globals[index].isArray) {
+                    globals[index].runtimeInit = true;
+                    globals[index].initExpr = std::move(value);
+                    continue;
+                }
+                const Ty actual = cnExpressionType(declaration.expression, globalContext);
+                const uint64_t bits = cnConstantScalarBits(target, actual, *value,
+                                                           declaration.line, declaration.column);
+                if (globals[index].isArray) {
+                    const uint32_t elementSize = tySize(target);
+                    globals[index].rawData.reserve(size_t(globals[index].count) * elementSize);
+                    for (uint32_t element = 0; element < globals[index].count; ++element)
+                        for (uint32_t byte = 0; byte < elementSize; ++byte)
+                            globals[index].rawData.push_back(static_cast<uint8_t>(bits >> (byte * 8)));
+                } else if (target == Ty::F64 || tyIs64(target)) {
+                    globals[index].wideInit = bits;
+                } else {
+                    globals[index].init = static_cast<int32_t>(static_cast<uint32_t>(bits));
+                }
+            }
+        } else if (globals[index].ty.isString) {
+            globals[index].runtimeInit = true;
+            if (globals[index].isArray) {
+                for (uint32_t element = 0; element < globals[index].count; ++element) {
+                    Stmt assignment(Stmt::IndexAssign);
+                    assignment.name = declaration.name;
+                    assignment.line = declaration.line;
+                    assignment.col = declaration.column;
+                    assignment.idx.reset(new Expr(Expr::Num, element));
+                    assignment.expr = cnEmptyStringValue(
+                        &stringPool, declaration.line, declaration.column);
+                    assignment.isArrayInit = true;
+                    globals[index].runtimeInitStatements.push_back(
+                        std::move(assignment));
+                }
+            } else {
+                E value = cnEmptyStringValue(&stringPool, declaration.line, declaration.column);
+                globals[index].initExpr = std::move(value);
+            }
+        } else if (globals[index].ty.k == Ty::Enum) {
+            E value = cnEnumDefaultValue(globals[index].ty, declaration.line, declaration.column);
+            int64_t folded = 0;
+            if (!constantInteger(*value, folded))
+                throw Error(loc(declaration.line, declaration.column, "enum has no constant default value"));
+            globals[index].init = static_cast<int32_t>(folded);
+        } else if (tyIsStruct(globals[index].ty)) {
+            const std::vector<uint8_t> image = cnStructDefaultImage(
+                globals[index].ty, declaration.line, declaration.column);
+            if (globals[index].isArray) {
+                globals[index].rawData.reserve(
+                    size_t(globals[index].count) * image.size());
+                for (uint32_t element = 0; element < globals[index].count; ++element)
+                    globals[index].rawData.insert(globals[index].rawData.end(),
+                                                  image.begin(), image.end());
+            } else {
+                globals[index].rawData = image;
+            }
+            const bool allZero = std::all_of(globals[index].rawData.begin(),
+                                             globals[index].rawData.end(),
+                                             [](uint8_t byte) { return byte == 0; });
+            globals[index].init = allZero ? 0 : 1;
+        }
+    }
+    for (const auto& method : program.methods) {
+        Function function;
+        function.name = method.isExternal ? method.externalName : method.name;
+        function.line = method.line;
+        function.col = method.column;
+        function.external = method.isExternal;
+        function.retType = methodReturns.at(method.name);
+        function.returnPtr = function.retType.k == Ty::Ptr;
+        function.returnBool = function.retType == Ty::Bool;
+        std::set<std::string> parameterNames;
+        CnLoweringContext loweringContext;
+        loweringContext.globals = &globalBindings;
+        loweringContext.methodReturns = &methodReturns;
+        loweringContext.methodSignatures = &g_cnFunctionSignatures;
+        loweringContext.strings = &stringPool;
+        loweringContext.countCheck = countCheck;
+        loweringContext.returnType = methodReturns.at(method.name);
+        loweringContext.sourceFile = method.sourceFile;
+        loweringContext.scopes.emplace_back();
+        for (const auto& parameter : method.parameters) {
+            if (!parameterNames.insert(parameter.name).second)
+                throw Error(loc(method.line, method.column, "duplicate parameter name in method " + method.name + ": " + parameter.name));
+            std::vector<uint32_t> parameterDims;
+            const Ty type = cnParameterType(parameter, method.line, method.column,
+                                            &parameterDims);
+            const bool isArray = !parameterDims.empty();
+            const Ty valueType = isArray ? ptrElemType(type) : type;
+            FuncSig parameterSignature;
+            const bool isFunc = cnFunctionTypeSignature(parameter.typeName, parameterSignature,
+                                                        method.line, method.column);
+            CnBinding binding{valueType, isArray,
+                              isArray ? parameterDims.front() : 0};
+            binding.isFunc = isFunc;
+            binding.funcSig = parameterSignature;
+            loweringContext.scopes.back()[parameter.name] = binding;
+            function.params.push_back(parameter.name);
+            function.paramTypes.push_back(type);
+            function.paramPtr.push_back(isArray || type.k == Ty::Ptr);
+            function.paramBool.push_back(!isArray && type == Ty::Bool);
+            function.paramDims.push_back(std::move(parameterDims));
+            function.paramFuncSig.push_back(parameterSignature);
+            function.paramIsFunc.push_back(isFunc);
+        }
+        if (method.isExternal) {
+            functions.push_back(std::move(function));
+            continue;
+        }
+        function.body = cnStatementsToAster(method.body, loweringContext);
+        if (function.body.empty())
+            throw Error(loc(method.line, method.column, "method body cannot be empty: " + method.name));
+        if (method.name == "main") {
+            hasMain = true;
+            if (function.retType != Ty::I32)
+                throw Error(loc(method.line, method.column,
+                    program.language == aster_cn::Language::Zh
+                        ? "启动方法必须返回 整数" : "main must return i32"));
+            const size_t count = function.params.size();
+            const bool valid = count == 0 ||
+                ((count == 2 || count == 3) && function.paramTypes[0] == Ty::I32 &&
+                 function.paramTypes[1] == Ty::Ptr &&
+                 (count == 2 || function.paramTypes[2] == Ty::Ptr));
+            if (!valid)
+                throw Error(loc(method.line, method.column,
+                    program.language == aster_cn::Language::Zh
+                        ? "启动方法不接受参数，或接受 (argc: 整数, argv: 指针[, envp: 指针])"
+                        : "main must take no parameters, or (argc: i32, argv: ptr[, envp: ptr])"));
+        }
+        functions.push_back(std::move(function));
+    }
+    if (!hasMain) throw Error(program.language == aster_cn::Language::Zh
+        ? "程序必须定义 启动方法" : "program must define main");
+    if (!stringPool.classConstructors.empty() || stringPool.usesClosureEnv ||
+        stringPool.usesClosureAdapter) {
+        if (names.count("alloc"))
+            throw Error("class construction, capturing closures, or callback adapters require the standard library alloc function; alloc is already declared");
+        Function allocator;
+        allocator.name = "alloc";
+        allocator.params = {"n"};
+        allocator.paramTypes = {Ty::I32};
+        allocator.paramPtr = {false};
+        allocator.paramBool = {false};
+        allocator.paramDims.resize(1);
+        allocator.paramFuncSig.resize(1);
+        allocator.paramIsFunc = {false};
+        allocator.retType = Ty::Ptr;
+        allocator.returnPtr = true;
+        allocator.external = true;
+        functions.push_back(std::move(allocator));
+        names.insert("alloc");
+
+        std::set<int> emittedClassInitializers;
+        std::set<int> emittedClassFactories;
+        while (true) {
+            int sid = -1;
+            for (const int candidate : stringPool.classConstructors) {
+                if (!emittedClassFactories.count(candidate)) {
+                    sid = candidate;
+                    break;
+                }
+            }
+            if (sid < 0) break;
+            emittedClassFactories.insert(sid);
+            const std::string className = structOf(sid).name;
+            const auto sourceClass = std::find_if(program.classes.begin(), program.classes.end(),
+                [&](const aster_cn::ClassDeclaration& declaration) {
+                    return declaration.name == className;
+                });
+            if (sourceClass == program.classes.end())
+                throw Error("internal error: missing class declaration for constructor " + className);
+
+            std::vector<int> classChain;
+            for (int current = sid;;) {
+                classChain.push_back(current);
+                const auto base = g_cnClassBase.find(current);
+                if (base == g_cnClassBase.end()) break;
+                current = base->second;
+            }
+            std::reverse(classChain.begin(), classChain.end());
+            for (const int ownerClassId : classChain) {
+                if (!emittedClassInitializers.insert(ownerClassId).second) continue;
+                const std::string ownerName = structOf(ownerClassId).name;
+                const auto ownerSource = std::find_if(program.classes.begin(), program.classes.end(),
+                    [&](const aster_cn::ClassDeclaration& declaration) {
+                        return declaration.name == ownerName;
+                    });
+                if (ownerSource == program.classes.end())
+                    throw Error("internal error: missing class declaration for initializer " + ownerName);
+                const CnClassMethodInfo* ownerConstructor = cnFindClassConstructor(ownerClassId);
+                const std::string initializerName = cnClassInitializerName(ownerClassId);
+                if (names.count(initializerName))
+                    throw Error(loc(ownerSource->line, ownerSource->column,
+                                    "class initializer symbol conflicts with a declaration: " +
+                                    initializerName));
+
+                Function initializer;
+                initializer.name = initializerName;
+                initializer.line = ownerSource->line;
+                initializer.col = ownerSource->column;
+                initializer.retType = Ty::Void;
+                std::set<std::string> initializerParameterNames;
+                if (ownerConstructor)
+                    initializerParameterNames.insert(ownerConstructor->parameterNames.begin(),
+                                                     ownerConstructor->parameterNames.end());
+                std::string objectParameter = "__aster_cn_init_object_" +
+                    cnMangleSymbolPart(ownerName);
+                while (initializerParameterNames.count(objectParameter))
+                    objectParameter.push_back('_');
+                initializerParameterNames.insert(objectParameter);
+                initializer.params.push_back(objectParameter);
+                initializer.paramTypes.push_back(Ty::ptrTo(ownerClassId));
+                initializer.paramPtr.push_back(true);
+                initializer.paramBool.push_back(false);
+                initializer.paramDims.emplace_back();
+                initializer.paramFuncSig.emplace_back();
+                initializer.paramIsFunc.push_back(false);
+                if (ownerConstructor) {
+                    for (size_t index = 0; index < ownerConstructor->parameterTypes.size(); ++index) {
+                        initializer.params.push_back(ownerConstructor->parameterNames[index]);
+                        initializer.paramTypes.push_back(ownerConstructor->parameterTypes[index]);
+                        initializer.paramPtr.push_back(
+                            !ownerConstructor->parameterDims[index].empty() ||
+                            ownerConstructor->parameterTypes[index].k == Ty::Ptr);
+                        initializer.paramBool.push_back(
+                            ownerConstructor->parameterDims[index].empty() &&
+                            ownerConstructor->parameterTypes[index] == Ty::Bool);
+                        initializer.paramDims.push_back(ownerConstructor->parameterDims[index]);
+                        initializer.paramFuncSig.push_back(
+                            ownerConstructor->parameterFuncSigs[index]);
+                        initializer.paramIsFunc.push_back(
+                            ownerConstructor->parameterIsFunc[index]);
+                    }
+                }
+
+                CnLoweringContext initializerContext;
+                initializerContext.globals = &globalBindings;
+                initializerContext.methodReturns = &methodReturns;
+                initializerContext.methodSignatures = &g_cnFunctionSignatures;
+                initializerContext.strings = &stringPool;
+                initializerContext.countCheck = countCheck;
+                initializerContext.currentClassId = ownerClassId;
+                initializerContext.sourceFile = ownerConstructor
+                    ? ownerConstructor->sourceFile : ownerSource->sourceFile;
+                initializerContext.scopes.emplace_back();
+                if (ownerConstructor) {
+                    for (size_t index = 0; index < ownerConstructor->parameterTypes.size(); ++index) {
+                        const bool isArray = !ownerConstructor->parameterDims[index].empty();
+                        CnBinding binding{
+                            isArray ? ptrElemType(ownerConstructor->parameterTypes[index])
+                                    : ownerConstructor->parameterTypes[index],
+                            isArray,
+                            isArray ? ownerConstructor->parameterDims[index].front() : 0};
+                        binding.isFunc = ownerConstructor->parameterIsFunc[index];
+                        binding.funcSig = ownerConstructor->parameterFuncSigs[index];
+                        initializerContext.scopes.back()[ownerConstructor->parameterNames[index]] =
+                            std::move(binding);
+                    }
+                }
+
+                Stmt thisBinding(Stmt::Let);
+                thisBinding.name = "__aster_cn_this";
+                thisBinding.line = ownerSource->line;
+                thisBinding.col = ownerSource->column;
+                thisBinding.ty = Ty::ptrTo(ownerClassId);
+                thisBinding.isPtr = true;
+                thisBinding.expr = cnNamedValue(objectParameter,
+                                                ownerSource->line, ownerSource->column);
+                initializer.body.push_back(std::move(thisBinding));
+
+                const auto base = g_cnClassBase.find(ownerClassId);
+                if (base != g_cnClassBase.end()) {
+                    std::vector<std::string> parentArgumentNames;
+                    const CnClassMethodInfo* baseConstructor = cnFindClassConstructor(base->second);
+                    const size_t parentArgumentCount = baseConstructor
+                        ? baseConstructor->parameterTypes.size() : 0;
+                    for (size_t index = 0; index < parentArgumentCount; ++index) {
+                        const auto& sourceArgument = ownerConstructor->parentConstructorArguments[index];
+                        std::vector<Stmt> prefix;
+                        E value = cnLowerStatementExpressionAs(
+                            sourceArgument, baseConstructor->parameterTypes[index],
+                            &stringPool, initializerContext, prefix,
+                            &baseConstructor->parameterDims[index]);
+                        for (auto& statement : prefix)
+                            initializer.body.push_back(std::move(statement));
+                        std::string argumentName = "__aster_cn_parent_arg_" +
+                            std::to_string(ownerClassId) + "_" + std::to_string(index);
+                        while (initializerParameterNames.count(argumentName))
+                            argumentName.push_back('_');
+                        initializerParameterNames.insert(argumentName);
+                        Stmt argument(Stmt::Let);
+                        argument.name = argumentName;
+                        argument.line = sourceArgument.line;
+                        argument.col = sourceArgument.column;
+                        argument.ty = baseConstructor->parameterTypes[index];
+                        argument.isPtr = argument.ty.k == Ty::Ptr;
+                        argument.isBool = argument.ty == Ty::Bool;
+                        argument.expr = std::move(value);
+                        initializer.body.push_back(std::move(argument));
+                        parentArgumentNames.push_back(argumentName);
+                    }
+                    Stmt invokeParent(Stmt::Expr);
+                    invokeParent.line = ownerSource->line;
+                    invokeParent.col = ownerSource->column;
+                    invokeParent.expr.reset(new Expr(Expr::Call));
+                    invokeParent.expr->name = cnClassInitializerName(base->second);
+                    invokeParent.expr->line = ownerSource->line;
+                    invokeParent.expr->col = ownerSource->column;
+                    invokeParent.expr->args.push_back(cnCast(
+                        cnNamedValue(objectParameter, ownerSource->line, ownerSource->column),
+                        Ty::ptrTo(base->second), ownerSource->line, ownerSource->column));
+                    for (const auto& argumentName : parentArgumentNames)
+                        invokeParent.expr->args.push_back(cnNamedValue(
+                            argumentName, ownerSource->line, ownerSource->column));
+                    initializer.body.push_back(std::move(invokeParent));
+                }
+
+                Stmt setVtable(Stmt::FieldAssign);
+                setVtable.line = ownerSource->line;
+                setVtable.col = ownerSource->column;
+                setVtable.idx = cnObjectPathExpr(
+                    objectParameter, {{false, "__aster_cn_vptr", 0}},
+                    ownerSource->line, ownerSource->column);
+                setVtable.expr.reset(new Expr(Expr::AddrOf));
+                setVtable.expr->a.reset(new Expr(Expr::Var));
+                setVtable.expr->a->name = g_cnClassVtableGlobals.at(ownerClassId);
+                setVtable.expr->line = ownerSource->line;
+                setVtable.expr->col = ownerSource->column;
+                initializer.body.push_back(std::move(setVtable));
+
+                CnLoweringContext fieldContext;
+                fieldContext.globals = &globalBindings;
+                fieldContext.methodReturns = &methodReturns;
+                fieldContext.methodSignatures = &g_cnFunctionSignatures;
+                fieldContext.strings = &stringPool;
+                fieldContext.countCheck = countCheck;
+                fieldContext.thisType = Ty::ptrTo(ownerClassId);
+                fieldContext.currentClassId = ownerClassId;
+                fieldContext.sourceFile = ownerSource->sourceFile;
+                fieldContext.scopes.emplace_back();
+                fieldContext.scopes.back()["__aster_cn_this"] =
+                    CnBinding{Ty::ptrTo(ownerClassId), false, 0};
+                if (base != g_cnClassBase.end())
+                    fieldContext.superType = Ty::ptrTo(base->second);
+                for (const auto& field : ownerSource->fields) {
+                    if (field.isStatic || !field.hasInitializer) continue;
+                    fieldContext.sourceFile = field.sourceFile;
+                    const Ty target = cnBackendType(field.typeName, field.line, field.column);
+                    const uint32_t arrayLength = cnClassFieldArrayLength(field);
+                    const size_t elementCount = arrayLength == 0
+                        ? 1 : field.initializer.children.size();
+                    for (size_t index = 0; index < elementCount; ++index) {
+                        const aster_cn::Expression& sourceValue = arrayLength == 0
+                            ? field.initializer : field.initializer.children[index];
+                        std::vector<Stmt> prefix;
+                        E value = cnLowerStatementExpressionAs(
+                            sourceValue, target, &stringPool, fieldContext, prefix);
+                        for (auto& statement : prefix)
+                            initializer.body.push_back(std::move(statement));
+                        Stmt store(Stmt::FieldAssign);
+                        store.line = sourceValue.line;
+                        store.col = sourceValue.column;
+                        std::vector<CnObjectPathPart> fieldPath{{false, field.name, 0}};
+                        if (arrayLength != 0)
+                            fieldPath.push_back({true, {}, static_cast<uint32_t>(index)});
+                        store.idx = cnObjectPathExpr("__aster_cn_this", fieldPath,
+                                                     sourceValue.line, sourceValue.column);
+                        store.expr = std::move(value);
+                        initializer.body.push_back(std::move(store));
+                    }
+                }
+
+                if (ownerConstructor) {
+                    Stmt invokeConstructor(Stmt::Expr);
+                    invokeConstructor.line = ownerSource->line;
+                    invokeConstructor.col = ownerSource->column;
+                    invokeConstructor.expr.reset(new Expr(Expr::Call));
+                    invokeConstructor.expr->name = ownerConstructor->functionName;
+                    invokeConstructor.expr->line = ownerSource->line;
+                    invokeConstructor.expr->col = ownerSource->column;
+                    invokeConstructor.expr->args.push_back(cnNamedValue(
+                        objectParameter, ownerSource->line, ownerSource->column));
+                    for (const auto& parameterName : ownerConstructor->parameterNames)
+                        invokeConstructor.expr->args.push_back(cnNamedValue(
+                            parameterName, ownerSource->line, ownerSource->column));
+                    initializer.body.push_back(std::move(invokeConstructor));
+                }
+                functions.push_back(std::move(initializer));
+                names.insert(initializerName);
+            }
+
+            const std::string constructorName = cnClassConstructorName(sid);
+            if (names.count(constructorName))
+                throw Error(loc(sourceClass->line, sourceClass->column,
+                                "class constructor symbol conflicts with a declaration: " + constructorName));
+
+            Function constructor;
+            constructor.name = constructorName;
+            constructor.line = sourceClass->line;
+            constructor.col = sourceClass->column;
+            constructor.retType = Ty::ptrTo(sid);
+            constructor.returnPtr = true;
+            const CnClassMethodInfo* userConstructor = cnFindClassConstructor(sid);
+            if (userConstructor) {
+                for (size_t index = 0; index < userConstructor->parameterTypes.size(); ++index) {
+                    constructor.params.push_back("__aster_cn_ctor_arg_" + std::to_string(index));
+                    constructor.paramTypes.push_back(userConstructor->parameterTypes[index]);
+                    constructor.paramPtr.push_back(
+                        !userConstructor->parameterDims[index].empty() ||
+                        userConstructor->parameterTypes[index].k == Ty::Ptr);
+                    constructor.paramBool.push_back(userConstructor->parameterDims[index].empty() &&
+                                                    userConstructor->parameterTypes[index] == Ty::Bool);
+                    constructor.paramDims.push_back(userConstructor->parameterDims[index]);
+                    constructor.paramFuncSig.push_back(userConstructor->parameterFuncSigs[index]);
+                    constructor.paramIsFunc.push_back(userConstructor->parameterIsFunc[index]);
+                }
+            }
+
+            Stmt object(Stmt::Let);
+            object.name = "__aster_cn_object";
+            object.line = sourceClass->line;
+            object.col = sourceClass->column;
+            object.ty = Ty::ptrTo(sid);
+            object.isPtr = true;
+            object.expr.reset(new Expr(Expr::Call));
+            object.expr->name = "alloc";
+            object.expr->line = sourceClass->line;
+            object.expr->col = sourceClass->column;
+            object.expr->args.push_back(E(new Expr(Expr::Num, structOf(sid).size)));
+            constructor.body.push_back(std::move(object));
+
+            Stmt allocationFailed(Stmt::If);
+            allocationFailed.line = sourceClass->line;
+            allocationFailed.col = sourceClass->column;
+            allocationFailed.expr.reset(new Expr(Expr::Eq));
+            allocationFailed.expr->a = cnNamedValue("__aster_cn_object", sourceClass->line,
+                                                     sourceClass->column);
+            allocationFailed.expr->b.reset(new Expr(Expr::Num, 0));
+            allocationFailed.expr->line = sourceClass->line;
+            allocationFailed.expr->col = sourceClass->column;
+            Stmt nullReturn(Stmt::Return);
+            nullReturn.line = sourceClass->line;
+            nullReturn.col = sourceClass->column;
+            nullReturn.expr.reset(new Expr(Expr::Num, 0));
+            allocationFailed.thenBody.push_back(std::move(nullReturn));
+            constructor.body.push_back(std::move(allocationFailed));
+
+            std::vector<CnObjectPathPart> path;
+            cnAppendClassDefaultStores(constructor.body, "__aster_cn_object", Ty::ofStruct(sid),
+                                       path, &stringPool, sourceClass->line, sourceClass->column);
+            Stmt invokeInitializer(Stmt::Expr);
+            invokeInitializer.line = sourceClass->line;
+            invokeInitializer.col = sourceClass->column;
+            invokeInitializer.expr.reset(new Expr(Expr::Call));
+            invokeInitializer.expr->name = cnClassInitializerName(sid);
+            invokeInitializer.expr->line = sourceClass->line;
+            invokeInitializer.expr->col = sourceClass->column;
+            invokeInitializer.expr->args.push_back(cnNamedValue(
+                "__aster_cn_object", sourceClass->line, sourceClass->column));
+            if (userConstructor) {
+                for (size_t index = 0; index < userConstructor->parameterTypes.size(); ++index)
+                    invokeInitializer.expr->args.push_back(cnNamedValue(
+                        "__aster_cn_ctor_arg_" + std::to_string(index),
+                        sourceClass->line, sourceClass->column));
+            }
+            constructor.body.push_back(std::move(invokeInitializer));
+            Stmt returnObject(Stmt::Return);
+            returnObject.line = sourceClass->line;
+            returnObject.col = sourceClass->column;
+            returnObject.expr = cnNamedValue("__aster_cn_object", sourceClass->line,
+                                             sourceClass->column);
+            constructor.body.push_back(std::move(returnObject));
+            functions.push_back(std::move(constructor));
+            names.insert(constructorName);
+        }
+    }
+    const std::string concatName = "__aster_cn_str_concat";
+    if (stringPool.usesConcat && names.count(concatName))
+        throw Error("method name is reserved for string concatenation: " + concatName);
+    if (stringPool.usesConcat) {
+        const Ty bytePointer = tyPtrToElem(Ty::U8);
+        Function concat;
+        concat.name = concatName;
+        concat.params = {"left", "right"};
+        concat.paramTypes = {bytePointer, bytePointer};
+        concat.paramPtr = {true, true};
+        concat.paramBool = {false, false};
+        concat.paramDims.resize(2);
+        concat.paramFuncSig.resize(2);
+        concat.paramIsFunc = {false, false};
+        concat.retType = bytePointer;
+        concat.returnPtr = true;
+        concat.external = true;
+        functions.push_back(std::move(concat));
+    }
+    const std::string orderName = "__aster_cn_str_order";
+    if (stringPool.usesStringOrder && names.count(orderName))
+        throw Error("method name is reserved for string ordering: " + orderName);
+    if (stringPool.usesStringOrder) {
+        const Ty bytePointer = tyPtrToElem(Ty::U8);
+        Function order;
+        order.name = orderName;
+        order.params = {"left", "right"};
+        order.paramTypes = {bytePointer, bytePointer};
+        order.paramPtr = {true, true};
+        order.paramBool = {false, false};
+        order.paramDims.resize(2);
+        order.paramFuncSig.resize(2);
+        order.paramIsFunc = {false, false};
+        order.retType = Ty::I32;
+        order.external = true;
+        functions.push_back(std::move(order));
+    }
+    const std::string viewName = "__aster_cn_str_view";
+    if (stringPool.usesStringView && names.count(viewName))
+        throw Error("method name is reserved for string_view conversion: " + viewName);
+    if (stringPool.usesStringView) {
+        const Ty bytePointer = tyPtrToElem(Ty::U8);
+        Function view;
+        view.name = viewName;
+        view.params = {"source"};
+        view.paramTypes = {bytePointer};
+        view.paramPtr = {true};
+        view.paramBool = {false};
+        view.paramDims.resize(1);
+        view.paramFuncSig.resize(1);
+        view.paramIsFunc = {false};
+        view.retType = cnBackendType("string_view", 0, 0);
+        view.external = true;
+        functions.push_back(std::move(view));
+    }
+    const std::string stringFromViewName = "__aster_cn_string_from_view";
+    if (stringPool.usesStringFromView && names.count(stringFromViewName))
+        throw Error("method name is reserved for string_view conversion: " + stringFromViewName);
+    if (stringPool.usesStringFromView) {
+        Function stringFromView;
+        stringFromView.name = stringFromViewName;
+        stringFromView.params = {"view"};
+        stringFromView.paramTypes = {cnBackendType("string_view", 0, 0)};
+        stringFromView.paramPtr = {false};
+        stringFromView.paramBool = {false};
+        stringFromView.paramDims.resize(1);
+        stringFromView.paramFuncSig.resize(1);
+        stringFromView.paramIsFunc = {false};
+        stringFromView.retType = Ty::string();
+        stringFromView.returnPtr = true;
+        stringFromView.external = true;
+        functions.push_back(std::move(stringFromView));
+    }
+    return functions;
+}
+
+struct CnStableValueCandidate {
+    std::string path;
+    std::string englishDescription;
+    std::string chineseDescription;
+    unsigned line = 0;
+    unsigned column = 0;
+};
+
+struct CnStableValueWarning {
+    unsigned line = 0;
+    unsigned column = 0;
+    std::string message;
+};
+
+static bool cnStoragePath(const aster_cn::Expression& expression, std::string& path) {
+    if (expression.kind == "Identifier") {
+        path = expression.value;
+        return true;
+    }
+    if (expression.kind == "Member" && expression.children.size() == 2 &&
+        expression.children[1].kind == "Identifier") {
+        if (!cnStoragePath(expression.children[0], path)) return false;
+        path += "." + expression.children[1].value;
+        return true;
+    }
+    if (expression.kind == "Index" && expression.children.size() == 2) {
+        if (!cnStoragePath(expression.children[0], path)) return false;
+        path += "[]";
+        return true;
+    }
+    return false;
+}
+
+static void cnCollectAddressEscapes(const aster_cn::Expression& expression,
+                                    std::vector<std::string>& escaped) {
+    if (expression.kind == "Unary" && expression.value == "&" &&
+        expression.children.size() == 1) {
+        std::string path;
+        if (cnStoragePath(expression.children[0], path)) escaped.push_back(std::move(path));
+    }
+    for (const auto& child : expression.children)
+        cnCollectAddressEscapes(child, escaped);
+}
+
+static void cnCollectArrayValueUses(const aster_cn::Expression& expression,
+                                   std::vector<std::string>& uses,
+                                   bool isArrayBase = false) {
+    if (!isArrayBase) {
+        std::string path;
+        if (cnStoragePath(expression, path)) uses.push_back(std::move(path));
+    }
+    if (expression.kind == "Index" && expression.children.size() == 2) {
+        cnCollectArrayValueUses(expression.children[0], uses, true);
+        cnCollectArrayValueUses(expression.children[1], uses);
+        return;
+    }
+    for (const auto& child : expression.children)
+        cnCollectArrayValueUses(child, uses, isArrayBase);
+}
+
+static void cnCollectStableValueFacts(const std::vector<aster_cn::Statement>& statements,
+                                      std::vector<std::string>& assigned,
+                                      std::vector<std::string>& escaped,
+                                      std::vector<std::string>& arrayValueUses) {
+    for (const auto& statement : statements) {
+        if (statement.kind == "AssignmentStatement" &&
+            statement.expression.kind == "Assignment" &&
+            !statement.expression.children.empty()) {
+            std::string path;
+            if (cnStoragePath(statement.expression.children.front(), path))
+                assigned.push_back(std::move(path));
+        }
+        cnCollectAddressEscapes(statement.expression, escaped);
+        cnCollectArrayValueUses(statement.expression, arrayValueUses);
+        for (const auto& expression : statement.expressions)
+            cnCollectAddressEscapes(expression, escaped);
+        for (const auto& expression : statement.expressions)
+            cnCollectArrayValueUses(expression, arrayValueUses);
+        for (const auto& condition : statement.conditions) {
+            cnCollectAddressEscapes(condition, escaped);
+            cnCollectArrayValueUses(condition, arrayValueUses);
+        }
+        for (const auto& arm : statement.caseValues) {
+            for (const auto& expression : arm) {
+                cnCollectAddressEscapes(expression, escaped);
+                cnCollectArrayValueUses(expression, arrayValueUses);
+            }
+        }
+        if (statement.kind == "EnumLoopStatement") {
+            std::string path;
+            if (statement.hasExpression && cnStoragePath(statement.expression, path))
+                escaped.push_back(std::move(path));
+        }
+        cnCollectStableValueFacts(statement.body, assigned, escaped, arrayValueUses);
+        for (const auto& branch : statement.branches)
+            cnCollectStableValueFacts(branch, assigned, escaped, arrayValueUses);
+        cnCollectStableValueFacts(statement.elseBody, assigned, escaped, arrayValueUses);
+    }
+}
+
+static void cnCollectStableDeclarations(const std::vector<aster_cn::Statement>& statements,
+                                        std::vector<CnStableValueCandidate>& candidates) {
+    for (const auto& statement : statements) {
+        if (statement.kind == "VariableDeclaration" && !statement.hasExpression) {
+            const Ty type = cnBackendType(statement.typeName, statement.line, statement.column);
+            if (type != Ty::Void) {
+                if (cnIsInterfaceType(type)) continue;
+                const std::string path = statement.arrayDimensions.empty()
+                    ? statement.name : statement.name + "[]";
+                const std::string shownPath = statement.arrayDimensions.empty()
+                    ? statement.name : statement.name + "[*]";
+                if (tyIsStruct(type) && !cnIsInterfaceType(type)) {
+                    const auto addFields = [&](const auto& self, Ty structureType,
+                                               const std::string& parentPath,
+                                               const std::string& parentDisplay,
+                                               unsigned depth) -> void {
+                        if (!tyIsStruct(structureType) || depth > 64) return;
+                        const StructDef& definition = structOf(structureType.sid);
+                        for (const auto& field : definition.fields) {
+                            if (definition.name == "字段信息" &&
+                                (field.name == "name" || field.name == "value")) continue;
+                            const std::string fieldPath = parentPath + "." + field.name;
+                            const std::string fieldDisplay = parentDisplay + "." + field.name;
+                            if (tyIsStruct(field.ty) && !cnIsInterfaceType(field.ty)) {
+                                self(self, field.ty,
+                                     fieldPath + (field.len ? "[]" : ""),
+                                     fieldDisplay + (field.len ? "[*]" : ""), depth + 1);
+                            } else if (cnIsInterfaceType(field.ty)) {
+                                continue;
+                            } else {
+                                candidates.push_back({fieldPath + (field.len ? "[]" : ""),
+                                    "field '" + fieldDisplay + "'",
+                                    "字段 '" + fieldDisplay + "'", statement.line,
+                                    statement.column});
+                            }
+                        }
+                    };
+                    addFields(addFields, type, path, shownPath, 0);
+                } else {
+                    const std::string description = statement.arrayDimensions.empty()
+                        ? "local variable '" + statement.name + "'"
+                        : "local array '" + statement.name + "'";
+                    const std::string chineseDescription = statement.arrayDimensions.empty()
+                        ? "局部变量 '" + statement.name + "'"
+                        : "局部数组 '" + statement.name + "'";
+                    candidates.push_back({path, description, chineseDescription, statement.line,
+                                          statement.column});
+                }
+            }
+        }
+        cnCollectStableDeclarations(statement.body, candidates);
+        for (const auto& branch : statement.branches)
+            cnCollectStableDeclarations(branch, candidates);
+        cnCollectStableDeclarations(statement.elseBody, candidates);
+    }
+}
+
+static bool cnStoragePathsOverlap(const std::string& left, const std::string& right) {
+    if (left == right) return true;
+    const auto ancestor = [](const std::string& parent, const std::string& child) {
+        return child.size() > parent.size() && child.compare(0, parent.size(), parent) == 0 &&
+               (child[parent.size()] == '.' || child[parent.size()] == '[');
+    };
+    return ancestor(left, right) || ancestor(right, left);
+}
+
+static std::vector<CnStableValueWarning> cnStableValueWarnings(
+    const aster_cn::Program& program, aster_cn::Language language) {
+    std::vector<CnStableValueWarning> warnings;
+    for (const auto& method : program.methods) {
+        std::vector<CnStableValueCandidate> candidates;
+        cnCollectStableDeclarations(method.body, candidates);
+        std::vector<std::string> assigned, escaped, arrayValueUses;
+        cnCollectStableValueFacts(method.body, assigned, escaped, arrayValueUses);
+        std::set<std::string> seen;
+        for (const auto& candidate : candidates) {
+            if (!seen.insert(candidate.path).second) continue;
+            const bool modified = std::any_of(assigned.begin(), assigned.end(),
+                [&](const std::string& path) {
+                    return cnStoragePathsOverlap(candidate.path, path);
+                });
+            const bool addressEscaped = std::any_of(escaped.begin(), escaped.end(),
+                [&](const std::string& path) {
+                    return cnStoragePathsOverlap(candidate.path, path);
+                });
+            const size_t arrayMarker = candidate.path.find("[]");
+            const bool arrayDecayed = arrayMarker != std::string::npos &&
+                std::find(arrayValueUses.begin(), arrayValueUses.end(),
+                          candidate.path.substr(0, arrayMarker)) != arrayValueUses.end();
+            if (modified || addressEscaped || arrayDecayed) continue;
+            const std::string description = language == aster_cn::Language::Zh
+                ? candidate.chineseDescription : candidate.englishDescription;
+            const std::string suffix = language == aster_cn::Language::Zh
+                ? " 仅获得初始值，之后没有再次赋值，值保持不变"
+                : " receives only its initial value and is never assigned again; its value remains unchanged";
+            warnings.push_back({candidate.line, candidate.column,
+                description + suffix});
+        }
+    }
+    return warnings;
+}
+#endif
+
+static std::string canonicalCliCommand(const std::string& command) {
+    struct Alias { const char* spelling; const char* canonical; };
+    static const Alias aliases[] = {
+        {"帮助", "help"}, {"-h", "help"}, {"--help", "help"},
+        {"format", "fmt"}, {"格式化源码", "fmt"}, {"格式化", "fmt"},
+        {"新建", "new"},
+        {"添加源码", "add"},
+        {"依赖", "deps"},
+        {"构建项目", "build"},
+        {"运行", "run"},
+        {"测试", "test"},
+        {"环境检查", "doctor"},
+        {"编译双语对象", "build-cn-obj"},
+        {"编译对象", "build-obj"},
+        {"构建可执行文件", "build-elf"},
+        {"构建PIE", "build-pie"},
+        {"编译共享库", "build-so"},
+        {"构建APK", "build-apk"},
+        {"链接可执行文件", "link-obj"},
+        {"链接PIE", "link-pie"},
+        {"链接共享库", "link-so"},
+        {"生成密钥", "keygen"},
+        {"验证APK", "verify-apk"},
+    };
+    for (const auto& alias : aliases)
+        if (command == alias.spelling) return alias.canonical;
+    return command;
+}
 
 int main(int argc,char**argv){
-    const std::string cmd=argc>1?argv[1]:"";
-    std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false,compactFrames=false;
+    const std::string cmd=canonicalCliCommand(argc>1?argv[1]:"");
+    std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false,compactFrames=false,gcSections=false;
     // v0.23.54-dev: load-segment page size. 4096 is the default (and the historical
     // value); 16384 is required so an app with targetSdk >= 35 loads on Android 15+
     // 16 KB-page devices. Only these two are accepted.
@@ -16065,6 +24596,7 @@ int main(int argc,char**argv){
             if(a=="-o"){if(i+1>=argc)return false;output=argv[++i];haveOutput=true;}
             else if(a=="--pic")pic=true;
             else if(a=="--bounds-check")boundsCheck=true;
+            else if(a=="--gc-sections")gcSections=true;
             else if(a=="-g"||a=="--debug-line")debugLine=true;
             else if(a=="--compact-frames")compactFrames=true;
             else if(a=="--soname"){if(i+1>=argc)return false;soname=argv[++i];haveSoname=true;}
@@ -16099,6 +24631,77 @@ int main(int argc,char**argv){
         return haveOutput;
     };
     try{
+        if(cmd=="help"){
+            std::cout<<kUsage;
+            return 0;
+        }
+#if ASTER_CN_FRONTEND_AVAILABLE
+        if (cmd == "fmt") {
+            bool writeBack = false, checkOnly = false, hasLanguageOverride = false;
+            aster_cn::Language languageOverride = aster_cn::Language::Zh;
+            std::string input;
+            auto usageError = [&]() {
+                std::cerr << "aster fmt: usage: aster fmt [--language zh|en] [--check|--write] <source.ast>\n";
+                return 2;
+            };
+            for (int i = 2; i < argc; ++i) {
+                const std::string argument = argv[i];
+                if (argument == "-h" || argument == "--help") {
+                    std::cout << "Usage: aster fmt [--language zh|en] [--check|--write] <source.ast>\n"
+                                 "Formats indentation with four spaces; default output is stdout.\n";
+                    return 0;
+                } else if (argument == "--check") {
+                    if (writeBack) return usageError();
+                    checkOnly = true;
+                } else if (argument == "--write") {
+                    if (checkOnly) return usageError();
+                    writeBack = true;
+                } else if (argument == "--language") {
+                    if (i + 1 >= argc) return usageError();
+                    const std::string value = argv[++i];
+                    if (value == "zh") languageOverride = aster_cn::Language::Zh;
+                    else if (value == "en") languageOverride = aster_cn::Language::En;
+                    else return usageError();
+                    hasLanguageOverride = true;
+                } else if (argument.rfind("--language=", 0) == 0) {
+                    const std::string value = argument.substr(11);
+                    if (value == "zh") languageOverride = aster_cn::Language::Zh;
+                    else if (value == "en") languageOverride = aster_cn::Language::En;
+                    else return usageError();
+                    hasLanguageOverride = true;
+                } else if (!argument.empty() && argument[0] == '-') {
+                    return usageError();
+                } else if (input.empty()) {
+                    input = argument;
+                } else {
+                    return usageError();
+                }
+            }
+            if (input.empty()) return usageError();
+            const std::string source = readFile(input);
+            g_cnDiagnosticActive = true;
+            g_cnDiagnosticLanguage = hasLanguageOverride ? languageOverride : aster_cn::Language::Zh;
+            const aster_cn::Language language = aster_cn::selectLanguage(
+                source, hasLanguageOverride, languageOverride);
+            g_cnDiagnosticLanguage = language;
+            const std::string formatted = aster_cn::formatSource(source, language);
+            if (checkOnly) {
+                if (formatted != source) {
+                    std::cerr << "aster fmt: formatting required: " << input << "\n";
+                    return 1;
+                }
+                std::cout << "aster fmt: already formatted: " << input << "\n";
+                return 0;
+            }
+            if (writeBack) {
+                if (formatted != source) writeFormattedSourceAtomic(input, formatted);
+                std::cout << "aster fmt: formatted " << input << "\n";
+            } else {
+                std::cout.write(formatted.data(), static_cast<std::streamsize>(formatted.size()));
+            }
+            return 0;
+        }
+#endif
         // v0.23.77-dev: a project is a directory holding aster.proj. `new`
         // scaffolds one (optionally an APK project), `add` appends a source,
         // `build` compiles it with a content-keyed object cache into an
@@ -16270,6 +24873,7 @@ int main(int argc,char**argv){
         if(cmd=="test"){
             bool dbg=false,bc2=false,noCache=false; uint64_t ps=4096; bool cliPageSet=false; std::string filter;
             uint64_t timeoutVal=0; bool timeoutSet=false;
+            std::vector<std::string> bilingualModuleDirs;
             for(int i=2;i<argc;++i){
                 const std::string a=argv[i];
                 if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
@@ -16288,6 +24892,11 @@ int main(int argc,char**argv){
                     }
                     timeoutSet=true;
                 }
+                else if(a=="--module-dir"||a=="--模块目录"){
+                    if(i+1>=argc){std::cerr<<"aster test: --module-dir needs a path\n";return 2;}
+                    bilingualModuleDirs.push_back(argv[++i]);
+                }
+                else if(a.rfind("--module-dir=",0)==0)bilingualModuleDirs.push_back(a.substr(13));
                 else if(a=="--page-size"){
                     if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
                         std::cerr<<"aster test: --page-size must be 4096 or 16384\n";return 2;
@@ -16296,7 +24905,7 @@ int main(int argc,char**argv){
                 }
                 else if(!a.empty()&&a[0]=='-'){std::cerr<<"aster test: unknown option "<<a<<"\n";return 2;}
                 else if(filter.empty())filter=a;
-                else {std::cerr<<"aster test: usage: aster test [-g] [--bounds-check] [--page-size N] [--no-cache] [filter]\n";return 2;}
+                else {std::cerr<<"aster test: usage: aster test [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [--no-cache] [filter]\n";return 2;}
             }
             if(ps!=4096&&ps!=16384){std::cerr<<"aster test: --page-size must be 4096 or 16384\n";return 2;}
             long timeoutSec=60;
@@ -16315,6 +24924,152 @@ int main(int argc,char**argv){
             if(spec.tests.empty()){
                 std::cerr<<"aster test: aster.proj lists no `test` sources (a line `test tests/foo.ast`)\n";
                 return 2;
+            }
+            aster_cn::ProjectLanguageConfig testLanguage;
+            if(fileExists("aster.proj")) testLanguage=aster_cn::readProjectLanguage("aster.proj");
+            bool bilingualTestProject=testLanguage.hasDefault||testLanguage.hasAllowed;
+            if(!bilingualTestProject) {
+                for(const auto& path:spec.sources) if(fileExists(path)) {
+                    const std::string source=readFile(path);
+                    if(source.find("aster:language=zh")!=std::string::npos||
+                       source.find("aster:language=en")!=std::string::npos) {
+                        bilingualTestProject=true; break;
+                    }
+                }
+            }
+            if(!bilingualTestProject) for(const auto& path:spec.tests) if(fileExists(path)) {
+                const std::string source=readFile(path);
+                if(source.find("aster:language=zh")!=std::string::npos||
+                   source.find("aster:language=en")!=std::string::npos) {
+                    bilingualTestProject=true; break;
+                }
+            }
+            if(bilingualTestProject) {
+                if(spec.kind=="apk") {
+                    std::cerr<<"aster test: bilingual APK projects are not supported yet\n";
+                    return 2;
+                }
+                const uint64_t testPage=cliPageSet?ps:(spec.pageSize?spec.pageSize:ps);
+                if(!makeDirs("build/.cache")){std::cerr<<"aster test: cannot create build/.cache\n";return 1;}
+                char testCwdBuffer[4096];
+                const std::string testCwd=getcwd(testCwdBuffer,sizeof testCwdBuffer)
+                    ? testCwdBuffer : std::string(".");
+                std::vector<std::string> packageRoots{testCwd};
+                packageRoots.insert(packageRoots.end(),bilingualModuleDirs.begin(),bilingualModuleDirs.end());
+                std::map<std::string,std::string> testExecutables;
+                int ran=0,failed=0,compiled=0,reused=0;
+                for(const auto& testPath:spec.tests) {
+                    if(!filter.empty()&&testPath.find(filter)==std::string::npos)continue;
+                    if(!fileExists(testPath)){std::cerr<<"aster test: missing test source "<<testPath<<"\n";return 1;}
+                    std::string exe="build/tests/"+baseNameOf(testPath).substr(
+                        0,baseNameOf(testPath).size()>4&&baseNameOf(testPath).compare(baseNameOf(testPath).size()-4,4,".ast")==0
+                            ? baseNameOf(testPath).size()-4 : baseNameOf(testPath).size());
+                    const auto existingExecutable=testExecutables.find(exe);
+                    if(existingExecutable!=testExecutables.end()&&existingExecutable->second!=testPath)
+                        exe+="-"+sha256Hex(testPath).substr(0,12);
+                    testExecutables[exe]=testPath;
+                    if(!makeDirs(dirNameOf(exe))){std::cerr<<"aster test: cannot create "<<dirNameOf(exe)<<"\n";return 1;}
+                    std::string testFingerprint=std::string(kVersion)+"|cn-test|"+
+                        (dbg?"g":"-")+(bc2?"b":"-")+"|"+std::to_string(testPage)+"\n";
+                    for(size_t i=0;i<packageRoots.size();++i)
+                        testFingerprint+="package-root "+std::to_string(i)+" "+packageRoots[i]+"\n";
+                    std::vector<std::string> testInputs;
+                    testInputs.push_back("aster.proj");
+                    for(const auto& path:spec.sources) testInputs.push_back(path);
+                    testInputs.push_back(testPath);
+                    testInputs.push_back(testCwd);
+                    for(const auto& moduleDir:bilingualModuleDirs) testInputs.push_back(moduleDir);
+                    std::sort(testInputs.begin(),testInputs.end());
+                    testInputs.erase(std::unique(testInputs.begin(),testInputs.end()),testInputs.end());
+                    for(const auto& path:testInputs) {
+                        testFingerprint+="input "+path+" ";
+                        if(fileExists(path)) testFingerprint+=sha256Hex(readFile(path));
+                        else if(dirExists(path)) {
+                            std::vector<std::string> moduleFiles;
+                            std::error_code moduleError;
+                            for(std::filesystem::recursive_directory_iterator it(
+                                    path,std::filesystem::directory_options::skip_permission_denied,
+                                    moduleError), end; it!=end; it.increment(moduleError)) {
+                                if(moduleError) { moduleError.clear(); continue; }
+                                if(it->is_regular_file(moduleError)&&it->path().extension()==".ast")
+                                    moduleFiles.push_back(it->path().string());
+                                moduleError.clear();
+                            }
+                            std::sort(moduleFiles.begin(),moduleFiles.end());
+                            for(const auto& moduleFile:moduleFiles)
+                                testFingerprint+=moduleFile+"="+sha256Hex(readFile(moduleFile))+";";
+                        } else testFingerprint+="<missing>";
+                        testFingerprint.push_back('\n');
+                    }
+                    const std::string object="build/.cache/cn-test-"+sha256Hex(testFingerprint)+".o";
+                    const bool reuse=!noCache&&fileExists(object);
+                    if(!reuse) {
+                        std::vector<aster_cn::Program> libraryPrograms;
+                        for(const auto& path:spec.sources) {
+                            if(!fileExists(path)){std::cerr<<"aster test: missing source "<<path<<"\n";return 1;}
+                            const std::string source=readFile(path);
+                            const aster_cn::Language language=aster_cn::selectLanguage(
+                                source,false,aster_cn::Language::Zh,testLanguage);
+                            libraryPrograms.push_back(aster_cn::parseProgram(source,language,path));
+                        }
+                        const std::string testSource=readFile(testPath);
+                        const aster_cn::Language testSourceLanguage=aster_cn::selectLanguage(
+                            testSource,false,aster_cn::Language::Zh,testLanguage);
+                        const aster_cn::Program testProgram=aster_cn::parseProgram(
+                            testSource,testSourceLanguage,testPath);
+                        aster_cn::Program roots;
+                        roots.language=testProgram.language;
+                        roots.sourceFile=testProgram.sourceFile;
+                        for(const auto& library:libraryPrograms) {
+                            roots.structures.insert(roots.structures.end(),library.structures.begin(),library.structures.end());
+                            roots.enums.insert(roots.enums.end(),library.enums.begin(),library.enums.end());
+                            roots.classes.insert(roots.classes.end(),library.classes.begin(),library.classes.end());
+                            roots.interfaceClasses.insert(roots.interfaceClasses.end(),library.interfaceClasses.begin(),library.interfaceClasses.end());
+                            roots.globals.insert(roots.globals.end(),library.globals.begin(),library.globals.end());
+                            roots.methods.insert(roots.methods.end(),library.methods.begin(),library.methods.end());
+                            roots.imports.insert(roots.imports.end(),library.imports.begin(),library.imports.end());
+                        }
+                        roots.structures.insert(roots.structures.end(),testProgram.structures.begin(),testProgram.structures.end());
+                        roots.enums.insert(roots.enums.end(),testProgram.enums.begin(),testProgram.enums.end());
+                        roots.classes.insert(roots.classes.end(),testProgram.classes.begin(),testProgram.classes.end());
+                        roots.interfaceClasses.insert(roots.interfaceClasses.end(),testProgram.interfaceClasses.begin(),testProgram.interfaceClasses.end());
+                        roots.globals.insert(roots.globals.end(),testProgram.globals.begin(),testProgram.globals.end());
+                        roots.methods.insert(roots.methods.end(),testProgram.methods.begin(),testProgram.methods.end());
+                        roots.imports.insert(roots.imports.end(),testProgram.imports.begin(),testProgram.imports.end());
+                        const aster_cn::Program resolved=cnResolvePackageImports(roots,testLanguage,packageRoots);
+                        std::vector<Global> globals;
+                        std::vector<Function> functions=cnProgramToAster(resolved,globals,true);
+                        const std::vector<CompiledFunction> generated=
+                            compileProgram(functions,globals,false,true,bc2,dbg);
+                        DebugLineBlob line; DebugInfoBlob info; EhFrameBlob eh;
+                        if(dbg) {
+                            const ObjectLayout layout=layoutObject(generated,globals);
+                            line=encodeDebugLine(layout.lineRows,layout.ins.size()*4,
+                                                 dirNameOf(testPath),baseNameOf(testPath));
+                            info=encodeDebugInfo(layout,generated,functions,globals,
+                                                 dirNameOf(testPath),baseNameOf(testPath));
+                            eh=encodeEhFrame(layout,generated);
+                        }
+                        writeObject(object,generated,globals,false,line,info,eh);
+                        ++compiled;
+                    } else ++reused;
+                    linkObjects({object},exe,0x400000,2,testPage,true);
+                    pid_t pid=::fork();
+                    if(pid<0){std::cerr<<"aster test: cannot fork\n";return 1;}
+                    if(pid==0){execAarch64Image(exe,{});std::perror("aster test");::_exit(127);}
+                    int st=0;
+                    if(::waitpid(pid,&st,0)<0){std::cerr<<"aster test: waitpid failed\n";return 1;}
+                    const int rc=WIFEXITED(st)?WEXITSTATUS(st):(WIFSIGNALED(st)?128+WTERMSIG(st):1);
+                    ++ran;
+                    if(rc==0)std::cout<<"PASS "<<testPath<<"\n";
+                    else {std::cout<<"FAIL "<<testPath<<" (exit "<<rc<<")\n";++failed;}
+                }
+                if(ran==0&&!filter.empty()){
+                    std::cerr<<"aster test: no test matched \""<<filter<<"\"\n";return 1;
+                }
+                std::cout<<"Aster v"<<kVersion<<": "<<ran<<" test"<<(ran==1?"":"s")<<", "<<failed
+                         <<" failed ("<<compiled<<" compiled, "<<reused<<" reused)\n";
+                return failed==0?0:1;
             }
             const std::string cacheDir="build/.cache";
             if(!makeDirs(cacheDir)){std::cerr<<"aster test: cannot create "<<cacheDir<<"\n";return 1;}
@@ -16560,6 +25315,7 @@ int main(int argc,char**argv){
         if(cmd=="build"||cmd=="run"){
             const bool isRun=cmd=="run";
             std::string out; bool dbg=false,bc2=false,noCache=false,afterDash=false;
+            std::vector<std::string> bilingualModuleDirs;
             uint64_t ps=4096; bool cliPageSet=false; std::vector<std::string> runArgs;
             uint64_t timeoutVal=0; bool timeoutSet=false;
             for(int i=2;i<argc;++i){
@@ -16583,6 +25339,11 @@ int main(int argc,char**argv){
                     }
                     timeoutSet=true;
                 }
+                else if(a=="--module-dir"||a=="--模块目录"){
+                    if(i+1>=argc){std::cerr<<"aster "<<cmd<<": --module-dir needs a path\n";return 2;}
+                    bilingualModuleDirs.push_back(argv[++i]);
+                }
+                else if(a.rfind("--module-dir=",0)==0)bilingualModuleDirs.push_back(a.substr(13));
                 else if(a=="--page-size"){
                     if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
                         std::cerr<<"aster "<<cmd<<": --page-size must be 4096 or 16384\n";return 2;
@@ -16601,6 +25362,155 @@ int main(int argc,char**argv){
             }
             ProjectSpec spec=parseProjectFile("aster.proj");
             if(spec.sources.empty()){std::cerr<<"aster "<<cmd<<": aster.proj lists no sources\n";return 2;}
+            // Projects that opt into the bilingual frontend through [language]
+            // or per-file language directives use the existing `build` command.
+            // Legacy projects without either signal retain the original parser.
+            bool bilingualProject=false;
+            aster_cn::ProjectLanguageConfig bilingualLanguage;
+            if(fileExists("aster.proj")) {
+                bilingualLanguage=aster_cn::readProjectLanguage("aster.proj");
+                bilingualProject=bilingualLanguage.hasDefault||bilingualLanguage.hasAllowed;
+            }
+            if(!bilingualProject) {
+                for(const auto& sourcePath:spec.sources) {
+                    if(!fileExists(sourcePath)) continue;
+                    const std::string source=readFile(sourcePath);
+                    if(source.find("aster:language=zh")!=std::string::npos||
+                       source.find("aster:language=en")!=std::string::npos) {
+                        bilingualProject=true;
+                        break;
+                    }
+                }
+            }
+            if(bilingualProject) {
+                if(spec.kind=="apk") {
+                    std::cerr<<"aster build: bilingual APK projects are not supported yet\n";
+                    return 2;
+                }
+                const uint64_t bilingualPage = cliPageSet ? ps : (spec.pageSize ? spec.pageSize : ps);
+                std::vector<aster_cn::Program> parsedSources;
+                parsedSources.reserve(spec.sources.size());
+                for(const auto& sourcePath:spec.sources) {
+                    if(!fileExists(sourcePath)){std::cerr<<"aster "<<cmd<<": missing source "<<sourcePath<<"\n";return 1;}
+                    const std::string source=readFile(sourcePath);
+                    setSourceCache(sourcePath,source);
+                    const aster_cn::Language language=aster_cn::selectLanguage(
+                        source,false,aster_cn::Language::Zh,bilingualLanguage);
+                    parsedSources.push_back(aster_cn::parseProgram(source,language,sourcePath));
+                }
+                char bilingualCwdBuffer[4096];
+                const std::string bilingualCwd=getcwd(bilingualCwdBuffer,sizeof bilingualCwdBuffer)
+                    ? bilingualCwdBuffer : std::string(".");
+                std::vector<std::string> packageRoots{bilingualCwd};
+                packageRoots.insert(packageRoots.end(),bilingualModuleDirs.begin(),bilingualModuleDirs.end());
+                aster_cn::Program roots;
+                roots.language=parsedSources.front().language;
+                roots.sourceFile=parsedSources.front().sourceFile;
+                for(const auto& parsed:parsedSources) {
+                    roots.structures.insert(roots.structures.end(),parsed.structures.begin(),parsed.structures.end());
+                    roots.enums.insert(roots.enums.end(),parsed.enums.begin(),parsed.enums.end());
+                    roots.classes.insert(roots.classes.end(),parsed.classes.begin(),parsed.classes.end());
+                    roots.interfaceClasses.insert(roots.interfaceClasses.end(),parsed.interfaceClasses.begin(),parsed.interfaceClasses.end());
+                    roots.globals.insert(roots.globals.end(),parsed.globals.begin(),parsed.globals.end());
+                    roots.methods.insert(roots.methods.end(),parsed.methods.begin(),parsed.methods.end());
+                    roots.imports.insert(roots.imports.end(),parsed.imports.begin(),parsed.imports.end());
+                }
+                const aster_cn::Program program=cnResolvePackageImports(
+                    roots,bilingualLanguage,packageRoots);
+                std::string bilingualProjectName=spec.name.empty()?baseNameOf(bilingualCwd):spec.name;
+                if(bilingualProjectName.empty()||bilingualProjectName=="."||bilingualProjectName=="..")
+                    bilingualProjectName="app";
+                const std::string target=out.empty()?"build/"+bilingualProjectName:out;
+                const std::string targetDir=dirNameOf(target);
+                if(!targetDir.empty()&&!makeDirs(targetDir)){std::cerr<<"aster build: cannot create "<<targetDir<<"\n";return 1;}
+                const std::string cacheDir="build/.cache";
+                if(!makeDirs(cacheDir)){std::cerr<<"aster "<<cmd<<": cannot create "<<cacheDir<<"\n";return 1;}
+                std::vector<std::string> fingerprintPaths{"aster.proj"};
+                for(const auto& sourcePath:spec.sources) fingerprintPaths.push_back(sourcePath);
+                std::vector<std::string> fingerprintRoots;
+                for(const auto& moduleDir:bilingualModuleDirs) fingerprintRoots.push_back(moduleDir);
+                std::error_code walkError;
+                for(std::filesystem::recursive_directory_iterator it(
+                        bilingualCwd,std::filesystem::directory_options::skip_permission_denied,
+                        walkError), end; it!=end; it.increment(walkError)) {
+                    if(walkError) { walkError.clear(); continue; }
+                    const auto& entry=*it;
+                    if(entry.is_directory(walkError)) {
+                        if(entry.path().filename()=="build" || entry.path().filename()==".git")
+                            it.disable_recursion_pending();
+                        continue;
+                    }
+                    if(!walkError && entry.is_regular_file(walkError) &&
+                       entry.path().extension()==".ast")
+                        fingerprintPaths.push_back(entry.path().string());
+                    walkError.clear();
+                }
+                for(const auto& moduleDir:fingerprintRoots) {
+                    std::error_code moduleError;
+                    for(std::filesystem::recursive_directory_iterator it(
+                            moduleDir,std::filesystem::directory_options::skip_permission_denied,
+                            moduleError), end; it!=end; it.increment(moduleError)) {
+                        if(moduleError) { moduleError.clear(); continue; }
+                        const auto& entry=*it;
+                        if(entry.is_regular_file(moduleError) && entry.path().extension()==".ast")
+                            fingerprintPaths.push_back(entry.path().string());
+                        moduleError.clear();
+                    }
+                }
+                std::sort(fingerprintPaths.begin(),fingerprintPaths.end());
+                fingerprintPaths.erase(std::unique(fingerprintPaths.begin(),fingerprintPaths.end()),
+                                       fingerprintPaths.end());
+                std::string fingerprint=std::string(kVersion)+"|cn-project|"+
+                    (dbg?"g":"-")+(bc2?"b":"-")+"|"+std::to_string(bilingualPage)+"\n";
+                for(const auto& moduleDir:bilingualModuleDirs)
+                    fingerprint+="module-dir "+moduleDir+"\n";
+                for(const auto& path:fingerprintPaths) {
+                    fingerprint+=path+" ";
+                    fingerprint+=fileExists(path)?sha256Hex(readFile(path)):"<missing>";
+                    fingerprint.push_back('\n');
+                }
+                const std::string cacheKey=sha256Hex(fingerprint);
+                const std::string objectPath=cacheDir+"/cn-"+cacheKey+".o";
+                const bool reused=!noCache&&fileExists(objectPath);
+                if(!reused) {
+                    std::vector<Global> globals;
+                    const std::vector<Function> functions=cnProgramToAster(program,globals,true);
+                    const auto compiled=compileProgram(functions,globals,false,true,bc2,dbg);
+                    DebugLineBlob bilingualDebugLine;
+                    DebugInfoBlob bilingualDebugInfo;
+                    EhFrameBlob bilingualEhFrame;
+                    if(dbg) {
+                        const ObjectLayout layout=layoutObject(compiled,globals);
+                        bilingualDebugLine=encodeDebugLine(layout.lineRows,layout.ins.size()*4,
+                                                           dirNameOf(program.sourceFile),
+                                                           baseNameOf(program.sourceFile));
+                        bilingualDebugInfo=encodeDebugInfo(layout,compiled,functions,globals,
+                                                            dirNameOf(program.sourceFile),
+                                                            baseNameOf(program.sourceFile));
+                        bilingualEhFrame=encodeEhFrame(layout,compiled);
+                    }
+                    const std::string temporary=objectPath+".tmp";
+                    writeObject(temporary,compiled,globals,false,bilingualDebugLine,
+                                bilingualDebugInfo,bilingualEhFrame);
+                    writeFileAtomic(objectPath,readFile(temporary));
+                    std::remove(temporary.c_str());
+                }
+                linkObjects({objectPath},target,0x400000,2,bilingualPage,true);
+                std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
+                         <<" ("<<spec.sources.size()<<" sources, "
+                         <<(reused?"0 compiled, 1 reused":"1 compiled, 0 reused")<<")\n";
+                if(isRun){
+                    pid_t pid=::fork();
+                    if(pid==0){execAarch64Image(target,runArgs);std::perror("aster run");::_exit(127);}
+                    int st=0;
+                    if(pid<0){std::cerr<<"aster run: cannot fork\n";return 1;}
+                    if(::waitpid(pid,&st,0)<0){std::cerr<<"aster run: waitpid failed\n";return 1;}
+                    if(WIFEXITED(st))return WEXITSTATUS(st);
+                    if(WIFSIGNALED(st))return 128+WTERMSIG(st);
+                    return 1;
+                }
+                return 0;
+            }
             char cwdbuf[4096];
             const std::string cwd=getcwd(cwdbuf,sizeof cwdbuf)?cwdbuf:".";
             std::string name=spec.name;
@@ -16949,17 +25859,126 @@ int main(int argc,char**argv){
             std::cout<<"aster: verify-apk: "<<apkPath<<": OK (v1 + v2 signatures verified)\n";
             return 0;
         }
+#if ASTER_CN_FRONTEND_AVAILABLE
+        if (cmd == "build-cn-obj") {
+            std::string input, outputPath, projectPath;
+            std::vector<std::string> packageRoots;
+            bool haveOutputPath = false, hasLanguageOverride = false;
+            bool withDebugInfo = false, withBoundsCheck = false, withCountCheck = true;
+            aster_cn::Language languageOverride = aster_cn::Language::Zh;
+            auto usageError = [&]() {
+                std::cerr << "Aster: build-cn-obj usage: aster build-cn-obj [--language zh|en] [--project FILE] [--module-dir DIR] [-g] [--bounds-check] [--no-count-check] <source.ast> -o <output.o>\n";
+                return 2;
+            };
+            for (int i = 2; i < argc; ++i) {
+                const std::string argument = argv[i];
+                if (argument == "-h" || argument == "--help") {
+                    std::cout << kUsage;
+                    return 0;
+                } else if (argument == "-o") {
+                    if (i + 1 >= argc) return usageError();
+                    outputPath = argv[++i];
+                    haveOutputPath = true;
+                } else if (argument == "--language") {
+                    if (i + 1 >= argc) return usageError();
+                    const std::string value = argv[++i];
+                    if (value == "zh") languageOverride = aster_cn::Language::Zh;
+                    else if (value == "en") languageOverride = aster_cn::Language::En;
+                    else return usageError();
+                    hasLanguageOverride = true;
+                } else if (argument.rfind("--language=", 0) == 0) {
+                    const std::string value = argument.substr(11);
+                    if (value == "zh") languageOverride = aster_cn::Language::Zh;
+                    else if (value == "en") languageOverride = aster_cn::Language::En;
+                    else return usageError();
+                    hasLanguageOverride = true;
+                } else if (argument == "--project") {
+                    if (i + 1 >= argc) return usageError();
+                    projectPath = argv[++i];
+                } else if (argument.rfind("--project=", 0) == 0) {
+                    projectPath = argument.substr(10);
+                } else if (argument == "--module-dir" || argument == "--模块目录") {
+                    if (i + 1 >= argc) return usageError();
+                    packageRoots.push_back(argv[++i]);
+                } else if (argument.rfind("--module-dir=", 0) == 0) {
+                    packageRoots.push_back(argument.substr(13));
+                } else if (argument == "-g" || argument == "--debug-line") {
+                    withDebugInfo = true;
+                } else if (argument == "--bounds-check") {
+                    withBoundsCheck = true;
+                } else if (argument == "--no-count-check") {
+                    withCountCheck = false;
+                } else if (!argument.empty() && argument[0] == '-') {
+                    return usageError();
+                } else if (input.empty()) {
+                    input = argument;
+                } else {
+                    return usageError();
+                }
+            }
+            if (input.empty() || !haveOutputPath || outputPath.empty()) return usageError();
+            const std::string source = readFile(input);
+            setSourceCache(input, source);
+            g_cnDiagnosticActive = true;
+            g_cnDiagnosticLanguage = hasLanguageOverride ? languageOverride : aster_cn::Language::Zh;
+            if (projectPath.empty()) {
+                if (fileExists("aster.proj")) projectPath = "aster.proj";
+                else {
+                    const std::string besideSource = dirNameOf(input) + "/aster.proj";
+                    if (fileExists(besideSource)) projectPath = besideSource;
+                }
+            }
+            aster_cn::ProjectLanguageConfig projectLanguage;
+            if (!projectPath.empty()) projectLanguage = aster_cn::readProjectLanguage(projectPath);
+            const aster_cn::Language language = aster_cn::selectLanguage(
+                source, hasLanguageOverride, languageOverride, projectLanguage);
+            g_cnDiagnosticLanguage = language;
+            std::vector<Global> globals;
+            const aster_cn::Program parsed = aster_cn::parseProgram(source, language, input);
+            if (!projectPath.empty()) packageRoots.push_back(dirNameOf(projectPath));
+            const aster_cn::Program resolved = cnResolvePackageImports(
+                parsed, projectLanguage, packageRoots);
+            std::vector<Function> functions = cnProgramToAster(resolved, globals, withCountCheck);
+            const auto compiled = compileProgram(functions, globals, false, true,
+                                                 withBoundsCheck, withDebugInfo);
+            const auto stableWarnings = cnStableValueWarnings(resolved, language);
+            DebugLineBlob debugLine;
+            DebugInfoBlob debugInfo;
+            EhFrameBlob ehFrame;
+            if (withDebugInfo) {
+                const ObjectLayout layout = layoutObject(compiled, globals);
+                debugLine = encodeDebugLine(layout.lineRows, layout.ins.size() * 4,
+                                             dirNameOf(input), baseNameOf(input));
+                debugInfo = encodeDebugInfo(layout, compiled, functions, globals,
+                                             dirNameOf(input), baseNameOf(input));
+                ehFrame = encodeEhFrame(layout, compiled);
+            }
+            writeObject(outputPath, compiled, globals, false, debugLine, debugInfo, ehFrame);
+            size_t instructionCount = 0;
+            for (const auto& function : compiled) instructionCount += function.code.size();
+            std::cout << "Aster v" << kVersion << ": emitted AArch64 ELF64 ET_REL object ("
+                      << instructionCount << " instructions, " << compiled.size()
+                      << " functions, " << globals.size() << " globals): " << outputPath << "\n";
+            std::cout.flush();
+            for (const auto& warning : stableWarnings) {
+                std::cerr << input << ":" << warning.line << ":" << warning.column
+                          << ": warning: " << warning.message << "\n";
+            }
+            return 0;
+        }
+#endif
         if(cmd=="link-obj"||cmd=="link-pie"){
             if(!parseArgs(2)||sources.empty()||pic||boundsCheck||!soname.empty()||!needed.empty()){std::cerr<<kUsage;return 2;}
-            if(cmd=="link-obj")linkObjects(sources,output,0x400000,2,pageSize);else linkObjects(sources,output,0,3,pageSize);
+            if(cmd=="link-obj")linkObjects(sources,output,0x400000,2,pageSize,gcSections);else linkObjects(sources,output,0,3,pageSize,gcSections);
             return 0;
         }
         if(cmd=="link-so"){
-            if(!parseArgs(2)||sources.empty()||pic||boundsCheck){std::cerr<<kUsage;return 2;}
+            if(!parseArgs(2)||sources.empty()||pic||boundsCheck||gcSections){std::cerr<<kUsage;return 2;}
             linkSharedObjects(sources,output,soname,needed,pageSize);
             return 0;
         }
         if(cmd!="build-elf"&&cmd!="build-pie"&&cmd!="build-obj"&&cmd!="build-so"){std::cerr<<kUsage;return 2;}
+        if(gcSections&&cmd!="build-elf"&&cmd!="build-pie"){std::cerr<<kUsage;return 2;}
         if(!parseArgs(2)||sources.empty()){std::cerr<<kUsage;return 2;}
         // v0.23.77-dev: build-elf / build-pie / build-so take one or more
         // sources (and prebuilt .o files); build-obj still compiles exactly one,
@@ -17056,8 +26075,8 @@ int main(int argc,char**argv){
                     linkerInputs.push_back(temp);
                 }
                 if(cmd=="build-so")linkSharedObjects(linkerInputs,output,soname,needed,pageSize);
-                else if(cmd=="build-pie")linkObjects(linkerInputs,output,0,3,pageSize);
-                else linkObjects(linkerInputs,output,0x400000,2,pageSize);
+                else if(cmd=="build-pie")linkObjects(linkerInputs,output,0,3,pageSize,gcSections);
+                else linkObjects(linkerInputs,output,0x400000,2,pageSize,gcSections);
                 removeTemps();
             }catch(...){removeTemps();throw;}
         }

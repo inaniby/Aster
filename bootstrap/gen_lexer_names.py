@@ -4,7 +4,7 @@
 Emits two artifacts from one list (bootstrap/LEXER-SPEC.md §12, as narrowed by
 PARSER-SPEC.md §12.1):
 
-  * the GENERATED region of bootstrap/aster.ast — the 77 K_* constants, the
+  * the GENERATED region of bootstrap/aster.ast — the 86 K_* constants, the
     `ident_is` byte-compare helper and the `keyword_kind` else-if chain. The
     packed `ktab` name table the retired token dump used is no longer emitted;
   * tests/lexer_names.h — the C side's enum of the same 77 codes and keyword
@@ -42,7 +42,7 @@ TOKENS = [
     "Fn", "Extern", "Main", "Let", "Return", "If", "Else", "While", "For",
     "Break", "Continue", "I32", "Ptr", "Bool", "Void",
     "Switch", "Case", "Default",   # v0.23.49-dev: the switch statement — Pascal semantics
-    "I64", "U8", "U16", "U32",
+    "I8", "I16", "I64", "U8", "U16", "U32",
     "U64",                 # v0.23.48-dev: the 64-bit unsigned integer
     "True", "False",
     "Struct", "Enum",
@@ -62,7 +62,7 @@ TOKENS = [
     "Do",                # v0.23.77-dev: the `do` keyword of do-while
 ]
 
-# The 33 reserved words, each spelling mapped to the kind it lexes to. Order
+# The 35 reserved words, each spelling mapped to the kind it lexes to. Order
 # is the order the host compiler's chain tests them in; since every spelling
 # is distinct the order carries no meaning, but keeping it identical makes
 # the generated chain diff against the C++ one line for line.
@@ -72,7 +72,8 @@ KEYWORDS = [
     ("for", "For"), ("break", "Break"), ("continue", "Continue"),
     ("switch", "Switch"), ("case", "Case"), ("default", "Default"),   # v0.23.49-dev
     ("i32", "I32"), ("ptr", "Ptr"), ("bool", "Bool"), ("void", "Void"),
-    ("i64", "I64"), ("u8", "U8"), ("u16", "U16"), ("u32", "U32"),
+    ("i8", "I8"), ("i16", "I16"), ("i64", "I64"),
+    ("u8", "U8"), ("u16", "U16"), ("u32", "U32"),
     ("u64", "U64"),       # v0.23.48-dev
     ("struct", "Struct"), ("enum", "Enum"),
     ("type", "Type"), ("const", "Const"),   # v0.23.67-dev
@@ -109,8 +110,8 @@ def die(msg):
 # Self-checks: the list must be well-formed before anything is emitted.
 # ---------------------------------------------------------------------------
 def check_list():
-    if TOKEN_COUNT != 84:
-        die("expected 84 token kinds, list has %d" % TOKEN_COUNT)
+    if TOKEN_COUNT != 86:
+        die("expected 86 token kinds, list has %d" % TOKEN_COUNT)
     if len(set(TOKENS)) != TOKEN_COUNT:
         die("duplicate token kind name")
     for name in TOKENS:
@@ -119,8 +120,8 @@ def check_list():
         if len(name) >= RECORD:
             die("token kind name %r does not fit a %d-byte record"
                 % (name, RECORD))
-    if KEYWORD_COUNT != 33:
-        die("expected 32 keywords, list has %d" % KEYWORD_COUNT)
+    if KEYWORD_COUNT != 35:
+        die("expected 35 keywords, list has %d" % KEYWORD_COUNT)
     kinds = [k for _, k in KEYWORDS]
     if len(set(kinds)) != KEYWORD_COUNT:
         die("two keywords map to the same kind")

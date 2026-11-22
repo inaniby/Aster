@@ -80,7 +80,7 @@ grep -qF '|| t.k == Ty::U64' src/aster.cpp >/dev/null \
     || { echo "FAIL: tySize/tyAlign no longer covers U64" >&2; exit 1; }
 grep -qF 'case Ty::U64: return "u64";' src/aster.cpp \
     || { echo "FAIL: tyName no longer names u64" >&2; exit 1; }
-grep -qF 'expected i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name' src/aster.cpp \
+grep -qF 'expected i8, i16, i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name' src/aster.cpp \
     || { echo "FAIL: kTypeExpected no longer lists u64" >&2; exit 1; }
 # the declaration-site range check and the u64 slot's acceptance
 grep -qF 'if(t==Ty::I64) return (uint64_t)e.n<=0x7fffffffffffffffULL;' src/aster.cpp \
@@ -117,9 +117,9 @@ grep -qF '||(to==Ty::U64&&from==Ty::I64)' src/aster.cpp \
 # the backend: the operand is generated at the target width, then normalised
 grep -qF 'int a=gen(*e.a,e.ty);' src/aster.cpp \
     || { echo "FAIL: gen() no longer generates a cast operand at the target width" >&2; exit 1; }
-grep -qF 'if(tyIs64(want)&&e.ty==Ty::I32&&!(wf>wt))' src/aster.cpp \
+grep -qF 'if(tyIs64(want)&&tyNeedsSignExtend64(e.ty)&&!(wf>wt&&e.ty==Ty::I32))' src/aster.cpp \
     || { echo "FAIL: an i32 cast no longer answers a 64-bit consumer" >&2; exit 1; }
-grep -qF 'else                   emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa' src/aster.cpp \
+grep -qF 'emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa' src/aster.cpp \
     || { echo "FAIL: the cast's SXTW normalisation is missing" >&2; exit 1; }
 # the DWARF table
 grep -qF 'case Ty::U64:  nm="u64"; size=8;enc=0x07;break;' src/aster.cpp \
@@ -405,12 +405,12 @@ mutate 'm1: no normalisation at all' \
 # m2: the i32 target takes the u32 target's encoding — a zero-extension
 # instead of the sign-extension, so an i64 reading of the bits is wrong.
 mutate 'm2: SXTW becomes UXTW' \
-    's#                else                   emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa#                else                   emit(0x2a0003e0u|(uint32_t(a)<<16)|uint32_t(a)); // SXTW Xa, Wa#' \
+    's#                emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa#                emit(0x2a0003e0u|(uint32_t(a)<<16)|uint32_t(a)); // SXTW Xa, Wa#' \
     must_differ 'i32 of an i64 top bit' 67 'fn main() -> i32 { let x: i64 = 4294967295; let y: i64 = i32(x); if (y == 0 - 1) { return 67; } return 0; }'
 # m3: the 64-bit consumer's extension is dropped — the one case the operand's
 # own producer cannot cover, because a 32-bit producer zeroes the upper half.
 mutate 'm3: an i32 cast ignores its consumer' \
-    's#                if(tyIs64(want)&&e.ty==Ty::I32&&!(wf>wt))#                if(false)#' \
+    's#                if(tyIs64(want)&&tyNeedsSignExtend64(e.ty)&&!(wf>wt&&e.ty==Ty::I32))#                if(false)#' \
     must_differ 'i64 of an i32 -1' 59 'fn main() -> i32 { if (i64(i32(0 - 1)) == 0 - 1) { return 59; } return 0; }'
 # m4: promoteInt loses the u64-first rule, so u64 + i32 promotes to i64 and
 # the comparison of that sum runs signed — 2^63 reads as negative. The sum is

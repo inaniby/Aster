@@ -75,6 +75,7 @@ int ANativeWindow_setBuffersGeometry(void *w, int a, int b, int c) { return 0; }
 int ANativeWindow_lock(void *w, void *o, void *d) { return -1; }
 int ANativeWindow_unlockAndPost(void *w) { return 0; }
 int __android_log_print(int p, const char *t, const char *f) { return 0; }
+int __android_log_buf_write(int b, int p, const char *t, const char *m) { return 0; }
 C
 mkdir -p "$OUT/stub"
 ${HOSTCC:-cc} -O1 -shared -fPIC -o "$OUT/stub/libandroid.so" "$OUT/stub.c"

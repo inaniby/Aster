@@ -48,6 +48,9 @@ build.log
 # behind; the "working tree clean" CI step would then fail on residue.
 # (Its OUT dir does not carry a tmp- prefix, so /tmp-* does not cover it.)
 /bootstrap-loop-artifacts/
+# Local CI/test output directories
+/.tmp-*
+/ci-artifacts-*/
 
 # Python caches
 __pycache__/

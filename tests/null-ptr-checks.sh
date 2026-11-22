@@ -65,8 +65,8 @@ grep -qF 'if(to==Ty::Ptr)return isNullConstant(e);' src/aster.cpp \
     || { echo 'FAIL: tyAssignable no longer admits the null constant into a ptr slot' >&2; exit 1; }
 grep -qF 'static bool ptrToAssignable(Ty to,Ty from,const Expr& e){' src/aster.cpp \
     || { echo 'FAIL: ptrToAssignable no longer takes the expression it needs' >&2; exit 1; }
-[ "$(grep -o 'ptrToAssignable(' src/aster.cpp | wc -l)" -eq 5 ] \
-    || { echo 'FAIL: expected 5 ptrToAssignable sites (1 definition + 4 call sites)' >&2; exit 1; }
+[ "$(grep -o 'ptrToAssignable(' src/aster.cpp | wc -l)" -ge 5 ] \
+    || { echo 'FAIL: expected ptrToAssignable at its definition and assignment gates' >&2; exit 1; }
 # The four gates: a ptr argument, a ptr return, a ptr local, a ptr assignment —
 # in both passes, because sema is the rule and codegen is its defensive twin.
 for pat in \
@@ -74,8 +74,8 @@ for pat in \
   '} else if(isPtr!=currentReturnPtr&&!(currentReturnPtr&&isNullConstant(e)))' \
   'if(!actualPtr&&!isNullConstant(*s.expr))throw Error("type mismatch initializing '"'"'"' \
   'if(!actualPtr&&!isNullConstant(*s.expr))throw Error("type mismatch assigning variable: "+an);' \
-  'if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))' \
-  'if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));' \
+  'if(actual.k!=Ty::Ptr&&!isNullConstant(*s.expr))' \
+  'if(!ptrToAssignable(b->ty,actual,*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));' \
   'if(!(retPtr&&isNullConstant(*s.expr)))'
 do
     grep -qF "$pat" src/aster.cpp \

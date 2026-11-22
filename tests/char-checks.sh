@@ -97,7 +97,7 @@ guard 'else if(x=="char")k=TK::CharType;' 'the char reserved word'
 # v0.23.77-dev: the float round appended F32/F64 after Void, so the
 # enum's closing brace moved - pin the members (the struct/union/enum suites
 # hit the same trap).
-guard 'enum Kind { I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void,' 'the Char type'
+guard 'enum Kind { I8, I16, I32, U32, U8, U16, I64, U64, Ptr, Bool, Enum, Struct, Char, Void,' 'the Char type'
 guard 'case TK::CharType: out=Ty::Char; ++p; return true;' 'char parsed as a type'
 guard 'case TK::CharType: t=Ty::Char; break;' 'the char cast'
 # tySize and tyAlign both say char is one byte; the count is part of the guard.
@@ -120,18 +120,17 @@ guard '|| t.k == Ty::U64 || t.k == Ty::Char;' 'char is unsigned (tyIsUnsigned)'
 [ "$(grep -c 't==Ty::U8||t==Ty::Char' src/aster.cpp)" -ge 10 ] \
     || { echo 'FAIL: fewer than ten u8/char codegen sites remain' >&2; exit 1; }
 guard_count=$((guard_count + 1))
-# The reserved-word list is generated, not hand-written: 32 words now that
-# `type`, `const`, `void` and `char` joined it, and `tls` is still a context
-# keyword.
+# The reserved-word list is generated, not hand-written: 35 words including
+# the narrow integer types, and `tls` is still a context keyword.
 python3 - <<'PY' || exit 1
 import re
 src = open('bootstrap/gen_lexer_names.py').read()
 m = re.search(r'KEYWORDS = \[(.*?)\]', src, re.S)
 entries = re.findall(r'\("([^"]+)",', m.group(1))
-assert len(entries) == 33, ('reserved-word count moved', len(entries), entries)
+assert len(entries) == 35, ('reserved-word count moved', len(entries), entries)
 assert 'char' in entries, 'char is not a reserved word'
 assert 'tls' not in entries, 'tls became a reserved word — it must stay a context keyword'
-print('PASS: 33 reserved words, char among them, tls still a context keyword')
+print('PASS: 35 reserved words, char among them, tls still a context keyword')
 PY
 guard_count=$((guard_count + 1))
 printf '  %-30s %s\n' "guards passed" "$guard_count"

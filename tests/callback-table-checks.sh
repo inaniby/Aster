@@ -51,7 +51,7 @@ ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -pedantic -Werror src/aster.cpp -o "$OU
 # [2/8] Source guards. Each piece of the machinery is pinned by its exact text.
 printf '%s\n' '[2/8] Source guards: the callback-table machinery is pinned'
 # The field carries the signature.
-grep -qF 'FuncSig funcSig; bool isFunc = false; };' src/aster.cpp \
+grep -qF 'FuncSig funcSig; bool isFunc = false;' src/aster.cpp \
     || { echo 'FAIL: a struct field no longer carries a function signature' >&2; exit 1; }
 # The field's capture, where v0.23.37-dev refused.
 grep -qF 'if(pendingFuncType){fieldIsFunc=true;fieldFuncSig=pendingFuncSig;' src/aster.cpp \

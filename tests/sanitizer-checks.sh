@@ -52,6 +52,7 @@
 #                     because a surviving key performs a full APK build)
 #   SAN_SEED=20261031 base seed for every corpus
 #   SAN_TIMEOUT=10    per-input cap, seconds
+#   SAN_KEY_TIMEOUT=60 per-key cap; RSA self-checks are expensive under ASan
 #   WORK=...          keep the work directory at this path (it is not removed)
 #   KEEP=1            keep the temporary work directory
 set -eu
@@ -64,6 +65,7 @@ SAN_COUNT=${SAN_COUNT:-200}
 SAN_KEY_COUNT=${SAN_KEY_COUNT:-100}
 SAN_SEED=${SAN_SEED:-20261031}
 SAN_TIMEOUT=${SAN_TIMEOUT:-10}
+SAN_KEY_TIMEOUT=${SAN_KEY_TIMEOUT:-60}
 CREATED=0
 if [ -n "${WORK:-}" ]; then
     case "$WORK" in
@@ -253,7 +255,7 @@ n=$(find "$WORK/corpus-der" "$WORK/corpus-pem" -name '*.bin' | wc -l)
 reset_counts
 for f in "$WORK"/corpus-der/*.bin "$WORK"/corpus-pem/*.bin; do
     rc=0
-    timeout "$SAN_TIMEOUT" "$WORK/aster-asan" build-apk "$WORK/seed.so" \
+    timeout "$SAN_KEY_TIMEOUT" "$WORK/aster-asan" build-apk "$WORK/seed.so" \
         -o "$WORK/key-out.apk" --package com.aster.hostile --libname hostile \
         --sign-mode release --keystore "$f" \
         --cert "$WORK/keys/.aster/debug.crt.pem" \
