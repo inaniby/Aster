@@ -93,7 +93,7 @@ values.shorts[0] = -32768
 结束 如果
 变量 metadata: Metadata
 变量 kinds: 整数 = 0
-枚举循环 (field -> metadata)
+枚举循环 (field 于 metadata)
 如果 field.类型 == 15
 如果 field.值 == &metadata.byte
 kinds = kinds + 1

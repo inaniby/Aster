@@ -2,10 +2,10 @@
 方法 启动方法(): 整数
 变量 items: 整数[3] = [4, 5, 6]
 变量 total: 整数 = 0
-遍历循环 (item -> items)
+遍历循环 (item 于 items)
 total = total + item
 结束 遍历循环
-遍历循环 (index, item2 -> items)
+遍历循环 (index, item2 于 items)
 total = total + index
 total = total + item2
 结束 遍历循环

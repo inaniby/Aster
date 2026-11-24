@@ -1440,10 +1440,15 @@ private:
             expect("LParen", "expected '(' after the foreach keyword");
         statement.name = parseName();
         if (eat("Comma")) { skipNewlines(); statement.secondaryName = parseName(); }
-        expect(language_ == Language::Zh ? "Arrow" : "InKw",
-               language_ == Language::Zh
-                   ? "expected '->' before the array being traversed"
-                   : "expected 'in' before the array being traversed");
+        // #1 (divergence): Chinese accepts both `于` (design §2.8
+        // canonical) and `->` (compat, removed in a later version).
+        // The diagnostic names `于` first. English still uses `in` only.
+        if (language_ == Language::Zh) {
+            if (!eat("InKw") && !eat("Arrow"))
+                fail("expected '于' before the array being traversed ('->' is also accepted for compatibility)");
+        } else {
+            expect("InKw", "expected 'in' before the array being traversed");
+        }
         statement.expression = parseExpression();
         statement.hasExpression = true;
         if (language_ == Language::Zh)
@@ -1461,7 +1466,11 @@ private:
         if (language_ == Language::Zh) {
             expect("LParen", "expected '(' after the enum-loop keyword");
             statement.name = parseName();
-            expect("Arrow", "expected '->' before the object being enumerated");
+            // #1 (divergence): Chinese accepts both `于` (design §2.8
+            // canonical) and `->` (compat, removed in a later version).
+            // The diagnostic names `于` first.
+            if (!eat("InKw") && !eat("Arrow"))
+                fail("expected '于' before the object being enumerated ('->' is also accepted for compatibility)");
             statement.expression = parseExpression();
             expect("RParen", "expected ')' after the enum-loop object");
         } else {

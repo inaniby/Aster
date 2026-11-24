@@ -1262,10 +1262,10 @@ cat > "$TMP/foreach-zh.ast" <<'SRC'
 方法 启动方法(): 整数
 变量 items: 整数[3] = [4, 5, 6]
 变量 total: 整数 = 0
-遍历循环 (item -> items)
+遍历循环 (item 于 items)
 total = total + item
 结束 遍历循环
-遍历循环 (index, item2 -> items)
+遍历循环 (index, item2 于 items)
 total = total + index
 total = total + item2
 结束 遍历循环
@@ -1302,7 +1302,7 @@ cat > "$TMP/foreach-read-only.ast" <<'SRC'
 // aster:language=zh
 方法 启动方法(): 整数
 变量 items: 整数[1] = [4]
-遍历循环 (item -> items)
+遍历循环 (item 于 items)
 item = 5
 结束 遍历循环
 返回 0
@@ -1318,7 +1318,7 @@ cat > "$TMP/foreach-index-read-only.ast" <<'SRC'
 // aster:language=zh
 方法 启动方法(): 整数
 变量 items: 整数[1] = [4]
-遍历循环 (index, item -> items)
+遍历循环 (index, item 于 items)
 index = 5
 结束 遍历循环
 返回 0
@@ -1838,7 +1838,7 @@ record.id = 11
 record.score = 29
 record.label = "value"
 变量 seen: 整数 = 0
-枚举循环 (field -> record)
+枚举循环 (field 于 record)
 如果 field.名称 == 空
 返回 1
 结束 如果
@@ -1871,7 +1871,7 @@ seen = seen + 1000
 变量 holder: Holder
 holder.item.id = 23
 变量 memberSeen: 整数 = 0
-枚举循环 (entry -> holder.item)
+枚举循环 (entry 于 holder.item)
 如果 entry.值 == &holder.item.id
 memberSeen = memberSeen + 1
 结束 如果
@@ -1884,7 +1884,7 @@ records[0].id = 31
 records[1].id = 47
 变量 selected: 整数 = 0
 变量 arraySeen: 整数 = 0
-枚举循环 (entry -> records[selected])
+枚举循环 (entry 于 records[selected])
 selected = 1
 如果 entry.值 == &records[0].id
 arraySeen = arraySeen + 1
@@ -1897,7 +1897,7 @@ arraySeen = arraySeen + 100
 返回 5
 结束 如果
 变量 visits: 整数 = 0
-枚举循环 (item -> record)
+枚举循环 (item 于 record)
 visits = visits + 1
 退出循环
 结束 枚举循环
@@ -1962,7 +1962,7 @@ cat > "$TMP/enumloop-scalar.ast" <<'SRC'
 // aster:language=zh
 方法 启动方法(): 整数
 变量 value: 整数 = 7
-枚举循环 (field -> value)
+枚举循环 (field 于 value)
 返回 1
 结束 枚举循环
 返回 0
@@ -2148,7 +2148,7 @@ values.shorts[0] = -32768
 结束 如果
 变量 metadata: Metadata
 变量 kinds: 整数 = 0
-枚举循环 (field -> metadata)
+枚举循环 (field 于 metadata)
 如果 field.类型 == 15
 如果 field.值 == &metadata.byte
 kinds = kinds + 1
@@ -3194,7 +3194,7 @@ SRC
 方法 启动方法(): 整数
 变量 对象: 公开字段 = 公开字段()
 变量 已见: 整数 = 0
-枚举循环 (字段 -> 对象)
+枚举循环 (字段 于 对象)
 如果 字段.名称 == "可见"
 已见 = 已见 + 1
 结束 如果
@@ -3233,7 +3233,7 @@ SRC
 结束 类
 方法 启动方法(): 整数
 变量 对象: 公开字段
-枚举循环 (字段 -> 对象)
+枚举循环 (字段 于 对象)
 返回 1
 结束 枚举循环
 返回 0

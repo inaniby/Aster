@@ -1,7 +1,7 @@
 // aster:language=zh
 方法 启动方法(): 整数
 变量 items: 整数[1] = [4]
-遍历循环 (index, item -> items)
+遍历循环 (index, item 于 items)
 index = 5
 结束 遍历循环
 返回 0

@@ -291,10 +291,10 @@ grep -q '(Index (Identifier "items") (IntegerLiteral "1"))' "$TMP/array-zh.out"
 cat > "$TMP/foreach-zh.ast" <<'SRC'
 方法 启动方法(): 整数
 变量 items: 整数[3] = [4, 5, 6]
-遍历循环 (item -> items)
+遍历循环 (item 于 items)
 返回 0
 结束 遍历循环
-遍历循环 (index, item2 -> items)
+遍历循环 (index, item2 于 items)
 返回 0
 结束 遍历循环
 返回 0
@@ -313,16 +313,32 @@ return 0;
 return 0;
 }
 SRC
-printf '%s\n' '[9/16] foreach bindings and arrow/in forms normalize bilingually'
+printf '%s\n' '[9/16] foreach bindings and 于/in forms normalize bilingually'
 "$TMP/aster-cn-parse" "$TMP/foreach-zh.ast" > "$TMP/foreach-zh.out"
 "$TMP/aster-cn-parse" "$TMP/foreach-en.ast" > "$TMP/foreach-en.out"
 cmp "$TMP/foreach-zh.out" "$TMP/foreach-en.out"
 grep -q '(ForEachLoopStatement "item" (Identifier "items")' "$TMP/foreach-zh.out"
 grep -q '(ForEachLoopStatement "index" "item2" (Identifier "items")' "$TMP/foreach-zh.out"
+# #1 (divergence): the `->` separator is still accepted for compatibility
+# and normalizes to the same AST as the canonical `于` form.
+cat > "$TMP/foreach-compat-zh.ast" <<'SRC'
+方法 启动方法(): 整数
+变量 items: 整数[3] = [4, 5, 6]
+遍历循环 (item -> items)
+返回 0
+结束 遍历循环
+遍历循环 (index, item2 -> items)
+返回 0
+结束 遍历循环
+返回 0
+结束 方法
+SRC
+"$TMP/aster-cn-parse" "$TMP/foreach-compat-zh.ast" > "$TMP/foreach-compat-zh.out"
+cmp "$TMP/foreach-compat-zh.out" "$TMP/foreach-zh.out"
 
 cat > "$TMP/enumloop-zh.ast" <<'SRC'
 方法 启动方法(): 整数
-枚举循环 (条目 -> 用户甲)
+枚举循环 (条目 于 用户甲)
 返回 0
 结束 枚举循环
 返回 0
@@ -337,11 +353,23 @@ return 0;
 return 0;
 }
 SRC
-printf '%s\n' '[10/16] enumloop arrow/in forms normalize bilingually'
+printf '%s\n' '[10/16] enumloop 于/in forms normalize bilingually'
 "$TMP/aster-cn-parse" "$TMP/enumloop-zh.ast" > "$TMP/enumloop-zh.out"
 "$TMP/aster-cn-parse" "$TMP/enumloop-en.ast" > "$TMP/enumloop-en.out"
 cmp "$TMP/enumloop-zh.out" "$TMP/enumloop-en.out"
 grep -q '(EnumLoopStatement "条目" (Identifier "用户甲")' "$TMP/enumloop-zh.out"
+# #1 (divergence): the `->` separator is still accepted for compatibility
+# and normalizes to the same AST as the canonical `于` form.
+cat > "$TMP/enumloop-compat-zh.ast" <<'SRC'
+方法 启动方法(): 整数
+枚举循环 (条目 -> 用户甲)
+返回 0
+结束 枚举循环
+返回 0
+结束 方法
+SRC
+"$TMP/aster-cn-parse" "$TMP/enumloop-compat-zh.ast" > "$TMP/enumloop-compat-zh.out"
+cmp "$TMP/enumloop-compat-zh.out" "$TMP/enumloop-zh.out"
 
 cat > "$TMP/float-zh.ast" <<'SRC'
 方法 启动方法(): 整数

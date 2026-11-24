@@ -1,7 +1,7 @@
 // aster:language=zh
 方法 启动方法(): 整数
 变量 value: 整数 = 7
-枚举循环 (field -> value)
+枚举循环 (field 于 value)
 返回 1
 结束 枚举循环
 返回 0

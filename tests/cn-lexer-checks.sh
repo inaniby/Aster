@@ -36,8 +36,18 @@ grep -q 'Identifier "如果"' "$TMP/en-mode.tokens"
 grep -q 'ElseIf "else if"' "$TMP/en-phrases.tokens"
 grep -q 'InterfaceClass "interface class"' "$TMP/en-phrases.tokens"
 printf '%s\n' '变量 于: 整数 = 1 -> 于' | "$TMP/aster-cn-lex" - > "$TMP/arrow-zh.tokens"
-[ "$(grep -c 'Identifier "于"' "$TMP/arrow-zh.tokens")" -eq 2 ]
+[ "$(grep -c 'InKw "于"' "$TMP/arrow-zh.tokens")" -eq 2 ]
 grep -q 'Arrow "->"' "$TMP/arrow-zh.tokens"
+# #1 (divergence): `于` is the InKw keyword; words containing it stay whole.
+printf '%s\n' '属于 位于 由于 于是 关于 对于' | "$TMP/aster-cn-lex" - > "$TMP/yu-words.tokens"
+for w in 属于 位于 由于 于是 关于 对于; do grep -q "Identifier \"$w\"" "$TMP/yu-words.tokens"; done
+if grep -q 'InKw "于"' "$TMP/yu-words.tokens"; then
+    echo 'FAIL: a word containing 于 was split at 于' >&2; exit 1
+fi
+printf '%s\n' '等于 小于 大于' | "$TMP/aster-cn-lex" - > "$TMP/yu-compare.tokens"
+grep -q 'EqEq "等于"' "$TMP/yu-compare.tokens"
+grep -q 'Lt "小于"' "$TMP/yu-compare.tokens"
+grep -q 'Gt "大于"' "$TMP/yu-compare.tokens"
 printf '%s\n' 'foreach item in items {}' | "$TMP/aster-cn-lex" --language=en - > "$TMP/foreach-en.tokens"
 grep -q 'InKw "in"' "$TMP/foreach-en.tokens"
 printf '%s\n' '// aster:language=en' 'fn main() -> i32 { return 0; }' | "$TMP/aster-cn-lex" - > "$TMP/directive.tokens"
