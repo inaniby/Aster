@@ -96,7 +96,7 @@ grep -q "android:icon = 0x7f010000 encoded as TYPE_REFERENCE (0x01)" "$OUT/valid
 grep -q "0x7f010000 -> drawable/ic_launcher -> TYPE_STRING" "$OUT/validate.log" \
     || { echo 'FAIL: validate_apk.py did not resolve the icon through the table'; exit 1; }
 "$ASTER" verify-apk "$APK" > /dev/null
-printf '%s\n' 'PASS: APK built, dual-signed, icon resolved through resources.arsc'
+printf '%s\n' 'PASS: APK built, triple-signed, icon resolved through resources.arsc'
 
 printf '%s\n' '[4/6] Independent byte-level read of resources.arsc and the PNG'
 # Written from scratch here rather than reusing validate_apk.py, so the two

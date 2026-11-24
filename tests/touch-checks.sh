@@ -161,7 +161,7 @@ for lib in libandroid.so liblog.so libm.so libc.so; do
     readelf -d "$OUT/native_touch.so" 2>/dev/null | grep -qF "$lib" \
         || { echo "FAIL: native_touch .so is missing the $lib DT_NEEDED" >&2; exit 1; }
 done
-printf '%s\n' 'PASS: native_touch APK builds, v1+v2 signs, validates, links libandroid/liblog/libm/libc'
+printf '%s\n' 'PASS: native_touch APK builds, v1+v2+v3 signs, validates, links libandroid/liblog/libm/libc'
 
 printf '%s\n' '[4/4] Mutation: a broken bridge must fail the qemu test'
 # The anchor must still exist exactly once, so the mutation is meaningful

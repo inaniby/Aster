@@ -16,7 +16,7 @@ Aster emits the native library and the APK directly.
 - An **APK Signing Block** between the last entry and the central directory —
   the **v2 signature**.
 
-It is **v1 + v2 dual-signed**, by default with your project's own debug key
+It is **v1 + v2 + v3 triple-signed**, by default with your project's own debug key
 (`aster keygen`, stored in `.aster/` next to your project root) or, with
 `--sign-mode release --keystore <key.pem> --cert <cert.pem>`, with your release
 key. Aster ships with no key of its own.
@@ -206,7 +206,7 @@ closed the app immediately; that is gone.)
 - **Release builds** (`--sign-mode release --keystore <key.pem> --cert <cert.pem>`)
   are signed with your key. Both options are required: a release build without
   them stops instead of quietly falling back to a debug key.
-- Every build is **v1 + v2 dual-signed**, and Aster re-verifies the APK in
+- Every build is **v1 + v2 + v3 triple-signed**, and Aster re-verifies the APK in
   memory before writing it (`--no-verify` bypasses only that check). You can
   re-check a file at any time:
 

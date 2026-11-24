@@ -13423,7 +13423,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "            [--sign-mode debug|release] [--keystore KEY] [--cert CRT]\n"
     "            [--keystore-dir DIR] [--key-bits N] [--no-verify] [--debuggable]\n"
     "  keygen     generate the project's RSA debug key + self-signed certificate\n"
-    "  verify-apk check an APK's own v1 + v2 signatures (structure, digests, certificate)\n"
+    "  verify-apk check an APK's own v1 + v2 + v3 signatures (structure, digests, certificate)\n"
     "  build-apk signs with one of two keys, never with a key baked into aster:\n"
     "    --sign-mode debug   (default) the project's own key in <keystore-dir>/.aster/\n"
     "                        debug.key.pem + debug.crt.pem, generated on first use\n"
@@ -13444,7 +13444,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "  Keys are read as PEM or DER: PKCS#8 or PKCS#1 private keys (unencrypted) and X.509\n"
     "  certificates, so anything openssl/keytool wrote can be used directly.\n"
     "  build-apk re-verifies the APK in memory before writing it (--no-verify skips that);\n"
-    "  by default every APK is v1 + v2 dual-signed. android:debuggable is false in the\n"
+    "  by default every APK is v1 + v2 + v3 triple-signed. android:debuggable is false in the\n"
     "  manifest unless --debuggable is given, so a release build is never debuggable."
     "  --soname NAME   DT_SONAME for the shared object (default: the output file name);\n"
     "                 for build-apk with .ast input, the library's DT_SONAME\n"
@@ -13464,7 +13464,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "                 Declarations only: a body and an initializer stay in the file\n"
 "                 that owns them, so the declaration cannot drift from it.\n"
     "  --needed LIB    add DT_NEEDED LIB (repeatable) so the loader loads that .so first\n"
-    "  build-apk emits a self-contained, v1 + v2 dual-signed NativeActivity APK with NO external\n"
+    "  build-apk emits a self-contained, v1 + v2 + v3 triple-signed NativeActivity APK with NO external\n"
     "  toolchain (aapt/d8/jarsigner/keytool/apksigner are not invoked); --libname defaults to the\n"
     "  output file base name; the v2 signature lives in an APK Signing Block (P2.1)\n"
     "  build-apk accepts .ast directly (compiled with the build-so pipeline first) — the\n"
@@ -14986,6 +14986,9 @@ static std::vector<uint8_t> centralHeader(const std::string& name, uint32_t crc,
 //   digests:            each lp(lp(uint32 algID, digest))
 //   signatures:         each lp(lp(uint32 algID, signature))
 //
+// The v3 pair (namespace APKv3, below) follows the v2 pair in the same block
+// and reuses this content digest verbatim; see there for its layout.
+//
 // The content digest covers three segments -- the ZIP entry region, the Central
 // Directory and the EOCD -- each split into 1 MiB chunks; every chunk is hashed
 // as {0xa5, uint32 chunkLen, chunk} and the result as
@@ -14993,6 +14996,11 @@ static std::vector<uint8_t> centralHeader(const std::string& name, uint32_t crc,
 // "offset of start of central directory" is rewritten to the offset at which
 // the APK Signing Block starts, so the record that gets hashed is not the one
 // that ends up in the file.
+namespace APKv3 {
+// Defined after APKv2: the v3 pair builder reuses APKv2's lp/lpseq/lppairs.
+static std::vector<uint8_t> signingPair(const std::vector<uint8_t>& contentDigest,
+                                        const SigningKey& key, uint32_t minSdk);
+} // namespace APKv3
 namespace APKv2 {
 static constexpr uint32_t kBlockId = 0x7109871a;
 // RSASSA-PKCS1-v1_5 with SHA2-256, content digested with chunked SHA2-256.
@@ -15048,14 +15056,21 @@ static std::vector<uint8_t> contentDigest(const std::vector<Seg>& segs) {
     SHA256 md; md.upd(top.data(), top.size()); return md.fin();
 }
 
-// Build the whole "APK Sig Block 42" carrying a single v2 signer. The DER
-// reader it uses to lift the public key out of the certificate is the shared
-// one at file scope, so the v2 public key can never drift from the certificate.
+// Build the whole "APK Sig Block 42" carrying one v2 signer and, after it,
+// one v3 signer (APKv3::signingPair) over the same content digest and the
+// same certificate. The DER reader it uses to lift the public key out of the
+// certificate is the shared one at file scope, so the v2 public key can never
+// drift from the certificate.
 static std::vector<uint8_t> signingBlock(const std::vector<uint8_t>& contentDigest,
-                                         const SigningKey& key) {
+                                         const SigningKey& key, uint32_t minSdk) {
     const std::vector<uint8_t> digests = lppairs({{kAlgRsaPkcs1Sha256, contentDigest}});
     const std::vector<uint8_t> certificates = lpseq({key.certDER});
-    const std::vector<uint8_t> attributes;      // no v3, so no stripping-protection attribute
+    // v3 is now emitted alongside v2, so this is not "no v3" any more. The
+    // stripping-protection attribute (0xbeeff00d) is still deliberately
+    // omitted: its value format is not published, and a wrong guess would
+    // make Android refuse the install. Stripping is detected by CERT.SF
+    // declaring X-Android-APK-Signed: 2,3 instead.
+    const std::vector<uint8_t> attributes;
     const std::vector<uint8_t> signedData = lpseq({digests, certificates, attributes, {}});
     SHA256 sd; sd.upd(signedData.data(), signedData.size());
     const std::vector<uint8_t> sig = rsaSign(sd.fin(), key);
@@ -15067,6 +15082,10 @@ static std::vector<uint8_t> signingBlock(const std::vector<uint8_t>& contentDige
     putU64(pair, (uint64_t)(4 + v2.size()));
     put32(pair, kBlockId);
     pair.insert(pair.end(), v2.begin(), v2.end());
+    // v3 follows v2 in the same block (apksigner's order), carrying the same
+    // content digest and certificate.
+    const std::vector<uint8_t> v3pair = APKv3::signingPair(contentDigest, key, minSdk);
+    pair.insert(pair.end(), v3pair.begin(), v3pair.end());
 
     std::vector<uint8_t> out;
     const uint64_t blockSize = (uint64_t)(pair.size() + 24);  // 8 size + pairs + 8 size + 16 magic
@@ -15078,6 +15097,70 @@ static std::vector<uint8_t> signingBlock(const std::vector<uint8_t>& contentDige
     return out;
 }
 } // namespace APKv2
+
+// ---------------------------------------------------------------- APK Signature Scheme v3 (v0.23.82-dev)
+//
+// v3 rides in the same APK Signing Block as v2, as a second ID-value pair
+// (0xf05368c0) after the v2 pair, and reuses the v2 content digest verbatim --
+// the digest covers the same three segments, so a v3 signer is a v2 signer
+// with two extra raw uint32 fields:
+//
+//   signers:            lp(lp(signer))
+//   signer:             lp(signedData) minSDK maxSDK lp(signatures) lp(publicKey)
+//   signedData:         lp(digests) lp(certificates) minSDK maxSDK lp(attributes)
+//
+// minSDK/maxSDK are raw little-endian uint32s in both places (NOT
+// length-prefixed); the outer pair must equal the inner pair. minSDK is the
+// APK's minSdkVersion, maxSDK is 0x7fffffff (INT_MAX, apksigner's default).
+// additional attributes are empty: a single key, no rotation, so the
+// proof-of-rotation attribute does not apply. The v2 stripping-protection
+// attribute is deliberately not emitted either (see APKv2::signingBlock).
+// v3.1 is not produced; a v3.1 pair stays an unknown ID and is ignored by
+// the verifier, like any other unknown pair.
+namespace APKv3 {
+static constexpr uint32_t kBlockId = 0xf05368c0;
+static constexpr uint32_t kMaxSdk = 0x7fffffff;
+
+// Build one v3 ID-value pair (uint64 size | uint32 ID | value) for the same
+// content digest the v2 pair carries. The signature algorithm is the same
+// deterministic 0x0103 as v2, so builds stay reproducible.
+static std::vector<uint8_t> signingPair(const std::vector<uint8_t>& contentDigest,
+                                        const SigningKey& key, uint32_t minSdk) {
+    const std::vector<uint8_t> digests = APKv2::lppairs({{APKv2::kAlgRsaPkcs1Sha256, contentDigest}});
+    const std::vector<uint8_t> certificates = APKv2::lpseq({key.certDER});
+    const std::vector<uint8_t> attributes;      // single key, no rotation
+    std::vector<uint8_t> signedData;
+    auto appendLp = [&](const std::vector<uint8_t>& d) {
+        const std::vector<uint8_t> x = APKv2::lp(d);
+        signedData.insert(signedData.end(), x.begin(), x.end());
+    };
+    appendLp(digests);
+    appendLp(certificates);
+    put32(signedData, minSdk);
+    put32(signedData, kMaxSdk);
+    appendLp(attributes);
+    SHA256 sd; sd.upd(signedData.data(), signedData.size());
+    const std::vector<uint8_t> sig = rsaSign(sd.fin(), key);
+    const std::vector<uint8_t> signatures = APKv2::lppairs({{APKv2::kAlgRsaPkcs1Sha256, sig}});
+    std::vector<uint8_t> signer;
+    auto appendSignerLp = [&](const std::vector<uint8_t>& d) {
+        const std::vector<uint8_t> x = APKv2::lp(d);
+        signer.insert(signer.end(), x.begin(), x.end());
+    };
+    appendSignerLp(signedData);
+    put32(signer, minSdk);
+    put32(signer, kMaxSdk);
+    appendSignerLp(signatures);
+    appendSignerLp(key.spki);
+    const std::vector<uint8_t> v3 = APKv2::lp(APKv2::lpseq({signer}));
+
+    std::vector<uint8_t> pair;
+    APKv2::putU64(pair, (uint64_t)(4 + v3.size()));
+    put32(pair, kBlockId);
+    pair.insert(pair.end(), v3.begin(), v3.end());
+    return pair;
+}
+} // namespace APKv3
 
 // Entry names are paths inside the archive. A name that is absolute, carries a
 // drive letter or a backslash, or has a "." / ".." component is a zip-slip
@@ -15554,7 +15637,7 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
     // v0.23.81-dev: every Signing Block ID may appear at most once. The old
     // code silently kept the last v2 pair (0x7109871a) and ignored the first,
     // so two different v2 signatures verified differently depending on which
-    // copy a verifier picked. Unknown IDs are still ignored (a single v3
+    // copy a verifier picked. Unknown IDs are still ignored (a single v3.1
     // pair verifies), but a repeated ID of any kind is now a hard failure.
     {
         std::set<uint32_t> seenIds;
@@ -15693,15 +15776,144 @@ static bool verify(const std::vector<uint8_t>& b, std::ostream& log) {
     if (sigOk) r.pass("the v2 signature over signed-data verified (RSASSA-PKCS1-v1_5 / SHA-256)");
     else r.fail("the v2 signature over signed-data did not verify");
 
+    // [3b] v3 (v0.23.82-dev). Same shape as v2, except the signer and the
+    // signed-data each carry minSDK/maxSDK as raw little-endian uint32s
+    // (not length-prefixed), and the signed-data has no trailing empty
+    // field. The content digest is the v2 one, recomputed above as `want`.
+    *r.log << "[3b] v3 (APK Signing Block) signature\n";
+    const std::vector<uint8_t>* v3Blob = nullptr;
+    for (const auto& pr : pairs) if (pr.first == APKv3::kBlockId) v3Blob = &pr.second;
+    if (!v3Blob) { r.fail("no v3 block (0xf05368c0) in the Signing Block"); return false; }
+    std::vector<uint8_t> v3SignersBlob, v3Signer, v3SignedData, v3Signatures, v3PublicKey,
+                         v3Digests, v3Certificates, v3Attributes;
+    size_t v3Used = 0, v3SignerEnd = 0;
+    if (!lpRead(*v3Blob, 0, v3Blob->size(), v3SignersBlob, v3Used) ||
+        !lpRead(v3SignersBlob, 0, v3SignersBlob.size(), v3Signer, v3SignerEnd)) {
+        r.fail("the v3 signer does not parse"); return false;
+    }
+    if (v3Used != v3Blob->size()) {
+        r.fail("the v3 block has trailing bytes after the signers sequence");
+        return false;
+    }
+    {
+        size_t sq = 0; std::vector<uint8_t> tmp;
+        if (!lpRead(v3SignersBlob, sq, v3SignersBlob.size(), tmp, sq) || sq != v3SignersBlob.size()) {
+            r.fail("the v3 block has more than one signer; this verifier handles exactly one");
+            return false;
+        }
+    }
+    // signer: lp(signedData) u32 minSDK u32 maxSDK lp(signatures) lp(publicKey)
+    size_t p = 0;
+    if (!lpRead(v3Signer, 0, v3Signer.size(), v3SignedData, p)) {
+        r.fail("the v3 signer does not parse"); return false;
+    }
+    if (v3Signer.size() - p < 8) {
+        r.fail("the v3 signer is truncated at minSDK/maxSDK"); return false;
+    }
+    const uint32_t v3MinSdk = rd32(v3Signer, p), v3MaxSdk = rd32(v3Signer, p + 4);
+    p += 8;
+    if (!lpRead(v3Signer, p, v3Signer.size(), v3Signatures, p) ||
+        !lpRead(v3Signer, p, v3Signer.size(), v3PublicKey, p)) {
+        r.fail("the v3 signer does not parse"); return false;
+    }
+    if (p != v3Signer.size()) {
+        r.fail("the v3 signer has trailing bytes");
+        return false;
+    }
+    // signedData: lp(digests) lp(certificates) u32 minSDK u32 maxSDK lp(attributes)
+    size_t sp = 0;
+    if (!lpRead(v3SignedData, 0, v3SignedData.size(), v3Digests, sp) ||
+        !lpRead(v3SignedData, sp, v3SignedData.size(), v3Certificates, sp)) {
+        r.fail("the v3 signed-data does not parse"); return false;
+    }
+    if (v3SignedData.size() - sp < 8) {
+        r.fail("the v3 signed-data is truncated at minSDK/maxSDK"); return false;
+    }
+    const uint32_t v3MinSdkInner = rd32(v3SignedData, sp), v3MaxSdkInner = rd32(v3SignedData, sp + 4);
+    sp += 8;
+    if (!lpRead(v3SignedData, sp, v3SignedData.size(), v3Attributes, sp)) {
+        r.fail("the v3 signed-data does not parse"); return false;
+    }
+    if (sp != v3SignedData.size()) {
+        r.fail("the v3 signed-data has trailing bytes");
+        return false;
+    }
+    if (v3MinSdk != v3MinSdkInner || v3MaxSdk != v3MaxSdkInner) {
+        r.fail("the v3 signer's minSDK/maxSDK do not match the ones in its signed-data");
+        return false;
+    }
+    if (v3MinSdk < 1 || v3MinSdk > v3MaxSdk) {
+        r.fail("the v3 minSDK/maxSDK range is invalid");
+        return false;
+    }
+    std::vector<std::pair<uint32_t, std::vector<uint8_t>>> v3DigestPairs, v3SigPairs, v3DigestRaw, v3SigRaw;
+    if (!readPairs32(v3Digests, v3DigestRaw) || !readPairs32(v3Signatures, v3SigRaw) ||
+        v3DigestRaw.empty() || v3SigRaw.empty()) {
+        r.fail("the v3 digests or signatures do not parse"); return false;
+    }
+    if (!unwrap(v3DigestRaw, v3DigestPairs) || !unwrap(v3SigRaw, v3SigPairs)) {
+        r.fail("the v3 digests or signatures are not length-prefixed properly"); return false;
+    }
+    std::vector<std::vector<uint8_t>> v3Certs;
+    {
+        size_t cq = 0;
+        while (cq < v3Certificates.size()) {
+            std::vector<uint8_t> c;
+            if (!lpRead(v3Certificates, cq, v3Certificates.size(), c, cq)) {
+                r.fail("the v3 certificate list is malformed");
+                return false;
+            }
+            if (c.empty()) { r.fail("the v3 certificate list contains an empty certificate"); return false; }
+            v3Certs.push_back(std::move(c));
+        }
+    }
+    if (v3Certs.empty()) { r.fail("the v3 signer carries no certificate"); return false; }
+    std::vector<uint8_t> v3Cert = v3Certs.front();
+    r.pass("v3 block parses: signed-data " + std::to_string(v3SignedData.size()) + " B, minSDK " +
+           std::to_string(v3MinSdk) + ", maxSDK " + std::to_string(v3MaxSdk) + ", public key " +
+           std::to_string(v3PublicKey.size()) + " B, " + std::to_string(v3Certs.size()) + " certificate(s)");
+
+    if (v3PublicKey == certSubjectPublicKeyInfo(v3Cert))
+        r.pass("the v3 public key is the certificate's SubjectPublicKeyInfo");
+    else r.fail("the v3 public key does not match the certificate it carries");
+
+    bool v3DigestOk = false;
+    for (const auto& pr : v3DigestPairs) if (pr.first == APKv2::kAlgRsaPkcs1Sha256) v3DigestOk = (pr.second == want);
+    if (v3DigestOk) r.pass("the v3 content digest recomputed over entries + central directory + EOCD matches");
+    else r.fail("the v3 content digest does not match the APK as it stands on disk");
+
+    std::vector<uint8_t> v3n, v3e;
+    rsaPublicKey(v3PublicKey, v3n, v3e, "the v3 public key");
+    SHA256 v3sdHash; v3sdHash.upd(v3SignedData.data(), v3SignedData.size());
+    bool v3SigOk = false;
+    for (const auto& pr : v3SigPairs)
+        if (pr.first == APKv2::kAlgRsaPkcs1Sha256) v3SigOk = rsaVerify(v3sdHash.fin(), pr.second, v3n, v3e);
+    if (v3SigOk) r.pass("the v3 signature over signed-data verified (RSASSA-PKCS1-v1_5 / SHA-256)");
+    else r.fail("the v3 signature over signed-data did not verify");
+
     *r.log << "[4] cross-scheme checks\n";
-    if (v1Cert == v2Cert) r.pass("v1 and v2 were made with the same certificate");
-    else r.fail("v1 and v2 carry different certificates");
+    if (v1Cert == v2Cert && v2Cert == v3Cert) r.pass("v1, v2 and v3 were made with the same certificate");
+    else r.fail("v1, v2 and v3 carry different certificates");
     std::string declared;
     for (const JarSection& s : sfSecs)
         if (s.name.empty()) { auto it = s.attrs.find("X-Android-APK-Signed"); if (it != s.attrs.end()) declared = it->second; }
-    if (declared.find("2") != std::string::npos)
-        r.pass("CERT.SF declares X-Android-APK-Signed: " + declared + " -- deleting the v2 block is detectable");
-    else r.fail("CERT.SF does not declare X-Android-APK-Signed: 2, so the v2 block could be stripped unnoticed");
+    {
+        bool has2 = false, has3 = false;
+        size_t d = 0;
+        while (d <= declared.size()) {
+            size_t e = declared.find(',', d);
+            if (e == std::string::npos) e = declared.size();
+            std::string t = declared.substr(d, e - d);
+            size_t b = t.find_first_not_of(" \t"), f = t.find_last_not_of(" \t");
+            if (b != std::string::npos) t = t.substr(b, f - b + 1);
+            if (t == "2") has2 = true;
+            if (t == "3") has3 = true;
+            d = e + 1;
+        }
+        if (has2 && has3)
+            r.pass("CERT.SF declares X-Android-APK-Signed: " + declared + " -- deleting the v2 or v3 block is detectable");
+        else r.fail("CERT.SF does not declare X-Android-APK-Signed: 2,3, so a signing block could be stripped unnoticed");
+    }
     return r.ok;
 }
 } // namespace Verify
@@ -15992,7 +16204,7 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     // Anti-stripping: Android rejects an APK whose v1 signature does not
     // declare the newer schemes it was also signed with, because otherwise a
     // v2/v3 block could simply be deleted and the APK downgraded to v1.
-    sf += "X-Android-APK-Signed: 2\r\n";
+    sf += "X-Android-APK-Signed: 2,3\r\n";
     SHA256 dm; dm.upd(mfBytes.data(), mfBytes.size()); std::vector<uint8_t> dmh=dm.fin();
     sf += "SHA-256-Digest-Manifest: " + b64(dmh) + "\r\n\r\n";
     std::string mfStr=mf;
@@ -16062,7 +16274,7 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     std::vector<uint8_t> eocdForDigest = makeEocd((uint32_t)sbStart);
     std::vector<uint8_t> contentDigest = APKv2::contentDigest({
         {apk.data(), apk.size()}, {cd.data(), cd.size()}, {eocdForDigest.data(), eocdForDigest.size()}});
-    std::vector<uint8_t> sb = APKv2::signingBlock(contentDigest, key);
+    std::vector<uint8_t> sb = APKv2::signingBlock(contentDigest, key, (uint32_t)minSdk);
     apk.insert(apk.end(), sb.begin(), sb.end());
     std::vector<uint8_t> eocd = makeEocd((uint32_t)(sbStart + sb.size()));
     apk.insert(apk.end(), cd.begin(), cd.end());
@@ -29122,8 +29334,8 @@ int main(int argc,char**argv){
                 if(bilingualObjs.empty()){std::cerr<<"aster "<<cmd<<": no objects to link\n";return 1;}
                 if(bilingualIsApk){
                     // C-1: the same packaging as the mainline project build
-                    // below — one shared object, then buildApk (v1 + v2
-                    // dual-signed, self-verified). The per-source objects
+                    // below — one shared object, then buildApk (v1 + v2 + v3
+                    // triple-signed, self-verified). The per-source objects
                     // are PIC (ctx.sharedObject), so linkSharedObjects
                     // accepts them (it refuses a _start definition); the
                     // __aster_init chain is rooted by the shared-object
@@ -29467,7 +29679,7 @@ int main(int argc,char**argv){
                 }
             }
             int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,debuggable,pageSize);
-            if(r==0)std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2 dual-signed, "
+            if(r==0)std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2+v3 triple-signed, "
                 <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n";
             return r;
         }
@@ -29529,10 +29741,10 @@ int main(int argc,char**argv){
                     std::cerr<<"aster: verify-apk: "<<apkPath<<": signature OK but sha256 mismatch: expected "<<expectSha<<", got "<<got<<"\n";
                     return 1;
                 }
-                std::cout<<"aster: verify-apk: "<<apkPath<<": OK (v1 + v2 signatures verified, sha256 matches --expect-sha256)\n";
+                std::cout<<"aster: verify-apk: "<<apkPath<<": OK (v1 + v2 + v3 signatures verified, sha256 matches --expect-sha256)\n";
                 return 0;
             }
-            std::cout<<"aster: verify-apk: "<<apkPath<<": OK (v1 + v2 signatures verified)\n";
+            std::cout<<"aster: verify-apk: "<<apkPath<<": OK (v1 + v2 + v3 signatures verified)\n";
             return 0;
         }
 #if ASTER_CN_FRONTEND_AVAILABLE

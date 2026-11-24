@@ -88,7 +88,7 @@ Five layers, and it ends with `ALL ICON+TEXT DEMO CHECKS PASSED`:
    the census is asserted (icon plate > 12,000 px, white title > 1,500 px, grey
    body > 1,500 px, magenta 0). On Termux this step runs natively — no qemu.
 5. **Package** — `build-apk` from the `.ast` in one step, then `validate_apk.py`
-   and `aster verify-apk` (v1 + v2), the five assets re-found inside
+   and `aster verify-apk` (v1 + v2 + v3), the five assets re-found inside
    `lib/arm64-v8a/libicontext.so`, and proof that the app name **is** in
    `AndroidManifest.xml` (see §5.1 for why that matters more than it sounds).
 
@@ -119,7 +119,7 @@ or pass `--emit-so libicontext.so` to the one-step form.
 
 ```sh
 aster verify-apk icon-text-demo.apk
-#   aster: verify-apk: icon-text-demo.apk: OK (v1 + v2 signatures verified)
+#   aster: verify-apk: icon-text-demo.apk: OK (v1 + v2 + v3 signatures verified)
 
 python3 tests/validate_apk.py icon-text-demo.apk \
     --package com.aster.icontext --libname icontext --label "Aster 图标文字"

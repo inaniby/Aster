@@ -93,10 +93,10 @@ HOSTCC=${HOSTCC:-cc} ./tests/e2e-c-ptr-index.sh
 ./tests/wide-int-checks.sh
 
 # v0.23.3-dev: APK v2 (APK Signing Block) signatures, with v1 retained for
-# dual-signing (P2.1) — the Signing Block layout, the chunked CHUNKED_SHA256
+# triple-signing (P2.1 + v3) — the Signing Block layout, the chunked CHUNKED_SHA256
 # content digest (including the EOCD central-directory-offset rewrite), the
 # anti-stripping X-Android-APK-Signed attribute, and mutation checks proving the
-# v2 verifier actually rejects tampering v1 cannot see.
+# v2/v3 verifier actually rejects tampering v1 cannot see.
 ./tests/apk-checks.sh
 
 # v0.23.4-dev: signing keys as input, not as constants (P2.5) — per-project debug

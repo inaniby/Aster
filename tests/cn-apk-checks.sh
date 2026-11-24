@@ -13,7 +13,7 @@
 #   [3] an English Counter (explicit en, arrow returns, extern fn) builds
 #       to a signed APK the same way.
 #   [4] both APKs verify: `aster verify-apk` plus tests/validate_apk.py
-#       (v1 + v2 signatures, structure, digests).
+#       (v1 + v2 + v3 signatures, structure, digests).
 #   [5] qemu entry probe (needs qemu-aarch64 + aarch64-linux-gnu-gcc, else
 #       SKIP): the APK's .so is extracted and its ANativeActivity_onCreate
 #       is called twice from a C harness under qemu-aarch64; it must return
@@ -174,7 +174,7 @@ grep -q '(0 compiled, 2 reused)' "$TMP/encounter/build2.log" || {
     echo 'FAIL: the English rebuild did not reuse both objects:' >&2; cat "$TMP/encounter/build2.log" >&2; exit 1; }
 printf '  %-40s %s\n' 'en Counter builds; per-source cache counts hold' 'ok'
 
-printf '%s\n' '[4/6] both APKs verify (v1 + v2)'
+printf '%s\n' '[4/6] both APKs verify (v1 + v2 + v3)'
 "$ASTER_BIN" verify-apk "$TMP/zhcounter/build/zhcounter.apk" > "$TMP/verify-zh.log" 2>&1 || {
     echo 'FAIL: the Chinese APK did not verify:' >&2; cat "$TMP/verify-zh.log" >&2; exit 1; }
 "$ASTER_BIN" verify-apk "$TMP/encounter/build/encounter.apk" > "$TMP/verify-en.log" 2>&1 || {

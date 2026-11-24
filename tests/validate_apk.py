@@ -38,10 +38,12 @@ verifier -- a machine without it still gets every check, and says so):
       [5d] embedded certificate subject == the Aster dev signing cert (read out
            of the DER, not asked from openssl)
       [5e] the embedded RSA signature is exactly modulus-wide (v0.22.48-dev regression)
-  [6] APK v2 (APK Signing Block) signing, v1 retained for dual-signing:
+  [6] APK v2 + v3 (APK Signing Block) signing, v1 retained for triple-signing:
       [6a] "APK Sig Block 42" sits directly before the Central Directory, and both
            uint64 size fields agree and match the real span
-      [6b] the 0x7109871a (v2) ID-value pair parses into exactly one signer
+      [6b] the 0x7109871a (v2) and 0xf05368c0 (v3) ID-value pairs parse into
+           exactly one signer each; no v3.1 block is present (Aster does not
+           produce v3.1)
       [6c] the signer's public key == the SubjectPublicKeyInfo lifted out of the
            embedded certificate (a mismatch is what apksig reports as
            V2_SIG_PUBLIC_KEY_MISMATCH_BETWEEN_CERTIFICATE_AND_SIGNATURES_RECORD)
@@ -50,11 +52,14 @@ verifier -- a machine without it still gets every check, and says so):
            region, the Central Directory and the EOCD -- with the EOCD's
            "offset of start of central directory" rewritten to the Signing Block
            start, which is the one subtle field of the v2 spec -- and matches
-      [6f] no v3 / v3.1 block is present (deliberate: v3 only adds key rotation)
-      [6g] CERT.SF declares "X-Android-APK-Signed: 2" so the v2 block cannot be
-           stripped and downgraded to v1
-      [6h] the certificate inside the v2 block is byte-identical to the one in
-           CERT.RSA, i.e. v1 and v2 were made with the same key
+      [6f] the v3 block verifies the same way: minSDK/maxSDK as raw uint32s in
+           both the signer and the signed-data, equal in both places, the same
+           CHUNKED_SHA256 content digest as v2, the 0x0103 signature over
+           signed-data verifies, public key == certificate SPKI
+      [6g] CERT.SF declares "X-Android-APK-Signed: 2,3" so neither the v2 nor
+           the v3 block can be stripped and downgraded to v1
+      [6h] the certificates inside the v2 and v3 blocks are byte-identical to
+           the one in CERT.RSA, i.e. v1, v2 and v3 were made with the same key
 
 Usage:
   validate_apk.py <app.apk> [--package PKG] [--libname NAME] [--abi ABI]
@@ -990,8 +995,8 @@ def validate(path, want_pkg=None, want_lib=None, want_abi="arm64-v8a", want_labe
         except Exception as e:
             allok = fail("could not structurally verify signature width: %r" % e)
 
-    # ------------------------------------------------------------ [6] APK v2
-    print("[6] APK v2 (APK Signing Block) signature")
+    # ------------------------------------------------------------ [6] APK v2 + v3
+    print("[6] APK v2 + v3 (APK Signing Block) signatures")
     try:
         allok = validate_v2(raw, data, allok)
     except Exception as e:
@@ -1202,6 +1207,106 @@ def _v2_slice(b, p):
     return b[p + 4:p + 4 + n], p + 4 + n
 
 
+def parse_pairs(blob):
+    """Digests / signatures: each element is uint32 length + uint32 algID +
+    length-prefixed bytes -> [(algID, bytes)]."""
+    out = []
+    p = 0
+    while p < len(blob):
+        el, p = _v2_slice(blob, p)
+        alg = struct.unpack_from("<I", el, 0)[0]
+        val, off = _v2_slice(el, 4)
+        if off != len(el):
+            raise ValueError("trailing bytes in a (uint32, bytes) pair")
+        out.append((alg, val))
+    return out
+
+
+def validate_v3(v3, want, allok):
+    """Verify the APK Signature Scheme v3 block sitting in `v3` (the pair's
+    value). `want` is the CHUNKED_SHA256 content digest recomputed for v2 --
+    v3 carries the same digest. Returns (allok, v3_certificate_or_None)."""
+    signers, q = _v2_slice(v3, 0)
+    if q != len(v3):
+        return fail("trailing bytes after the v3 signers sequence"), None
+    signer, q = _v2_slice(signers, 0)
+    signer_count = 1
+    rest = signers[q:]
+    while rest:
+        _, q2 = _v2_slice(rest, 0)
+        signer_count += 1
+        rest = rest[q2:]
+    # signer: lp(signedData) u32 minSDK u32 maxSDK lp(signatures) lp(publicKey)
+    signed_data, q = _v2_slice(signer, 0)
+    if len(signer) - q < 8:
+        return fail("v3 signer truncated at minSDK/maxSDK"), None
+    min_sdk, max_sdk = struct.unpack_from("<II", signer, q)
+    q += 8
+    signatures, q = _v2_slice(signer, q)
+    public_key, q = _v2_slice(signer, q)
+    if q != len(signer):
+        return fail("trailing bytes inside the v3 signer"), None
+    # signedData: lp(digests) lp(certificates) u32 minSDK u32 maxSDK lp(attributes)
+    digests, q = _v2_slice(signed_data, 0)
+    certs, q = _v2_slice(signed_data, q)
+    if len(signed_data) - q < 8:
+        return fail("v3 signed-data truncated at minSDK/maxSDK"), None
+    min_sdk_in, max_sdk_in = struct.unpack_from("<II", signed_data, q)
+    q += 8
+    attributes, q = _v2_slice(signed_data, q)
+    if q != len(signed_data):
+        return fail("trailing bytes inside the v3 signed-data"), None
+    ok("v3 block parses: %d signer; signed-data %d B, minSDK %d, maxSDK %d, "
+       "signatures %d B, public key %d B"
+       % (signer_count, len(signed_data), min_sdk, max_sdk, len(signatures), len(public_key)))
+    if (min_sdk, max_sdk) != (min_sdk_in, max_sdk_in):
+        return fail("v3 minSDK/maxSDK in the signer (%d/%d) differ from the signed-data (%d/%d)"
+                    % (min_sdk, max_sdk, min_sdk_in, max_sdk_in)), None
+    if min_sdk < 1 or min_sdk > max_sdk:
+        return fail("v3 minSDK/maxSDK range is invalid: %d/%d" % (min_sdk, max_sdk)), None
+    dig_list = parse_pairs(digests)
+    sig_list = parse_pairs(signatures)
+    cert_list = []
+    p = 0
+    while p < len(certs):
+        c, p = _v2_slice(certs, p)
+        cert_list.append(c)
+    if [a for a, _ in dig_list] != [a for a, _ in sig_list]:
+        return fail("v3 signature algorithm IDs differ between the digests and signatures records: %r vs %r"
+                    % ([hex(a) for a, _ in dig_list], [hex(a) for a, _ in sig_list])), None
+    ok("v3 signed-data: %d digest(s) alg %s, %d signature(s) alg %s, %d certificate(s), "
+       "%d attribute(s)"
+       % (len(dig_list), [hex(a) for a, _ in dig_list], len(sig_list),
+          [hex(a) for a, _ in sig_list], len(cert_list), len(attributes)))
+    if not cert_list:
+        return fail("v3 signer carries no certificate"), None
+    # [6f] the signer's public key must be the certificate's SPKI
+    spki = _cert_spki(cert_list[0])
+    if spki is None:
+        return fail("cannot extract SubjectPublicKeyInfo from the v3 certificate"), None
+    if spki != public_key:
+        return fail("v3 public key does not match the certificate's SubjectPublicKeyInfo "
+                    "(%d vs %d bytes)" % (len(public_key), len(spki))), None
+    n, e = _rsa_pubkey(spki)
+    ok("v3 public key == the certificate's SubjectPublicKeyInfo (RSA-%d, e=%d)" % (n.bit_length(), e))
+    if len(sig_list) != 1 or sig_list[0][0] != ALG_RSA_PKCS1_SHA256:
+        return fail("expected a single 0x0103 (RSASSA-PKCS1-v1_5 / SHA-256) v3 signature, got %r"
+                    % [hex(a) for a, _ in sig_list]), None
+    good, why = _pkcs1_v15_verify(n, e, signed_data, sig_list[0][1])
+    if not good:
+        return fail("v3 signature over signed-data did not verify: %s" % why), None
+    ok("v3 signature verified: RSASSA-PKCS1-v1_5 over SHA-256(signed-data), %d-bit modulus" % n.bit_length())
+    got = dict((a, v) for a, v in dig_list).get(ALG_RSA_PKCS1_SHA256)
+    if got is None:
+        return fail("no 0x0103 content digest in the v3 signed-data"), None
+    if got != want:
+        return fail("v3 CHUNKED_SHA256 content digest mismatch: block has %s, recomputed %s"
+                    % (got.hex(), want.hex())), None
+    ok("v3 content digest recomputed over entries + CD + EOCD (CD offset rewritten to the "
+       "Signing Block start) -- matches the v2 digest")
+    return allok, cert_list[0]
+
+
 def validate_v2(raw, data, allok):
     """Verify the APK Signature Scheme v2 block sitting in `raw` (the whole APK).
     `data` maps entry name -> bytes for entries already read out of the ZIP."""
@@ -1229,6 +1334,7 @@ def validate_v2(raw, data, allok):
     pairs_end = sb_end - 24
     p = sb_start + 8
     v2 = None
+    v3 = None
     seen = []
     while p + 8 <= pairs_end:
         plen = struct.unpack_from("<Q", raw, p)[0]
@@ -1238,14 +1344,18 @@ def validate_v2(raw, data, allok):
         seen.append(pid)
         if pid == V2_BLOCK_ID:
             v2 = raw[p + 12:p + 8 + plen]
+        if pid == V3_BLOCK_ID:
+            v3 = raw[p + 12:p + 8 + plen]
         p += 8 + plen
     if p != pairs_end:
         return fail("ID-value pairs do not fill the Signing Block exactly")
-    if V3_BLOCK_ID in seen or V31_BLOCK_ID in seen:
-        return fail("unexpected v3 / v3.1 block present (Aster deliberately signs v1+v2 only)")
+    if V31_BLOCK_ID in seen:
+        return fail("unexpected v3.1 block present (Aster signs v1+v2+v3 only)")
     if v2 is None:
         return fail("no APK Signature Scheme v2 block (ID 0x7109871a) in the Signing Block")
-    ok("ID-value pairs: %s -- v2 present, no v3 (Aster signs v1+v2 by design)"
+    if v3 is None:
+        return fail("no APK Signature Scheme v3 block (ID 0xf05368c0) in the Signing Block")
+    ok("ID-value pairs: %s -- v2 + v3 present, no v3.1 (Aster signs v1+v2+v3)"
        % ", ".join("0x%08x" % i for i in seen))
 
     signers, q = _v2_slice(v2, 0)
@@ -1270,19 +1380,6 @@ def validate_v2(raw, data, allok):
     certs, q = _v2_slice(signed_data, q)
     attributes, q = _v2_slice(signed_data, q)
     trailing, q = _v2_slice(signed_data, q)
-
-    # digests / signatures: each element is uint32 length + uint32 algID + lp bytes
-    def parse_pairs(blob):
-        out = []
-        p = 0
-        while p < len(blob):
-            el, p = _v2_slice(blob, p)
-            alg = struct.unpack_from("<I", el, 0)[0]
-            val, off = _v2_slice(el, 4)
-            if off != len(el):
-                raise ValueError("trailing bytes in a (uint32, bytes) pair")
-            out.append((alg, val))
-        return out
 
     dig_list = parse_pairs(digests)
     sig_list = parse_pairs(signatures)
@@ -1342,19 +1439,25 @@ def validate_v2(raw, data, allok):
     ok("v2 content digest recomputed over entries[0:%d] + CD[%d:%d] + EOCD (CD offset "
        "rewritten to the Signing Block start %d) -- matches" % (sb_start, sb_end, eocd_off, sb_start))
 
-    # [6g] anti-stripping: the v1 signature file must declare the v2 scheme
+    # [6f] the v3 block must be present and must verify the same way, over the
+    # same recomputed content digest
+    allok, v3_cert = validate_v3(v3, want, allok)
+    if v3_cert is None:
+        return allok
+
+    # [6g] anti-stripping: the v1 signature file must declare the v2 and v3 schemes
     sf_txt = data["META-INF/CERT.SF"].decode("utf-8", "replace")
     main_section = sf_txt.split("\r\n\r\n", 1)[0]
     m = re.search(r"^X-Android-APK-Signed:[ \t]*([^\r\n]+)", main_section, re.M)
     if not m:
-        return fail("CERT.SF main section lacks 'X-Android-APK-Signed': the v2 block could be "
+        return fail("CERT.SF main section lacks 'X-Android-APK-Signed': the v2/v3 block could be "
                     "stripped and the APK downgraded to v1 without detection")
     schemes = [t.strip() for t in m.group(1).split(",") if t.strip()]
-    if schemes != ["2"]:
-        return fail("CERT.SF declares X-Android-APK-Signed: %r, expected ['2']" % schemes)
-    ok("CERT.SF declares X-Android-APK-Signed: 2 -- stripping the v2 block is detectable")
+    if schemes != ["2", "3"]:
+        return fail("CERT.SF declares X-Android-APK-Signed: %r, expected ['2', '3']" % schemes)
+    ok("CERT.SF declares X-Android-APK-Signed: 2,3 -- stripping the v2 or v3 block is detectable")
 
-    # [6h] v1 and v2 must have been made with the same certificate
+    # [6h] v1, v2 and v3 must have been made with the same certificate
     rsa = data["META-INF/CERT.RSA"]
     ci = _der_at(rsa, 0)
     ctx = [k for k in _der_kids(rsa, ci) if k[0] == 0xA0][0]
@@ -1362,9 +1465,9 @@ def validate_v2(raw, data, allok):
     sd_kids = _der_kids(rsa, sd)
     z = [k for k in sd_kids if k[0] == 0xA0][0]
     v1_cert = rsa[_der_kids(rsa, z)[0][1]:_der_kids(rsa, z)[0][2] + _der_kids(rsa, z)[0][3]]
-    if v1_cert != cert_list[0]:
-        return fail("the v1 (CERT.RSA) and v2 certificates differ: v1 and v2 were signed with different keys")
-    ok("v1 (CERT.RSA) and v2 certificates are byte-identical (%d bytes) -- one key, dual-signed"
+    if v1_cert != cert_list[0] or v1_cert != v3_cert:
+        return fail("the v1 (CERT.RSA), v2 and v3 certificates differ: v1, v2 and v3 were signed with different keys")
+    ok("v1 (CERT.RSA), v2 and v3 certificates are byte-identical (%d bytes) -- one key, triple-signed"
        % len(v1_cert))
     return allok
 

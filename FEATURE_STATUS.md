@@ -309,14 +309,14 @@ carry their tracking id from `ROADMAP.md`; nothing else is promised.
 | Binary AXML manifest (real string pool), NativeActivity glue, 4 KiB alignment | shipped | v0.22.x | `apk-checks.sh`, `validate_apk.py` |
 | APK v1 (JAR) PKCS#7 signature, fixed-width modulus padding | shipped | v0.22.48-dev (width fix) | `apk-checks.sh` [5e], openssl cross-check |
 | APK v2 (APK Signing Block) dual signature — `APK Sig Block 42`, block ID `0x7109871a`, alg `0x0103`, CHUNKED_SHA256 over entries + CD + EOCD | shipped | v0.23.3-dev | `apk-checks.sh` [2/7][4/7], `validate_apk.py` [6] |
-| APK v2 anti-stripping: `CERT.SF` declares `X-Android-APK-Signed: 2` so the v2 block cannot be removed and downgraded to v1 | shipped | v0.23.3-dev | `apk-checks.sh` [5/7], `validate_apk.py` [6g] |
+| APK v2 anti-stripping: `CERT.SF` declares `X-Android-APK-Signed: 2,3` so neither the v2 nor the v3 block can be removed and downgraded to v1 | shipped | v0.23.3-dev (v3 added v0.23.82-dev) | `apk-checks.sh` [5/7], `validate_apk.py` [6g] |
 | Reproducible APK builds (PKCS#1 v1.5, no salt): the same inputs give the same bytes twice | shipped | v0.23.3-dev | `apk-checks.sh` [6/7] |
 | Signing key as input (`SigningKey`): `--sign-mode debug` (per-project generated key, `aster keygen`) vs `--sign-mode release` (`--keystore` + `--cert`, fails closed without both) | shipped | v0.23.4-dev | `signing-checks.sh` [1/10]–[6/10], `apk-checks.sh` [2/7] |
 | `aster keygen` — RSA 2048/3072/4096 generation (Miller-Rabin + random source) and a self-signed X.509 v3 certificate | shipped | v0.23.4-dev | `signing-checks.sh` [1/10][2/10], openssl oracle |
 | Key material loading: PEM or DER, PKCS#8 or PKCS#1 private keys, X.509 certificates; mismatched key/certificate rejected | shipped | v0.23.4-dev | `signing-checks.sh` [7/10][8/10] |
-| `aster verify-apk` — full v1 + v2 verification (ZIP CRCs, JAR digests, PKCS#7, Signing Block, chunked content digest, RSA over signed-data) | shipped | v0.23.4-dev | `signing-checks.sh` [9/10] |
+| `aster verify-apk` — full v1 + v2 + v3 verification (ZIP CRCs, JAR digests, PKCS#7, Signing Block, chunked content digest, RSA over signed-data) | shipped | v0.23.4-dev (v3 added v0.23.82-dev) | `signing-checks.sh` [9/10] |
 | `build-apk` verifies the APK in memory before writing it (`--no-verify` bypasses only the check) | shipped | v0.23.4-dev | `apk-checks.sh` [5/7] |
-| APK v3 / v3.1 signature blocks | **not planned** | — | v3's only incremental value is key rotation; a per-project debug key has no use for it, and v3 is not a compliance gate (v1+v2 is). `apk-checks.sh` [2/7] guards that no v3 code appears |
+| APK v3 signature block (v3.1 still not produced) | shipped | v0.23.82-dev | `apk-checks.sh` [2/7], `signing-checks.sh` [9/10], `validate_apk.py` [6f] |
 | Launcher icon: `android:icon` as TYPE_REFERENCE, a self-encoded 192×192 palette PNG, and a generated `resources.arsc` | shipped | v0.23.6-dev | `icon-checks.sh` [2/6]–[6/6], `validate_apk.py` [4a][4b][4c], androguard + PIL |
 | `resources.arsc` as a real table: N types, N entries, ids derived from the table, `--string NAME=VALUE` | shipped | v0.23.7-dev | `resource-table-checks.sh` [2/5]–[5/5], `validate_apk.py` [4d], androguard + AXMLPrinter |
 | `android:label` as `TYPE_REFERENCE` to `@string/app_name` instead of a literal in the manifest | shipped | v0.23.7-dev | `resource-table-checks.sh` [3/5][5/5], `validate_apk.py` [4d] |

@@ -3,9 +3,9 @@
 #
 # End-to-end check for Aster's native APK packager (build-apk):
 #   1. compile aster with the same strict flags used for release (-Werror)
-#   2. source guards for the v2 (APK Signing Block) implementation
+#   2. source guards for the v2 + v3 (APK Signing Block) implementation
 #   3. build-so a sample AArch64 library from Aster source (.ast), then build-apk
-#      wraps it into a self-contained, v1 + v2 dual-signed NativeActivity APK
+#      wraps it into a self-contained, v1 + v2 + v3 triple-signed NativeActivity APK
 #   4. validate_apk.py re-derives every invariant (ZIP/CRC, layout, 4K alignment,
 #      binary AXML fields, the full v1 JAR signature chain incl. openssl verify,
 #      and the whole v2 APK Signing Block: structure, RSA signature, and a
@@ -43,14 +43,16 @@ echo "[1/7] generating the test project's debug key in $KEY_DIR"
 rm -rf "$KEY_DIR" && mkdir -p "$KEY_DIR"
 "$ASTER_BIN" keygen --dir "$KEY_DIR" > /dev/null
 
-echo "[2/7] v2 source guards"
+echo "[2/7] v2 + v3 source guards"
 python3 - <<'PY'
 import sys
 src = open('src/aster.cpp').read()
 needles = [
     # APK Signing Block framing
     ('namespace APKv2', 'v2 signing module'),
+    ('namespace APKv3', 'v3 signing module'),
     ('0x7109871a', 'v2 block ID'),
+    ('0xf05368c0', 'v3 block ID'),
     ("'A','P','K',' ','S','i','g',' ','B','l','o','c','k',' ','4','2'", 'APK Sig Block 42 magic'),
     ('(uint64_t)(pair.size() + 24)', 'block size = pairs + 24'),
     # signature algorithm: deterministic PKCS#1 v1.5 + SHA-256, matching rsaSign()
@@ -63,8 +65,8 @@ needles = [
     # Signing Block, then write the record with the real CD offset
     ('eocdForDigest = makeEocd((uint32_t)sbStart)', 'EOCD digested with CD offset = Signing Block start'),
     ('makeEocd((uint32_t)(sbStart + sb.size()))', 'EOCD written with the real CD offset'),
-    # anti-stripping: v1 has to declare that a v2 signature exists
-    ('X-Android-APK-Signed: 2', 'anti-stripping attribute'),
+    # anti-stripping: v1 has to declare that v2 and v3 signatures exist
+    ('X-Android-APK-Signed: 2,3', 'anti-stripping attribute covers v2+v3'),
     # the v2 public key is lifted out of the certificate, never duplicated
     ('certSubjectPublicKeyInfo', 'public key taken from the certificate'),
     # --- v0.23.4: the key is a parameter, not a constant baked into the binary
@@ -84,11 +86,13 @@ missing = [what for needle, what in needles if needle not in src]
 if missing:
     print('FAIL: v2 source guards missing: %s' % missing)
     sys.exit(1)
-# v3 must NOT be implemented (deliberate: v3 only adds key rotation, which a
-# per-project debug key has no use for -- see ROADMAP v0.23.3-dev).
-for bad in ('0xf05368c0', '0x1b93ad61'):
+# v3 IS implemented (v0.23.82-dev): the packager emits a v3 pair (0xf05368c0)
+# after the v2 pair, and verify-apk requires it. What must never appear is
+# the wrong v3 ID (0x71777777, an error that circulated for a while) or v3.1
+# (Aster signs v1+v2+v3 only, so a v3.1 pair stays an unknown ID).
+for bad in ('0x71777777', '0x1b93ad61'):
     if bad in src:
-        print('FAIL: unexpected v3 signature code in the packager (%s)' % bad)
+        print('FAIL: unexpected v3/v3.1 signature code in the packager (%s)' % bad)
         sys.exit(1)
 # nor may any key material still be compiled in: since v0.23.4 every APK is
 # signed with a key Aster is given, so there is nothing left to hardcode.
@@ -101,7 +105,7 @@ import os
 if os.path.exists('src/aster_apk_key.h'):
     print('FAIL: src/aster_apk_key.h still exists')
     sys.exit(1)
-print('PASS: all %d v2 source guards present, no v3 code, no embedded key' % len(needles))
+print('PASS: all %d v2+v3 source guards present, no wrong-ID / v3.1 code, no embedded key' % len(needles))
 PY
 
 echo "[3/7] build-so examples/so_math.ast -> $SO"
@@ -132,7 +136,7 @@ if [ -e $TMPD/aster-abi-mismatch.apk ]; then
 fi
 echo "PASS: --abi is checked against the ELF header it ships"
 
-echo "[3/7] validating APK (v1 + v2)"
+echo "[3/7] validating APK (v1 + v2 + v3)"
 python3 tests/validate_apk.py "$APK" --package "$PKG" --libname "$LIB" --abi "$ABI"
 # validate_apk.py exits 0 on ALL CHECKS PASSED, 1 on failure.
 
@@ -307,7 +311,7 @@ python3 - <<'PY'
 import os
 p = os.environ["TMPD"]+"/aster-apk-mut/aster.cpp"
 s = open(p).read()
-old = '    sf += "X-Android-APK-Signed: 2\\r\\n";\n'
+old = '    sf += "X-Android-APK-Signed: 2,3\\r\\n";\n'
 assert old in s, 'anti-stripping attribute anchor not found'
 open(p, 'w').write(s.replace(old, ''))
 PY

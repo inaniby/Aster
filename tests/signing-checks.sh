@@ -169,7 +169,8 @@ echo "PASS: PKCS#1 PEM and raw DER key material load and produce valid APKs"
 echo "[9/10] aster verify-apk accepts good APKs and rejects tampered ones"
 "$ASTER_BIN" verify-apk "$WORK/rel.apk" > /dev/null
 # flip a byte deep inside the Signing Block: every entry, CRC and v1 digest is
-# untouched, so only the v2 checks can see this
+# untouched, so only the v2/v3 checks can see this (the flip lands in the last
+# pair, which is v3 since v0.23.82-dev)
 python3 - <<'PY'
 import os
 import struct
@@ -184,20 +185,61 @@ if "$ASTER_BIN" verify-apk "$WORK/tampered.apk" > "$WORK/tampered.log" 2>&1; the
     echo "FAIL: verify-apk accepted a tampered APK"; exit 1
 fi
 grep -q "FAIL:" "$WORK/tampered.log" || { echo "FAIL: tampering rejected without a reason"; exit 1; }
-echo "PASS: verify-apk rejects an APK whose v2 block was tampered with"
+echo "PASS: verify-apk rejects an APK whose Signing Block was tampered with"
+
+# v0.23.82-dev: the same treatment inside the v3 pair, aimed precisely at the
+# v3 content digest so the rejection must come from the v3 check, not the v2 one.
+python3 - <<'PY'
+import os
+import struct
+raw = bytearray(open(os.environ["TMPD"]+"/aster-signing/rel.apk", 'rb').read())
+i = raw.rfind(b'APK Sig Block 42')
+blk = struct.unpack_from('<Q', raw, i - 8)[0]
+sb_start = i + 16 - (blk + 8)
+# walk the ID-value pairs to the v3 pair (0xf05368c0)
+p = sb_start + 8
+end = sb_start + blk + 8 - 24
+v3off = None
+while p < end:
+    ln = struct.unpack_from('<Q', raw, p)[0]
+    pid = struct.unpack_from('<I', raw, p + 8)[0]
+    if pid == 0xf05368c0:
+        v3off = p + 12          # start of the v3 value
+        break
+    p += 8 + ln
+assert v3off is not None, 'no v3 pair in the seed APK'
+# v3 value = lp(signers) -> lp(signer) -> lp(signedData) -> lp(digests) ->
+# first pair [alg][lp digest]: each lp is a 4-byte length, so the digest
+# bytes start 28 bytes into the value (4+4+4+4+4+4+4).
+s = v3off + 4 + 4 + 4 + 4 + 4
+assert struct.unpack_from('<I', raw, s)[0] == 0x0103, 'expected a 0x0103 digest first'
+s += 4 + 4                       # skip alg + digest length -> digest bytes
+raw[s + 8] ^= 0xFF
+open(os.environ["TMPD"]+"/aster-signing/tampered-v3.apk", 'wb').write(bytes(raw))
+print('   flipped a byte of the v3 content digest at offset %d' % (s + 8))
+PY
+if "$ASTER_BIN" verify-apk "$WORK/tampered-v3.apk" > "$WORK/tampered-v3.log" 2>&1; then
+    echo "FAIL: verify-apk accepted an APK whose v3 block was tampered with"; exit 1
+fi
+grep -q "v3 content digest does not match" "$WORK/tampered-v3.log" || {
+    echo "FAIL: v3 tampering rejected, but not by the v3 content digest:"; cat "$WORK/tampered-v3.log"; exit 1; }
+echo "PASS: verify-apk rejects an APK whose v3 content digest was tampered with"
 
 # v0.23.81-dev: a Signing Block with the v2 pair twice used to verify (the
 # verifier kept the last pair and silently ignored the first). It must now
 # be rejected with a clear duplicate-ID reason, while a single unknown
-# (v3) pair next to a valid v2 pair is still ignored by design.
+# (v3.1) pair next to a valid v2 pair is still ignored by design. Note the
+# mutant is named v3-pair-added but the pair it adds carries the v3.1 ID
+# (apk-semantic-mutate.py: V3_ID = 0x1b93ad61) plus garbage content -- v3.1
+# is still not produced by Aster, so it stays an unknown ID.
 python3 tests/apk-semantic-mutate.py "$WORK/rel.apk" "$WORK/mutants" > /dev/null
 if "$ASTER_BIN" verify-apk "$WORK/mutants/dup-v2-pair.apk" > "$WORK/dup-v2.log" 2>&1; then
     echo "FAIL: verify-apk accepted an APK with a duplicated v2 pair"; exit 1
 fi
 grep -qi "duplicate" "$WORK/dup-v2.log" || { echo "FAIL: duplicated v2 pair rejected without a duplicate-ID reason"; exit 1; }
 "$ASTER_BIN" verify-apk "$WORK/mutants/v3-pair-added.apk" > /dev/null \
-    || { echo "FAIL: verify-apk rejected an APK with a single unknown (v3) pair"; exit 1; }
-echo "PASS: verify-apk rejects a duplicated v2 pair and still accepts a single v3 pair"
+    || { echo "FAIL: verify-apk rejected an APK with a single unknown (v3.1) pair"; exit 1; }
+echo "PASS: verify-apk rejects a duplicated v2 pair and still accepts a single v3.1 pair"
 
 echo "[9b/10] validate_apk.py verifies the v1 signature in-process, and rejects a bad one"
 # The v1 PKCS#7 signature used to be checked only by shelling out to openssl,

@@ -173,7 +173,7 @@ if [ -n "${APK_OUT:-}" ]; then
     cp "$OUT/demo.apk" "$APK_OUT"
     printf '%s\n' "   APK copied to $APK_OUT"
 fi
-printf '%s\n' 'PASS: APK validated, v1 + v2 verified, assets packaged, name in the manifest and the table'
+printf '%s\n' 'PASS: APK validated, v1 + v2 + v3 verified, assets packaged, name in the manifest and the table'
 
 printf '%s\n' ''
 printf '%s\n' 'ALL ICON+TEXT DEMO CHECKS PASSED'

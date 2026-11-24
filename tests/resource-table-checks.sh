@@ -92,7 +92,7 @@ if ! python3 tests/validate_apk.py "$APK" --package "$PKG" --libname "$LIB" \
     sed -n 's/^/    /p' "$OUT/validate.log" >&2
     exit 1
 fi
-printf '%s\n' 'PASS: validate_apk.py accepts it (icon, label, table, v1 + v2 signatures)'
+printf '%s\n' 'PASS: validate_apk.py accepts it (icon, label, table, v1 + v2 + v3 signatures)'
 
 # A second parser, written here rather than reused, so the two have to agree
 # independently. This one walks every type chunk and every entry and checks that
