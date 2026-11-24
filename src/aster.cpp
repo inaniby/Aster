@@ -434,7 +434,14 @@ public:
                 TK k=TK::Ident;
                 if(x=="fn")k=TK::Fn; else if(x=="extern")k=TK::Extern; else if(x=="main")k=TK::Main; else if(x=="let")k=TK::Let;
                 else if(x=="return")k=TK::Return; else if(x=="if")k=TK::If; else if(x=="else")k=TK::Else; else if(x=="while")k=TK::While; else if(x=="for")k=TK::For; else if(x=="break")k=TK::Break; else if(x=="continue")k=TK::Continue; else if(x=="switch")k=TK::Switch; else if(x=="case")k=TK::Case; else if(x=="default")k=TK::Default; else if(x=="i32")k=TK::I32; else if(x=="ptr")k=TK::Ptr; else if(x=="bool")k=TK::Bool; else if(x=="void")k=TK::Void;
-                else if(x=="i8")k=TK::I8; else if(x=="i16")k=TK::I16; else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct; else if(x=="enum")k=TK::Enum;
+                // P1-13: `i8`/`i16` are context keywords, not reserved
+                // words — the lexer leaves them as Ident and the parser
+                // reads them as a type only where a type is expected
+                // (parseType, the `i8(x)` cast). Any other position may
+                // use them as identifiers (`let i8: i32 = 3;`), which
+                // bdb7eb7 accepted. The remaining integer types stay
+                // unconditional keywords, as before.
+                else if(x=="i64")k=TK::I64; else if(x=="u8")k=TK::U8; else if(x=="u16")k=TK::U16; else if(x=="u32")k=TK::U32; else if(x=="u64")k=TK::U64; else if(x=="struct")k=TK::Struct; else if(x=="enum")k=TK::Enum;
                 // v0.23.67-dev: `type` and `const`. Neither is an identifier
                 // anywhere in the shipped corpus — the byte baseline's examples,
                 // stdlib and the self-hosting source all spell their own names
@@ -1605,6 +1612,14 @@ class Parser {
                 // struct name but answering before the struct table.
                 if(cur().s=="f64"){out=Ty::F64;++p;return true;}
                 if(cur().s=="f32"){out=Ty::F32;++p;return true;}   // v0.23.77-dev
+                // P1-13: `i8`/`i16` are context keywords — the lexer
+                // leaves them as Ident, so a type position reads them
+                // here, before the struct/enum/alias tables (the same
+                // shape as the f64/f32 precedent above). A struct, enum
+                // or alias actually named `i8`/`i16` is therefore
+                // shadowed as a type spelling, exactly like `f64`.
+                if(cur().s=="i8"){out=Ty::I8;++p;return true;}
+                if(cur().s=="i16"){out=Ty::I16;++p;return true;}
                 auto it=g_structIndex.find(cur().s);
                 if(it!=g_structIndex.end()){out=Ty::ofStruct(it->second);++p;return true;}
                 // v0.23.61-dev: an enum name is a type spelling too.
@@ -1874,15 +1889,29 @@ class Parser {
         // struct is spellable — bool <-> integer, integer <-> ptr, ptr<S> <->
         // ptr<U>. (Which *combinations* are legal is decided in Sema's typeOf;
         // the parser only assembles the node and its target type here.)
-        if(cur().k==TK::Ident&&(cur().s=="f64"||cur().s=="f32")){
+        // P1-13: `i8`/`i16` are context keywords — `i8(x)` is still a
+        // cast, recognized from the identifier spelling exactly like
+        // the f64/f32 casts this branch already serves. The lookahead
+        // for `(` is what makes the keyword contextual: a bare `i8`
+        // (no paren follows) falls through to the variable read below,
+        // so `let i8: i32 = 3; return i8;` works. (A variable named
+        // `i8` therefore cannot be called as `i8(x)` — the call shape
+        // is the cast — the same trade-off `f64` already makes, now
+        // applied to `f64`/`f32` as well: previously a bare `f64`
+        // died here with "expected '(' after f64" instead of reading
+        // the variable.)
+        if(cur().k==TK::Ident&&(cur().s=="f64"||cur().s=="f32"||cur().s=="i8"||cur().s=="i16")
+           &&p+1<t.size()&&t[p+1].k==TK::LParen){
             // v0.23.77-dev: `f64(x)` — the same function-shaped cast the integer
             // keywords use, recognized from the built-in type name.
             const Token kw=t[p++];
-            need(TK::LParen,"expected '(' after f64");
+            const std::string afterParen="expected '(' after "+kw.s;
+            const std::string afterOperand="expected ')' after the "+kw.s+" operand";
+            need(TK::LParen,afterParen.c_str());
             E inner=expr();
-            need(TK::RParen,"expected ')' after the f64 operand");
+            need(TK::RParen,afterOperand.c_str());
             E x(new Expr(Expr::Cast));
-            x->ty=kw.s=="f32"?Ty::F32:Ty::F64; x->a=std::move(inner); x->line=kw.line; x->col=kw.col;
+            x->ty=kw.s=="f32"?Ty::F32:kw.s=="f64"?Ty::F64:kw.s=="i8"?Ty::I8:Ty::I16; x->a=std::move(inner); x->line=kw.line; x->col=kw.col;
             return x;
         }
         if(cur().k==TK::I8||cur().k==TK::I16||cur().k==TK::I32||cur().k==TK::I64||cur().k==TK::U8||cur().k==TK::U16||cur().k==TK::U32||cur().k==TK::U64||cur().k==TK::CharType||cur().k==TK::Bool||cur().k==TK::Ptr){
@@ -9501,7 +9530,16 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                             throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected bool)"));
                     } else if(b->ty==Ty::Ptr){
                         // v0.23.26-dev: `p = 0;` clears a pointer.
-                        if(!ptrToAssignable(b->ty,actual,*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
+                        // P1-10: an assignment to a ptr slot keeps the
+                        // pre-bilingual rule — any address (or the null
+                        // constant) is accepted. The stride rule still
+                        // applies at `let` initialization (see Stmt::Let),
+                        // so `let p: ptr = &u8arr;` inside a function is
+                        // refused there while `p = &u8arr;` is not; that
+                        // split is the bdb7eb7 behaviour, and codegen's
+                        // backstop (which never adopted ptrToAssignable
+                        // here) agrees.
+                        if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
                     } else if(actual==Ty::Ptr||actual==Ty::Bool){
                         throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));
                     // v0.23.61-dev: enum nominal isolation on assignment. An enum
@@ -9546,7 +9584,13 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                         // here, so `g = &x` stored a truncated address and
                         // `g = 12345` turned an integer into a pointer. Mirror
                         // the local rule.
-                        if(!ptrToAssignable(want,actual,*s.expr))
+                        // P1-10: same as the local branch above — restore the
+                        // pre-bilingual rule. A global `let gp: ptr = &gb;`
+                        // is validated through this branch too, so the
+                        // ptrToAssignable form rejected it as well; bdb7eb7
+                        // accepts it, and the stride rule still applies at
+                        // local `let` initialization.
+                        if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))
                             throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected ptr)"));
                     } else if(actual==Ty::Bool){
                         throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected i32)"));
@@ -16853,6 +16897,17 @@ static Ty cnBackendType(const std::string& name, unsigned line, unsigned column)
     if (name == "char") return Ty::Char;
     if (name == "string") return Ty::string();
     if (name == "ptr") return Ty::Ptr;
+    // D-3 (i): generic pointer `ptr<T>`, the framework surface
+    // (`ptr<u8>`, `ptr<AuiNode>`, ...). A struct element folds to a typed
+    // pointer (same rule as the mainline at the array-of-struct site);
+    // anything else folds to an element-typed pointer.
+    if (name.compare(0, 4, "ptr<") == 0 && name.size() > 5 && name.back() == '>') {
+        const std::string inner = cnTrimTypeName(name.substr(4, name.size() - 5));
+        if (inner.empty())
+            throw Error(loc(line, column, "ptr<> requires an element type"));
+        const Ty elem = cnBackendType(inner, line, column);
+        return elem.k == Ty::Struct ? Ty::ptrTo(elem.sid) : tyPtrToElem(elem);
+    }
     if (name == "f32") return Ty::F32;
     if (name == "f64") return Ty::F64;
     if (name == "void") return Ty::Void;
@@ -16863,6 +16918,9 @@ static Ty cnBackendType(const std::string& name, unsigned line, unsigned column)
         if (g_cnClassIndex.count(name)) return Ty::ptrTo(structure->second);
         return Ty::ofStruct(structure->second);
     }
+    // P1-3: a type alias registered by cnProgramToAster (`类型 别名 = 类型`).
+    // Struct/enum names win over an alias of the same spelling.
+    if (const TypeAlias* alias = typeAliasOf(name)) return alias->ty;
     throw Error(loc(line, column, "type '" + name + "' is not supported by the current compiler backend"));
 }
 
@@ -17565,6 +17623,11 @@ static E cnExpressionToAster(const aster_cn::Expression& source,
         else if (source.value == "*") kind = Expr::Mul;
         else if (source.value == "/") kind = Expr::Div;
         else if (source.value == "%") kind = Expr::Mod;
+        else if (source.value == "<<") kind = Expr::Shl;
+        else if (source.value == ">>") kind = Expr::Shr;
+        else if (source.value == "&") kind = Expr::BitAnd;
+        else if (source.value == "|") kind = Expr::BitOr;
+        else if (source.value == "^") kind = Expr::BitXor;
         else if (source.value == "==") kind = Expr::Eq;
         else if (source.value == "!=") kind = Expr::Ne;
         else if (source.value == "<") kind = Expr::Lt;
@@ -17589,6 +17652,35 @@ static E cnExpressionToAster(const aster_cn::Expression& source,
         result.reset(new Expr(kind));
         result->a = cnExpressionToAster(source.children[0], strings, context);
     } else if (source.kind == "Call") {
+        // D-3 (i): `sizeof(Type)` (the mainline type form, Expr::SizeOf,
+        // i32). The parser leaves it as a plain call to `sizeof` with a
+        // single Identifier/TypeName argument naming a type; the shared
+        // Sema/codegen fold the SizeOf node. The expression form
+        // `sizeof(variable)` is not implemented: it falls through to the
+        // generic call below and fails as an unknown function.
+        if (!source.children.empty() &&
+            source.children.front().kind == "Identifier" &&
+            source.children.front().value == "sizeof" &&
+            source.children.size() == 2 &&
+            (source.children[1].kind == "Identifier" ||
+             source.children[1].kind == "TypeName")) {
+            const aster_cn::Expression& typeArg = source.children[1];
+            Ty type;
+            try {
+                type = cnBackendType(typeArg.value, typeArg.line, typeArg.column);
+            } catch (const Error&) {
+                throw Error(loc(line, column,
+                                "sizeof() requires a type name (the sizeof(variable) form is not supported by the bilingual frontend)"));
+            }
+            result.reset(new Expr(Expr::SizeOf));
+            result->ty = type;
+            // The mainline folds the type form at parse time into `n`
+            // (constExprType answers it); without this the node folds to 0.
+            result->n = sizeofTypeValue(type, {});
+            result->line = line;
+            result->col = column;
+            return result;
+        }
         if (context) {
             E closureCall = cnClosureCallToAster(source, strings, context);
             if (closureCall) return closureCall;
@@ -17968,6 +18060,16 @@ static E cnExpressionToAster(const aster_cn::Expression& source,
         result.reset(new Expr(Expr::Field));
         result->a = cnExpressionToAster(source.children[0], strings, context);
         result->name = cnCanonicalFieldName(baseType, source.children[1].value);
+    } else if (source.kind == "Conditional") {
+        // P1-5: ternary `条件 ? 值1 : 值2` lowers to the mainline Cond
+        // node (a = condition, b = then-arm, args[0] = else-arm), so the
+        // shared Sema/Codegen rules for `?:` apply unchanged.
+        if (source.children.size() != 3)
+            throw Error(loc(line, column, "invalid conditional expression"));
+        result.reset(new Expr(Expr::Cond));
+        result->a = cnExpressionToAster(source.children[0], strings, context);
+        result->b = cnExpressionToAster(source.children[1], strings, context);
+        result->args.push_back(cnExpressionToAster(source.children[2], strings, context));
     } else if (source.kind == "ClosureExpression") {
         if (!context)
             throw Error(loc(line, column, "closure expression has no semantic context"));
@@ -19667,10 +19769,17 @@ static Ty cnExpressionType(const aster_cn::Expression& source,
         source.children[0].kind == "Identifier") {
         const CnBinding binding = context.findBinding(source.children[0].value,
                                                        source.line, source.column);
-        if (!binding.isArray)
-            throw Error(loc(source.line, source.column,
-                            "cannot index non-array variable: " + source.children[0].value));
-        return binding.type;
+        if (binding.isArray) return binding.type;
+        // D-3 (i): pointer indexing `p[i]` (mainline: a ptr indexes like
+        // an array of its element type). A bare `ptr` has no element type,
+        // so it reads/writes i32 (the mainline default). A string binding
+        // is not a pointer for this purpose (its `k` is Ptr too, so the
+        // isString test matters); indexing one still throws below.
+        if (!binding.type.isString &&
+            (binding.type.k == Ty::Ptr || tyIsPtrToElem(binding.type)))
+            return tyIsPtrToElem(binding.type) ? ptrElemType(binding.type) : Ty::I32;
+        throw Error(loc(source.line, source.column,
+                        "cannot index non-array variable: " + source.children[0].value));
     }
     if (source.kind == "Index" && source.children.size() == 2 &&
         source.children[0].kind == "Member") {
@@ -19781,6 +19890,22 @@ static Ty cnExpressionType(const aster_cn::Expression& source,
         if (source.value == "&") return Ty::Ptr;
         if (source.value == "*") return Ty::I32;
         return cnExpressionType(source.children[0], context);
+    }
+    if (source.kind == "Conditional" && source.children.size() == 3) {
+        // P1-5: same type rules as the mainline `?:` (the shared Sema
+        // re-checks the lowered Cond as well): bool condition, agreeing
+        // arms; the result type is the arms' type.
+        const Ty condition = cnExpressionType(source.children[0], context);
+        if (condition != Ty::Bool)
+            throw Error(loc(source.line, source.column,
+                            "the condition of '?:' must be a bool expression"));
+        const Ty thenType = cnExpressionType(source.children[1], context);
+        const Ty elseType = cnExpressionType(source.children[2], context);
+        if (thenType != elseType)
+            throw Error(loc(source.line, source.column,
+                            "both arms of '?:' must have the same type (got " +
+                            tyNameFull(thenType) + " and " + tyNameFull(elseType) + ")"));
+        return thenType;
     }
     if (source.kind == "Binary" && source.children.size() == 2) {
         if (source.value == "==" || source.value == "!=" || source.value == "<" ||
@@ -19909,6 +20034,105 @@ static Ty cnExpressionType(const aster_cn::Expression& source,
         cnRequireMethodArity(*method, source, member.children[1].value);
         return method->returnType;
     }
+    // D-3 (i): mainline memory intrinsics (Sema ~9130) and sizeof(Type).
+    // The bilingual stdlib and framework call them, and a user function of
+    // the same name shadows the builtin (as in the mainline), so they only
+    // apply when no user method of that name exists. Arity is checked
+    // here; the argument's pointer-ness is left to the shared Sema,
+    // because this function's own Binary rule types `ptr + i32` as i32
+    // (promoteInt), so a ptr check here would reject valid uses.
+    if (source.kind == "Call" && !source.children.empty() &&
+        source.children.front().kind == "Identifier") {
+        const std::string& builtin = source.children.front().value;
+        const bool shadowed =
+            (context.methodSignatures &&
+             context.methodSignatures->find(builtin) != context.methodSignatures->end()) ||
+            (context.methodReturns &&
+             context.methodReturns->find(builtin) != context.methodReturns->end());
+        if (!shadowed) {
+            const size_t actual = source.children.size() - 1;
+            if (builtin == "load_u8" || builtin == "load_u16") {
+                if (actual != 1)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects exactly one ptr argument"));
+                return Ty::I32;
+            }
+            if (builtin == "load_i64") {
+                if (actual != 1)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects exactly one ptr argument"));
+                return Ty::I64;
+            }
+            if (builtin == "load_ptr") {
+                if (actual != 1)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects exactly one ptr argument"));
+                return Ty::Ptr;
+            }
+            if (builtin == "store_u8" || builtin == "store_u16") {
+                if (actual != 2)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects (ptr, i32)"));
+                return Ty::I32;
+            }
+            if (builtin == "store_i64") {
+                if (actual != 2)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects (ptr, i64)"));
+                return Ty::I64;
+            }
+            if (builtin == "write" || builtin == "read") {
+                if (actual != 3)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects (fd: i32, buf: ptr, len: i32)"));
+                return Ty::I32;
+            }
+            if (builtin == "openat") {
+                if (actual != 4)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects (fd: i32, path: ptr, flags: i32, mode: i32)"));
+                return Ty::I32;
+            }
+            if (builtin == "close") {
+                if (actual != 1)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects (fd: i32)"));
+                return Ty::I32;
+            }
+            if (builtin == "fstat") {
+                if (actual != 2)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects (fd: i32, buf: ptr)"));
+                return Ty::I32;
+            }
+            if (builtin == "mmap") {
+                if (actual != 6)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects (addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64)"));
+                return Ty::Ptr;
+            }
+            if (builtin == "brk") {
+                if (actual != 1)
+                    throw Error(loc(source.line, source.column,
+                                    builtin + " expects (addr: ptr)"));
+                return Ty::Ptr;
+            }
+            if (builtin == "sizeof" && actual == 1 &&
+                (source.children[1].kind == "Identifier" ||
+                 source.children[1].kind == "TypeName")) {
+                try {
+                    (void)cnBackendType(source.children[1].value,
+                                        source.children[1].line,
+                                        source.children[1].column);
+                    return Ty::I32;
+                } catch (const Error&) {
+                    // Not a type name: the sizeof(variable) form, which
+                    // the bilingual frontend does not implement; fall
+                    // through to the unknown-call error below.
+                }
+            }
+        }
+    }
     if (source.kind == "Call" && !source.children.empty() &&
         source.children.front().kind == "Identifier" && context.methodReturns) {
         if (context.methodSignatures) {
@@ -19929,6 +20153,15 @@ static Ty cnExpressionType(const aster_cn::Expression& source,
                                           source.line, source.column);
             return found->second;
         }
+    }
+    // D-3 (i): call through a bare ptr value (e.g. a `cmp: ptr`
+    // comparator parameter): the mainline answers the i32 default for an
+    // indirect call through an untyped pointer. (Again `Ty::Ptr` is the
+    // Kind, so spell out the fields: a string callee is not a bare ptr.)
+    if (source.kind == "Call" && !source.children.empty() &&
+        source.children.front().kind == "Identifier") {
+        const Ty calleeType = cnExpressionType(source.children.front(), context);
+        if (calleeType.k == Ty::Ptr && !calleeType.isString) return Ty::I32;
     }
     throw Error(loc(source.line, source.column,
                     "cannot determine the type of this expression for match lowering"));
@@ -20202,6 +20435,26 @@ static E cnExpressionToAsterAs(const aster_cn::Expression& source, Ty target,
                                CnStringPool* strings, const CnLoweringContext* context,
                                const std::vector<uint32_t>* expectedArrayDimensions) {
     const Ty actual = cnExpressionType(source, *context);
+    // D-3 (i): a string literal decays to a plain pointer when the target
+    // is one (`f("lit")` with `f(p: ptr)`, `let p: ptr<u8> = "lit"`).
+    // The mainline types native literals as plain ptr values; the CN
+    // lowering marks every literal a string value, which ptrToAssignable
+    // refuses (isString mismatch). Clearing the flag on the lowered
+    // literal is the decay: the bytes and the global are unchanged. Only
+    // a bare ptr and a 1-byte-element pointer decay; a string never decays
+    // (note `Ty::Ptr` here is the Kind, so `target == Ty::Ptr` would also
+    // match a string target — the bare-pointer test spells out the
+    // fields instead).
+    const bool targetIsBarePtr = target.k == Ty::Ptr && !target.isString &&
+        target.sid < 0 && !tyIsPtrToElem(target);
+    if (source.kind == "StringLiteral" && actual.isString &&
+        (targetIsBarePtr ||
+         (tyIsPtrToElem(target) &&
+          (ptrElemType(target) == Ty::U8 || ptrElemType(target) == Ty::Char)))) {
+        E lowered = cnExpressionToAster(source, strings, context);
+        lowered->isStringValue = false;
+        return lowered;
+    }
     Ty arrayElementType = Ty::Void;
     uint32_t arrayLength = 0;
     if (tyIsPtrToElem(target) && cnArrayArgumentInfo(
@@ -20604,6 +20857,16 @@ static void cnRegisterStructures(const aster_cn::Program& program) {
     fieldValueAlias.ty = Ty::Ptr;
     fieldValueAlias.offset = g_structs.back().fields[1].offset;
     g_structs.back().fields.push_back(std::move(fieldValueAlias));
+    // D-3 (i)/P1-2: the English alias for 类型. The `name`/`value`
+    // aliases above exist so English enumloop code can read the metadata
+    // fields; `type` was missing, so after P1-2 made English `.type`
+    // parse as "type" (instead of the Chinese "类型" it used to be
+    // hard-coded to), `field.type` had no field to resolve to.
+    StructField fieldTypeAlias{};
+    fieldTypeAlias.name = "type";
+    fieldTypeAlias.ty = Ty::I32;
+    fieldTypeAlias.offset = g_structs.back().fields[2].offset;
+    g_structs.back().fields.push_back(std::move(fieldTypeAlias));
 
     if (g_structIndex.count("string_view"))
         throw Error("built-in type conflicts with a structure declaration: string_view");
@@ -20917,6 +21180,9 @@ static E cnEnumFieldInfoTableLiteral(const std::string& object,
     literal->args.push_back(std::move(kind));
     literal->args.push_back(makeName());
     literal->args.push_back(makeAddress());
+    // The `type` alias shares 类型's storage, so it takes the same kind
+    // value again (see the `type` alias in cnRegisterStructures).
+    literal->args.push_back(cnEnumMetadataValue(metadata, metadataBase, 2, line, column));
     return literal;
 }
 
@@ -20943,7 +21209,7 @@ static Stmt cnEnumLoopToAster(const aster_cn::Statement& source,
     std::vector<const StructField*> fields;
     for (const auto& field : definition.fields) {
         if (definition.name == "字段信息" &&
-            (field.name == "name" || field.name == "value")) continue;
+            (field.name == "name" || field.name == "value" || field.name == "type")) continue;
         if (classObject && field.name == "__aster_cn_vptr") continue;
         if (classObject && field.cnVisibility != 0) continue;
         fields.push_back(&field);
@@ -21101,11 +21367,12 @@ static Stmt cnEnumLoopToAster(const aster_cn::Statement& source,
     fieldInfo.ty = fieldInfoType;
     fieldInfo.expr.reset(new Expr(Expr::StructLit));
     fieldInfo.expr->name = "字段信息";
-    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
-    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
-    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
-    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
-    fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
+    // One zero per field, aliases included: the literal is positional,
+    // so its arity must track the struct's field count (the `type` alias
+    // made it six). The aliases share storage with the real fields, so
+    // the values are placeholders overwritten by the assignment below.
+    for (size_t i = 0; i < structOf(fieldInfoType.sid).fields.size(); ++i)
+        fieldInfo.expr->args.push_back(E(new Expr(Expr::Num, 0)));
     result.thenBody.push_back(std::move(fieldInfo));
     bodyContext.scopes.back()[source.name] = CnBinding{fieldInfoType, false, 0};
 
@@ -21621,6 +21888,29 @@ static CnMatchConstant cnMatchConstantToAster(const aster_cn::Expression& source
 
 static std::vector<Stmt> cnMatchToAster(const aster_cn::Statement& source,
                                         CnLoweringContext& context) {
+    // P1-9: an empty match is allowed by the EBNF. It lowers to just the
+    // subject evaluation (kept, so a subject with side effects still runs,
+    // then discarded — no temp name is minted, so several empty matches
+    // in one function cannot collide) plus the else body when present.
+    if (source.hasExpression && source.caseValues.empty()) {
+        std::vector<Stmt> result;
+        std::vector<Stmt> subjectPrefix;
+        E subject = cnLowerStatementExpression(source.expression, context.strings,
+                                               context, subjectPrefix);
+        for (auto& statement : subjectPrefix) result.push_back(std::move(statement));
+        Stmt discard(Stmt::Expr);
+        discard.line = source.line;
+        discard.col = source.column;
+        discard.expr = std::move(subject);
+        result.push_back(std::move(discard));
+        if (source.hasElse) {
+            CnLoweringContext elseContext = context;
+            elseContext.scopes.emplace_back();
+            std::vector<Stmt> elseBody = cnStatementsToAster(source.elseBody, elseContext);
+            for (auto& statement : elseBody) result.push_back(std::move(statement));
+        }
+        return result;
+    }
     if (!source.hasExpression || source.caseValues.empty() ||
         source.caseValues.size() != source.branches.size())
         throw Error(loc(source.line, source.column, "invalid match AST"));
@@ -21818,6 +22108,20 @@ static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Stateme
                         : cnDefaultValue(converted.ty, statement.line, statement.column);
             }
             CnBinding localBinding{converted.ty, converted.isArray, converted.count};
+            // D-3 (i): a `let f: fn(...) -> T` local is a callable value:
+            // carry the signature on the Stmt (so the shared Sema sees the
+            // indirect call with its arity) and on the binding (so
+            // cnFunctionValueSignature answers calls through it).
+            // Parameters and globals already do this; locals did not, so a
+            // call through one (`cb(user)`) had no determinable type.
+            FuncSig localFuncSig;
+            if (cnFunctionTypeSignature(statement.typeName, localFuncSig,
+                                        statement.line, statement.column)) {
+                converted.funcSig = localFuncSig;
+                converted.isFunc = true;
+                localBinding.isFunc = true;
+                localBinding.funcSig = localFuncSig;
+            }
             context.scopes.back()[statement.name] = std::move(localBinding);
             for (auto& prefixStatement : expressionPrefix)
                 result.push_back(std::move(prefixStatement));
@@ -21893,6 +22197,17 @@ static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Stateme
                 target.children.size() == 2 &&
                 cnIsClassQualifier(target.children[0], context);
             const Ty targetType = cnExpressionType(target, context);
+            // D-3 (i): dereference assignment `*p = v` / `*(p + n) = v`
+            // (the mainline Stmt::DerefAssign). The CN lowering had no
+            // case for it, so the framework's out-parameter writes
+            // (`*(out + 0) = first;`) fell through to the error below.
+            const bool derefTarget = target.kind == "Unary" && target.value == "*" &&
+                target.children.size() == 1;
+            Ty derefElementType = targetType;
+            if (derefTarget) {
+                const Ty pointerType = cnExpressionType(target.children[0], context);
+                if (tyIsPtrToElem(pointerType)) derefElementType = ptrElemType(pointerType);
+            }
             const CnStaticClassFieldInfo* staticField = staticFieldTarget
                 ? cnFindClassStaticField(g_cnClassIndex.at(target.children[0].value),
                                          target.children[1].value)
@@ -21914,7 +22229,8 @@ static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Stateme
                     target.children[0].column);
             }
             const bool capturedArrayTarget = static_cast<bool>(capturedArrayTargetValue);
-            Stmt converted(target.kind == "Index" &&
+            Stmt converted(derefTarget ? Stmt::DerefAssign :
+                           target.kind == "Index" &&
                                (!fieldElement || staticArrayElementTarget) &&
                                !capturedArrayTarget
                                ? Stmt::IndexAssign :
@@ -21954,6 +22270,8 @@ static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Stateme
                                                     &context);
             } else if (fieldElement) {
                 converted.idx = cnExpressionToAster(target, context.strings, &context);
+            } else if (derefTarget) {
+                converted.idx = cnExpressionToAster(target.children[0], context.strings, &context);
             } else {
                 throw Error(loc(statement.line, statement.column,
                                 "assignment target must be a variable, field, or named array element"));
@@ -21961,9 +22279,10 @@ static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Stateme
             converted.line = statement.line;
             converted.col = statement.column;
             std::vector<Stmt> expressionPrefix;
-            converted.expr = cnLowerStatementExpressionAs(statement.expression.children[1], targetType,
-                                                           context.strings, context,
-                                                           expressionPrefix);
+            converted.expr = cnLowerStatementExpressionAs(statement.expression.children[1],
+                                                          derefTarget ? derefElementType : targetType,
+                                                          context.strings, context,
+                                                          expressionPrefix);
             for (auto& prefixStatement : targetPrefix)
                 result.push_back(std::move(prefixStatement));
             for (auto& prefixStatement : expressionPrefix)
@@ -22627,13 +22946,132 @@ static void cnRewriteImportedProgram(aster_cn::Program& program,
 static std::set<std::string> g_cnPackageFilesLoaded;
 static std::map<std::string, std::vector<std::string>> g_cnPackageFilesByModule;
 static std::map<std::string, std::string> g_cnPackageCanonicalByName;
+// P1-3: file-import graph, canonical imported path -> canonical importer
+// path (first importer wins). Read by cnFileImportOwners to attribute an
+// imported file's declarations to the listed TU that (transitively)
+// imports it, mirroring packageFileOwners. Cleared per resolution, like
+// g_cnPackageFilesLoaded.
+static std::map<std::string, std::string> g_cnFileImporters;
+
+// P1-3: canonical spelling of a source path (absolute, lexically normal),
+// so an imported file reached as `src/math.ast` and as `./src/math.ast`
+// compares equal when attributing declarations and cache deps.
+static std::string cnCanonicalPath(const std::string& path) {
+    try {
+        return fs::absolute(fs::path(path)).lexically_normal().string();
+    } catch (const std::exception&) {
+        return path;
+    }
+}
+
+// P1-3: file-level imports (`导入 "x.ast"` / `include "x.ast";`, EBNF
+// `include`, design §2.10) share a source file's declarations textually,
+// like the legacy `include` — unlike `@导入`, which imports a logical
+// module. They are resolved here, in cnResolvePackageImports (the single
+// funnel for build-cn-obj, project build/test and `aster deps`), so
+// cn-parse still shows the import node while every lowering path sees
+// merged declarations. A file already merged (diamond imports) is merged
+// once; an import cycle is an error.
+static void cnMergeFileImportInto(aster_cn::Program& target,
+                                  const aster_cn::Program& loaded) {
+    target.structures.insert(target.structures.end(), loaded.structures.begin(),
+                             loaded.structures.end());
+    target.enums.insert(target.enums.end(), loaded.enums.begin(), loaded.enums.end());
+    target.classes.insert(target.classes.end(), loaded.classes.begin(), loaded.classes.end());
+    target.interfaceClasses.insert(target.interfaceClasses.end(),
+                                   loaded.interfaceClasses.begin(),
+                                   loaded.interfaceClasses.end());
+    target.globals.insert(target.globals.end(), loaded.globals.begin(), loaded.globals.end());
+    target.methods.insert(target.methods.end(), loaded.methods.begin(), loaded.methods.end());
+    target.aliases.insert(target.aliases.end(), loaded.aliases.begin(), loaded.aliases.end());
+    target.imports.insert(target.imports.end(), loaded.imports.begin(), loaded.imports.end());
+}
+
+static aster_cn::Program cnLoadFileImport(
+    const std::string& path,
+    const std::string& importer,
+    const aster_cn::ProjectLanguageConfig& projectLanguage,
+    const std::set<std::string>& knownSources,
+    std::set<std::string>& merged, std::set<std::string>& loading) {
+    std::string canonical;
+    try {
+        canonical = fs::absolute(fs::path(path)).lexically_normal().string();
+    } catch (const std::exception&) {
+        canonical = path;
+    }
+    if (loading.count(canonical))
+        throw std::runtime_error("cyclic file import involving '" + path + "'");
+    if (merged.count(canonical)) return aster_cn::Program{};
+    // An imported file that is itself a listed project source is supplied
+    // by its own TU; merging it again would duplicate every declaration.
+    if (knownSources.count(canonical)) return aster_cn::Program{};
+    if (!importer.empty()) g_cnFileImporters.emplace(canonical, importer);
+    if (!fileExists(path))
+        throw std::runtime_error("cannot find imported file '" + path + "'");
+    loading.insert(canonical);
+    const std::string source = readFile(path);
+    const aster_cn::Language language = aster_cn::selectLanguage(
+        source, false, aster_cn::Language::Zh, projectLanguage);
+    aster_cn::Program parsed;
+    try {
+        parsed = aster_cn::parseProgram(source, language, path);
+    } catch (...) {
+        throw;
+    }
+    const std::string base = dirNameOf(path);
+    const std::vector<aster_cn::FileImportDeclaration> nested = parsed.fileImports;
+    parsed.fileImports.clear();
+    for (const auto& import : nested) {
+        const std::string nestedPath = base.empty() ? import.path : base + "/" + import.path;
+        cnMergeFileImportInto(
+            parsed, cnLoadFileImport(nestedPath, canonical, projectLanguage,
+                                     knownSources, merged, loading));
+    }
+    loading.erase(canonical);
+    merged.insert(canonical);
+    return parsed;
+}
+
+static aster_cn::Program cnResolveFileImports(
+    aster_cn::Program root,
+    const aster_cn::ProjectLanguageConfig& projectLanguage,
+    const std::set<std::string>& knownSources) {
+    if (root.fileImports.empty()) return root;
+    std::set<std::string> merged;
+    std::set<std::string> loading;
+    if (!root.sourceFile.empty()) {
+        try {
+            loading.insert(
+                fs::absolute(fs::path(root.sourceFile)).lexically_normal().string());
+        } catch (const std::exception&) {
+        }
+    }
+    const std::vector<aster_cn::FileImportDeclaration> imports = root.fileImports;
+    root.fileImports.clear();
+    for (const auto& import : imports) {
+        const std::string base = dirNameOf(import.sourceFile);
+        const std::string path = base.empty() ? import.path : base + "/" + import.path;
+        cnMergeFileImportInto(root, cnLoadFileImport(path, cnCanonicalPath(import.sourceFile),
+                                                     projectLanguage, knownSources,
+                                                     merged, loading));
+    }
+    return root;
+}
+
 static aster_cn::Program cnResolvePackageImports(
     aster_cn::Program root,
     const aster_cn::ProjectLanguageConfig& projectLanguage,
-    const std::vector<std::string>& searchRoots) {
+    const std::vector<std::string>& searchRoots,
+    const std::set<std::string>& knownSources = {}) {
     g_cnPackageFilesLoaded.clear();
     g_cnPackageFilesByModule.clear();
     g_cnPackageCanonicalByName.clear();
+    g_cnFileImporters.clear();
+    // P1-3: file-level imports resolve first (even with no module imports);
+    // the merged program below is what package resolution and lowering see.
+    // knownSources are the listed project sources (canonical paths): an
+    // imported file that is itself listed is supplied by its own TU.
+    root = cnResolveFileImports(std::move(root), projectLanguage, knownSources);
     if (root.imports.empty()) return root;
     CnPackageIndex packageIndex;
     const fs::path rootDirectory = fs::path(dirNameOf(root.sourceFile)).empty()
@@ -22846,7 +23284,8 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                                               bool requireMain = true,
                                               const std::set<std::string>* forceConstructedClasses = nullptr,
                                               uint64_t poolSalt = 0,
-                                              const std::map<std::string, std::string>* packageFileOwners = nullptr) {
+                                              const std::map<std::string, std::string>* packageFileOwners = nullptr,
+                                              const std::map<std::string, std::string>* fileImportOwners = nullptr) {
     std::vector<Function> functions;
     // A bilingual project test can lower several independent test programs in
     // one compiler process.  These legacy tables are the per-program backend
@@ -22885,6 +23324,15 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         if (packageFileOwners) {
             const auto owned = packageFileOwners->find(sourceFile);
             if (owned != packageFileOwners->end()) return owned->second == onlySource;
+        }
+        // P1-3: same rule for file imports: an imported file's declarations
+        // are emitted by the listed TU that (transitively) imports it, so
+        // they are emitted exactly once. Keys/values are canonical paths,
+        // so compare canonically against the TU path.
+        if (fileImportOwners) {
+            const auto owned = fileImportOwners->find(cnCanonicalPath(sourceFile));
+            if (owned != fileImportOwners->end())
+                return cnCanonicalPath(owned->second) == cnCanonicalPath(onlySource);
         }
         // A declaration without provenance cannot be attributed to another
         // TU; emitting it everywhere it is needed is the fail-loud choice
@@ -22931,6 +23379,18 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         g_cnInterfaceNames.insert(declaration.name);
     cnRegisterEnums(program);
     cnRegisterStructures(program);
+    // P1-3: register type aliases (`类型 别名 = 类型`) into the backend
+    // type-alias table, after structures/enums so an alias may name them
+    // (`type P = ptr<Point>;`). Aliases are resolved in declaration order,
+    // so an alias may also name an earlier alias. A duplicate alias name
+    // is an error, like a duplicate structure.
+    for (const auto& alias : program.aliases) {
+        TypeAlias registered;
+        registered.ty = cnBackendType(alias.typeName, alias.line, alias.column);
+        if (!g_typeAlias.emplace(alias.name, std::move(registered)).second)
+            throw Error(loc(alias.line, alias.column,
+                            "duplicate type alias declaration: " + alias.name));
+    }
     for (const auto& declaration : program.globals) {
         const auto inserted = g_cnTopLevelGlobals.emplace(declaration.name,
             CnTopLevelGlobalInfo{cnVisibilityCode(declaration.visibility,
@@ -24769,7 +25229,51 @@ static std::map<std::string, std::string> cnPackageFileOwners(
     return owners;
 }
 
+// P1-3: file-import ownership, mirroring cnPackageFileOwners. Every file
+// in g_cnFileImporters is attributed to the listed TU that (transitively)
+// imports it first in link order; the walk climbs the importer chain
+// until it reaches a listed source. An imported file that is itself a
+// listed source owns itself.
+static std::map<std::string, std::string> cnFileImportOwners(
+    const std::vector<std::pair<std::string, const aster_cn::Program*>>& linkSet) {
+    std::set<std::string> listed;
+    for (const auto& tu : linkSet) listed.insert(cnCanonicalPath(tu.first));
+    std::map<std::string, std::string> owners;
+    for (const auto& entry : g_cnFileImporters) {
+        std::string file = entry.first;
+        std::set<std::string> seen;
+        std::string owner;
+        while (true) {
+            if (listed.count(file)) { owner = file; break; }
+            const auto next = g_cnFileImporters.find(file);
+            if (next == g_cnFileImporters.end() || !seen.insert(file).second) break;
+            file = next->second;
+        }
+        if (!owner.empty()) owners[entry.first] = owner;
+    }
+    return owners;
+}
 
+// P1-3: owners hash over both ownership maps (package + file imports).
+static std::string cnCombinedOwnersHash(
+    const std::map<std::string, std::string>& packageOwners,
+    const std::map<std::string, std::string>& fileOwners) {
+    std::string text;
+    for (const auto& entry : packageOwners) {
+        text += entry.first;
+        text.push_back('\n');
+        text += entry.second;
+        text.push_back('\n');
+    }
+    text += "---\n";
+    for (const auto& entry : fileOwners) {
+        text += entry.first;
+        text.push_back('\n');
+        text += entry.second;
+        text.push_back('\n');
+    }
+    return sha256Hex(text);
+}
 
 static void cnVisitCnExpression(const aster_cn::Expression& expression,
                                 const std::function<void(const aster_cn::Expression&)>& visit);
@@ -25023,6 +25527,11 @@ static std::set<std::string> cnForeignSourcesForTu(const CnPerSourceContext& ctx
     // file records no package dep, so a package edit leaves it reused.
     for (const auto& entry : ctx.packageFileOwners)
         if (entry.second == sp) addFile(entry.first);
+    // P1-3: same rule for file imports: the owning TU depends on its
+    // imported files even when it references none of their symbols.
+    // Owners are canonical paths; compare canonically with the TU path.
+    for (const auto& entry : ctx.fileImportOwners)
+        if (cnCanonicalPath(entry.second) == cnCanonicalPath(sp)) addFile(entry.first);
     return files;
 }
 
@@ -25310,7 +25819,7 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
     g_buildDeps.clear();
     std::vector<Global> globals;
     std::vector<Function> functions = cnProgramToAster(*ctx.program, globals, true, sp, false,
-        &ctx.forceConstructedClasses, poolSalt, &ctx.packageFileOwners);
+        &ctx.forceConstructedClasses, poolSalt, &ctx.packageFileOwners, &ctx.fileImportOwners);
     // Take this TU's embed reads before the next TU's lowering
     // overwrites them, then clear so nothing leaks across TUs.
     const std::map<std::string, std::string> embedDeps = g_buildDeps;
@@ -25509,7 +26018,8 @@ static void cnCollectStableDeclarations(const std::vector<aster_cn::Statement>& 
                         const StructDef& definition = structOf(structureType.sid);
                         for (const auto& field : definition.fields) {
                             if (definition.name == "字段信息" &&
-                                (field.name == "name" || field.name == "value")) continue;
+                                (field.name == "name" || field.name == "value" ||
+                                 field.name == "type")) continue;
                             const std::string fieldPath = parentPath + "." + field.name;
                             const std::string fieldDisplay = parentDisplay + "." + field.name;
                             if (tyIsStruct(field.ty) && !cnIsInterfaceType(field.ty)) {
@@ -25962,10 +26472,15 @@ int main(int argc,char**argv){
                             depsRoots.globals.insert(depsRoots.globals.end(),parsed.globals.begin(),parsed.globals.end());
                             depsRoots.methods.insert(depsRoots.methods.end(),parsed.methods.begin(),parsed.methods.end());
                             depsRoots.imports.insert(depsRoots.imports.end(),parsed.imports.begin(),parsed.imports.end());
+                            depsRoots.aliases.insert(depsRoots.aliases.end(),parsed.aliases.begin(),parsed.aliases.end());
+                            depsRoots.fileImports.insert(depsRoots.fileImports.end(),parsed.fileImports.begin(),parsed.fileImports.end());
                         }
                         char depsCwdBuffer[4096];
                         const std::string depsCwd=getcwd(depsCwdBuffer,sizeof depsCwdBuffer)?depsCwdBuffer:std::string(".");
-                        cnResolvePackageImports(depsRoots,depsLanguage,std::vector<std::string>{depsCwd});
+                        std::set<std::string> depsKnownSources;
+                        for(const auto& parsed:depsPrograms)
+                            depsKnownSources.insert(cnCanonicalPath(parsed.sourceFile));
+                        cnResolvePackageImports(depsRoots,depsLanguage,std::vector<std::string>{depsCwd},depsKnownSources);
                     }catch(const std::exception&){/* package resolution failed; deps lists project sources only */}
                 }
             }
@@ -26150,6 +26665,8 @@ int main(int argc,char**argv){
                         roots.globals.insert(roots.globals.end(),library.second.globals.begin(),library.second.globals.end());
                         roots.methods.insert(roots.methods.end(),library.second.methods.begin(),library.second.methods.end());
                         roots.imports.insert(roots.imports.end(),library.second.imports.begin(),library.second.imports.end());
+                        roots.aliases.insert(roots.aliases.end(),library.second.aliases.begin(),library.second.aliases.end());
+                        roots.fileImports.insert(roots.fileImports.end(),library.second.fileImports.begin(),library.second.fileImports.end());
                     }
                     roots.structures.insert(roots.structures.end(),testProgram.structures.begin(),testProgram.structures.end());
                     roots.enums.insert(roots.enums.end(),testProgram.enums.begin(),testProgram.enums.end());
@@ -26158,7 +26675,15 @@ int main(int argc,char**argv){
                     roots.globals.insert(roots.globals.end(),testProgram.globals.begin(),testProgram.globals.end());
                     roots.methods.insert(roots.methods.end(),testProgram.methods.begin(),testProgram.methods.end());
                     roots.imports.insert(roots.imports.end(),testProgram.imports.begin(),testProgram.imports.end());
-                        const aster_cn::Program resolved=cnResolvePackageImports(roots,testLanguage,packageRoots);
+                    roots.aliases.insert(roots.aliases.end(),testProgram.aliases.begin(),testProgram.aliases.end());
+                    roots.fileImports.insert(roots.fileImports.end(),testProgram.fileImports.begin(),testProgram.fileImports.end());
+                    // P1-3: listed library/test sources are known sources
+                    // for file imports (see the build driver).
+                    std::set<std::string> testKnownSources;
+                    for(const auto& library:testLibraries)
+                        testKnownSources.insert(cnCanonicalPath(library.first));
+                    testKnownSources.insert(cnCanonicalPath(testPath));
+                    const aster_cn::Program resolved=cnResolvePackageImports(roots,testLanguage,packageRoots,testKnownSources);
                     // The exactly-one-main check, at merged level: the test
                     // file supplies main; the libraries must not.
                     bool testHasMain=false;
@@ -26175,6 +26700,9 @@ int main(int argc,char**argv){
                         }
                         for(const auto& c:parsed.classes) testTypeToSource[c.name]=parsed.sourceFile;
                         for(const auto& i:parsed.interfaceClasses) testTypeToSource[i.name]=parsed.sourceFile;
+                        // P1-3: aliases are type names too: a TU using an
+                        // alias must recompile when the defining TU changes it.
+                        for(const auto& a:parsed.aliases) testTypeToSource[a.name]=parsed.sourceFile;
                     };
                     for(const auto& library:testLibraries) testAddTypes(library.second);
                     testAddTypes(testProgram);
@@ -26199,6 +26727,9 @@ int main(int argc,char**argv){
                             testLinkSet.emplace_back(library.first, &library.second);
                         testLinkSet.emplace_back(testPath, &testProgram);
                         testCtx.packageFileOwners = cnPackageFileOwners(testLinkSet);
+                        testCtx.fileImportOwners = cnFileImportOwners(testLinkSet);
+                        testCtx.ownersHash = cnCombinedOwnersHash(testCtx.packageFileOwners,
+                                                                  testCtx.fileImportOwners);
                     }
                     testCtx.packageFiles=&testPackageFiles;
                     testCtx.forceConstructedClasses=cnFindConstructedClasses(resolved);
@@ -26623,9 +27154,23 @@ int main(int argc,char**argv){
                     roots.globals.insert(roots.globals.end(),parsed.globals.begin(),parsed.globals.end());
                     roots.methods.insert(roots.methods.end(),parsed.methods.begin(),parsed.methods.end());
                     roots.imports.insert(roots.imports.end(),parsed.imports.begin(),parsed.imports.end());
+                    roots.aliases.insert(roots.aliases.end(),parsed.aliases.begin(),parsed.aliases.end());
+                    roots.fileImports.insert(roots.fileImports.end(),parsed.fileImports.begin(),parsed.fileImports.end());
                 }
+                // P1-3: listed sources are known sources for file imports:
+                // an imported file that is itself listed is supplied by its
+                // own TU instead of being merged again.
+                std::set<std::string> bilingualKnownSources;
+                for(const auto& sourcePath:spec.sources)
+                    bilingualKnownSources.insert(cnCanonicalPath(sourcePath));
+                // B-P1: each listed source's resolved language, so its file
+                // imports inherit it (not the merged root's, which only
+                // carries the first TU's language).
+                std::map<std::string, aster_cn::Language> bilingualSourceLanguages;
+                for(size_t i=0;i<spec.sources.size();++i)
+                    bilingualSourceLanguages[cnCanonicalPath(spec.sources[i])] = parsedSources[i].language;
                 const aster_cn::Program program=cnResolvePackageImports(
-                    roots,bilingualLanguage,packageRoots);
+                    roots,bilingualLanguage,packageRoots,bilingualKnownSources);
                 std::string bilingualProjectName=spec.name.empty()?baseNameOf(bilingualCwd):spec.name;
                 if(bilingualProjectName.empty()||bilingualProjectName=="."||bilingualProjectName=="..")
                     bilingualProjectName="app";
@@ -26665,6 +27210,10 @@ int main(int argc,char**argv){
                         bilingualTypeToSource[e.name]=parsed.sourceFile;
                         for(const auto& m:e.members) bilingualTypeToSource[m.name]=parsed.sourceFile;
                     }
+                    for(const auto& c:parsed.classes) bilingualTypeToSource[c.name]=parsed.sourceFile;
+                    for(const auto& i:parsed.interfaceClasses) bilingualTypeToSource[i.name]=parsed.sourceFile;
+                    // P1-3: aliases are type names too (see testAddTypes).
+                    for(const auto& a:parsed.aliases) bilingualTypeToSource[a.name]=parsed.sourceFile;
                 }
                 std::string bilingualLangText=std::string("default=")+
                     (bilingualLanguage.hasDefault
@@ -26685,6 +27234,9 @@ int main(int argc,char**argv){
                     for (size_t i = 0; i < spec.sources.size(); ++i)
                         bilingualLinkSet.emplace_back(spec.sources[i], &parsedSources[i]);
                     bilingualCtx.packageFileOwners = cnPackageFileOwners(bilingualLinkSet);
+                    bilingualCtx.fileImportOwners = cnFileImportOwners(bilingualLinkSet);
+                    bilingualCtx.ownersHash = cnCombinedOwnersHash(bilingualCtx.packageFileOwners,
+                                                                   bilingualCtx.fileImportOwners);
                 }
                 bilingualCtx.packageFiles=&bilingualPackageFiles;
                 bilingualCtx.forceConstructedClasses=cnFindConstructedClasses(program);

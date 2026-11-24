@@ -46,8 +46,10 @@ fn main(): i32 {
 
 `main` is the English entry point and must return `i32`. Return types follow a
 colon. A method may omit its return type: `fn log()` is equivalent to
-`fn log(): void`. The arrow `->` is reserved for foreach and enumloop object
-separators; it is not a return-type operator.
+`fn log(): void`. In Chinese sources the arrow `->` separates the binding
+list from the object in foreach and enumloop; in English sources the
+separator is `in` (`foreach (index, item in list)`), and `->` is not a
+return-type operator in either language.
 
 ## Keywords and types
 
@@ -96,7 +98,7 @@ are:
 | `@constructor` | The one instance constructor of a class; returns `void` |
 | `@override` | Exact-signature override of an inherited instance method |
 | `@private` | Visible only in the declaring class, or declaring source for top-level declarations |
-| `@protected` | Class and subclasses; top-level declarations remain source-file restricted |
+| `@protected` | Class members: declaring class and subclasses (not valid on top-level declarations; use `@private` there) |
 | `@import("package").alias("name")` | Import a source package under a local alias |
 
 `@protected` is the English spelling of Chinese `@受限`; the English frontend

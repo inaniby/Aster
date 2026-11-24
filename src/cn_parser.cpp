@@ -120,6 +120,9 @@ public:
             program.packageAliases.assign(packageNames.begin() + 1, packageNames.end());
         }
         skipNewlines();
+        // P1-4: pre-scan so struct literals and class constructions do not
+        // depend on declaration order (see collectDeclaredTypeNames).
+        collectDeclaredTypeNames();
         while (!at("End")) {
             if (at("PackageKw")) {
                 fail("a package declaration must be the first declaration in the source file");
@@ -160,7 +163,9 @@ public:
                     }
                 } else if (at("End")) {
                     break;
-                } else if (at("StructKw")) program.structures.push_back(parseStruct());
+                } else if (at("TypeAlias")) program.aliases.push_back(parseTypeAlias());
+                else if (at("IncludeKw")) program.fileImports.push_back(parseFileImport());
+                else if (at("StructKw")) program.structures.push_back(parseStruct());
                 else if (at("EnumKw")) program.enums.push_back(parseEnum());
                 else if (at("Class")) program.classes.push_back(parseClass());
                 else if (at("InterfaceClass"))
@@ -172,7 +177,9 @@ public:
                 else if (at("Method") || at("Extern"))
                     program.methods.push_back(parseMethod(at("Extern")));
                 else fail("expected a method, structure, enum, class, interface class, or global declaration");
-            } else if (at("StructKw")) program.structures.push_back(parseStruct());
+            } else if (at("TypeAlias")) program.aliases.push_back(parseTypeAlias());
+            else if (at("IncludeKw")) program.fileImports.push_back(parseFileImport());
+            else if (at("StructKw")) program.structures.push_back(parseStruct());
             else if (at("EnumKw")) program.enums.push_back(parseEnum());
             else if (at("Class")) program.classes.push_back(parseClass());
             else if (at("InterfaceClass"))
@@ -225,6 +232,36 @@ private:
     std::set<std::string> structureNames_;
     std::set<std::string> classNames_;
     std::set<std::string> interfaceClassNames_;
+    std::set<std::string> aliasNames_;
+    // P1-4: duplicate-declaration checks use these sets, not the pre-scanned
+    // ones above: collectDeclaredTypeNames() fills the use-site sets before
+    // parsing, so an `insert().second` check on them would false-trip on the
+    // first real declaration.
+    std::set<std::string> declaredStructureNames_;
+    std::set<std::string> declaredClassNames_;
+    std::set<std::string> declaredInterfaceClassNames_;
+
+    // P1-4: a struct literal (`点{...}`) or a class construction
+    // (`Point(...)`) must not depend on whether the declaration textually
+    // precedes the use: the EBNF puts no such restriction on them (only a
+    // class *base* must be declared first, design §2.9 D-16). Pre-scan the
+    // token stream for the top-level declarations so the use-site sets are
+    // complete before any statement is parsed. `结构`/`类`/`接口类` only
+    // occur as declaration heads, so a flat token scan is exact.
+    void collectDeclaredTypeNames() {
+        for (std::size_t i = 0; i < tokens_.size(); ++i) {
+            const Token& token = tokens_[i];
+            std::set<std::string>* names = nullptr;
+            if (token.kind == "StructKw") names = &structureNames_;
+            else if (token.kind == "Class") names = &classNames_;
+            else if (token.kind == "InterfaceClass") names = &interfaceClassNames_;
+            else continue;
+            if (i + 1 >= tokens_.size()) continue;
+            const Token& name = tokens_[i + 1];
+            if (name.kind == "Identifier" || name.kind == "Main") names->insert(name.text);
+            else if (name.kind == "StartMethod") names->insert("main");
+        }
+    }
 
     const Token& current() const { return tokens_[position_]; }
     bool at(const char* kind) const { return current().kind == kind; }
@@ -256,15 +293,26 @@ private:
     std::string parseName() {
         if (eat("StartMethod")) return "main";
         if (at("Identifier") || at("Main")) {
-            if (current().text.rfind("__aster_", 0) == 0) fail("identifier prefix '__aster_' is reserved");
+            // D-3 (i): `__aster_cn_` is the CN runtime's own namespace: the
+            // bilingual stdlib defines the string helpers the lowering
+            // itself calls (`__aster_cn_str_order`, `__aster_cn_str_concat`,
+            // `__aster_cn_string_from_view`), and the mainline accepts
+            // those definitions. Other `__aster_` prefixes stay reserved
+            // so user code cannot collide with compiler-generated symbols
+            // (`__aster_cn_new_class_*`, `__aster_cn_method_*`, ...).
+            if (current().text.rfind("__aster_", 0) == 0 &&
+                current().text.rfind("__aster_cn_", 0) != 0)
+                fail("identifier prefix '__aster_' is reserved");
             return tokens_[position_++].text;
         }
         fail("expected an identifier");
     }
     std::string parseMemberName() {
+        // P1-2: `.type` is a member name, not a keyword position: spell it
+        // in the file's own language instead of hard-coding Chinese.
         if (at("TypeAlias")) {
             ++position_;
-            return "类型";
+            return language_ == Language::Zh ? "类型" : "type";
         }
         return parseName();
     }
@@ -275,7 +323,9 @@ private:
     static bool isImportIdentifier(const std::string& name, Language language) {
         try {
             const std::vector<Token> parsed = lex(name, language);
-            return name.rfind("__aster_", 0) != 0 && parsed.size() == 2 &&
+            // D-3 (i): same `__aster_cn_` carve-out as parseName.
+            return (name.rfind("__aster_", 0) != 0 ||
+                    name.rfind("__aster_cn_", 0) == 0) && parsed.size() == 2 &&
                 parsed[0].text == name &&
                 (parsed[0].kind == "Identifier" || parsed[0].kind == "Main");
         } catch (const std::exception&) {
@@ -294,11 +344,21 @@ private:
         }
     }
     TopLevelAnnotations parseTopLevelAnnotations(Program& program) {
+        // P1-8: annotations are per-language closed tables (EBNF:
+        // zh top-level visibility is 隐藏|受限, en is @private only;
+        // the import annotation is @导入 in zh, @import in en).
+        // Cross-language spellings are rejected. Mapping verdict: `private`
+        // maps to `restricted` here and to `hidden` in class members, and
+        // both are correct — design D-13 says the top-level file-private
+        // annotation is also written `@private`, "按声明位置区分", and D-12
+        // defines top-level `@受限` as file-scoped, while class-member
+        // `@private` means visible only inside the declaring class.
+        const bool zh = language_ == Language::Zh;
         TopLevelAnnotations annotations;
         while (eat("At")) {
             const Token atToken = tokens_[position_ - 1];
             const std::string name = parseAnnotationName();
-            if (name == "导入" || name == "import") {
+            if ((zh && name == "导入") || (!zh && name == "import")) {
                 if (annotations.hasVisibility)
                     fail("an import annotation cannot share a declaration with a visibility annotation");
                 expect("LParen", "expected '(' after '@import'");
@@ -313,7 +373,7 @@ private:
                 expect("RParen", "expected ')' after the module import");
                 if (eat("Dot")) {
                     const std::string option = parseAnnotationName();
-                    if (option != "别名" && option != "alias")
+                    if ((zh && option != "别名") || (!zh && option != "alias"))
                         fail("expected '.别名(...)' after the module import");
                     expect("LParen", "expected '(' after '.别名'");
                     const Token alias = expect("String", "expected a string alias after '.别名('");
@@ -333,20 +393,20 @@ private:
                     throw std::runtime_error("import alias must be an identifier at " +
                         std::to_string(atToken.line) + ":" + std::to_string(atToken.column));
                 program.imports.push_back(std::move(import));
-            } else if (name == "隐藏" || name == "hidden" ||
-                       name == "受限" || name == "private") {
+            } else if ((zh && name == "隐藏") || (zh && name == "受限") ||
+                       (!zh && name == "private")) {
                 if (annotations.hasVisibility)
                     throw std::runtime_error("top-level visibility annotations are mutually exclusive at " +
                         std::to_string(atToken.line) + ":" + std::to_string(atToken.column));
                 annotations.hasVisibility = true;
-                annotations.visibility = (name == "隐藏" || name == "hidden") ? "hidden" : "restricted";
-            } else if (name == "静态" || name == "static") {
+                annotations.visibility = (name == "隐藏") ? "hidden" : "restricted";
+            } else if ((zh && name == "静态") || (!zh && name == "static")) {
                 throw std::runtime_error("'@static' can only annotate a class method at " +
                     std::to_string(atToken.line) + ":" + std::to_string(atToken.column));
-            } else if (name == "构造" || name == "constructor") {
+            } else if ((zh && name == "构造") || (!zh && name == "constructor")) {
                 throw std::runtime_error("'@constructor' can only annotate a class method at " +
                     std::to_string(atToken.line) + ":" + std::to_string(atToken.column));
-            } else if (name == "重写" || name == "override") {
+            } else if ((zh && name == "重写") || (!zh && name == "override")) {
                 throw std::runtime_error("'@override' can only annotate a class method at " +
                     std::to_string(atToken.line) + ":" + std::to_string(atToken.column));
             } else {
@@ -358,36 +418,41 @@ private:
         return annotations;
     }
     ClassMemberAnnotations parseClassMemberAnnotations() {
+        // P1-8: per-language closed tables (EBNF: zh 隐藏|受限|受限.类|
+        // 静态|构造|重写, en private|protected|static|constructor|override).
+        // `@hidden` and `@protected.class` are not in the en table and are
+        // rejected, as are all cross-language spellings.
+        const bool zh = language_ == Language::Zh;
         ClassMemberAnnotations annotations;
         while (eat("At")) {
             const Token annotation = current();
             const std::string name = parseAnnotationName();
-            if (name == "隐藏" || name == "hidden" || name == "private" ||
-                name == "受限" || name == "protected") {
+            if ((zh && name == "隐藏") || (!zh && name == "private") ||
+                (zh && name == "受限") || (!zh && name == "protected")) {
                 if (annotations.hasVisibility)
                     throw std::runtime_error("class member visibility annotations are mutually exclusive at " +
                         std::to_string(annotation.line) + ":" + std::to_string(annotation.column));
                 annotations.hasVisibility = true;
-                annotations.visibility = (name == "隐藏" || name == "hidden" || name == "private")
+                annotations.visibility = ((zh && name == "隐藏") || (!zh && name == "private"))
                     ? "hidden" : "restricted_class";
-                if ((name == "受限" || name == "protected") && eat("Dot")) {
+                if (zh && name == "受限" && eat("Dot")) {
                     if (!at("Class") &&
-                        (!at("Identifier") || (current().text != "类" && current().text != "class")))
-                        fail("expected '类' or 'class' after a restricted annotation");
+                        (!at("Identifier") || current().text != "类"))
+                        fail("expected '类' after a restricted annotation");
                     ++position_;
                 }
-            } else if (name == "静态" || name == "static") {
+            } else if ((zh && name == "静态") || (!zh && name == "static")) {
                 if (annotations.isStatic)
                     throw std::runtime_error("duplicate '@静态' annotation at " +
                         std::to_string(annotation.line) + ":" + std::to_string(annotation.column));
                 annotations.isStatic = true;
-            } else if (name == "构造" || name == "constructor") {
+            } else if ((zh && name == "构造") || (!zh && name == "constructor")) {
                 if (annotations.isConstructor)
                     throw std::runtime_error("duplicate '@构造' annotation at " +
                         std::to_string(annotation.line) + ":" +
                         std::to_string(annotation.column));
                 annotations.isConstructor = true;
-            } else if (name == "重写" || name == "override") {
+            } else if ((zh && name == "重写") || (!zh && name == "override")) {
                 if (annotations.isOverride)
                     throw std::runtime_error("duplicate '@override' annotation at " +
                         std::to_string(annotation.line) + ":" +
@@ -406,9 +471,15 @@ private:
         DepthGuard guard(closureTypeDepth_, "closure type", current());
         expect("Closure", "expected a closure type");
         expect("LParen", "expected '(' after closure");
+        skipNewlines();
         std::vector<std::string> parameters;
         if (!at("RParen")) {
-            do { parameters.push_back(parseType()); } while (eat("Comma"));
+            while (true) {
+                parameters.push_back(parseType());
+                skipNewlines();
+                if (!eat("Comma")) break;
+                skipNewlines();
+            }
         }
         expect("RParen", "expected ')' after closure parameter types");
         expect("Colon", "expected ':' after closure parameter types");
@@ -424,9 +495,15 @@ private:
         DepthGuard guard(functionTypeDepth_, "function type", current());
         expect("Method", "expected a function type");
         expect("LParen", "expected '(' after the function type");
+        skipNewlines();
         std::vector<std::string> parameters;
         if (!at("RParen")) {
-            do { parameters.push_back(parseType()); } while (eat("Comma"));
+            while (true) {
+                parameters.push_back(parseType());
+                skipNewlines();
+                if (!eat("Comma")) break;
+                skipNewlines();
+            }
         }
         expect("RParen", "expected ')' after function type parameters");
         // C-1 (P9): English function types accept the mainline `->`
@@ -459,6 +536,14 @@ private:
             token.kind == "Ptr" || token.kind == "VoidKw" || token.kind == "Empty") {
             ++position_;
             std::string type = canonicalType(token);
+            // D-3 (i): generic pointer `ptr<T>` (the framework surface:
+            // `ptr<u8>`, `ptr<AuiNode>`, ...). Type position only, so `<`
+            // is unambiguous here; nested `ptr<ptr<u8>>` recurses.
+            if (type == "ptr" && at("Lt")) {
+                ++position_;
+                type += "<" + parseType() + ">";
+                expect("Gt", "expected '>' after the pointer element type");
+            }
             while (eat("Dot")) type += "." + parseName();
             return type;
         }
@@ -466,10 +551,16 @@ private:
     }
     void parseParameterType(Parameter& parameter) {
         parameter.typeName = parseType();
-        while (eat("LBracket")) {
+        // P1-7: one dimension only (EBNF `parameter` has no dimension at
+        // all; design S4 allows one-dimensional fixed arrays). The message
+        // keeps the lowering's wording so the existing rejection test in
+        // cn-backend-checks.sh still matches.
+        if (eat("LBracket")) {
             parameter.arrayDimensions.push_back(
                 expect("Number", "expected a fixed array length").text);
             expect("RBracket", "expected ']' after the array length");
+            if (at("LBracket"))
+                fail("the current compiler backend supports one-dimensional array parameters");
         }
     }
     void requireTerminator() {
@@ -525,16 +616,24 @@ private:
             fail("中文入口方法应命名为“启动方法”，不能使用“main”");
         method.name = parseName();
         expect("LParen", "expected '(' after the method name");
+        skipNewlines();
         if (!at("RParen")) {
-            do {
+            while (true) {
                 Parameter parameter;
                 parameter.name = parseName();
                 expect("Colon", "expected ':' after a parameter name");
                 parseParameterType(parameter);
                 method.parameters.push_back(std::move(parameter));
-            } while (eat("Comma"));
+                skipNewlines();
+                if (!eat("Comma")) break;
+                skipNewlines();
+            }
         }
         expect("RParen", "expected ')' after method parameters");
+        // C-1 (P9): an English file in a bilingual project must accept the
+        // mainline English spelling `fn f(...) -> T` as well as the colon
+        // form `fn f(...): T` the bilingual design settled on (D-16). The
+        // arrow is only accepted in En mode; zh keeps the colon alone.
         if (eat("Colon")) method.returnType = parseType();
         else if (language_ == Language::En && eat("Arrow")) method.returnType = parseType();
         else method.returnType = "void";
@@ -550,6 +649,45 @@ private:
         }
         method.body = parseBlock("Method");
         return method;
+    }
+    // P1-3: `类型 别名 = 类型` / `type Alias = Type;` (EBNF `alias`,
+    // design §2.9). The alias name is registered so a later duplicate is a
+    // parse error, like a duplicate structure or class; the type itself is
+    // resolved by the lowering, which needs the program's structures
+    // registered first.
+    TypeAliasDeclaration parseTypeAlias() {
+        const Token start = expect("TypeAlias", "expected a type alias declaration");
+        TypeAliasDeclaration alias;
+        alias.line = start.line;
+        alias.column = start.column;
+        alias.sourceFile = sourceFile_;
+        alias.name = parseName();
+        if (!aliasNames_.insert(alias.name).second)
+            throw std::runtime_error("duplicate type alias declaration: " + alias.name + " at " +
+                std::to_string(alias.line) + ":" + std::to_string(alias.column));
+        expect("Eq", "expected '=' after a type alias name");
+        alias.typeName = parseType();
+        requireTerminator();
+        return alias;
+    }
+    // P1-3: `导入 "文件.ast"` / `include "file.ast";` (EBNF `include`,
+    // design §2.10: file-level sharing, as opposed to the logical-module
+    // `@导入`. The path is resolved relative to the importing file by
+    // cnResolvePackageImports; the parser only records it.
+    FileImportDeclaration parseFileImport() {
+        const Token start = expect("IncludeKw", "expected a file import");
+        const Token file = expect("String", "expected a string file name after the import keyword");
+        if (file.text.size() < 2 || file.text.front() != '"' ||
+            file.text.back() != '"' || file.text.find('\\') != std::string::npos)
+            fail("import file name must be a plain string literal without escapes");
+        FileImportDeclaration import;
+        import.line = start.line;
+        import.column = start.column;
+        import.sourceFile = sourceFile_;
+        import.path = file.text.substr(1, file.text.size() - 2);
+        if (import.path.empty()) fail("import file name must not be empty");
+        requireTerminator();
+        return import;
     }
     Statement parseExternalGlobal() {
         const Token start = expect("Extern", "expected 'extern' before an external global");
@@ -588,8 +726,9 @@ private:
         closure->column = start.column;
         if (eat("LBracket")) {
             std::set<std::string> seenCaptures;
+            skipNewlines();
             if (!at("RBracket")) {
-                do {
+                while (true) {
                     if (eat("Amp"))
                         fail(language_ == Language::Zh
                             ? "闭包只支持按值捕获"
@@ -600,19 +739,26 @@ private:
                             ? "闭包捕获项重复: " + capture
                             : "duplicate closure capture: " + capture);
                     closure->captures.push_back(capture);
-                } while (eat("Comma"));
+                    skipNewlines();
+                    if (!eat("Comma")) break;
+                    skipNewlines();
+                }
             }
             expect("RBracket", "expected ']' after the capture list");
         }
         expect("LParen", "expected '(' after the closure capture list");
+        skipNewlines();
         if (!at("RParen")) {
-            do {
+            while (true) {
                 Parameter parameter;
                 parameter.name = parseName();
                 expect("Colon", "expected ':' after a closure parameter name");
                 parseParameterType(parameter);
                 closure->parameters.push_back(std::move(parameter));
-            } while (eat("Comma"));
+                skipNewlines();
+                if (!eat("Comma")) break;
+                skipNewlines();
+            }
         }
         expect("RParen", "expected ')' after closure parameters");
         if (eat("Colon")) closure->returnType = parseType();
@@ -628,15 +774,29 @@ private:
         expression.column = start.column;
         return expression;
     }
+    // P1-23 (design §2.9 D-10): `字段` must not be used as an ordinary
+    // field name in a structure or class. It stays an ordinary identifier
+    // everywhere else (notably as an enum-loop binding), so the check is a
+    // spelling check on the field name, not a keyword: registering it as a
+    // keyword would reject every other identifier use.
+    std::string parseFieldName() {
+        const std::string name = parseName();
+        if (name == "字段")
+            fail(language_ == Language::Zh
+                ? "“字段”是保留字，不能用作字段名"
+                : "'字段' is a reserved word and cannot be used as a field name");
+        return name;
+    }
     StructDeclaration parseStruct() {
         const Token start = expect("StructKw", "expected a structure declaration");
         StructDeclaration structure;
         structure.line = start.line;
         structure.column = start.column;
         structure.name = parseName();
-        if (!structureNames_.insert(structure.name).second)
+        if (!declaredStructureNames_.insert(structure.name).second)
             throw std::runtime_error("duplicate structure declaration: " + structure.name + " at " +
                 std::to_string(structure.line) + ":" + std::to_string(structure.column));
+        structureNames_.insert(structure.name);
         if (language_ == Language::En) {
             skipNewlines();
             expect("LBrace", "expected '{' after the structure name");
@@ -648,7 +808,7 @@ private:
                 field.line = fieldStart.line;
                 field.column = fieldStart.column;
                 field.sourceFile = sourceFile_;
-                field.name = parseName();
+                field.name = parseFieldName();
                 expect("Colon", "expected ':' after a field name");
                 field.typeName = parseType();
                 if (eat("LBracket")) {
@@ -673,7 +833,7 @@ private:
                 field.line = fieldStart.line;
                 field.column = fieldStart.column;
                 field.sourceFile = sourceFile_;
-                field.name = parseName();
+                field.name = parseFieldName();
                 expect("Colon", "expected ':' after a field name");
                 field.typeName = parseType();
                 if (eat("LBracket")) {
@@ -687,9 +847,8 @@ private:
             expect("EndKw", "expected '结束' to close the structure");
             if (!eat("StructKw")) fail("mismatched block close; expected '结构'");
         }
-        if (structure.fields.empty())
-            throw std::runtime_error("structure '" + structure.name + "' must declare at least one field at " +
-                std::to_string(structure.line) + ":" + std::to_string(structure.column));
+        // P1-9: an empty structure is allowed by the EBNF (`{ field }` is
+        // zero or more); whether it means anything is for the semantic phase.
         return structure;
     }
     ClassDeclaration parseClass() {
@@ -699,9 +858,10 @@ private:
         declaration.column = start.column;
         declaration.sourceFile = sourceFile_;
         declaration.name = parseName();
-        if (!classNames_.insert(declaration.name).second)
+        if (!declaredClassNames_.insert(declaration.name).second)
             throw std::runtime_error("duplicate class declaration: " + declaration.name + " at " +
                 std::to_string(declaration.line) + ":" + std::to_string(declaration.column));
+        classNames_.insert(declaration.name);
         if (eat("Colon")) {
             declaration.baseName = parseName();
             if (eat("Dot")) declaration.baseName += "." + parseName();
@@ -726,7 +886,14 @@ private:
                 fail("'@构造' can only annotate class methods");
             if (annotations.isOverride)
                 fail("'@重写' can only annotate class methods");
+            // P1-23: `字段` as a class field name is rejected by the
+            // spelling check after parsing (it stays an ordinary identifier
+            // elsewhere, so it is not a keyword).
             const Statement field = parseVariable(false);
+            if (field.name == "字段")
+                fail(language_ == Language::Zh
+                    ? "“字段”是保留字，不能用作字段名"
+                    : "'字段' is a reserved word and cannot be used as a field name");
             if (field.typeName.empty())
                 throw std::runtime_error("class field needs an explicit type at " +
                     std::to_string(field.line) + ":" + std::to_string(field.column));
@@ -777,16 +944,22 @@ private:
         method.column = methodStart.column;
         method.name = parseName();
         expect("LParen", "expected '(' after the method name");
+        skipNewlines();
         if (!at("RParen")) {
-            do {
+            while (true) {
                 Parameter parameter;
                 parameter.name = parseName();
                 expect("Colon", "expected ':' after a parameter name");
                 parseParameterType(parameter);
                 method.parameters.push_back(std::move(parameter));
-            } while (eat("Comma"));
+                skipNewlines();
+                if (!eat("Comma")) break;
+                skipNewlines();
+            }
         }
         expect("RParen", "expected ')' after method parameters");
+        // C-1 (P9): same `->` acceptance as parseMethod, for English
+        // interface method signatures (`fn f(...) -> T;`).
         if (eat("Colon")) method.returnType = parseType();
         else if (language_ == Language::En && eat("Arrow")) method.returnType = parseType();
         else method.returnType = "void";
@@ -800,10 +973,11 @@ private:
         declaration.column = start.column;
         declaration.sourceFile = sourceFile_;
         declaration.name = parseName();
-        if (!interfaceClassNames_.insert(declaration.name).second)
+        if (!declaredInterfaceClassNames_.insert(declaration.name).second)
             throw std::runtime_error("duplicate interface class declaration: " + declaration.name +
                 " at " + std::to_string(declaration.line) + ":" +
                 std::to_string(declaration.column));
+        interfaceClassNames_.insert(declaration.name);
         if (eat("Colon")) {
             declaration.baseName = parseName();
             if (eat("Dot")) declaration.baseName += "." + parseName();
@@ -904,12 +1078,21 @@ private:
         requireBlockLine();
         return parseStatementsUntil({"ElseIf", "Else", "EndKw"});
     }
-    std::vector<Statement> parseStatementsUntil(std::initializer_list<const char*> stops) {
+    // P1-6: stopAtDefault is only for English switch arms: a bare
+    // `default:` starts the default arm, so a case arm's body must stop
+    // there. (A variable literally named `default` cannot start an
+    // expression statement inside a switch arm; `let default` still works,
+    // because that statement starts with `let`, not `default`.)
+    std::vector<Statement> parseStatementsUntil(std::initializer_list<const char*> stops,
+                                                bool stopAtDefault = false) {
+        DepthGuard guard(stmtsUntilDepth_, "statement list", current());
         std::vector<Statement> body;
         while (!at("End")) {
             skipNewlines();
             bool stop = false;
             for (const char* kind : stops) if (at(kind)) { stop = true; break; }
+            if (!stop && stopAtDefault && language_ == Language::En && atWord("default"))
+                stop = true;
             if (stop) return body;
             body.push_back(parseStatement());
         }
@@ -964,10 +1147,18 @@ private:
         statement.name = parseName();
         if (eat("Colon")) {
             statement.typeName = parseType();
-            while (eat("LBracket")) {
+            // P1-7: one dimension only, matching struct/class fields (which
+            // already reject a second dimension) and the EBNF/design
+            // one-dimensional rule. No existing suite depends on multi-
+            // dimensional variables (checked 2026-11-23); the only
+            // multi-dimensional case in the cn suites is the parameter
+            // rejection test in cn-backend-checks.sh.
+            if (eat("LBracket")) {
                 statement.arrayDimensions.push_back(
                     expect("Number", "expected a fixed array length").text);
                 expect("RBracket", "expected ']' after the array length");
+                if (at("LBracket"))
+                    fail("the current compiler backend supports one-dimensional arrays");
             }
         }
         if (eat("Eq")) {
@@ -1041,7 +1232,7 @@ private:
         statement.expressions.push_back(parseExpression());
         expect("Comma", "expected ',' after the counting-loop start value");
         statement.expressions.push_back(parseExpression());
-        if (eat("Comma")) statement.expressions.push_back(parseExpression());
+        if (eat("Comma")) { skipNewlines(); statement.expressions.push_back(parseExpression()); }
         expect("RParen", "expected ')' after the counting-loop range");
         statement.body = parseBlock("CountLoop");
         return statement;
@@ -1056,7 +1247,7 @@ private:
         if (language_ == Language::Zh)
             expect("LParen", "expected '(' after the foreach keyword");
         statement.name = parseName();
-        if (eat("Comma")) statement.secondaryName = parseName();
+        if (eat("Comma")) { skipNewlines(); statement.secondaryName = parseName(); }
         expect(language_ == Language::Zh ? "Arrow" : "InKw",
                language_ == Language::Zh
                    ? "expected '->' before the array being traversed"
@@ -1119,12 +1310,21 @@ private:
             while (at("CaseArm")) {
                 ++position_;
                 std::vector<Expression> values;
-                do { values.push_back(parseMatchPattern()); } while (eat("Comma"));
+                // D-3 (i): skip newlines only after a comma. The newline
+                // after the LAST value is requireBlockLine's terminator
+                // below; skipping it here would eat the block line.
+                while (true) {
+                    values.push_back(parseMatchPattern());
+                    if (!eat("Comma")) break;
+                    skipNewlines();
+                }
                 requireBlockLine();
                 statement.caseValues.push_back(std::move(values));
                 statement.branches.push_back(parseStatementsUntil({"CaseArm", "Else", "EndKw"}));
             }
-            if (statement.caseValues.empty()) fail("a match needs at least one '是' branch");
+            // P1-9: an empty match is allowed by the EBNF
+            // (`{ match_arm }` is zero or more); the lowering treats it as
+            // a no-op (or just the else body).
             if (eat("Else")) {
                 statement.hasElse = true;
                 requireBlockLine();
@@ -1137,20 +1337,44 @@ private:
 
         expect("LBrace", "expected '{' after the switch subject");
         skipNewlines();
-        while (at("CaseArm")) {
-            ++position_;
-            std::vector<Expression> values;
-            do { values.push_back(parseMatchPattern()); } while (eat("Comma"));
-            requireBlockLine();
-            statement.caseValues.push_back(std::move(values));
-            statement.branches.push_back(parseStatementsUntil({"CaseArm", "Else", "RBrace"}));
+        // P1-6: English switch accepts the mainline forms `case <expr>:` and
+        // `default:` (docs/language-reference.md). The older bilingual form
+        // without a colon (`case 1` + newline) and the EBNF `else` default
+        // keep working. `default` is not a cn keyword, so it is matched as
+        // the identifier `default` followed by `:`.
+        bool sawDefault = false;
+        while (true) {
+            if (at("CaseArm")) {
+                ++position_;
+                std::vector<Expression> values;
+                // D-3 (i): skip newlines only after a comma (see the
+                // Chinese arm above: the line end after the last value
+                // belongs to the arm body).
+                while (true) {
+                    values.push_back(parseMatchPattern());
+                    if (!eat("Comma")) break;
+                    skipNewlines();
+                }
+                if (!eat("Colon")) requireBlockLine();
+                statement.caseValues.push_back(std::move(values));
+                statement.branches.push_back(parseStatementsUntil({"CaseArm", "Else", "RBrace"}, true));
+            } else if (!sawDefault && atWord("default")) {
+                ++position_;
+                expect("Colon", "expected ':' after 'default'");
+                statement.hasElse = true;
+                sawDefault = true;
+                statement.elseBody = parseStatementsUntil({"CaseArm", "Else", "RBrace"}, true);
+            } else if (!sawDefault && eat("Else")) {
+                statement.hasElse = true;
+                sawDefault = true;
+                requireBlockLine();
+                statement.elseBody = parseStatementsUntil({"CaseArm", "Else", "RBrace"}, true);
+            } else {
+                break;
+            }
         }
-        if (statement.caseValues.empty()) fail("a switch needs at least one 'case' branch");
-        if (eat("Else")) {
-            statement.hasElse = true;
-            requireBlockLine();
-            statement.elseBody = parseStatementsUntil({"RBrace"});
-        }
+        if (at("Else") || atWord("default"))
+            fail("a switch can have only one 'default' branch");
         expect("RBrace", "expected '}' after the switch");
         return statement;
     }
@@ -1171,31 +1395,53 @@ private:
             }
             if (eat("Else")) {
                 statement.hasElse = true;
-                statement.elseBody = parseChineseIfBody();
+                // D-3 (i): `else if` written as two words desugars to
+                // `else { if ... }`; the lowering lowers the nested if
+                // directly. (zh normally writes the single keyword
+                // `否则如果`, but the two-word form is accepted too.)
+                if (at("If")) statement.elseBody.push_back(parseIf());
+                else statement.elseBody = parseChineseIfBody();
             }
             expect("EndKw", "expected '结束 如果' after the conditional");
             expect("If", "expected '结束 如果' after the conditional");
             return statement;
         }
         statement.branches.push_back(parseBlock("If"));
+        // D-3 (i): the framework writes `}` and `else` on separate lines,
+        // so skip newlines before looking for the next arm; the statement
+        // list skips them anyway, so this cannot swallow a following
+        // statement.
+        skipNewlines();
         while (eat("ElseIf")) {
             statement.conditions.push_back(parseCondition());
             statement.branches.push_back(parseBlock("If"));
+            skipNewlines();
         }
         if (eat("Else")) {
             statement.hasElse = true;
-            statement.elseBody = parseBlock("If");
+            // D-3 (i): `else if` is two tokens in English; desugar to
+            // `else { if ... }` (see the Chinese branch above).
+            if (at("If")) statement.elseBody.push_back(parseIf());
+            else statement.elseBody = parseBlock("If");
         }
         return statement;
     }
 
     static int precedence(const std::string& kind) {
+        // C precedence, loosest first (`a & b == c` is `a & (b == c)`:
+        // equality binds tighter than bitwise AND, the classic C rule).
         if (kind == "Or") return 1;
         if (kind == "And") return 2;
-        if (kind == "EqEq" || kind == "Ne") return 3;
-        if (kind == "Lt" || kind == "Le" || kind == "Gt" || kind == "Ge") return 4;
-        if (kind == "Plus" || kind == "Minus") return 5;
-        if (kind == "Star" || kind == "Slash" || kind == "Percent") return 6;
+        if (kind == "BitOr") return 3;
+        if (kind == "BitXor") return 4;
+        if (kind == "Amp") return 5;
+        if (kind == "EqEq" || kind == "Ne") return 6;
+        if (kind == "Lt" || kind == "Le" || kind == "Gt" || kind == "Ge") return 7;
+        // D-3 (i): shifts sit between additive and relational, as in C
+        // (`a + b << c` is `(a + b) << c`); the mainline shift() level.
+        if (kind == "Shl" || kind == "Shr") return 8;
+        if (kind == "Plus" || kind == "Minus") return 9;
+        if (kind == "Star" || kind == "Slash" || kind == "Percent") return 10;
         return 0;
     }
     static std::string operatorName(const std::string& kind) {
@@ -1212,6 +1458,10 @@ private:
         if (kind == "Star") return "*";
         if (kind == "Slash") return "/";
         if (kind == "Percent") return "%";
+        if (kind == "Shl") return "<<";
+        if (kind == "Shr") return ">>";
+        if (kind == "BitOr") return "|";
+        if (kind == "BitXor") return "^";
         if (kind == "Not") return "!";
         if (kind == "Tilde") return "~";
         if (kind == "Amp") return "&";
@@ -1221,10 +1471,24 @@ private:
         DepthGuard guard(exprDepth_, "expression", current());
         Expression left = parseUnary();
         while (true) {
+            // D-3 (i): an operator may also LEAD the next line
+            // (`(a << 8)\n | b`): look past newlines; if a binary operator
+            // follows, continue the expression. A newline followed by
+            // anything else still ends it.
+            if (at("Newline")) {
+                std::size_t probe = position_;
+                while (probe < tokens_.size() && tokens_[probe].kind == "Newline") ++probe;
+                if (probe >= tokens_.size() || precedence(tokens_[probe].kind) == 0) break;
+                position_ = probe;
+            }
             const int priority = precedence(current().kind);
             if (priority < minimumPrecedence) break;
             const std::string op = operatorName(current().kind);
             ++position_;
+            // D-3 (i): an operand may start on the next line (`a &&\n b`,
+            // `x +\n y`); inside an expression a newline never terminates
+            // a statement, in either language.
+            skipNewlines();
             Expression right = parseExpression(priority + 1);
             Expression binary;
             binary.kind = "Binary";
@@ -1232,6 +1496,34 @@ private:
             binary.children.push_back(std::move(left));
             binary.children.push_back(std::move(right));
             left = std::move(binary);
+        }
+        // P1-5: ternary `条件 ? 值1 : 值2`, right-associative, lowest
+        // precedence (below `||`), mirroring the mainline parser's expr()
+        // (`c ? a : b`, both arms at full precedence). Only handled at the
+        // outermost level of this call (minimumPrecedence == 1): a binary
+        // right-hand side parses with a higher minimum, so `a + b ? c : d`
+        // groups as `(a + b) ? c : d`, as in C. The lowering emits
+        // Expr::Cond; the condition must be bool and both arms must agree.
+        // NOTE for the doc group (EBNF lacks a ternary production): the
+        // implemented form is
+        //   expression = logical_or, [ "?", expression, ":", expression ] ;
+        // with the middle and else arms parsed at full expression
+        // precedence, so `a ? b : c ? d : e` nests right.
+        if (minimumPrecedence == 1 && at("Question")) {
+            ++position_;
+            skipNewlines();
+            Expression middle = parseExpression();
+            expect("Colon", "expected ':' in conditional expression");
+            skipNewlines();
+            Expression otherwise = parseExpression();
+            Expression conditional;
+            conditional.kind = "Conditional";
+            conditional.line = left.line;
+            conditional.column = left.column;
+            conditional.children.push_back(std::move(left));
+            conditional.children.push_back(std::move(middle));
+            conditional.children.push_back(std::move(otherwise));
+            return conditional;
         }
         return left;
     }
@@ -1270,11 +1562,41 @@ private:
         if (eat("Character")) return make("CharacterLiteral", token.text);
         if (eat("LBracket")) {
             Expression expression = make("ArrayLiteral", "");
+            skipNewlines();
             if (!at("RBracket")) {
-                do { expression.children.push_back(parseExpression()); } while (eat("Comma"));
+                while (true) {
+                    expression.children.push_back(parseExpression());
+                    skipNewlines();
+                    if (!eat("Comma")) break;
+                    skipNewlines();
+                }
             }
             expect("RBracket", "expected ']' after the array literal");
             return expression;
+        }
+        // D-3 (i): generic-pointer cast `ptr<T>(expr)`. The plain
+        // `ptr(...)` cast below would leave `<T>` behind; confirm the
+        // `<...>` is followed by `(` first, so `ptr < x` (a comparison)
+        // still parses as one.
+        if ((token.kind == "Ptr" ||
+             (token.kind == "Identifier" && isBuiltinTypeSpelling(token.text))) &&
+            position_ + 1 < tokens_.size() && tokens_[position_ + 1].kind == "Lt") {
+            std::size_t depth = 0;
+            std::size_t scan = position_ + 1;
+            for (; scan < tokens_.size(); ++scan) {
+                if (tokens_[scan].kind == "Lt") ++depth;
+                else if (tokens_[scan].kind == "Gt") {
+                    if (--depth == 0) break;
+                } else if (tokens_[scan].kind == "Newline") break;
+            }
+            if (scan + 1 < tokens_.size() && tokens_[scan].kind == "Gt" &&
+                tokens_[scan + 1].kind == "LParen") {
+                ++position_;
+                ++position_;
+                const std::string inner = parseType();
+                expect("Gt", "expected '>' after the pointer element type");
+                return make("TypeName", "ptr<" + inner + ">");
+            }
         }
         if (token.kind == "Identifier" &&
             (classNames_.count(token.text) || isBuiltinTypeSpelling(token.text)) &&
@@ -1298,7 +1620,9 @@ private:
         if (eat("ThisKw")) return make("ThisExpression", "this");
         if (eat("SuperKw")) return make("SuperExpression", "super");
         if (eat("LParen")) {
+            skipNewlines();
             Expression expression = parseExpression();
+            skipNewlines();
             expect("RParen", "expected ')' after the expression");
             return expression;
         }
@@ -1313,8 +1637,14 @@ private:
                 literal.value = expression.value;
                 literal.line = expression.line;
                 literal.column = expression.column;
+                skipNewlines();
                 if (!at("RBrace")) {
-                    do { literal.children.push_back(parseExpression()); } while (eat("Comma"));
+                    while (true) {
+                        literal.children.push_back(parseExpression());
+                        skipNewlines();
+                        if (!eat("Comma")) break;
+                        skipNewlines();
+                    }
                 }
                 expect("RBrace", "expected '}' after structure literal");
                 expression = std::move(literal);
@@ -1324,8 +1654,14 @@ private:
                 call.line = expression.line;
                 call.column = expression.column;
                 call.children.push_back(std::move(expression));
+                skipNewlines();
                 if (!at("RParen")) {
-                    do { call.children.push_back(parseExpression()); } while (eat("Comma"));
+                    while (true) {
+                        call.children.push_back(parseExpression());
+                        skipNewlines();
+                        if (!eat("Comma")) break;
+                        skipNewlines();
+                    }
                 }
                 expect("RParen", "expected ')' after call arguments");
                 expression = std::move(call);
@@ -1335,7 +1671,9 @@ private:
                 index.line = expression.line;
                 index.column = expression.column;
                 index.children.push_back(std::move(expression));
+                skipNewlines();
                 index.children.push_back(parseExpression());
+                skipNewlines();
                 expect("RBracket", "expected ']' after the array index");
                 expression = std::move(index);
             } else if (eat("Dot")) {
@@ -1496,6 +1834,10 @@ std::string dumpAst(const Program& program) {
     }
     for (const auto& import : program.imports)
         out << " (Import " << quoted(import.moduleName) << ' ' << quoted(import.alias) << ')';
+    for (const auto& alias : program.aliases)
+        out << " (Alias " << quoted(alias.name) << ' ' << quoted(alias.typeName) << ')';
+    for (const auto& fileImport : program.fileImports)
+        out << " (FileImport " << quoted(fileImport.path) << ')';
     for (const auto& enumeration : program.enums) {
         out << " (Enum " << quoted(enumeration.name) << " (Members";
         for (const auto& member : enumeration.members) {

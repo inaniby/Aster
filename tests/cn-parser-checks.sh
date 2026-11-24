@@ -322,7 +322,7 @@ grep -q '(ForEachLoopStatement "index" "item2" (Identifier "items")' "$TMP/forea
 
 cat > "$TMP/enumloop-zh.ast" <<'SRC'
 方法 启动方法(): 整数
-枚举循环 (字段 -> 用户甲)
+枚举循环 (条目 -> 用户甲)
 返回 0
 结束 枚举循环
 返回 0
@@ -331,7 +331,7 @@ SRC
 cat > "$TMP/enumloop-en.ast" <<'SRC'
 // aster:language=en
 fn main(): i32 {
-enumloop 字段 in 用户甲 {
+enumloop 条目 in 用户甲 {
 return 0;
 }
 return 0;
@@ -341,7 +341,7 @@ printf '%s\n' '[10/16] enumloop arrow/in forms normalize bilingually'
 "$TMP/aster-cn-parse" "$TMP/enumloop-zh.ast" > "$TMP/enumloop-zh.out"
 "$TMP/aster-cn-parse" "$TMP/enumloop-en.ast" > "$TMP/enumloop-en.out"
 cmp "$TMP/enumloop-zh.out" "$TMP/enumloop-en.out"
-grep -q '(EnumLoopStatement "字段" (Identifier "用户甲")' "$TMP/enumloop-zh.out"
+grep -q '(EnumLoopStatement "条目" (Identifier "用户甲")' "$TMP/enumloop-zh.out"
 
 cat > "$TMP/float-zh.ast" <<'SRC'
 方法 启动方法(): 整数
@@ -862,5 +862,194 @@ printf '%s\n' '[interfaces] inherited interface signatures normalize bilingually
 "$TMP/aster-cn-parse" "$TMP/interface-inheritance-en.ast" > "$TMP/interface-inheritance-en.out"
 cmp "$TMP/interface-inheritance-zh.out" "$TMP/interface-inheritance-en.out"
 grep -q '(InterfaceClass "可增强" (Base "可读")' "$TMP/interface-inheritance-zh.out"
+
+# P1-1: a diagnostic is decorated exactly once even though lexing,
+# parsing and the main catch all decorate (idempotent [A-NNN] prefix).
+printf 'fn main(): i32 { return \377; }\n' > "$TMP/bad-utf8.ast"
+if "$TMP/aster-cn-parse" "$TMP/bad-utf8.ast" \
+    > /dev/null 2> "$TMP/bad-utf8.err"; then
+    echo 'FAIL: invalid UTF-8 was accepted' >&2
+    exit 1
+fi
+if [ "$(grep -o '\[A-001\]' "$TMP/bad-utf8.err" | wc -l)" -ne 1 ]; then
+    echo 'FAIL: invalid UTF-8 diagnostic was not decorated exactly once' >&2
+    exit 1
+fi
+
+# P1-2: .type member name follows the file language.
+cat > "$TMP/dot-type-en.ast" <<'SRC'
+// aster:language=en
+fn f(o: ptr): i32 { return o.type; }
+fn main(): i32 { return 0; }
+SRC
+"$TMP/aster-cn-parse" "$TMP/dot-type-en.ast" > "$TMP/dot-type-en.out"
+grep -q '(Member (Identifier "o") (Identifier "type"))' "$TMP/dot-type-en.out"
+
+# P1-3: type aliases and top-level file imports parse (zh and en).
+cat > "$TMP/alias-import-zh.ast" <<'SRC'
+类型 用户编号 = 整数
+导入 "math.ast"
+方法 启动方法(): 整数
+变量 x: 用户编号 = 0
+返回 x
+结束 方法
+SRC
+"$TMP/aster-cn-parse" "$TMP/alias-import-zh.ast" > "$TMP/alias-import-zh.out"
+grep -q '(Alias "用户编号" "i32")' "$TMP/alias-import-zh.out"
+grep -q '(FileImport "math.ast")' "$TMP/alias-import-zh.out"
+cat > "$TMP/alias-import-en.ast" <<'SRC'
+// aster:language=en
+type UserId = i32;
+include "math.ast";
+fn main(): i32 { let x: UserId = 0; return x; }
+SRC
+"$TMP/aster-cn-parse" "$TMP/alias-import-en.ast" > "$TMP/alias-import-en.out"
+grep -q '(Alias "UserId" "i32")' "$TMP/alias-import-en.out"
+grep -q '(FileImport "math.ast")' "$TMP/alias-import-en.out"
+
+# P1-4: struct literals and class construction do not depend on
+# declaration order.
+cat > "$TMP/late-literal-zh.ast" <<'SRC'
+方法 启动方法(): 整数
+变量 p: 点 = 点{1, 2}
+返回 p.甲 + p.乙
+结束 方法
+结构 点
+甲: 整数
+乙: 整数
+结束 结构
+SRC
+"$TMP/aster-cn-parse" "$TMP/late-literal-zh.ast" > "$TMP/late-literal-zh.out"
+grep -q '(StructLiteral "点"' "$TMP/late-literal-zh.out"
+cat > "$TMP/late-construct-en.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 { let p: Point = Point(3, 4); return p.x + p.y; }
+class Point {
+let x: i32;
+let y: i32;
+@constructor
+fn constructor(x: i32, y: i32) { this.x = x; this.y = y; }
+}
+SRC
+"$TMP/aster-cn-parse" "$TMP/late-construct-en.ast" > "$TMP/late-construct-en.out"
+grep -q '(Call (TypeName "Point")' "$TMP/late-construct-en.out"
+
+# P1-5: ternary ?: parses (right-associative) in both languages.
+cat > "$TMP/ternary-zh.ast" <<'SRC'
+方法 启动方法(): 整数
+变量 x: 整数 = 1
+返回 x == 1 ? 10 : x == 2 ? 20 : 30
+结束 方法
+SRC
+"$TMP/aster-cn-parse" "$TMP/ternary-zh.ast" > "$TMP/ternary-zh.out"
+grep -q '(Conditional (Binary "=="' "$TMP/ternary-zh.out"
+cat > "$TMP/ternary-en.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 { let x: i32 = 1; return x == 1 ? 10 : 20; }
+SRC
+"$TMP/aster-cn-parse" "$TMP/ternary-en.ast" > "$TMP/ternary-en.out"
+grep -q '(Conditional (Binary "=="' "$TMP/ternary-en.out"
+
+# P1-6: English switch accepts case <expr>: and default:.
+cat > "$TMP/switch-default-en.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 { let x: i32 = 2; switch (x) { case 1: return 1; default: return 0; } }
+SRC
+"$TMP/aster-cn-parse" "$TMP/switch-default-en.ast" > "$TMP/switch-default-en.out"
+grep -q '(Case ' "$TMP/switch-default-en.out"
+grep -q '(Else ' "$TMP/switch-default-en.out"
+
+# P1-7: multi-dimensional arrays are rejected in variables and parameters.
+cat > "$TMP/multidim-var-zh.ast" <<'SRC'
+方法 启动方法(): 整数
+变量 a: 整数[2][3]
+返回 0
+结束 方法
+SRC
+if "$TMP/aster-cn-parse" "$TMP/multidim-var-zh.ast" \
+    > /dev/null 2> "$TMP/multidim-var-zh.err"; then
+    echo 'FAIL: multi-dimensional variable was accepted' >&2
+    exit 1
+fi
+grep -q 'one-dimensional' "$TMP/multidim-var-zh.err"
+cat > "$TMP/multidim-param-en.ast" <<'SRC'
+// aster:language=en
+fn f(x: i32[2][3]): i32 { return x[0][0]; }
+fn main(): i32 { return 0; }
+SRC
+if "$TMP/aster-cn-parse" "$TMP/multidim-param-en.ast" \
+    > /dev/null 2> "$TMP/multidim-param-en.err"; then
+    echo 'FAIL: multi-dimensional parameter was accepted' >&2
+    exit 1
+fi
+grep -q 'supports one-dimensional array parameters' "$TMP/multidim-param-en.err"
+
+# P1-8: annotations are enforced per language (cross-language spellings
+# are rejected).
+cat > "$TMP/annotation-zh-private.ast" <<'SRC'
+@private
+方法 甲(): 整数
+返回 0
+结束 方法
+方法 启动方法(): 整数
+返回 0
+结束 方法
+SRC
+if "$TMP/aster-cn-parse" "$TMP/annotation-zh-private.ast" \
+    > /dev/null 2> "$TMP/annotation-zh-private.err"; then
+    echo 'FAIL: @private in a Chinese file was accepted' >&2
+    exit 1
+fi
+grep -q "unknown top-level annotation '@private'" "$TMP/annotation-zh-private.err"
+cat > "$TMP/annotation-en-hidden.ast" <<'SRC'
+// aster:language=en
+class C {
+@hidden
+let x: i32;
+}
+fn main(): i32 { return 0; }
+SRC
+if "$TMP/aster-cn-parse" "$TMP/annotation-en-hidden.ast" \
+    > /dev/null 2> "$TMP/annotation-en-hidden.err"; then
+    echo 'FAIL: @hidden in an English class was accepted' >&2
+    exit 1
+fi
+grep -q "unknown class member annotation '@hidden'" "$TMP/annotation-en-hidden.err"
+
+# P1-9: empty structures, empty matches and empty switches parse.
+cat > "$TMP/empty-zh.ast" <<'SRC'
+结构 空壳
+结束 结构
+方法 启动方法(): 整数
+变量 x: 整数 = 1
+假如 (x)
+结束 假如
+返回 0
+结束 方法
+SRC
+"$TMP/aster-cn-parse" "$TMP/empty-zh.ast" > "$TMP/empty-zh.out"
+grep -q '(Structure "空壳" (Fields))' "$TMP/empty-zh.out"
+cat > "$TMP/empty-switch-en.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 { let x: i32 = 1; switch (x) { } return 0; }
+SRC
+"$TMP/aster-cn-parse" "$TMP/empty-switch-en.ast" > "$TMP/empty-switch-en.out"
+grep -q '(MatchStatement (Identifier "x"))' "$TMP/empty-switch-en.out"
+
+# P1-23: 字段 is a reserved word and cannot be used as a field name.
+cat > "$TMP/reserved-field-zh.ast" <<'SRC'
+结构 点
+字段: 整数
+结束 结构
+方法 启动方法(): 整数
+返回 0
+结束 方法
+SRC
+if "$TMP/aster-cn-parse" "$TMP/reserved-field-zh.ast" \
+    > /dev/null 2> "$TMP/reserved-field-zh.err"; then
+    echo 'FAIL: 字段 as a structure field name was accepted' >&2
+    exit 1
+fi
+grep -q '保留字' "$TMP/reserved-field-zh.err"
 
 echo 'PASS: bilingual core parser checks'

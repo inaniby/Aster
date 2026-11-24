@@ -72,8 +72,8 @@ default = "en"
 allowed = ["zh", "en"]
 PROJ
 "$ASTER_BIN" build-cn-obj --project "$TMP/aster.proj" "$TMP/core-en.ast" -o "$TMP/project-en.o"
-cmp "$TMP/zh.o" "$TMP/en.o"
-cmp "$TMP/zh.o" "$TMP/project-en.o"
+cmp "$TMP/zh.o" "$TMP/en.o" || { echo "FAIL: \$TMP/zh.o and \$TMP/en.o differ" >&2; exit 1; }
+cmp "$TMP/zh.o" "$TMP/project-en.o" || { echo "FAIL: \$TMP/zh.o and \$TMP/project-en.o differ" >&2; exit 1; }
 
 cat > "$TMP/omitted-void-zh.ast" <<'SRC'
 // aster:language=zh
@@ -109,10 +109,10 @@ return 0;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/omitted-void-zh.ast" -o "$TMP/omitted-void-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/omitted-void-en.ast" -o "$TMP/omitted-void-en.o"
-cmp "$TMP/omitted-void-zh.o" "$TMP/omitted-void-en.o"
+cmp "$TMP/omitted-void-zh.o" "$TMP/omitted-void-en.o" || { echo "FAIL: \$TMP/omitted-void-zh.o and \$TMP/omitted-void-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/omitted-void-zh.o" -o "$TMP/omitted-void"
 if [ "$CAN_RUN" -eq 1 ]; then
-    "$RUNNER" "$TMP/omitted-void"
+    "$RUNNER" "$TMP/omitted-void" || { echo 'FAIL: program run failed' >&2; exit 1; }
 fi
 
 cat > "$TMP/extern-zh.ast" <<'SRC'
@@ -131,7 +131,7 @@ return puts(0);
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/extern-zh.ast" -o "$TMP/extern-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/extern-en.ast" -o "$TMP/extern-en.o"
-cmp "$TMP/extern-zh.o" "$TMP/extern-en.o"
+cmp "$TMP/extern-zh.o" "$TMP/extern-en.o" || { echo "FAIL: \$TMP/extern-zh.o and \$TMP/extern-en.o differ" >&2; exit 1; }
 readelf -Ws "$TMP/extern-zh.o" | grep -E 'UND[[:space:]]+puts$' >/dev/null || {
     echo 'FAIL: Chinese external method did not produce an undefined puts symbol' >&2; exit 1;
 }
@@ -153,7 +153,7 @@ return native_counter;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/extern-global-zh.ast" -o "$TMP/extern-global-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/extern-global-en.ast" -o "$TMP/extern-global-en.o"
-cmp "$TMP/extern-global-zh.o" "$TMP/extern-global-en.o"
+cmp "$TMP/extern-global-zh.o" "$TMP/extern-global-en.o" || { echo "FAIL: \$TMP/extern-global-zh.o and \$TMP/extern-global-en.o differ" >&2; exit 1; }
 readelf -Ws "$TMP/extern-global-zh.o" | grep -E 'UND[[:space:]]+native_counter$' >/dev/null || {
     echo 'FAIL: Chinese external global did not produce an undefined OBJECT symbol' >&2; exit 1;
 }
@@ -175,7 +175,7 @@ return native_values[1];
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/extern-global-array-zh.ast" -o "$TMP/extern-global-array-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/extern-global-array-en.ast" -o "$TMP/extern-global-array-en.o"
-cmp "$TMP/extern-global-array-zh.o" "$TMP/extern-global-array-en.o"
+cmp "$TMP/extern-global-array-zh.o" "$TMP/extern-global-array-en.o" || { echo "FAIL: \$TMP/extern-global-array-zh.o and \$TMP/extern-global-array-en.o differ" >&2; exit 1; }
 readelf -Ws "$TMP/extern-global-array-zh.o" | grep -E 'UND[[:space:]]+native_values$' >/dev/null || {
     echo 'FAIL: external global array did not preserve the ASCII ABI symbol' >&2; exit 1;
 }
@@ -195,7 +195,7 @@ return native_callback(41);
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/extern-global-fn-zh.ast" -o "$TMP/extern-global-fn-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/extern-global-fn-en.ast" -o "$TMP/extern-global-fn-en.o"
-cmp "$TMP/extern-global-fn-zh.o" "$TMP/extern-global-fn-en.o"
+cmp "$TMP/extern-global-fn-zh.o" "$TMP/extern-global-fn-en.o" || { echo "FAIL: \$TMP/extern-global-fn-zh.o and \$TMP/extern-global-fn-en.o differ" >&2; exit 1; }
 readelf -Ws "$TMP/extern-global-fn-zh.o" | grep -E 'UND[[:space:]]+native_callback$' >/dev/null || {
     echo 'FAIL: external function-pointer global did not preserve the ASCII ABI symbol' >&2; exit 1;
 }
@@ -223,7 +223,7 @@ return 0;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/extern-global-string-zh.ast" -o "$TMP/extern-global-string-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/extern-global-string-en.ast" -o "$TMP/extern-global-string-en.o"
-cmp "$TMP/extern-global-string-zh.o" "$TMP/extern-global-string-en.o"
+cmp "$TMP/extern-global-string-zh.o" "$TMP/extern-global-string-en.o" || { echo "FAIL: \$TMP/extern-global-string-zh.o and \$TMP/extern-global-string-en.o differ" >&2; exit 1; }
 readelf -Ws "$TMP/extern-global-string-zh.o" | grep -E 'UND[[:space:]]+native_text$' >/dev/null || {
     echo 'FAIL: external string global did not preserve the ASCII ABI symbol' >&2; exit 1;
 }
@@ -406,7 +406,7 @@ return selected;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/wide-match-zh.ast" -o "$TMP/wide-match-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/wide-match-en.ast" -o "$TMP/wide-match-en.o"
-cmp "$TMP/wide-match-zh.o" "$TMP/wide-match-en.o"
+cmp "$TMP/wide-match-zh.o" "$TMP/wide-match-en.o" || { echo "FAIL: \$TMP/wide-match-zh.o and \$TMP/wide-match-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/wide-match-zh.o" -o "$TMP/wide-match"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/wide-match"; then status=0; else status=$?; fi
@@ -490,7 +490,7 @@ return total;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/enum-match-zh.ast" -o "$TMP/enum-match-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/enum-match-en.ast" -o "$TMP/enum-match-en.o"
-cmp "$TMP/enum-match-zh.o" "$TMP/enum-match-en.o"
+cmp "$TMP/enum-match-zh.o" "$TMP/enum-match-en.o" || { echo "FAIL: \$TMP/enum-match-zh.o and \$TMP/enum-match-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/enum-match-zh.o" -o "$TMP/enum-match"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/enum-match"; then status=0; else status=$?; fi
@@ -632,7 +632,7 @@ return total;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/truthiness-zh.ast" -o "$TMP/truthiness-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/truthiness-en.ast" -o "$TMP/truthiness-en.o"
-cmp "$TMP/truthiness-zh.o" "$TMP/truthiness-en.o"
+cmp "$TMP/truthiness-zh.o" "$TMP/truthiness-en.o" || { echo "FAIL: \$TMP/truthiness-zh.o and \$TMP/truthiness-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/truthiness-zh.o" -o "$TMP/truthiness"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/truthiness"; then status=0; else status=$?; fi
@@ -692,7 +692,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/zero-step.ast" -o "$TMP/zero-step.o" 2> "$TMP
     echo 'FAIL: zero count-loop step accepted' >&2
     exit 1
 fi
-grep -q 'counting-loop step cannot be zero' "$TMP/zero-step.err"
+grep -q 'counting-loop step cannot be zero' "$TMP/zero-step.err" || { echo "FAIL: expected 'counting-loop step cannot be zero' in \$TMP/zero-step.err" >&2; exit 1; }
 
 cat > "$TMP/dynamic-step.ast" <<'SRC'
 // aster:language=zh
@@ -755,7 +755,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/large-step.ast" -o "$TMP/large-step.o" 2> "$T
     echo 'FAIL: out-of-range count-loop step accepted' >&2
     exit 1
 fi
-grep -q 'counting-loop step must fit i32' "$TMP/large-step.err"
+grep -q 'counting-loop step must fit i32' "$TMP/large-step.err" || { echo "FAIL: expected 'counting-loop step must fit i32' in \$TMP/large-step.err" >&2; exit 1; }
 
 cat > "$TMP/duplicate-match.ast" <<'SRC'
 // aster:language=zh
@@ -773,7 +773,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/duplicate-match.ast" -o "$TMP/duplicate-match
     echo 'FAIL: duplicate match value accepted' >&2
     exit 1
 fi
-grep -q 'duplicate match value 2' "$TMP/duplicate-match.err"
+grep -q 'duplicate match value 2' "$TMP/duplicate-match.err" || { echo "FAIL: expected 'duplicate match value 2' in \$TMP/duplicate-match.err" >&2; exit 1; }
 
 cat > "$TMP/nonconstant-match.ast" <<'SRC'
 // aster:language=zh
@@ -790,7 +790,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/nonconstant-match.ast" -o "$TMP/nonconstant-m
     echo 'FAIL: nonconstant match value accepted' >&2
     exit 1
 fi
-grep -q 'match values must be compile-time integer constants' "$TMP/nonconstant-match.err"
+grep -q 'match values must be compile-time integer constants' "$TMP/nonconstant-match.err" || { echo "FAIL: expected 'match values must be compile-time integer constants' in \$TMP/nonconstant-match.err" >&2; exit 1; }
 
 cat > "$TMP/out-of-range-match.ast" <<'SRC'
 // aster:language=zh
@@ -806,7 +806,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/out-of-range-match.ast" -o "$TMP/out-of-range
     echo 'FAIL: out-of-range match value accepted' >&2
     exit 1
 fi
-grep -q 'match value does not fit i32' "$TMP/out-of-range-match.err"
+grep -q 'match value does not fit i32' "$TMP/out-of-range-match.err" || { echo "FAIL: expected 'match value does not fit i32' in \$TMP/out-of-range-match.err" >&2; exit 1; }
 
 cat > "$TMP/bool-match.ast" <<'SRC'
 // aster:language=zh
@@ -823,7 +823,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/bool-match.ast" -o "$TMP/bool-match.o" 2> "$T
     echo 'FAIL: non-integer match subject accepted' >&2
     exit 1
 fi
-grep -q 'match subject must be an integer type' "$TMP/bool-match.err"
+grep -q 'match subject must be an integer type' "$TMP/bool-match.err" || { echo "FAIL: expected 'match subject must be an integer type' in \$TMP/bool-match.err" >&2; exit 1; }
 
 cat > "$TMP/u8-out-of-range-match.ast" <<'SRC'
 // aster:language=zh
@@ -840,7 +840,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/u8-out-of-range-match.ast" -o "$TMP/u8-out-of
     echo 'FAIL: out-of-range u8 match value accepted' >&2
     exit 1
 fi
-grep -q 'match value does not fit u8' "$TMP/u8-out-of-range-match.err"
+grep -q 'match value does not fit u8' "$TMP/u8-out-of-range-match.err" || { echo "FAIL: expected 'match value does not fit u8' in \$TMP/u8-out-of-range-match.err" >&2; exit 1; }
 
 cat > "$TMP/unknown-match-subject.ast" <<'SRC'
 // aster:language=zh
@@ -856,7 +856,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/unknown-match-subject.ast" -o "$TMP/unknown-m
     echo 'FAIL: unknown match subject accepted' >&2
     exit 1
 fi
-grep -q "$TMP/unknown-match-subject.ast:3:" "$TMP/unknown-match-subject.err"
+grep -q "$TMP/unknown-match-subject.ast:3:" "$TMP/unknown-match-subject.err" || { echo "FAIL: expected '\$TMP/unknown-match-subject.ast:3:' in \$TMP/unknown-match-subject.err" >&2; exit 1; }
 
 printf '%s\n' '[4/19] lowered count variables remain read-only'
 cat > "$TMP/write-counter.ast" <<'SRC'
@@ -872,7 +872,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/write-counter.ast" -o "$TMP/write-counter.o" 
     echo 'FAIL: count-loop variable assignment accepted' >&2
     exit 1
 fi
-grep -q 'cannot assign to a const: i' "$TMP/write-counter.err"
+grep -q 'cannot assign to a const: i' "$TMP/write-counter.err" || { echo "FAIL: expected 'cannot assign to a const: i' in \$TMP/write-counter.err" >&2; exit 1; }
 
 cat > "$TMP/address-counter.ast" <<'SRC'
 // aster:language=zh
@@ -888,7 +888,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/address-counter.ast" -o "$TMP/address-counter
     echo 'FAIL: count-loop variable address accepted' >&2
     exit 1
 fi
-grep -q 'cannot take the address of a const: i' "$TMP/address-counter.err"
+grep -q 'cannot take the address of a const: i' "$TMP/address-counter.err" || { echo "FAIL: expected 'cannot take the address of a const: i' in \$TMP/address-counter.err" >&2; exit 1; }
 
 printf '%s\n' '[5/19] semantic failures retain source locations and condition types'
 cat > "$TMP/invalid.ast" <<'SRC'
@@ -901,7 +901,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/invalid.ast" -o "$TMP/invalid.o" 2> "$TMP/err
     echo 'FAIL: unknown variable accepted' >&2
     exit 1
 fi
-grep -q "$TMP/invalid.ast:3:" "$TMP/error"
+grep -q "$TMP/invalid.ast:3:" "$TMP/error" || { echo "FAIL: expected '\$TMP/invalid.ast:3:' in \$TMP/error" >&2; exit 1; }
 
 cat > "$TMP/struct-if.ast" <<'SRC'
 // aster:language=zh
@@ -920,7 +920,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/struct-if.ast" -o "$TMP/struct-if.o" 2> "$TMP
     echo 'FAIL: struct if condition accepted' >&2
     exit 1
 fi
-grep -q 'condition must be bool, numeric, or pointer' "$TMP/struct-if.err"
+grep -q 'condition must be bool, numeric, or pointer' "$TMP/struct-if.err" || { echo "FAIL: expected 'condition must be bool, numeric, or pointer' in \$TMP/struct-if.err" >&2; exit 1; }
 
 cat > "$TMP/struct-while.ast" <<'SRC'
 // aster:language=en
@@ -937,7 +937,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/struct-while.ast" -o "$TMP/struct-while.o" 2>
     echo 'FAIL: struct while condition accepted' >&2
     exit 1
 fi
-grep -q 'condition must be bool, numeric, or pointer' "$TMP/struct-while.err"
+grep -q 'condition must be bool, numeric, or pointer' "$TMP/struct-while.err" || { echo "FAIL: expected 'condition must be bool, numeric, or pointer' in \$TMP/struct-while.err" >&2; exit 1; }
 
 cat > "$TMP/range-match-zh.ast" <<'SRC'
 // aster:language=zh
@@ -953,7 +953,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/range-match-zh.ast" -o "$TMP/range-match-zh.o
     echo 'FAIL: deferred Chinese range match accepted' >&2
     exit 1
 fi
-grep -q '范围匹配尚未实现' "$TMP/range-match-zh.err"
+grep -q '范围匹配尚未实现' "$TMP/range-match-zh.err" || { echo "FAIL: expected '范围匹配尚未实现' in \$TMP/range-match-zh.err" >&2; exit 1; }
 
 cat > "$TMP/range-match-en.ast" <<'SRC'
 // aster:language=en
@@ -969,14 +969,14 @@ if "$ASTER_BIN" build-cn-obj --language en "$TMP/range-match-en.ast" -o "$TMP/ra
     echo 'FAIL: deferred English range match accepted' >&2
     exit 1
 fi
-grep -q 'range matching is not implemented' "$TMP/range-match-en.err"
+grep -q 'range matching is not implemented' "$TMP/range-match-en.err" || { echo "FAIL: expected 'range matching is not implemented' in \$TMP/range-match-en.err" >&2; exit 1; }
 
 printf '%s\n' '[6/19] debug output includes DWARF sections when readelf exists'
 "$ASTER_BIN" build-cn-obj -g "$TMP/core-zh.ast" -o "$TMP/debug.o"
 if command -v readelf >/dev/null 2>&1; then
-    readelf -S "$TMP/debug.o" | grep -q '\.debug_line'
-    readelf -S "$TMP/debug.o" | grep -q '\.debug_info'
-    readelf -S "$TMP/debug.o" | grep -q '\.eh_frame'
+    readelf -S "$TMP/debug.o" | grep -q '\.debug_line' || { echo "FAIL: expected '\$TMP/debug.o' in \\.debug_line" >&2; exit 1; }
+    readelf -S "$TMP/debug.o" | grep -q '\.debug_info' || { echo "FAIL: expected '\$TMP/debug.o' in \\.debug_info" >&2; exit 1; }
+    readelf -S "$TMP/debug.o" | grep -q '\.eh_frame' || { echo "FAIL: expected '\$TMP/debug.o' in \\.eh_frame" >&2; exit 1; }
 else
     echo 'SKIP: readelf is unavailable'
 fi
@@ -1012,7 +1012,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/array-length-mismatch.ast" -o "$TMP/array-len
     echo 'FAIL: mismatched array literal length accepted' >&2
     exit 1
 fi
-grep -q 'array literal length does not match declared array length' "$TMP/array-length-mismatch.err"
+grep -q 'array literal length does not match declared array length' "$TMP/array-length-mismatch.err" || { echo "FAIL: expected 'array literal length does not match declared array length' in \$TMP/array-length-mismatch.err" >&2; exit 1; }
 
 printf '%s\n' '[8/19] array foreach lowers with read-only element and index bindings'
 cat > "$TMP/foreach-zh.ast" <<'SRC'
@@ -1047,7 +1047,7 @@ return total;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/foreach-zh.ast" -o "$TMP/foreach-zh.o"
 "$ASTER_BIN" build-cn-obj "$TMP/foreach-en.ast" -o "$TMP/foreach-en.o"
-cmp "$TMP/foreach-zh.o" "$TMP/foreach-en.o"
+cmp "$TMP/foreach-zh.o" "$TMP/foreach-en.o" || { echo "FAIL: \$TMP/foreach-zh.o and \$TMP/foreach-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/foreach-zh.o" -o "$TMP/foreach"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/foreach"; then status=0; else status=$?; fi
@@ -1070,7 +1070,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/foreach-read-only.ast" -o "$TMP/foreach-read-
     echo 'FAIL: foreach element binding was writable' >&2
     exit 1
 fi
-grep -q 'cannot assign to a const: item' "$TMP/foreach-read-only.err"
+grep -q 'cannot assign to a const: item' "$TMP/foreach-read-only.err" || { echo "FAIL: expected 'cannot assign to a const: item' in \$TMP/foreach-read-only.err" >&2; exit 1; }
 
 cat > "$TMP/foreach-index-read-only.ast" <<'SRC'
 // aster:language=zh
@@ -1086,7 +1086,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/foreach-index-read-only.ast" -o "$TMP/foreach
     echo 'FAIL: foreach index binding was writable' >&2
     exit 1
 fi
-grep -q 'cannot assign to a const: index' "$TMP/foreach-index-read-only.err"
+grep -q 'cannot assign to a const: index' "$TMP/foreach-index-read-only.err" || { echo "FAIL: expected 'cannot assign to a const: index' in \$TMP/foreach-index-read-only.err" >&2; exit 1; }
 
 printf '%s\n' '[9/19] UTF-8 strings lower and private symbols link across frontends'
 cat > "$TMP/string-zh.ast" <<'SRC'
@@ -1111,7 +1111,7 @@ return take(greeting) + take("世界");
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/string-zh.ast" -o "$TMP/string-zh.o"
 "$ASTER_BIN" build-cn-obj "$TMP/string-en.ast" -o "$TMP/string-en.o"
-cmp "$TMP/string-zh.o" "$TMP/string-en.o"
+cmp "$TMP/string-zh.o" "$TMP/string-en.o" || { echo "FAIL: \$TMP/string-zh.o and \$TMP/string-en.o differ" >&2; exit 1; }
 cat > "$TMP/string-native.ast" <<'SRC'
 fn native_literal() -> i32 {
     write(1, "native\n", 7);
@@ -1177,7 +1177,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/string-nul.ast" -o "$TMP/string-nul.o" 2> "$T
     echo 'FAIL: string literal containing NUL accepted' >&2
     exit 1
 fi
-grep -q 'string literals cannot contain NUL' "$TMP/string-nul.err"
+grep -q 'string literals cannot contain NUL' "$TMP/string-nul.err" || { echo "FAIL: expected 'string literals cannot contain NUL' in \$TMP/string-nul.err" >&2; exit 1; }
 
 cat > "$TMP/string-view.ast" <<'SRC'
 // aster:language=zh
@@ -1190,7 +1190,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/string-view.ast" -o "$TMP/string-view.o" 2> "
     echo 'FAIL: non-string string_view conversion was accepted' >&2
     exit 1
 fi
-grep -q 'string_view conversion requires a string operand' "$TMP/string-view.err"
+grep -q 'string_view conversion requires a string operand' "$TMP/string-view.err" || { echo "FAIL: expected 'string_view conversion requires a string operand' in \$TMP/string-view.err" >&2; exit 1; }
 
 printf '%s\n' '[10/19] scalar and array variables receive typed default values'
 cat > "$TMP/default-scalars.ast" <<'SRC'
@@ -1250,7 +1250,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/default-void.ast" -o "$TMP/default-void.o" 2>
     echo 'FAIL: void local was accepted' >&2
     exit 1
 fi
-grep -q 'void cannot be used as a local variable type' "$TMP/default-void.err"
+grep -q 'void cannot be used as a local variable type' "$TMP/default-void.err" || { echo "FAIL: expected 'void cannot be used as a local variable type' in \$TMP/default-void.err" >&2; exit 1; }
 
 printf '%s\n' '[11/19] scalar casts lower through the native float ABI'
 cat > "$TMP/scalar-casts.ast" <<'SRC'
@@ -1285,7 +1285,7 @@ return 0;
 }
 SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/scalar-casts-en.ast" -o "$TMP/scalar-casts-en.o"
-cmp "$TMP/scalar-casts.o" "$TMP/scalar-casts-en.o"
+cmp "$TMP/scalar-casts.o" "$TMP/scalar-casts-en.o" || { echo "FAIL: \$TMP/scalar-casts.o and \$TMP/scalar-casts-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/scalar-casts.o" -o "$TMP/scalar-casts"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/scalar-casts"; then status=0; else status=$?; fi
@@ -1303,7 +1303,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/bad-cast-arity.ast" -o "$TMP/bad-cast-arity.o
     echo 'FAIL: type cast with two arguments was accepted' >&2
     exit 1
 fi
-grep -q 'a type cast requires exactly one argument' "$TMP/bad-cast-arity.err"
+grep -q 'a type cast requires exactly one argument' "$TMP/bad-cast-arity.err" || { echo "FAIL: expected 'a type cast requires exactly one argument' in \$TMP/bad-cast-arity.err" >&2; exit 1; }
 
 
 printf '%s\n' '[12/19] nested structures zero-fill and initialize string fields'
@@ -1369,7 +1369,7 @@ return item.nested.value;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/struct-defaults-zh.ast" -o "$TMP/struct-defaults-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/struct-defaults-en.ast" -o "$TMP/struct-defaults-en.o"
-cmp "$TMP/struct-defaults-zh.o" "$TMP/struct-defaults-en.o"
+cmp "$TMP/struct-defaults-zh.o" "$TMP/struct-defaults-en.o" || { echo "FAIL: \$TMP/struct-defaults-zh.o and \$TMP/struct-defaults-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/struct-defaults-zh.o" -o "$TMP/struct-defaults"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/struct-defaults"; then status=0; else status=$?; fi
@@ -1390,7 +1390,7 @@ SRC
 if "$ASTER_BIN" build-cn-obj "$TMP/struct-void-field.ast" -o "$TMP/struct-void-field.o" 2> "$TMP/struct-void-field.err"; then
     echo 'FAIL: void structure field accepted' >&2; exit 1
 fi
-grep -q 'void cannot be used as a structure field type' "$TMP/struct-void-field.err"
+grep -q 'void cannot be used as a structure field type' "$TMP/struct-void-field.err" || { echo "FAIL: expected 'void cannot be used as a structure field type' in \$TMP/struct-void-field.err" >&2; exit 1; }
 
 printf '%s\n' '[13/19] nested struct literals initialize locals bilingually'
 cat > "$TMP/struct-literal-zh.ast" <<'SRC'
@@ -1423,7 +1423,7 @@ return item.pair.left + item.pair.right;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/struct-literal-zh.ast" -o "$TMP/struct-literal-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/struct-literal-en.ast" -o "$TMP/struct-literal-en.o"
-cmp "$TMP/struct-literal-zh.o" "$TMP/struct-literal-en.o"
+cmp "$TMP/struct-literal-zh.o" "$TMP/struct-literal-en.o" || { echo "FAIL: \$TMP/struct-literal-zh.o and \$TMP/struct-literal-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/struct-literal-zh.o" -o "$TMP/struct-literal"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/struct-literal"; then status=0; else status=$?; fi
@@ -1446,7 +1446,7 @@ SRC
 if "$ASTER_BIN" build-cn-obj "$TMP/struct-literal-arity.ast" -o "$TMP/struct-literal-arity.o" 2> "$TMP/struct-literal-arity.err"; then
     echo 'FAIL: structure literal with missing field accepted' >&2; exit 1
 fi
-grep -q "struct literal for 'Pair' has 1 values but the struct has 2 fields" "$TMP/struct-literal-arity.err"
+grep -q "struct literal for 'Pair' has 1 values but the struct has 2 fields" "$TMP/struct-literal-arity.err" || { echo "FAIL: expected 'struct literal for 'Pair' has 1 values but the struct has 2 fields' in \$TMP/struct-literal-arity.err" >&2; exit 1; }
 
 printf '%s\n' '[14/19] structure array fields read, write, and default-initialize bilingually'
 cat > "$TMP/struct-array-zh.ast" <<'SRC'
@@ -1482,7 +1482,7 @@ return table.items[0] + table.items[1];
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/struct-array-zh.ast" -o "$TMP/struct-array-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/struct-array-en.ast" -o "$TMP/struct-array-en.o"
-cmp "$TMP/struct-array-zh.o" "$TMP/struct-array-en.o"
+cmp "$TMP/struct-array-zh.o" "$TMP/struct-array-en.o" || { echo "FAIL: \$TMP/struct-array-zh.o and \$TMP/struct-array-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/struct-array-zh.o" -o "$TMP/struct-array"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/struct-array"; then status=0; else status=$?; fi
@@ -1532,7 +1532,7 @@ return 0;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/default-read-zh.ast" -o "$TMP/default-read-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/default-read-en.ast" -o "$TMP/default-read-en.o"
-cmp "$TMP/default-read-zh.o" "$TMP/default-read-en.o"
+cmp "$TMP/default-read-zh.o" "$TMP/default-read-en.o" || { echo "FAIL: \$TMP/default-read-zh.o and \$TMP/default-read-en.o differ" >&2; exit 1; }
 
 printf '%s\n' '[16/19] structure array element members initialize and read bilingually'
 cat > "$TMP/struct-array-element-zh.ast" <<'SRC'
@@ -1569,7 +1569,7 @@ return points[1].y;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/struct-array-element-zh.ast" -o "$TMP/struct-array-element-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/struct-array-element-en.ast" -o "$TMP/struct-array-element-en.o"
-cmp "$TMP/struct-array-element-zh.o" "$TMP/struct-array-element-en.o"
+cmp "$TMP/struct-array-element-zh.o" "$TMP/struct-array-element-en.o" || { echo "FAIL: \$TMP/struct-array-element-zh.o and \$TMP/struct-array-element-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/struct-array-element-zh.o" -o "$TMP/struct-array-element"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/struct-array-element"; then status=0; else status=$?; fi
@@ -1707,7 +1707,7 @@ return visits - 1;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/enumloop-zh.ast" -o "$TMP/enumloop-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/enumloop-en.ast" -o "$TMP/enumloop-en.o"
-cmp "$TMP/enumloop-zh.o" "$TMP/enumloop-en.o"
+cmp "$TMP/enumloop-zh.o" "$TMP/enumloop-en.o" || { echo "FAIL: \$TMP/enumloop-zh.o and \$TMP/enumloop-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/enumloop-zh.o" -o "$TMP/enumloop"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/enumloop"; then status=0; else status=$?; fi
@@ -1729,7 +1729,7 @@ SRC
 if "$ASTER_BIN" build-cn-obj "$TMP/enumloop-scalar.ast" -o "$TMP/enumloop-scalar.o" 2> "$TMP/enumloop-scalar.err"; then
     echo 'FAIL: enumloop accepted a scalar object' >&2; exit 1
 fi
-grep -q 'enumloop object must be a structure variable' "$TMP/enumloop-scalar.err"
+grep -q 'enumloop object must be a structure variable' "$TMP/enumloop-scalar.err" || { echo "FAIL: expected 'enumloop object must be a structure variable' in \$TMP/enumloop-scalar.err" >&2; exit 1; }
 
 printf '%s\n' '[18/19] auto-initialized unchanged values produce conservative warnings'
 cat > "$TMP/stable-zh.ast" <<'SRC'
@@ -1801,8 +1801,8 @@ for language in zh en; do
         field_warning="warning: field 'data.fixed' receives only its initial value"
         unexpected="warning: (local variable 'changed'|local variable 'escaped'|field 'data.changed'|field 'data.escaped'|local array 'values'|local array 'passed'|local variable 'conditional'|local variable 'explicit')"
     fi
-    grep -q "$stable_warning" "$TMP/stable-$language.err"
-    grep -q "$field_warning" "$TMP/stable-$language.err"
+    grep -q "$stable_warning" "$TMP/stable-$language.err" || { echo "FAIL: expected '\$stable_warning' in \$TMP/stable-\$language.err" >&2; exit 1; }
+    grep -q "$field_warning" "$TMP/stable-$language.err" || { echo "FAIL: expected '\$field_warning' in \$TMP/stable-\$language.err" >&2; exit 1; }
     if grep -Eq "$unexpected" "$TMP/stable-$language.err"; then
         echo "FAIL: stable-value analysis warned about a modified, escaped, explicitly initialized, or constant binding ($language)" >&2
         exit 1
@@ -1986,7 +1986,7 @@ return 0;
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/signed-narrow-zh.ast" -o "$TMP/signed-narrow-zh.o"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/signed-narrow-en.ast" -o "$TMP/signed-narrow-en.o"
-cmp "$TMP/signed-narrow-zh.o" "$TMP/signed-narrow-en.o"
+cmp "$TMP/signed-narrow-zh.o" "$TMP/signed-narrow-en.o" || { echo "FAIL: \$TMP/signed-narrow-zh.o and \$TMP/signed-narrow-en.o differ" >&2; exit 1; }
 "$ASTER_BIN" build-cn-obj -g "$TMP/signed-narrow-zh.ast" -o "$TMP/signed-narrow-debug.o"
 if command -v strings >/dev/null 2>&1; then
     strings -n 2 "$TMP/signed-narrow-debug.o" | grep -qx 'i8'
@@ -2030,7 +2030,7 @@ SRC
         echo "FAIL: out-of-range $name initializer accepted" >&2
         exit 1
     fi
-    grep -q "initializer does not fit in $type" "$TMP/signed-narrow-overflow.err"
+    grep -q "initializer does not fit in $type" "$TMP/signed-narrow-overflow.err" || { echo "FAIL: expected 'initializer does not fit in \$type' in \$TMP/signed-narrow-overflow.err" >&2; exit 1; }
 done
 
 cat > "$TMP/closure-unknown-capture.ast" <<'SRC'
@@ -2048,7 +2048,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/closure-unknown-capture.ast" \
     echo 'FAIL: unknown closure capture was accepted' >&2
     exit 1
 fi
-grep -q 'unknown closure capture: missing' "$TMP/closure-unknown-capture.err"
+grep -q 'unknown closure capture: missing' "$TMP/closure-unknown-capture.err" || { echo "FAIL: expected 'unknown closure capture: missing' in \$TMP/closure-unknown-capture.err" >&2; exit 1; }
 
 cat > "$TMP/closure-uncaptured-body.ast" <<'SRC'
 // aster:language=zh
@@ -2066,7 +2066,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/closure-uncaptured-body.ast" \
     echo 'FAIL: closure body referenced an uncaptured local' >&2
     exit 1
 fi
-grep -q 'unknown variable: 局部值' "$TMP/closure-uncaptured-body.err"
+grep -q 'unknown variable: 局部值' "$TMP/closure-uncaptured-body.err" || { echo "FAIL: expected 'unknown variable: 局部值' in \$TMP/closure-uncaptured-body.err" >&2; exit 1; }
 
 cat > "$TMP/closure-global-capture.ast" <<'SRC'
 // aster:language=en
@@ -2084,7 +2084,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/closure-global-capture.ast" \
     exit 1
 fi
 grep -q 'global variable cannot be captured; access it directly: shared' \
-    "$TMP/closure-global-capture.err"
+    "$TMP/closure-global-capture.err" || { echo "FAIL: expected 'global variable cannot be captured; access it directly: shared' in \$TMP/closure-global-capture.err" >&2; exit 1; }
 
 cat > "$TMP/closure-large-env.ast" <<'SRC'
 // aster:language=en
@@ -2105,7 +2105,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/closure-large-env.ast" \
     exit 1
 fi
 grep -q "closure environment exceeds 256 bytes at capture 'large'" \
-    "$TMP/closure-large-env.err"
+    "$TMP/closure-large-env.err" || { echo "FAIL: expected 'closure environment exceeds 256 bytes at capture 'large'' in \$TMP/closure-large-env.err" >&2; exit 1; }
 
 cat > "$TMP/closure-this-outside.ast" <<'SRC'
 // aster:language=en
@@ -2122,7 +2122,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/closure-this-outside.ast" \
     exit 1
 fi
 grep -q 'this can only be captured inside an instance method' \
-    "$TMP/closure-this-outside.err"
+    "$TMP/closure-this-outside.err" || { echo "FAIL: expected 'this can only be captured inside an instance method' in \$TMP/closure-this-outside.err" >&2; exit 1; }
 
 cat > "$TMP/closure-valid-capture.ast" <<'SRC'
 // aster:language=en
@@ -2655,7 +2655,7 @@ if "$ASTER_BIN" build-cn-obj --language en "$TMP/closure-callback-struct-return-
     exit 1
 fi
 grep -q 'closure callback adapter does not support struct return values' \
-    "$TMP/closure-callback-struct-return-en.err"
+    "$TMP/closure-callback-struct-return-en.err" || { echo "FAIL: expected 'closure callback adapter does not support struct return values' in \$TMP/closure-callback-struct-return-en.err" >&2; exit 1; }
 
 cat > "$TMP/closure-callback-struct-return-zh.ast" <<'SRC'
 // aster:language=zh
@@ -2680,7 +2680,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/closure-callback-struct-return-zh.ast" \
     exit 1
 fi
 grep -q 'closure callback adapter does not support struct return values' \
-    "$TMP/closure-callback-struct-return-zh.err"
+    "$TMP/closure-callback-struct-return-zh.err" || { echo "FAIL: expected 'closure callback adapter does not support struct return values' in \$TMP/closure-callback-struct-return-zh.err" >&2; exit 1; }
 
 cat > "$TMP/closure-callback-void-nested-en.ast" <<'SRC'
 // aster:language=en
@@ -2701,7 +2701,7 @@ if "$ASTER_BIN" build-cn-obj --language en "$TMP/closure-callback-void-nested-en
     exit 1
 fi
 grep -q 'a callback adapter call returning void cannot be used inside an expression' \
-    "$TMP/closure-callback-void-nested-en.err"
+    "$TMP/closure-callback-void-nested-en.err" || { echo "FAIL: expected 'a callback adapter call returning void cannot be used inside an expression' in \$TMP/closure-callback-void-nested-en.err" >&2; exit 1; }
 
 cat > "$TMP/closure-callback-void-nested-zh.ast" <<'SRC'
 // aster:language=zh
@@ -2724,7 +2724,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/closure-callback-void-nested-zh.ast" \
     exit 1
 fi
 grep -q 'a callback adapter call returning void cannot be used inside an expression' \
-    "$TMP/closure-callback-void-nested-zh.err"
+    "$TMP/closure-callback-void-nested-zh.err" || { echo "FAIL: expected 'a callback adapter call returning void cannot be used inside an expression' in \$TMP/closure-callback-void-nested-zh.err" >&2; exit 1; }
 
 cat > "$TMP/closure-callback-wrong-user-en.ast" <<'SRC'
 // aster:language=en
@@ -2742,7 +2742,7 @@ if "$ASTER_BIN" build-cn-obj --language en "$TMP/closure-callback-wrong-user-en.
     exit 1
 fi
 grep -q 'argument type mismatch calling register at argument 1: expected ptr' \
-    "$TMP/closure-callback-wrong-user-en.err"
+    "$TMP/closure-callback-wrong-user-en.err" || { echo "FAIL: expected 'argument type mismatch calling register at argument 1: expected ptr' in \$TMP/closure-callback-wrong-user-en.err" >&2; exit 1; }
 
 cat > "$TMP/closure-callback-wrong-user-zh.ast" <<'SRC'
 // aster:language=zh
@@ -2762,7 +2762,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/closure-callback-wrong-user-zh.ast" \
     exit 1
 fi
 grep -q 'argument type mismatch calling 注册 at argument 1: expected ptr' \
-    "$TMP/closure-callback-wrong-user-zh.err"
+    "$TMP/closure-callback-wrong-user-zh.err" || { echo "FAIL: expected 'argument type mismatch calling 注册 at argument 1: expected ptr' in \$TMP/closure-callback-wrong-user-zh.err" >&2; exit 1; }
 
 cat > "$TMP/closure-callback-plain-function-en.ast" <<'SRC'
 // aster:language=en
@@ -2793,26 +2793,26 @@ SRC
     -o "$TMP/closure-callback-plain-function-zh.o"
 
 if command -v readelf >/dev/null 2>&1; then
-    readelf -Ws "$TMP/closure-zero-en.o" | grep -q '__aster_cn_closure_'
-    readelf -Ws "$TMP/closure-zero-zh.o" | grep -q '__aster_cn_closure_'
-    readelf -Ws "$TMP/closure-callback-adapter-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-adapter-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-member-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-member-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-field-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-array-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-delayed-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-delayed-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-nested-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-nested-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-condition-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-condition-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-while-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-while-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-count-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-count-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-match-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -Ws "$TMP/closure-callback-match-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-zero-en.o" | grep -q '__aster_cn_closure_' || { echo "FAIL: expected '\$TMP/closure-zero-en.o' in __aster_cn_closure_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-zero-zh.o" | grep -q '__aster_cn_closure_' || { echo "FAIL: expected '\$TMP/closure-zero-zh.o' in __aster_cn_closure_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-adapter-en.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-adapter-en.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-adapter-zh.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-adapter-zh.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-member-en.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-member-en.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-member-zh.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-member-zh.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-field-en.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-field-en.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-array-zh.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-array-zh.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-delayed-en.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-delayed-en.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-delayed-zh.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-delayed-zh.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-nested-en.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-nested-en.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-nested-zh.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-nested-zh.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-condition-en.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-condition-en.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-condition-zh.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-condition-zh.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-while-en.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-while-en.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-while-zh.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-while-zh.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-count-en.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-count-en.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-count-zh.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-count-zh.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-match-en.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-match-en.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
+    readelf -Ws "$TMP/closure-callback-match-zh.o" | grep -q '__aster_cn_adapter_thunk_' || { echo "FAIL: expected '\$TMP/closure-callback-match-zh.o' in __aster_cn_adapter_thunk_" >&2; exit 1; }
     if readelf -Ws "$TMP/closure-callback-plain-function-en.o" | grep -q '__aster_cn_adapter_thunk_'; then
         echo 'FAIL: ordinary function pointer received an adapter thunk (en)' >&2
         exit 1
@@ -2826,7 +2826,7 @@ if [ "$CAN_RUN" -eq 1 ]; then
     "$ASTER_BIN" build-obj "$ROOT/stdlib/aster_std.ast" -o "$TMP/aster_std.o"
     "$ASTER_BIN" link-obj "$TMP/closure-valid-capture.o" "$TMP/aster_std.o" -o "$TMP/closure-valid-capture"
     if "$RUNNER" "$TMP/closure-valid-capture"; then status=0; else status=$?; fi
-    [ "$status" -eq 42 ]
+    [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     cat > "$TMP/closure-valid-capture-zh.ast" <<'SRC'
 // aster:language=zh
 方法 启动方法(): 整数
@@ -2843,86 +2843,86 @@ SRC
     "$ASTER_BIN" link-obj "$TMP/closure-valid-capture-zh.o" "$TMP/aster_std.o" \
         -o "$TMP/closure-valid-capture-zh"
     if "$RUNNER" "$TMP/closure-valid-capture-zh"; then status=0; else status=$?; fi
-    [ "$status" -eq 42 ]
+    [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     "$ASTER_BIN" link-obj "$TMP/closure-zero-en.o" -o "$TMP/closure-zero-en"
     if "$RUNNER" "$TMP/closure-zero-en"; then status=0; else status=$?; fi
-    [ "$status" -eq 42 ]
+    [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     "$ASTER_BIN" link-obj "$TMP/closure-zero-zh.o" -o "$TMP/closure-zero-zh"
     if "$RUNNER" "$TMP/closure-zero-zh"; then status=0; else status=$?; fi
-    [ "$status" -eq 42 ]
+    [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     for adapter_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-adapter-$adapter_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-adapter-$adapter_target"
         if "$RUNNER" "$TMP/closure-callback-adapter-$adapter_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 42 ]
+        [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     done
     for member_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-member-$member_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-member-$member_target"
         if "$RUNNER" "$TMP/closure-callback-member-$member_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 42 ]
+        [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     done
     "$ASTER_BIN" link-obj "$TMP/closure-callback-field-en.o" \
         "$TMP/aster_std.o" -o "$TMP/closure-callback-field-en"
     if "$RUNNER" "$TMP/closure-callback-field-en"; then status=0; else status=$?; fi
-    [ "$status" -eq 42 ]
+    [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     "$ASTER_BIN" link-obj "$TMP/closure-callback-array-zh.o" \
         "$TMP/aster_std.o" -o "$TMP/closure-callback-array-zh"
     if "$RUNNER" "$TMP/closure-callback-array-zh"; then status=0; else status=$?; fi
-    [ "$status" -eq 43 ]
+    [ "$status" -eq 43 ] || { echo "FAIL: expected exit 43, got $status" >&2; exit 1; }
     for delayed_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-delayed-$delayed_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-delayed-$delayed_target"
         if "$RUNNER" "$TMP/closure-callback-delayed-$delayed_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 85 ]
+        [ "$status" -eq 85 ] || { echo "FAIL: expected exit 85, got $status" >&2; exit 1; }
     done
     for nested_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-nested-$nested_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-nested-$nested_target"
         if "$RUNNER" "$TMP/closure-callback-nested-$nested_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 42 ]
+        [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     done
     for condition_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-condition-$condition_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-condition-$condition_target"
         if "$RUNNER" "$TMP/closure-callback-condition-$condition_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 42 ]
+        [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     done
     for while_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-while-$while_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-while-$while_target"
         if "$RUNNER" "$TMP/closure-callback-while-$while_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 5 ]
+        [ "$status" -eq 5 ] || { echo "FAIL: expected exit 5, got $status" >&2; exit 1; }
     done
     for count_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-count-$count_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-count-$count_target"
         if "$RUNNER" "$TMP/closure-callback-count-$count_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 4 ]
+        [ "$status" -eq 4 ] || { echo "FAIL: expected exit 4, got $status" >&2; exit 1; }
     done
     for match_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-match-$match_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-match-$match_target"
         if "$RUNNER" "$TMP/closure-callback-match-$match_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 42 ]
+        [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     done
     for plain_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-plain-function-$plain_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-plain-function-$plain_target"
         if "$RUNNER" "$TMP/closure-callback-plain-function-$plain_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 42 ]
+        [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     done
     for closure_target in field-en field-zh array-en array-zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-$closure_target.o" \
             -o "$TMP/closure-$closure_target"
         if "$RUNNER" "$TMP/closure-$closure_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 42 ]
+        [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
     done
     for capture_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-array-capture-$capture_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-array-capture-$capture_target"
         if "$RUNNER" "$TMP/closure-array-capture-$capture_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 22 ]
+        [ "$status" -eq 22 ] || { echo "FAIL: expected exit 22, got $status" >&2; exit 1; }
     done
 
     cat > "$TMP/class-enum-public-en.ast" <<'SRC'
@@ -2972,7 +2972,7 @@ SRC
             "$TMP/aster_std.o" \
             -o "$TMP/class-enum-public-$class_enum_target"
         if "$RUNNER" "$TMP/class-enum-public-$class_enum_target"; then status=0; else status=$?; fi
-        [ "$status" -eq 1 ]
+        [ "$status" -eq 1 ] || { echo "FAIL: expected exit 1, got $status" >&2; exit 1; }
     done
 
     cat > "$TMP/class-enum-null-en.ast" <<'SRC'
@@ -3097,7 +3097,7 @@ for global_struct_target in en zh; do
         "$TMP/global-struct-array-$global_struct_target.ast" \
         -o "$TMP/global-struct-array-$global_struct_target.o"
 done
-cmp "$TMP/global-struct-array-en.o" "$TMP/global-struct-array-zh.o"
+cmp "$TMP/global-struct-array-en.o" "$TMP/global-struct-array-zh.o" || { echo "FAIL: \$TMP/global-struct-array-en.o and \$TMP/global-struct-array-zh.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/global-struct-array-en.o" \
     -o "$TMP/global-struct-array"
 if [ "$CAN_RUN" -eq 1 ]; then
@@ -3171,7 +3171,7 @@ for array_parameter_target in en zh; do
         "$TMP/array-parameter-$array_parameter_target.ast" \
         -o "$TMP/array-parameter-$array_parameter_target.o"
 done
-cmp "$TMP/array-parameter-en.o" "$TMP/array-parameter-zh.o"
+cmp "$TMP/array-parameter-en.o" "$TMP/array-parameter-zh.o" || { echo "FAIL: \$TMP/array-parameter-en.o and \$TMP/array-parameter-zh.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/array-parameter-en.o" -o "$TMP/array-parameter"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/array-parameter"; then status=0; else status=$?; fi
@@ -3342,7 +3342,7 @@ for class_array_parameter_target in en zh; do
         "$TMP/class-array-parameter-$class_array_parameter_target.ast" \
         -o "$TMP/class-array-parameter-$class_array_parameter_target.o"
 done
-cmp "$TMP/class-array-parameter-en.o" "$TMP/class-array-parameter-zh.o"
+cmp "$TMP/class-array-parameter-en.o" "$TMP/class-array-parameter-zh.o" || { echo "FAIL: \$TMP/class-array-parameter-en.o and \$TMP/class-array-parameter-zh.o differ" >&2; exit 1; }
 "$ASTER_BIN" link-obj "$TMP/class-array-parameter-en.o" \
     -o "$TMP/class-array-parameter"
 if [ "$CAN_RUN" -eq 1 ]; then

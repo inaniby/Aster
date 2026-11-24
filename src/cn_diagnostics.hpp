@@ -19,9 +19,21 @@ struct DiagnosticInfo {
 };
 
 inline bool diagnosticDecorated(std::string_view message) {
-    return message.size() >= 6 && message[0] == '[' && message[1] == 'A' &&
+    // P1-1: classifyDiagnostic() only ever emits three-digit codes
+    // ([A-NNN]), so the old check for a two-digit code (message[5] == ']')
+    // was false for every real diagnostic and the same error was decorated
+    // once per layer (lex() -> parseProgram()/readPackageName(s) -> main's
+    // catch), nesting [A-001]/[A-011] two or three deep. Accept both the
+    // three-digit form and the legacy two-digit form so decoration is
+    // idempotent at every layer.
+    if (message.size() >= 6 && message[0] == '[' && message[1] == 'A' &&
         message[2] == '-' && message[3] >= '0' && message[3] <= '9' &&
-        message[4] >= '0' && message[4] <= '9' && message[5] == ']';
+        message[4] >= '0' && message[4] <= '9' && message[5] == ']')
+        return true;
+    return message.size() >= 7 && message[0] == '[' && message[1] == 'A' &&
+        message[2] == '-' && message[3] >= '0' && message[3] <= '9' &&
+        message[4] >= '0' && message[4] <= '9' &&
+        message[5] >= '0' && message[5] <= '9' && message[6] == ']';
 }
 
 inline DiagnosticInfo classifyDiagnostic(std::string_view message) {

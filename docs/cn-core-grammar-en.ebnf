@@ -5,11 +5,12 @@
 program       = [ package_header ], { declaration | comment } ;
 package_header = "package", package_name, { "=", package_name }, ";" ;
 package_name = identifier, { ".", identifier } ;
-declaration   = variable | constant | function | external_function | structure | enum | class | interface_class | alias | include ;
+declaration   = variable | constant | function | external_function | external_global | structure | enum | class | interface_class | alias | include ;
 variable      = "let", identifier, [ ":", type, [ "[", integer, "]" ] ], [ "=", expression ], ";" ;
 constant      = "const", identifier, ":", type, "=", expression, ";" ;
-function      = "fn", identifier, "(", [ parameters ], ")", ":", type, block ;
+function      = "fn", identifier, "(", [ parameters ], ")", [ ":", type ], block ;
 external_function = "extern", "fn", identifier, "(", [ parameters ], ")", [ ":", type ], ";" ;
+external_global = "extern", "let", identifier, ":", type, ";" ;
 closure       = "fn", [ capture_list ], "(", [ parameters ], ")", [ ":", type ], block ;
 capture_list  = "[", capture_name, { ",", capture_name }, "]" ;
 capture_name  = identifier | "this" ;
@@ -22,8 +23,8 @@ class_member  = { class_member_annotation, [ newline ] }, ( class_field | functi
 class_member_annotation = "@", ( "private" | "protected" | "static" | "constructor" | "override" ) ;
 top_visibility_annotation = "@private" ;
 class_field   = "let", identifier, ":", type, [ "[", integer, "]" ], [ "=", expression ], ";" ;
-interface_class = "interface class", identifier, "{", { method_signature }, "}" ;
-method_signature = "fn", identifier, "(", [ parameters ], ")", ":", type, ";" ;
+interface_class = "interface class", identifier, [ ":", identifier ], "{", { method_signature }, "}" ;
+method_signature = "fn", identifier, "(", [ parameters ], ")", [ ":", type ], ";" ;
 enum          = "enum", identifier, "{", enum_items, "}" ;
 enum_items    = enum_member, { ("," | newline), enum_member }, [ "," | newline ] ;
 enum_member   = identifier, [ "=", expression ] ;
@@ -38,6 +39,13 @@ switch        = "switch", "(", expression, ")", "{", newline, { switch_arm }, [ 
 switch_arm    = "case", expression_list, newline, { statement }, ? until "case" | "else" | "}" ? ;
 switch_else   = "else", newline, { statement }, ? until "}" ? ;
 expression_list = expression, { ",", expression } ;
+expression    = logical_or, [ "?", expression, ":", expression ] ;
+logical_or    = postfix, { binary_operator, postfix } ;
+binary_operator = "||" | "&&" | "|" | "^" | "&" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "<<" | ">>" | "+" | "-" | "*" | "/" | "%" ;
+              (* Ternary conditional, right-associative: a ? b : c ? d : e reads as
+                 a ? b : (c ? d : e). The condition and both arms are full
+                 expressions. Binary-operator precedence follows §2.4 of the
+                 design and is not expanded in this file. *)
 primary       = identifier | closure | integer | floating | string | character | boolean | "null" | "(", expression, ")"
               | "[", [ expression_list ], "]" ;
 struct_literal = identifier, "{", [ expression_list ], "}" ;
@@ -50,8 +58,10 @@ break         = "break", [ identifier ], ";" ;
 continue      = "continue", [ identifier ], ";" ;
 identifier    = ? ASCII letter / underscore / CJK U+4E00..U+9FFF, then those or digits ? ;
 type          = "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
-              | "f32" | "f64" | "bool" | "char" | "string" | "ptr" | identifier | closure_type ;
+              | "f32" | "f64" | "bool" | "char" | "string" | "string_view" | "ptr"
+              | identifier | closure_type | function_type ;
 closure_type  = "closure", "(", [ type, { ",", type } ], ")", ":", type ;
+function_type = "fn", "(", [ type, { ",", type } ], ")", ":", type ;
 floating      = ? decimal floating-point literal containing "." or "e"/"E" ? ;
 (* Class member annotations may stack; visibility annotations are mutually
    exclusive. @static applies to fields and methods; @constructor/@override

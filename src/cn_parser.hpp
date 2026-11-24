@@ -131,6 +131,30 @@ struct ImportDeclaration {
     unsigned column = 0;
 };
 
+
+// P1-3: `类型 别名 = 类型` / `type Alias = Type;` (EBNF `alias`, design
+// §2.9) and `导入 "文件.ast"` / `include "file.ast";` (EBNF `include`,
+// design §2.10). The alias is resolved by the lowering (registered into
+// the backend type-alias table); the file import is resolved textually by
+// cnResolvePackageImports, like the legacy `include`.
+struct TypeAliasDeclaration {
+    std::string name;
+    std::string typeName;
+    unsigned line = 0;
+    unsigned column = 0;
+    // B-P4: as StructDeclaration — the file that declared the alias.
+    std::string sourceFile;
+};
+
+struct FileImportDeclaration {
+    std::string path;
+    // The file that wrote the import: relative paths resolve against its
+    // directory, which matters once several TUs are merged into one program.
+    std::string sourceFile;
+    unsigned line = 0;
+    unsigned column = 0;
+};
+
 struct EnumMemberDeclaration {
     std::string name;
     bool hasExpression = false;
@@ -153,6 +177,8 @@ struct Program {
     std::string packageName;
     std::vector<std::string> packageAliases;
     std::vector<ImportDeclaration> imports;
+    std::vector<TypeAliasDeclaration> aliases;
+    std::vector<FileImportDeclaration> fileImports;
     std::vector<StructDeclaration> structures;
     std::vector<EnumDeclaration> enums;
     std::vector<ClassDeclaration> classes;

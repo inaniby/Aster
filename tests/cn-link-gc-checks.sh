@@ -34,9 +34,9 @@ fi
 printf '  file size %s -> %s bytes, unreachable routine removed\n' "$full_size" "$gc_size"
 
 echo '[2/3] the pruned image still has the same runtime output'
-"$RUNNER" "$TMP/full" > "$TMP/full.out"
-"$RUNNER" "$TMP/gc" > "$TMP/gc.out"
-cmp "$TMP/full.out" "$TMP/gc.out"
+"$RUNNER" "$TMP/full" > "$TMP/full.out" || { echo 'FAIL: program run failed' >&2; exit 1; }
+"$RUNNER" "$TMP/gc" > "$TMP/gc.out" || { echo 'FAIL: program run failed' >&2; exit 1; }
+cmp "$TMP/full.out" "$TMP/gc.out" || { echo "FAIL: \$TMP/full.out and \$TMP/gc.out differ" >&2; exit 1; }
 
 echo '[3/3] debug links retain complete text for valid DWARF'
 "$ASTER_BIN" build-obj -g stdlib/aster_std.ast -o "$TMP/std-g.o" >/dev/null
