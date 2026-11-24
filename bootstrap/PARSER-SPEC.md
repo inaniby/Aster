@@ -847,6 +847,18 @@ All carry a position.
 | B20 | `global alignment is not in the bootstrap subset` | the `@` |
 | B21 | `ptr<ptr<...>> is not in the bootstrap subset` | the inner `ptr` |
 | B22 | `fn(...) types are not in the bootstrap subset` | the `fn` |
+| B23 | `D-2a 'layout' declaration is not in the bootstrap subset` | the `layout` |
+| B24 | `D-2a 'event' block is not in the bootstrap subset` | the `event` |
+| B25 | `D-2a node row is not in the bootstrap subset: <Kind>` | the kind name |
+| B26 | `D-2a 'key()' is not in the bootstrap subset` | the `key` |
+
+B23–B25 fire where an `Ident Ident` shape can only be a layout form: at the
+top of a program item and at the start of a statement (a top-level item never
+validly starts with `Ident Ident`, and neither does a statement). B26 fires
+in the expression machine where a call callee is read, next to the
+`sizeof`/`len` rejection (B18). The Chinese spellings of the same four forms
+(`布局`/`事件`/`键`/node-kind names) are refused one phase earlier, in the
+scanner — see LEXER-SPEC.md §4, which carves them out of E6.
 
 ### 11.3 Caps
 

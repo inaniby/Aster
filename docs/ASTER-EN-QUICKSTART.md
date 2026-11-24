@@ -318,6 +318,61 @@ The repository examples are in `examples/cn/`; `hello.ast` demonstrates count
 loops and `oop.ast` demonstrates classes and static members. The formatter is
 available to IDE integrations through `src/cn_formatter.hpp`.
 
+## Declarative layout (D-2a)
+
+A `layout` declaration is a named function returning a `View`; its body is
+the tree expression. An `event` block is a top-level block whose header uses
+a **name**, not a numeric key. Layout and event blocks close with braces;
+an `if` inside a layout body still uses braces in English files. Ordinary
+methods write the return type after a colon (`fn f(): i32`); the English
+`layout` declaration keeps the draft form `-> View`:
+
+```aster
+event Inc:tap() {
+    g_app.count = g_app.count + 1;
+    aui_state_set(1, g_app.count);
+    aui_invalidate();
+}
+
+layout page_counter(s: ptr<App>, user: ptr) -> View {
+    Column MainCol, Padding(20), Gap(16) {
+        Label Title, ptr("Counter")
+        Row ButtonRow, Gap(12) {
+            Button Dec, ptr("-")
+            Number Count, s.count
+            Button Inc, ptr("+")
+        }
+        Button Reset, ptr("Reset")
+        if (s.count == 0) {
+            Label Zero, ptr("Count is zero.")
+        } else {
+            Label NonZero, ptr("Count is non-zero.")
+        }
+    }
+}
+```
+
+A node row is `Kind Name, args..., modifier calls..., { child rows... }` and
+never appears in argument position. The node name is its identity: names are
+unique within one layout declaration, and
+`key = FNV-1a(declarationName.nodeName)` (32-bit, names hashed as UTF-8
+bytes); a collision within one application is a compile error, overridable
+with the named parameter `key = N` (`Column MainCol, key = 1001, Padding(20)
+{ ... }` — an override parameter, not a modifier). `key(name)` is a
+compile-time builtin that folds to an `i32` constant
+(`aui_text_value(key(Input))`); referring to an unknown node name is a
+compile error. Modifiers are calls (`Padding(20)`, `Gap(16)`,
+`Background(...)`, `Radius(...)`, `TextSize(...)`, `Foreground(...)`,
+`Selectable(...)`, `Size(...)`, `Align(...)`, `Weight(...)`, `Grow(...)`);
+repeating one in a row is a compile error and string dimensions are refused.
+`Grow` has no landing yet — the framework has no `aui_grow`, so writing
+`Grow(...)` is a compile error, not a silent drop. An event block body may
+only use globals and getters, never build locals; writing two blocks for the
+same (key, event) is a compile error; statements after the tree expression
+are post-mount statements and run in source order. The full node-kind,
+modifier, and event-kind tables are in `docs/ASTER-CN-DESIGN.md` §2.16. The
+bootstrap compiler rejects all D-2a forms (see the design §3.7).
+
 ## Current limits
 
 The frontend currently targets the implemented subset of the language. One-

@@ -158,6 +158,14 @@ public:
                         InterfaceClassDeclaration declaration = parseInterfaceClass();
                         declaration.visibility = annotations.visibility;
                         program.interfaceClasses.push_back(std::move(declaration));
+                    } else if (at("LayoutKw")) {
+                        LayoutDeclaration declaration = parseLayout();
+                        declaration.visibility = annotations.visibility;
+                        program.layouts.push_back(std::move(declaration));
+                    } else if (eventBlockAhead()) {
+                        EventBlockDeclaration declaration = parseEventBlock();
+                        declaration.visibility = annotations.visibility;
+                        program.events.push_back(std::move(declaration));
                     } else {
                         fail("top-level visibility annotations require a declaration");
                     }
@@ -170,13 +178,15 @@ public:
                 else if (at("Class")) program.classes.push_back(parseClass());
                 else if (at("InterfaceClass"))
                     program.interfaceClasses.push_back(parseInterfaceClass());
+                else if (at("LayoutKw")) program.layouts.push_back(parseLayout());
+                else if (eventBlockAhead()) program.events.push_back(parseEventBlock());
                 else if (at("VarDecl") || at("ConstDecl"))
                     program.globals.push_back(parseVariable(at("ConstDecl")));
                 else if (at("Extern") && externalGlobalAhead())
                     program.globals.push_back(parseExternalGlobal());
                 else if (at("Method") || at("Extern"))
                     program.methods.push_back(parseMethod(at("Extern")));
-                else fail("expected a method, structure, enum, class, interface class, or global declaration");
+                else fail("expected a method, structure, enum, class, interface class, layout, event block, or global declaration");
             } else if (at("TypeAlias")) program.aliases.push_back(parseTypeAlias());
             else if (at("IncludeKw")) program.fileImports.push_back(parseFileImport());
             else if (at("StructKw")) program.structures.push_back(parseStruct());
@@ -184,13 +194,15 @@ public:
             else if (at("Class")) program.classes.push_back(parseClass());
             else if (at("InterfaceClass"))
                 program.interfaceClasses.push_back(parseInterfaceClass());
+            else if (at("LayoutKw")) program.layouts.push_back(parseLayout());
+            else if (eventBlockAhead()) program.events.push_back(parseEventBlock());
             else if (at("VarDecl") || at("ConstDecl"))
                 program.globals.push_back(parseVariable(at("ConstDecl")));
             else if (at("Extern") && externalGlobalAhead())
                 program.globals.push_back(parseExternalGlobal());
             else if (at("Method") || at("Extern"))
                 program.methods.push_back(parseMethod(at("Extern")));
-            else fail("expected a method, structure, enum, class, interface class, or global declaration");
+            else fail("expected a method, structure, enum, class, interface class, layout, event block, or global declaration");
             skipNewlines();
         }
         return program;
@@ -586,6 +598,171 @@ private:
             ++index;
         }
         return index < tokens_.size() && tokens_[index].kind == "VarDecl";
+    }
+    // D-2a fix: `event`/`事件` are contextual keywords, not reserved
+    // keywords — the framework's NDK declarations use `event` as a
+    // parameter name (e.g. aui_impl.ast:1329 `event: ptr`), so the lexer
+    // must not turn it into a keyword token. An event block is `event` /
+    // `事件` followed by an identifier (the node name) and a colon; any
+    // other use of `event` is an ordinary identifier.
+    bool eventBlockAhead() const {
+        if (!at("Identifier")) return false;
+        if (current().text != "event" && current().text != "事件") return false;
+        if (position_ + 2 >= tokens_.size()) return false;
+        return tokens_[position_ + 1].kind == "Identifier" &&
+               tokens_[position_ + 2].kind == "Colon";
+    }
+    // D-2a: a node row starts with two identifiers in a row — the node
+    // kind, then the node name (`列 主列, ...` / `Column MainCol, ...`).
+    // A kind followed directly by a comma is a node row missing its name
+    // (`列 , ...`), so it counts too, and parseNodeRow reports the missing
+    // name. Ordinary statements never do that: a call is `name(`, an
+    // assignment is `name =` / `name.`, so the lookahead is exact. (`name
+    // {` is deliberately NOT a row: it is a struct literal statement.)
+    bool nodeRowAhead() const {
+        if (!at("Identifier")) return false;
+        if (position_ + 1 >= tokens_.size()) return false;
+        const Token& next = tokens_[position_ + 1];
+        return next.kind == "Identifier" || next.kind == "Main" || next.kind == "Comma";
+    }
+    // D-2a (W-1): `布局 名(参数): 视图 { ... }` /
+    // `layout name(params) -> View { ... }`. The body uses braces in both
+    // languages (W-O1); the `如果` inside still closes with `结束 如果`.
+    // `视图`/`View` needs no keyword: parseType() accepts any identifier
+    // as a type name, and the lowering treats it as i32.
+    LayoutDeclaration parseLayout() {
+        const Token start = expect("LayoutKw", "expected a layout declaration");
+        LayoutDeclaration layout;
+        layout.line = start.line;
+        layout.column = start.column;
+        layout.sourceFile = sourceFile_;
+        layout.name = parseName();
+        expect("LParen", "expected '(' after the layout name");
+        skipNewlines();
+        if (!at("RParen")) {
+            while (true) {
+                Parameter parameter;
+                parameter.name = parseName();
+                expect("Colon", "expected ':' after a layout parameter name");
+                parseParameterType(parameter);
+                layout.parameters.push_back(std::move(parameter));
+                skipNewlines();
+                if (!eat("Comma")) break;
+                skipNewlines();
+            }
+        }
+        expect("RParen", "expected ')' after layout parameters");
+        if (eat("Colon")) layout.returnType = parseType();
+        else if (language_ == Language::En && eat("Arrow")) layout.returnType = parseType();
+        else fail("expected ':' (or '->' in English) and a return type after layout parameters");
+        skipNewlines();
+        expect("LBrace", "expected '{' to open the layout body");
+        ++layoutDepth_;
+        layout.body = parseStatementsUntil({"RBrace"});
+        --layoutDepth_;
+        expect("RBrace", "expected '}' to close the layout body");
+        return layout;
+    }
+    // D-2a (W-4): `事件 名:事件种() { ... }` / `event Name:kind() { ... }`.
+    // `event`/`事件` is a contextual keyword: parseEventBlock consumes
+    // the leading identifier itself (no EventKw token exists any more).
+    // The body holds ordinary statements only (no node rows: layoutDepth_
+    // stays 0 here).
+    EventBlockDeclaration parseEventBlock() {
+        const Token start = current();
+        if (!eventBlockAhead())
+            fail("expected an event block");
+        ++position_;
+        EventBlockDeclaration event;
+        event.line = start.line;
+        event.column = start.column;
+        event.sourceFile = sourceFile_;
+        event.nodeName = parseName();
+        if (!eat("Colon"))
+            fail("an event block needs an event kind after the node name, e.g. '事件 名:被单击()' or 'event Name:tap()'");
+        if (!at("Identifier"))
+            fail("expected an event kind after ':' in the event block header");
+        event.eventKind = tokens_[position_++].text;
+        skipNewlines();
+        expect("LParen", "expected '(' after the event kind");
+        skipNewlines();
+        if (!eat("RParen"))
+            fail("an event block takes no parameters; expected ')' after the event kind");
+        skipNewlines();
+        expect("LBrace", "expected '{' to open the event block body");
+        event.body = parseStatementsUntil({"RBrace"});
+        expect("RBrace", "expected '}' to close the event block body");
+        return event;
+    }
+    // D-2a (W-2/W-8): `种名 节点名, 项..., { 子节点行... }`. Every
+    // comma-separated item is parsed as an expression and collected into
+    // `children` (modifier calls included; the lowering classifies them by
+    // the modifier table, so this parser needs no schema table). `键 = N` /
+    // `key = N` is the explicit key override, not a position argument and
+    // not a modifier. A child block holds layout-body statements (node
+    // rows, `如果`, `变量`, ...), in source order, in `childStatements`.
+    Expression parseNodeRow() {
+        const Token kindToken = current();
+        Expression row;
+        row.kind = "NodeRow";
+        row.value = parseName();
+        row.line = kindToken.line;
+        row.column = kindToken.column;
+        row.sourceFile = sourceFile_;
+        if (!at("Identifier") && !at("Main"))
+            fail("a node row needs a node name after the node kind '" + row.value + "'");
+        row.nodeName = parseName();
+        while (eat("Comma")) {
+            skipNewlines();
+            if (at("Identifier") && (current().text == "键" || current().text == "key") &&
+                position_ + 1 < tokens_.size() && tokens_[position_ + 1].kind == "Eq") {
+                if (row.hasKeyOverride)
+                    fail("duplicate '键 = N' key override in a node row for '" + row.nodeName + "'");
+                ++position_;
+                ++position_;
+                const Token number = current();
+                if (!eat("Number"))
+                    fail("expected an integer after '键 =' in a node row for '" + row.nodeName + "'");
+                try {
+                    row.keyOverride = std::stoll(number.text, nullptr, 0);
+                } catch (const std::exception&) {
+                    fail("expected an integer after '键 =' in a node row for '" + row.nodeName + "'");
+                }
+                row.hasKeyOverride = true;
+                continue;
+            }
+            row.children.push_back(parseExpression());
+            skipNewlines();
+        }
+        skipNewlines();
+        if (eat("LBrace")) {
+            // D-2a: a child block is a layout-body statement list, not
+            // rows only — the drafts put `如果`/`变量` in child blocks
+            // (counter-zh:52, tab-input-zh:69; design §1.1 anticipated
+            // relaxing this). layoutDepth_ is still raised, so node rows
+            // inside parse through parseStatement; `如果`/`变量` reuse the
+            // ordinary statement parsing.
+            skipNewlines();
+            row.childStatements = parseStatementsUntil({"RBrace"});
+            expect("RBrace", "expected '}' to close the node row child block");
+            for (const auto& childStatement : row.childStatements)
+                if (childStatement.kind == "ExpressionStatement" &&
+                    childStatement.expression.kind == "NodeRow")
+                    row.childRows.push_back(childStatement.expression);
+        }
+        return row;
+    }
+    Statement parseNodeRowStatement() {
+        Expression row = parseNodeRow();
+        Statement statement;
+        statement.line = row.line;
+        statement.column = row.column;
+        statement.sourceFile = sourceFile_;
+        statement.kind = "ExpressionStatement";
+        statement.expression = std::move(row);
+        statement.hasExpression = true;
+        skipNewlines();
+        return statement;
     }
     MethodDeclaration parseMethod(bool external = false) {
         const Token methodStart = current();
@@ -1100,6 +1277,16 @@ private:
     }
     Statement parseStatement() {
         DepthGuard guard(stmtDepth_, "statement", current());
+        // D-2a: node rows are only valid inside a layout body (layoutDepth_
+        // is raised while parsing one, including its `如果` branches). A
+        // two-identifier statement anywhere else is a misplaced node row,
+        // not a valid expression, so reject it with the position, not a
+        // generic terminator error.
+        if (nodeRowAhead()) {
+            if (layoutDepth_ == 0)
+                fail("a node row is only allowed inside a layout declaration");
+            return parseNodeRowStatement();
+        }
         if (at("VarDecl")) return parseVariable(false);
         if (at("ConstDecl")) return parseVariable(true);
         if (at("Return")) return parseReturn();
@@ -1711,7 +1898,23 @@ private:
                     }
                 }
                 expect("RParen", "expected ')' after call arguments");
-                expression = std::move(call);
+                // D-2a (W-7): `键(名)` / `key(name)` with a single
+                // identifier argument is the compile-time key builtin, not
+                // an ordinary call. Any other shape stays a Call, and the
+                // lowering rejects it as an unknown call.
+                if (call.children.size() == 2 && call.children[0].kind == "Identifier" &&
+                    (call.children[0].value == "键" || call.children[0].value == "key") &&
+                    call.children[1].kind == "Identifier") {
+                    Expression keyRef;
+                    keyRef.kind = "KeyRef";
+                    keyRef.value = call.children[1].value;
+                    keyRef.line = call.line;
+                    keyRef.column = call.column;
+                    keyRef.sourceFile = sourceFile_;
+                    expression = std::move(keyRef);
+                } else {
+                    expression = std::move(call);
+                }
             } else if (eat("LBracket")) {
                 Expression index;
                 index.kind = "Index";
@@ -1778,6 +1981,30 @@ void dumpExpression(std::ostringstream& out, const Expression& expression) {
         out << ' ';
         dumpExpression(out, child);
     }
+    // D-2a: node-row payload (only present on kind == "NodeRow").
+    if (!expression.nodeName.empty()) out << " (NodeName " << quoted(expression.nodeName) << ')';
+    if (!expression.modifiers.empty()) {
+        out << " (Modifiers";
+        for (const auto& modifier : expression.modifiers) {
+            out << ' ';
+            dumpExpression(out, modifier);
+        }
+        out << ')';
+    }
+    if (!expression.childRows.empty()) {
+        out << " (ChildRows";
+        for (const auto& childRow : expression.childRows) {
+            out << ' ';
+            dumpExpression(out, childRow);
+        }
+        out << ')';
+    }
+    if (!expression.childStatements.empty()) {
+        out << " (ChildStatements ";
+        dumpStatements(out, expression.childStatements);
+        out << ')';
+    }
+    if (expression.hasKeyOverride) out << " (KeyOverride " << expression.keyOverride << ')';
     if (expression.closure) {
         out << " (Captures";
         for (const auto& capture : expression.closure->captures)
@@ -1990,6 +2217,26 @@ std::string dumpAst(const Program& program) {
             out << " (Visibility " << quoted(astVisibility(method.visibility)) << ')';
         out << ' ';
         dumpStatements(out, method.body);
+        out << ')';
+    }
+    // D-2a: layout declarations and event blocks.
+    for (const auto& layout : program.layouts) {
+        out << " (Layout " << quoted(layout.name) << ' ' << quoted(layout.returnType) << " (Parameters";
+        for (const auto& parameter : layout.parameters)
+            dumpParameter(out, parameter);
+        out << ')';
+        if (layout.visibility != "public")
+            out << " (Visibility " << quoted(astVisibility(layout.visibility)) << ')';
+        out << ' ';
+        dumpStatements(out, layout.body);
+        out << ')';
+    }
+    for (const auto& event : program.events) {
+        out << " (Event " << quoted(event.nodeName) << ' ' << quoted(event.eventKind);
+        if (event.visibility != "public")
+            out << " (Visibility " << quoted(astVisibility(event.visibility)) << ')';
+        out << ' ';
+        dumpStatements(out, event.body);
         out << ')';
     }
     out << ')';

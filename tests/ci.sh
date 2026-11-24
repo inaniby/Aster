@@ -299,7 +299,7 @@ printf 'CACHE     : compiler builds through %s\n' "$CXX"
 # 3. Suites
 # ---------------------------------------------------------------------------
 DEFAULT_SUITES="
-cn-lexer-checks.sh cn-parser-checks.sh cn-format-checks.sh cn-backend-checks.sh cn-module-checks.sh cn-runtime-checks.sh cn-diag-checks.sh cn-constructor-checks.sh cn-override-checks.sh cn-interface-checks.sh cn-link-gc-checks.sh cn-apk-checks.sh cn-ast-equiv-checks.sh cn-sema-checks.sh cn-types-checks.sh cn-closure-checks.sh cn-class-checks.sh cn-traditional-surface-checks.sh cn-embed-checks.sh
+cn-lexer-checks.sh cn-parser-checks.sh cn-format-checks.sh cn-backend-checks.sh cn-module-checks.sh cn-runtime-checks.sh cn-diag-checks.sh cn-constructor-checks.sh cn-override-checks.sh cn-interface-checks.sh cn-link-gc-checks.sh cn-apk-checks.sh cn-ast-equiv-checks.sh cn-sema-checks.sh cn-types-checks.sh cn-closure-checks.sh cn-class-checks.sh cn-traditional-surface-checks.sh cn-embed-checks.sh decl-layout-checks.sh
 string-symbol-checks.sh
 f64-short-circuit-checks.sh
 library-core-checks.sh

@@ -159,6 +159,30 @@ struct ImportDeclaration {
     unsigned column = 0;
 };
 
+// D-2a (W-1): `布局 名(参数): 视图 { ... }` / `layout name(params) -> View { ... }`.
+// The body is a statement list: node rows (expression statements whose
+// expression is a NodeRow), `如果`/`变量` and trailing statements.
+struct LayoutDeclaration {
+    std::string name;
+    std::vector<Parameter> parameters;
+    std::string returnType;
+    std::vector<Statement> body;
+    std::string visibility = "public";
+    std::string sourceFile;
+    unsigned line = 0, column = 0;
+};
+
+// D-2a (W-4): `事件 名:事件种() { ... }` / `event Name:kind() { ... }`.
+// The header names the node and the event kind; the body is ordinary
+// statements (no node rows).
+struct EventBlockDeclaration {
+    std::string nodeName;
+    std::string eventKind;
+    std::vector<Statement> body;
+    std::string visibility = "public";
+    std::string sourceFile;
+    unsigned line = 0, column = 0;
+};
 
 // P1-3: `类型 别名 = 类型` / `type Alias = Type;` (EBNF `alias`, design
 // §2.9) and `导入 "文件.ast"` / `include "file.ast";` (EBNF `include`,
@@ -215,6 +239,8 @@ struct Program {
     std::vector<InterfaceClassDeclaration> interfaceClasses;
     std::vector<Statement> globals;
     std::vector<MethodDeclaration> methods;
+    std::vector<LayoutDeclaration> layouts;
+    std::vector<EventBlockDeclaration> events;
 };
 
 Program parseProgram(const std::string& source, Language language,

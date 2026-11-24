@@ -23673,7 +23673,6 @@ static aster_cn::Program cnResolvePackageImports(
 }
 }  // namespace
 
-static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
 // Per-source lowering (bilingual build/test, design (b)): when `onlySource`
 // is non-empty, only declarations owned by that source file are emitted
 // as definitions; every other declaration still registers (so diagnostics
@@ -23704,6 +23703,1086 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
 // objects (the bilingual zh/en identity checks) while two different TUs
 // still mint different helpers.
 // ===========================================================================
+// D-2a declarative layout lowering (W-1..W-10; design
+// ~/workspace/audit-cn-s1s2/d2a-design.md §5, work order
+// ~/workspace/asterui-cn-s1s2/D2A-COMPILER-WORKORDER.md).
+//
+// Entry: cnD2aSynthesize, called at the top of cnProgramToAster on a
+// mutable copy of the parsed program. It turns each `布局` declaration into
+// a synthetic top-level method (same name, parameters copied, return type
+// i32, body = desugared statements + `return 0;`) and each `事件` block
+// into a synthetic method (a named callback, signature (ptr) -> i32) whose
+// name is passed as the callback argument of its node's constructor call.
+// Everything downstream — signature registration, duplicate checks,
+// statement/expression lowering, codegen — then runs unchanged on the
+// synthetic methods, so a layout is exactly a function and an event block
+// exactly a callback.
+//
+// Deviations from the work order §2 (design §0 ruling: the `_p` family,
+// the `g_aui_evt` event table and `aui_apply_m` exist only on the old
+// line; the new line has plain `aui_*` constructors with callback
+// parameters and plain `aui_*` modifiers):
+//   - Node rows desugar to plain `aui_*` constructor calls, resolved
+//     through the program's own `外部("aui_*")` declarations (the call
+//     table is keyed by source name, mangled name and external name
+//     alike, so emitting the `aui_*` spelling resolves either way).
+//   - Event blocks are not subscribed into a table; the generated
+//     callback is passed directly as the node's constructor callback
+//     argument, with the layout's `用户`/`user` parameter (or 0) as the
+//     user argument. Nodes without an event block get 0 for both.
+//   - Modifiers desugar to plain `aui_*` calls in design §4 table
+//     order (P4-3: the same modifier set in two source orders desugars
+//     to byte-identical output), right after the constructor call.
+//   - `aui_end()` is emitted for every container kind (列/行/堆叠/滚动/
+//     下拉选择): a container pushes the framework depth on creation, so
+//     it must be closed even with no child block. The design only says
+//     "rows with a child block get aui_end"; the AST cannot tell an empty
+//     `{}` from no block, and closing by kind is the only discipline that
+//     keeps siblings out of the container. A non-container row with a
+//     child block is a compile error (its children would attach to the
+//     enclosing container, and an `aui_end` there would pop the parent).
+//   - `尺寸` named values: 包内容/Wrap -> -1 (未指定 = 包内容, per
+//     aui_size); 填满/Fill has no framework encoding (D2A-SCHEMA §2.8/§3:
+//     "无填满哨兵——填满走既有 aui_weight 机制"), so it is a compile error
+//     pointing at 权重(1). 生长/Grow likewise errors ("框架未提供
+//     aui_grow").
+//   - `键()` folds to an i32 constant anywhere in the program (layout
+//     bodies, event blocks, ordinary methods); inside a layout body the
+//     enclosing layout's node wins, otherwise the program-wide node table
+//     must hold exactly one node of that name.
+//   - Event-block callbacks take one parameter named `__aster_evt_user`
+//     (unwritable in source: user identifiers may not start with
+//     `__aster_`); event bodies use globals (`g_app`), never the user
+//     pointer, matching the drafts.
+// ===========================================================================
+
+// D-2a: FNV-1a, 32-bit, over the UTF-8 bytes of
+// "<layout-name>.<node-name>" (design §5.1).
+static uint32_t cnD2aFnv1a(const std::string& text) {
+    uint32_t hash = 2166136261u;
+    for (unsigned char byte : text) {
+        hash ^= byte;
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+// D-2a: node kind -> constructor (design §3). `positional` is the number
+// of position arguments after the key; `callback` says the constructor
+// takes (cb, user) after them; `container` says the constructor pushes
+// the framework depth and needs a matching `aui_end()`.
+struct CnD2aKindInfo {
+    const char* ctor;
+    int positional;
+    bool callback;
+    bool container;
+};
+
+static const std::map<std::string, CnD2aKindInfo>& cnD2aKindTable() {
+    static const std::map<std::string, CnD2aKindInfo> table = {
+        {"列", {"aui_column", 0, false, true}}, {"Column", {"aui_column", 0, false, true}},
+        {"行", {"aui_row", 0, false, true}}, {"Row", {"aui_row", 0, false, true}},
+        {"堆叠", {"aui_stack", 0, false, true}}, {"Stack", {"aui_stack", 0, false, true}},
+        {"滚动", {"aui_scroll", 0, false, true}}, {"Scroll", {"aui_scroll", 0, false, true}},
+        {"标签", {"aui_label", 1, false, false}}, {"Label", {"aui_label", 1, false, false}},
+        {"数字", {"aui_text_i32", 1, false, false}}, {"Number", {"aui_text_i32", 1, false, false}},
+        {"文本框", {"aui_text_field", 1, false, false}}, {"TextField", {"aui_text_field", 1, false, false}},
+        {"按钮", {"aui_button", 1, true, false}}, {"Button", {"aui_button", 1, true, false}},
+        {"下拉选择", {"aui_select", 3, true, true}}, {"Select", {"aui_select", 3, true, true}},
+        {"选项", {"aui_option", 1, false, false}}, {"Option", {"aui_option", 1, false, false}},
+        {"开关", {"aui_switch", 1, true, false}}, {"Switch", {"aui_switch", 1, true, false}},
+        {"复选框", {"aui_checkbox", 2, true, false}}, {"Checkbox", {"aui_checkbox", 2, true, false}},
+        {"滑杆", {"aui_slider", 2, true, false}}, {"Slider", {"aui_slider", 2, true, false}},
+        {"进度条", {"aui_progress", 1, false, false}}, {"Progress", {"aui_progress", 1, false, false}},
+    };
+    return table;
+}
+
+// D-2a: kind spelling (either language) -> canonical (Chinese) kind, for
+// the (kind, event) check (§5.6).
+static const std::map<std::string, std::string>& cnD2aKindCanonical() {
+    static const std::map<std::string, std::string> table = {
+        {"列", "列"}, {"Column", "列"},
+        {"行", "行"}, {"Row", "行"},
+        {"堆叠", "堆叠"}, {"Stack", "堆叠"},
+        {"滚动", "滚动"}, {"Scroll", "滚动"},
+        {"标签", "标签"}, {"Label", "标签"},
+        {"数字", "数字"}, {"Number", "数字"},
+        {"文本框", "文本框"}, {"TextField", "文本框"},
+        {"按钮", "按钮"}, {"Button", "按钮"},
+        {"下拉选择", "下拉选择"}, {"Select", "下拉选择"},
+        {"选项", "选项"}, {"Option", "选项"},
+        {"开关", "开关"}, {"Switch", "开关"},
+        {"复选框", "复选框"}, {"Checkbox", "复选框"},
+        {"滑杆", "滑杆"}, {"Slider", "滑杆"},
+        {"进度条", "进度条"}, {"Progress", "进度条"},
+        {"菜单", "菜单"}, {"Menu", "菜单"},
+        {"对话框", "对话框"}, {"Dialog", "对话框"},
+        {"标签页", "标签页"}, {"Tabs", "标签页"},
+        {"拆分", "拆分"}, {"Split", "拆分"},
+        {"虚拟列表", "虚拟列表"}, {"VList", "虚拟列表"},
+        {"虚拟表格", "虚拟表格"}, {"VTable", "虚拟表格"},
+    };
+    return table;
+}
+
+// D-2a: modifier -> call (design §4). `args` is the required argument
+// count; Size takes two. Grow has no call: it is rejected, not dropped.
+// `order` is the design §4 table order (Padding -> Gap -> Background ->
+// Radius -> TextSize -> Foreground -> Selectable -> Size -> Align ->
+// Weight); modifiers are emitted in this order, not source order, so
+// the same modifier set in two source orders desugars to byte-identical
+// output (work order P4-3).
+struct CnD2aModifierInfo {
+    const char* call;
+    int args;
+    int order;
+};
+
+static const std::map<std::string, CnD2aModifierInfo>& cnD2aModifierTable() {
+    static const std::map<std::string, CnD2aModifierInfo> table = {
+        {"内边距", {"aui_pad", 1, 0}}, {"Padding", {"aui_pad", 1, 0}},
+        {"间隙", {"aui_gap", 1, 1}}, {"Gap", {"aui_gap", 1, 1}},
+        {"背景", {"aui_bg", 1, 2}}, {"Background", {"aui_bg", 1, 2}},
+        {"圆角", {"aui_radius", 1, 3}}, {"Radius", {"aui_radius", 1, 3}},
+        {"字号", {"aui_text_size", 1, 4}}, {"TextSize", {"aui_text_size", 1, 4}},
+        {"前景色", {"aui_fg", 1, 5}}, {"Foreground", {"aui_fg", 1, 5}},
+        {"长按选中", {"aui_selectable", 1, 6}}, {"Selectable", {"aui_selectable", 1, 6}},
+        {"尺寸", {"aui_size", 2, 7}}, {"Size", {"aui_size", 2, 7}},
+        {"对齐", {"aui_align", 1, 8}}, {"Align", {"aui_align", 1, 8}},
+        {"权重", {"aui_weight", 1, 9}}, {"Weight", {"aui_weight", 1, 9}},
+    };
+    return table;
+}
+
+static bool cnD2aIsGrow(const std::string& name) {
+    return name == "生长" || name == "Grow";
+}
+
+// D-2a: event spelling (either language) -> canonical (Chinese) event.
+// Returns 0 = unknown event kind, 1 = known, 2 = global gesture
+// (长按/捏合: registered globally, never an event block).
+static int cnD2aCanonicalEvent(const std::string& spelling, std::string& canonical) {
+    static const std::map<std::string, std::string> table = {
+        {"被单击", "被单击"}, {"tap", "被单击"},
+        {"变化", "变化"}, {"change", "变化"},
+        {"开关", "开关"}, {"toggle", "开关"},
+        {"切换", "切换"}, {"select", "切换"},
+        {"拖动", "拖动"}, {"drag", "拖动"},
+        {"点按", "点按"},
+    };
+    const auto found = table.find(spelling);
+    if (found != table.end()) {
+        canonical = found->second;
+        return 1;
+    }
+    if (spelling == "长按" || spelling == "longpress" || spelling == "long_press" ||
+        spelling == "捏合" || spelling == "pinch")
+        return 2;
+    return 0;
+}
+
+// D-2a: (canonical kind, canonical event) static check (design §5.6).
+static bool cnD2aEventAllowed(const std::string& kind, const std::string& event,
+                              std::string& allowed) {
+    static const std::map<std::string, std::set<std::string>> table = {
+        {"按钮", {"被单击"}},
+        {"开关", {"变化"}},
+        {"复选框", {"变化"}},
+        {"滑杆", {"变化"}},
+        {"下拉选择", {"变化"}},
+        {"菜单", {"开关"}},
+        {"对话框", {"开关"}},
+        {"标签页", {"切换"}},
+        {"拆分", {"拖动"}},
+        {"虚拟列表", {"点按"}},
+        {"虚拟表格", {"点按"}},
+    };
+    const auto found = table.find(kind);
+    if (found == table.end()) {
+        allowed.clear();
+        return false;
+    }
+    for (const auto& eventName : found->second) {
+        if (!allowed.empty()) allowed += "/";
+        allowed += eventName;
+    }
+    return found->second.count(event) != 0;
+}
+
+// D-2a: synthetic-expression builders. The lowering works on AST nodes,
+// so desugaring builds ordinary expressions (a call to `aui_*`, an
+// integer literal for a folded key) and lets the existing lowering type
+// them against the declared `外部("aui_*")` signatures.
+static aster_cn::Expression cnD2aIntLiteral(long long value, unsigned line,
+                                            unsigned column) {
+    aster_cn::Expression literal;
+    literal.kind = "IntegerLiteral";
+    literal.value = std::to_string(value);
+    literal.line = line;
+    literal.column = column;
+    return literal;
+}
+
+// D-2a: a node key as an i32 literal. Keys are 32-bit FNV-1a values;
+// the upper half (>= 2^31) must be emitted in signed form (e.g.
+// -13268203 for 4281699093): the backend compares a > INT32_MAX
+// unsigned literal in 64-bit, so an i32 variable holding the key's
+// bit pattern would never compare equal to the unsigned spelling
+// (probe cmp.ast), and the work-order sentinel pattern
+// `s.选择打开 == 键(语言)` relies on the round trip working
+// (store the key, compare it later). Same 32 bits either way.
+static aster_cn::Expression cnD2aKeyLiteral(uint32_t key, unsigned line,
+                                            unsigned column) {
+    return cnD2aIntLiteral(static_cast<int32_t>(key), line, column);
+}
+
+static aster_cn::Expression cnD2aNegOne(unsigned line, unsigned column) {
+    aster_cn::Expression negated;
+    negated.kind = "Unary";
+    negated.value = "-";
+    negated.line = line;
+    negated.column = column;
+    negated.children.push_back(cnD2aIntLiteral(1, line, column));
+    return negated;
+}
+
+static aster_cn::Expression cnD2aIdentifier(const std::string& name, unsigned line,
+                                            unsigned column) {
+    aster_cn::Expression identifier;
+    identifier.kind = "Identifier";
+    identifier.value = name;
+    identifier.line = line;
+    identifier.column = column;
+    return identifier;
+}
+
+static aster_cn::Expression cnD2aCall(const std::string& callee,
+                                      std::vector<aster_cn::Expression> args,
+                                      unsigned line, unsigned column) {
+    aster_cn::Expression call;
+    call.kind = "Call";
+    call.line = line;
+    call.column = column;
+    call.children.push_back(cnD2aIdentifier(callee, line, column));
+    for (auto& arg : args) call.children.push_back(std::move(arg));
+    return call;
+}
+
+static aster_cn::Statement cnD2aCallStatement(aster_cn::Expression call,
+                                              unsigned line, unsigned column) {
+    aster_cn::Statement statement;
+    statement.kind = "ExpressionStatement";
+    statement.hasExpression = true;
+    statement.expression = std::move(call);
+    statement.line = line;
+    statement.column = column;
+    return statement;
+}
+
+static aster_cn::Statement cnD2aReturnZero(unsigned line, unsigned column) {
+    aster_cn::Statement statement;
+    statement.kind = "ReturnStatement";
+    statement.hasExpression = true;
+    statement.expression = cnD2aIntLiteral(0, line, column);
+    statement.line = line;
+    statement.column = column;
+    return statement;
+}
+
+struct CnD2aNodeInfo {
+    std::string layoutName;
+    std::string nodeName;
+    std::string kind;
+    uint32_t key = 0;
+    bool hasOverride = false;
+    unsigned line = 0, column = 0;
+    std::string sourceFile;
+};
+
+struct CnD2aContext {
+    bool isZh = true;
+    std::set<std::string> methodNames;
+    std::set<std::string> declaredCallables;
+    std::vector<CnD2aNodeInfo> nodes;
+    std::map<std::string, std::vector<size_t>> nodesByName;
+    std::map<uint32_t, size_t> nodesByKey;
+    std::map<std::string, size_t> nodesByLayoutAndName;
+    std::map<std::string, std::set<std::string>> layoutForbidden;
+    std::map<std::string, std::string> layoutUserParam;
+    std::map<std::pair<uint32_t, std::string>, size_t> eventsByKeyAndKind;
+    std::map<size_t, std::string> eventFunctionName;
+    std::map<size_t, size_t> eventNode;
+};
+
+static std::string cnD2aNodeDesc(const CnD2aNodeInfo& node) {
+    return "布局 '" + node.layoutName + "' 的节点 '" + node.nodeName + "'";
+}
+
+// D-2a: collect the local names a layout declares (`变量`/`常量`, at any
+// depth: layout body, node child blocks, `如果` branches) plus its
+// parameter names. Event bodies may not reference any of them (design
+// §5.5: only globals and getters).
+static void cnD2aCollectLocals(const std::vector<aster_cn::Statement>& statements,
+                               std::set<std::string>& locals) {
+    for (const auto& statement : statements) {
+        if (statement.kind == "VariableDeclaration" ||
+            statement.kind == "ConstantDeclaration")
+            locals.insert(statement.name);
+        if (statement.kind == "ExpressionStatement" &&
+            statement.expression.kind == "NodeRow")
+            cnD2aCollectLocals(statement.expression.childStatements, locals);
+        cnD2aCollectLocals(statement.body, locals);
+        for (const auto& branch : statement.branches)
+            cnD2aCollectLocals(branch, locals);
+        cnD2aCollectLocals(statement.elseBody, locals);
+    }
+}
+
+// D-2a: walk a layout's statement lists and register every node row:
+// kind check, per-layout name uniqueness (W-O4: `如果` branches share the
+// namespace), key derivation or explicit override, program-wide key
+// collision check (W-6, explicit keys included).
+static void cnD2aCollectNodes(const std::vector<aster_cn::Statement>& statements,
+                              const aster_cn::LayoutDeclaration& layout,
+                              CnD2aContext& ctx, std::set<std::string>& namesInLayout,
+                              bool& hasNodeRow) {
+    for (const auto& statement : statements) {
+        if (statement.kind == "ExpressionStatement" &&
+            statement.expression.kind == "NodeRow") {
+            const aster_cn::Expression& row = statement.expression;
+            hasNodeRow = true;
+            if (!cnD2aKindTable().count(row.value)) {
+                cnSetDiagnosticFile(row.sourceFile.empty() ? layout.sourceFile
+                                                           : row.sourceFile);
+                throw Error(loc(row.line, row.column,
+                                "布局 '" + layout.name +
+                                    "' 的节点 '" + row.nodeName +
+                                    "'：未知的节点种 '" +
+                                    row.value + "'"));
+            }
+            if (!namesInLayout.insert(row.nodeName).second) {
+                cnSetDiagnosticFile(row.sourceFile.empty() ? layout.sourceFile
+                                                           : row.sourceFile);
+                throw Error(loc(row.line, row.column,
+                                "布局 '" + layout.name + "' 里节点名 '" + row.nodeName +
+                                          "' 重复（同一布局内节点名必须唯一）"));
+            }
+            uint32_t key = 0;
+            bool hasOverride = false;
+            if (row.hasKeyOverride) {
+                hasOverride = true;
+                if (row.keyOverride < 0 || row.keyOverride > 0xFFFFFFFFLL) {
+                    cnSetDiagnosticFile(row.sourceFile.empty() ? layout.sourceFile
+                                                               : row.sourceFile);
+                    throw Error(loc(row.line, row.column,
+                                    "节点 '" + row.nodeName + "' 的 键 = " +
+                                              std::to_string(row.keyOverride) +
+                                              " 超出范围（须在 0..4294967295 内）"));
+                }
+                key = static_cast<uint32_t>(row.keyOverride);
+            } else {
+                key = cnD2aFnv1a(layout.name + "." + row.nodeName);
+            }
+            const auto collision = ctx.nodesByKey.find(key);
+            if (collision != ctx.nodesByKey.end()) {
+                const CnD2aNodeInfo& other = ctx.nodes[collision->second];
+                cnSetDiagnosticFile(row.sourceFile.empty() ? layout.sourceFile
+                                                           : row.sourceFile);
+                throw Error(loc(row.line, row.column,
+                                "节点 key 碰撞：" + cnD2aNodeDesc(other) + " 与布局 '" +
+                                          layout.name + "' 的节点 '" + row.nodeName +
+                                          "' 的 key 都是 " + std::to_string(key) +
+                                          "；给其中一个写 键 = N 显式覆盖"));
+            }
+            CnD2aNodeInfo info;
+            info.layoutName = layout.name;
+            info.nodeName = row.nodeName;
+            info.kind = row.value;
+            info.key = key;
+            info.hasOverride = hasOverride;
+            info.line = row.line;
+            info.column = row.column;
+            info.sourceFile = row.sourceFile.empty() ? layout.sourceFile : row.sourceFile;
+            const size_t index = ctx.nodes.size();
+            ctx.nodes.push_back(info);
+            ctx.nodesByKey[key] = index;
+            ctx.nodesByName[row.nodeName].push_back(index);
+            ctx.nodesByLayoutAndName[layout.name + "." + row.nodeName] = index;
+            cnD2aCollectNodes(row.childStatements, layout, ctx, namesInLayout,
+                              hasNodeRow);
+            continue;
+        }
+        cnD2aCollectNodes(statement.body, layout, ctx, namesInLayout, hasNodeRow);
+        for (const auto& branch : statement.branches)
+            cnD2aCollectNodes(branch, layout, ctx, namesInLayout, hasNodeRow);
+        cnD2aCollectNodes(statement.elseBody, layout, ctx, namesInLayout, hasNodeRow);
+    }
+}
+
+// D-2a: resolve a `键(名)` reference. Inside a layout body the enclosing
+// layout's node wins; otherwise the program-wide node table must hold
+// exactly one node of that name (design §5.1, W-O2).
+static uint32_t cnD2aResolveKeyRef(const std::string& name,
+                                   const std::string& enclosingLayout,
+                                   const CnD2aContext& ctx, unsigned line,
+                                   unsigned column, const std::string& sourceFile) {
+    if (!enclosingLayout.empty()) {
+        const auto inLayout = ctx.nodesByLayoutAndName.find(enclosingLayout + "." + name);
+        if (inLayout != ctx.nodesByLayoutAndName.end())
+            return ctx.nodes[inLayout->second].key;
+    }
+    const auto found = ctx.nodesByName.find(name);
+    if (found == ctx.nodesByName.end() || found->second.empty()) {
+        cnSetDiagnosticFile(sourceFile);
+        throw Error(loc(line, column,
+                        "键('" + name + "') 引用的节点不存在"));
+    }
+    if (found->second.size() > 1) {
+        std::string layouts;
+        for (const size_t index : found->second) {
+            if (!layouts.empty()) layouts += "、";
+            layouts += ctx.nodes[index].layoutName;
+        }
+        cnSetDiagnosticFile(sourceFile);
+        throw Error(loc(line, column,
+                        "键('" + name + "') 有歧义：多个布局（" + layouts +
+                                       "）含同名节点，请改名"));
+    }
+    return ctx.nodes[found->second.front()].key;
+}
+
+static std::vector<aster_cn::Statement> cnD2aFoldStatements(
+    const std::vector<aster_cn::Statement>& statements, const CnD2aContext& ctx,
+    const std::string& enclosingLayout);
+
+// D-2a: fold every `键(名)` in an expression to its i32 key constant
+// (W-7). Runs over the whole program, so a stray `键()` outside any
+// layout or event block is still resolved — or refused with the name.
+static aster_cn::Expression cnD2aFoldExpression(const aster_cn::Expression& source,
+                                                const CnD2aContext& ctx,
+                                                const std::string& enclosingLayout) {
+    if (source.kind == "KeyRef") {
+        const uint32_t key = cnD2aResolveKeyRef(source.value, enclosingLayout, ctx,
+                                                source.line, source.column,
+                                                source.sourceFile);
+        return cnD2aKeyLiteral(key, source.line, source.column);
+    }
+    aster_cn::Expression folded = source;
+    if (folded.kind == "NodeRow") {
+        for (auto& child : folded.children)
+            child = cnD2aFoldExpression(child, ctx, enclosingLayout);
+        folded.childStatements =
+            cnD2aFoldStatements(folded.childStatements, ctx, enclosingLayout);
+        folded.childRows.clear();
+        for (const auto& childStatement : folded.childStatements)
+            if (childStatement.kind == "ExpressionStatement" &&
+                childStatement.expression.kind == "NodeRow")
+                folded.childRows.push_back(childStatement.expression);
+        return folded;
+    }
+    for (auto& child : folded.children)
+        child = cnD2aFoldExpression(child, ctx, enclosingLayout);
+    if (folded.closure)
+        folded.closure->body =
+            cnD2aFoldStatements(folded.closure->body, ctx, enclosingLayout);
+    return folded;
+}
+
+static std::vector<aster_cn::Statement> cnD2aFoldStatements(
+    const std::vector<aster_cn::Statement>& statements, const CnD2aContext& ctx,
+    const std::string& enclosingLayout) {
+    std::vector<aster_cn::Statement> folded;
+    folded.reserve(statements.size());
+    for (const auto& statement : statements) {
+        aster_cn::Statement copy = statement;
+        if (copy.hasExpression)
+            copy.expression =
+                cnD2aFoldExpression(copy.expression, ctx, enclosingLayout);
+        for (auto& expression : copy.expressions)
+            expression = cnD2aFoldExpression(expression, ctx, enclosingLayout);
+        for (auto& condition : copy.conditions)
+            condition = cnD2aFoldExpression(condition, ctx, enclosingLayout);
+        for (auto& values : copy.caseValues)
+            for (auto& value : values)
+                value = cnD2aFoldExpression(value, ctx, enclosingLayout);
+        copy.body = cnD2aFoldStatements(copy.body, ctx, enclosingLayout);
+        for (auto& branch : copy.branches)
+            branch = cnD2aFoldStatements(branch, ctx, enclosingLayout);
+        copy.elseBody = cnD2aFoldStatements(copy.elseBody, ctx, enclosingLayout);
+        folded.push_back(std::move(copy));
+    }
+    return folded;
+}
+
+static bool cnD2aShadowed(const std::vector<std::set<std::string>>& scopes,
+                          const std::string& name) {
+    for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope)
+        if (scope->count(name)) return true;
+    return false;
+}
+
+// D-2a: event-body capture check (design §5.5, E-1 body rule). Walk an
+// expression; a bare identifier that names a layout parameter or a
+// layout-local variable — and is not shadowed by an event-local
+// declaration — is a capture and a compile error. Member field names are
+// not variables (only the base is walked); a call whose callee is a known
+// top-level method is not a variable reference either.
+static void cnD2aCheckEventExpression(
+    const aster_cn::Expression& source, const CnD2aContext& ctx,
+    const std::set<std::string>& forbidden,
+    const std::vector<std::set<std::string>>& scopes, const std::string& eventDesc,
+    const std::string& sourceFile);
+
+static void cnD2aCheckEventStatements(
+    const std::vector<aster_cn::Statement>& statements, const CnD2aContext& ctx,
+    const std::set<std::string>& forbidden,
+    std::vector<std::set<std::string>>& scopes, const std::string& eventDesc,
+    const std::string& sourceFile) {
+    for (const auto& statement : statements) {
+        if (statement.kind == "VariableDeclaration" ||
+            statement.kind == "ConstantDeclaration") {
+            if (statement.hasExpression)
+                cnD2aCheckEventExpression(statement.expression, ctx, forbidden, scopes,
+                                          eventDesc, sourceFile);
+            if (!scopes.empty()) scopes.back().insert(statement.name);
+            continue;
+        }
+        if (statement.hasExpression)
+            cnD2aCheckEventExpression(statement.expression, ctx, forbidden, scopes,
+                                      eventDesc, sourceFile);
+        for (const auto& expression : statement.expressions)
+            cnD2aCheckEventExpression(expression, ctx, forbidden, scopes, eventDesc,
+                                      sourceFile);
+        for (const auto& condition : statement.conditions)
+            cnD2aCheckEventExpression(condition, ctx, forbidden, scopes, eventDesc,
+                                      sourceFile);
+        for (const auto& values : statement.caseValues)
+            for (const auto& value : values)
+                cnD2aCheckEventExpression(value, ctx, forbidden, scopes, eventDesc,
+                                          sourceFile);
+        if (!statement.body.empty()) {
+            scopes.emplace_back();
+            cnD2aCheckEventStatements(statement.body, ctx, forbidden, scopes, eventDesc,
+                                      sourceFile);
+            scopes.pop_back();
+        }
+        for (const auto& branch : statement.branches) {
+            scopes.emplace_back();
+            cnD2aCheckEventStatements(branch, ctx, forbidden, scopes, eventDesc,
+                                      sourceFile);
+            scopes.pop_back();
+        }
+        if (!statement.elseBody.empty()) {
+            scopes.emplace_back();
+            cnD2aCheckEventStatements(statement.elseBody, ctx, forbidden, scopes,
+                                      eventDesc, sourceFile);
+            scopes.pop_back();
+        }
+    }
+}
+
+static void cnD2aCheckEventExpression(
+    const aster_cn::Expression& source, const CnD2aContext& ctx,
+    const std::set<std::string>& forbidden,
+    const std::vector<std::set<std::string>>& scopes, const std::string& eventDesc,
+    const std::string& sourceFile) {
+    if (source.kind == "Identifier") {
+        if (forbidden.count(source.value) && !cnD2aShadowed(scopes, source.value)) {
+            cnSetDiagnosticFile(sourceFile);
+            throw Error(loc(source.line, source.column,
+                            "事件块 '" + eventDesc +
+                                "' 引用了布局局部量 '" +
+                                source.value +
+                                "'：事件块只能用全局量与 getter，不能捕获布局参数或布局内变量"));
+        }
+        return;
+    }
+    if (source.kind == "NodeRow") {
+        cnSetDiagnosticFile(sourceFile);
+        throw Error(loc(source.line, source.column,
+                        "事件块 '" + eventDesc +
+                            "' 里不能写节点行"));
+    }
+    if (source.kind == "Member") {
+        if (!source.children.empty())
+            cnD2aCheckEventExpression(source.children[0], ctx, forbidden, scopes,
+                                      eventDesc, sourceFile);
+        return;
+    }
+    if (source.kind == "Call" && !source.children.empty()) {
+        const aster_cn::Expression& callee = source.children[0];
+        if (callee.kind == "TypeName") {
+            // A cast (`指针(...)`): the callee names a type, not a variable.
+        } else if (callee.kind == "Identifier" && ctx.methodNames.count(callee.value)) {
+            // A call to a known top-level method: not a variable reference.
+        } else {
+            cnD2aCheckEventExpression(callee, ctx, forbidden, scopes, eventDesc,
+                                      sourceFile);
+        }
+        for (size_t index = 1; index < source.children.size(); ++index)
+            cnD2aCheckEventExpression(source.children[index], ctx, forbidden, scopes,
+                                      eventDesc, sourceFile);
+        return;
+    }
+    if (source.kind == "ClosureExpression" && source.closure) {
+        std::vector<std::set<std::string>> closureScopes = scopes;
+        closureScopes.emplace_back();
+        for (const auto& capture : source.closure->captures) {
+            if (forbidden.count(capture) &&
+                !cnD2aShadowed(closureScopes, capture)) {
+                cnSetDiagnosticFile(sourceFile);
+                throw Error(loc(source.line, source.column,
+                                "事件块 '" + eventDesc +
+                                    "' 捕获了布局局部量 '" +
+                                    capture +
+                                    "'：事件块只能用全局量与 getter"));
+            }
+        }
+        for (const auto& parameter : source.closure->parameters)
+            closureScopes.back().insert(parameter.name);
+        cnD2aCheckEventStatements(source.closure->body, ctx, forbidden, closureScopes,
+                                  eventDesc, sourceFile);
+        return;
+    }
+    for (const auto& child : source.children)
+        cnD2aCheckEventExpression(child, ctx, forbidden, scopes, eventDesc, sourceFile);
+}
+
+// D-2a: desugar one node row into its call sequence (design §5.3):
+// constructor call (key first, position arguments next, callback + user
+// for callback kinds), modifier calls in design §4 table order, desugared child
+// block, `aui_end()` for container kinds. `statements` collects the
+// output; the row's own event (if any) supplies the callback argument.
+static void cnD2aDesugarNodeRow(
+    const aster_cn::Expression& row, const std::string& layoutName,
+    const CnD2aContext& ctx, std::vector<aster_cn::Statement>& statements);
+
+static std::vector<aster_cn::Statement> cnD2aDesugarStatements(
+    const std::vector<aster_cn::Statement>& statements, const std::string& layoutName,
+    const CnD2aContext& ctx) {
+    std::vector<aster_cn::Statement> desugared;
+    for (const auto& statement : statements) {
+        if (statement.kind == "ExpressionStatement" &&
+            statement.expression.kind == "NodeRow") {
+            cnD2aDesugarNodeRow(statement.expression, layoutName, ctx, desugared);
+            continue;
+        }
+        aster_cn::Statement copy = statement;
+        copy.body = cnD2aDesugarStatements(copy.body, layoutName, ctx);
+        for (auto& branch : copy.branches)
+            branch = cnD2aDesugarStatements(branch, layoutName, ctx);
+        copy.elseBody = cnD2aDesugarStatements(copy.elseBody, layoutName, ctx);
+        desugared.push_back(std::move(copy));
+    }
+    return desugared;
+}
+
+static void cnD2aDesugarNodeRow(
+    const aster_cn::Expression& row, const std::string& layoutName,
+    const CnD2aContext& ctx, std::vector<aster_cn::Statement>& statements) {
+    const auto nodeIt = ctx.nodesByLayoutAndName.find(layoutName + "." + row.nodeName);
+    // The node was registered during collection; missing here is internal.
+    if (nodeIt == ctx.nodesByLayoutAndName.end()) return;
+    const CnD2aNodeInfo& node = ctx.nodes[nodeIt->second];
+    const CnD2aKindInfo& kind = cnD2aKindTable().at(row.value);
+    cnSetDiagnosticFile(node.sourceFile);
+    // Classify the comma items: table names are modifiers, the rest are
+    // position arguments (design §1.1). `内边距 = "16dp"` (assignment
+    // form) and `生长(...)` are refused here, with the modifier name.
+    std::vector<aster_cn::Expression> positionArgs;
+    struct ModifierUse {
+        std::string name;
+        const aster_cn::Expression* call;
+    };
+    std::vector<ModifierUse> modifiers;
+    for (const auto& item : row.children) {
+        if (item.kind == "Assignment" && item.children.size() == 2 &&
+            item.children[0].kind == "Identifier") {
+            const std::string& target = item.children[0].value;
+            if (cnD2aModifierTable().count(target) || cnD2aIsGrow(target))
+                throw Error(loc(item.line, item.column,
+                                "修饰符 '" + target +
+                                    "' 须写成调用形态 '" +
+                                    target +
+                                    "(值)'，不接受 '" +
+                                    target +
+                                    " = ...' 赋值形态（节点 '" +
+                                    row.nodeName + "'）"));
+            positionArgs.push_back(item);
+            continue;
+        }
+        if (item.kind == "Call" && !item.children.empty() &&
+            item.children[0].kind == "Identifier") {
+            const std::string& callee = item.children[0].value;
+            if (cnD2aIsGrow(callee))
+                throw Error(loc(item.line, item.column,
+                                "修饰符 '" + callee +
+                                    "' 没有框架落点：框架未提供 aui_grow（节点 '" +
+                                    row.nodeName + "'）"));
+            if (cnD2aModifierTable().count(callee)) {
+                modifiers.push_back(ModifierUse{callee, &item});
+                continue;
+            }
+        }
+        positionArgs.push_back(item);
+    }
+    if (positionArgs.size() < static_cast<size_t>(kind.positional))
+        throw Error(loc(row.line, row.column,
+                        "节点 '" + row.nodeName +
+                            "'（种 '" + row.value +
+                            "'）缺少位置参数：需要 " +
+                            std::to_string(kind.positional) +
+                            " 个，实际 " +
+                            std::to_string(positionArgs.size()) +
+                            " 个"));
+    if (positionArgs.size() > static_cast<size_t>(kind.positional)) {
+        std::string extra = "?";
+        const aster_cn::Expression& extraItem =
+            positionArgs[static_cast<size_t>(kind.positional)];
+        if (extraItem.kind == "Call" && !extraItem.children.empty() &&
+            extraItem.children[0].kind == "Identifier")
+            extra = extraItem.children[0].value;
+        throw Error(loc(row.line, row.column,
+                        "节点 '" + row.nodeName +
+                            "'（种 '" + row.value +
+                            "'）的位置参数过多：需要 " +
+                            std::to_string(kind.positional) +
+                            " 个，实际 " +
+                            std::to_string(positionArgs.size()) +
+                            " 个；'" + extra +
+                            "' 不是已知修饰符"));
+    }
+    // Modifier checks (W-3/W-5/W-9): duplicates, arity, string/float
+    // dimensions. Types the lowering cannot know statically (an
+    // identifier, a member read) flow on to the `aui_*` signature check.
+    std::set<std::string> seenModifiers;
+    struct ModifierCall {
+        std::string callName;
+        std::vector<aster_cn::Expression> args;
+        int order = 0;
+    };
+    std::vector<ModifierCall> modifierCalls;
+    for (const auto& use : modifiers) {
+        const CnD2aModifierInfo& info = cnD2aModifierTable().at(use.name);
+        if (!seenModifiers.insert(info.call).second)
+            throw Error(loc(use.call->line, use.call->column,
+                            "节点 '" + row.nodeName + "' 的修饰符 '" + use.name +
+                                           "' 重复"));
+        const size_t actual = use.call->children.size() - 1;
+        if (static_cast<int>(actual) != info.args)
+            throw Error(loc(use.call->line, use.call->column,
+                            "修饰符 '" + use.name +
+                                "' 需要 " +
+                                std::to_string(info.args) +
+                                " 个参数，实际 " +
+                                std::to_string(actual) +
+                                " 个（节点 '" + row.nodeName +
+                                "'）"));
+        ModifierCall built;
+        built.callName = info.call;
+        built.order = info.order;
+        for (size_t index = 1; index < use.call->children.size(); ++index) {
+            const aster_cn::Expression& arg = use.call->children[index];
+            if (arg.kind == "StringLiteral")
+                throw Error(loc(arg.line, arg.column,
+                                "修饰符 '" + use.name +
+                                    "' 的参数须是整数，不接受字符串维度（节点 '" +
+                                    row.nodeName + "'）"));
+            if (arg.kind == "FloatLiteral")
+                throw Error(loc(arg.line, arg.column,
+                                "修饰符 '" + use.name +
+                                    "' 的参数须是整数，不接受浮点数（节点 '" +
+                                    row.nodeName + "'）"));
+            if (info.call == std::string("aui_size")) {
+                if (arg.kind == "Identifier" &&
+                    (arg.value == "填满" || arg.value == "Fill"))
+                    throw Error(loc(arg.line, arg.column,
+                                    "尺寸 的 '填满' 没有框架编码：填满走 权重(1)（aui_size "
+                                          "无填满哨兵，每维 -1 = 未指定/包内容；节点 '" +
+                                              row.nodeName + "'）"));
+                if (arg.kind == "Identifier" &&
+                    (arg.value == "包内容" || arg.value == "Wrap")) {
+                    built.args.push_back(cnD2aNegOne(arg.line, arg.column));
+                    continue;
+                }
+            }
+            built.args.push_back(arg);
+        }
+        modifierCalls.push_back(std::move(built));
+    }
+    // P4-3 (work order §1 W-3 / §6): emit modifiers in design §4 table
+    // order, not source order, so the same modifier set written in two
+    // source orders desugars to byte-identical output. Duplicate
+    // checking (W-9) already ran above, during classification, and is
+    // unaffected by the sort.
+    std::stable_sort(modifierCalls.begin(), modifierCalls.end(),
+                     [](const ModifierCall& a, const ModifierCall& b) {
+                         return a.order < b.order;
+                     });
+    // The calls resolve through the program's own `外部("aui_*")`
+    // declarations; a missing one is a clear error, not a link failure.
+    auto requireFrameworkCall = [&](const std::string& callName) {
+        if (!ctx.declaredCallables.count(callName))
+            throw Error(loc(row.line, row.column,
+                            "节点 '" + row.nodeName +
+                                "'（种 '" + row.value +
+                                "'）需要框架函数 '" +
+                                callName +
+                                "'，程序未声明它"));
+    };
+    requireFrameworkCall(kind.ctor);
+    for (const auto& modifierCall : modifierCalls)
+        requireFrameworkCall(modifierCall.callName);
+    if (kind.container) requireFrameworkCall("aui_end");
+    if (!row.childStatements.empty() && !kind.container)
+        throw Error(loc(row.line, row.column,
+                        "节点种 '" + row.value +
+                            "' 不能有子节点行（只有容器种 " +
+                            "列/行/堆叠/滚动/下拉选择" +
+                            " 可以有子块；节点 '" +
+                            row.nodeName + "'）"));
+    // Constructor call: key, position arguments, then (cb, user).
+    std::vector<aster_cn::Expression> ctorArgs;
+    ctorArgs.push_back(cnD2aKeyLiteral(node.key, row.line, row.column));
+    for (const auto& arg : positionArgs) ctorArgs.push_back(arg);
+    if (kind.callback) {
+        std::string callbackName;
+        for (const auto& entry : ctx.eventFunctionName) {
+            if (ctx.eventNode.at(entry.first) == nodeIt->second) {
+                callbackName = entry.second;
+                break;
+            }
+        }
+        if (callbackName.empty())
+            ctorArgs.push_back(cnD2aIntLiteral(0, row.line, row.column));
+        else
+            ctorArgs.push_back(cnD2aIdentifier(callbackName, row.line, row.column));
+        const auto userParam = ctx.layoutUserParam.find(layoutName);
+        if (userParam != ctx.layoutUserParam.end() && !userParam->second.empty())
+            ctorArgs.push_back(
+                cnD2aIdentifier(userParam->second, row.line, row.column));
+        else
+            ctorArgs.push_back(cnD2aIntLiteral(0, row.line, row.column));
+    }
+    statements.push_back(cnD2aCallStatement(
+        cnD2aCall(kind.ctor, std::move(ctorArgs), row.line, row.column), row.line,
+        row.column));
+    for (const auto& modifierCall : modifierCalls)
+        statements.push_back(cnD2aCallStatement(
+            cnD2aCall(modifierCall.callName, modifierCall.args, row.line, row.column),
+            row.line, row.column));
+    std::vector<aster_cn::Statement> children =
+        cnD2aDesugarStatements(row.childStatements, layoutName, ctx);
+    for (auto& child : children) statements.push_back(std::move(child));
+    if (kind.container)
+        statements.push_back(cnD2aCallStatement(
+            cnD2aCall("aui_end", {}, row.line, row.column), row.line, row.column));
+}
+
+// D-2a: synthesize the lowering input. Layouts become methods, event
+// blocks become named callbacks; both are appended to program.methods so
+// the existing registration and lowering see them as ordinary methods.
+static void cnD2aSynthesize(aster_cn::Program& program) {
+    CnD2aContext ctx;
+    ctx.isZh = program.language == aster_cn::Language::Zh;
+    for (const auto& method : program.methods) {
+        ctx.methodNames.insert(method.name);
+        ctx.declaredCallables.insert(method.name);
+        if (method.isExternal && !method.externalName.empty())
+            ctx.declaredCallables.insert(method.externalName);
+    }
+    // Layouts: name checks, node collection, forbidden names, user param.
+    std::set<std::string> layoutNames;
+    for (const auto& layout : program.layouts) {
+        cnSetDiagnosticFile(layout.sourceFile);
+        if (layout.name == "main")
+            throw Error(loc(layout.line, layout.column,
+                            "布局不能命名为 'main'（启动方法）"));
+        if (!layoutNames.insert(layout.name).second)
+            throw Error(loc(layout.line, layout.column,
+                            "布局 '" + layout.name + "' 重复声明"));
+        if (ctx.methodNames.count(layout.name))
+            throw Error(loc(layout.line, layout.column,
+                            "布局名 '" + layout.name +
+                                "' 与已有方法同名"));
+        if (layout.returnType != "视图" && layout.returnType != "View")
+            throw Error(loc(layout.line, layout.column,
+                            "布局 '" + layout.name +
+                                "' 须返回 视图，实际返回 '" +
+                                layout.returnType + "'"));
+        std::set<std::string> forbidden;
+        for (const auto& parameter : layout.parameters) {
+            forbidden.insert(parameter.name);
+            if ((parameter.name == "用户" || parameter.name == "user") &&
+                !ctx.layoutUserParam.count(layout.name))
+                ctx.layoutUserParam[layout.name] = parameter.name;
+        }
+        cnD2aCollectLocals(layout.body, forbidden);
+        ctx.layoutForbidden[layout.name] = forbidden;
+        std::set<std::string> namesInLayout;
+        bool hasNodeRow = false;
+        cnD2aCollectNodes(layout.body, layout, ctx, namesInLayout, hasNodeRow);
+        if (!hasNodeRow)
+            throw Error(loc(layout.line, layout.column,
+                            "布局 '" + layout.name +
+                                "' 没有节点行（布局体须含至少一个节点行）"));
+    }
+    // `键()` folds over the whole program (methods, globals, classes,
+    // layouts, events): a stray `键()` with no layouts is refused here,
+    // with the name.
+    for (auto& method : program.methods)
+        method.body = cnD2aFoldStatements(method.body, ctx, "");
+    for (auto& global : program.globals) {
+        std::vector<aster_cn::Statement> folded =
+            cnD2aFoldStatements({global}, ctx, "");
+        global = folded.front();
+    }
+    for (auto& declaration : program.classes)
+        for (auto& method : declaration.methods)
+            method.body = cnD2aFoldStatements(method.body, ctx, "");
+    for (auto& structure : program.structures)
+        for (auto& field : structure.fields)
+            if (field.hasInitializer)
+                field.initializer =
+                    cnD2aFoldExpression(field.initializer, ctx, "");
+    for (auto& enumeration : program.enums)
+        for (auto& member : enumeration.members)
+            if (member.hasExpression)
+                member.expression =
+                    cnD2aFoldExpression(member.expression, ctx, "");
+    for (auto& layout : program.layouts)
+        layout.body = cnD2aFoldStatements(layout.body, ctx, layout.name);
+    for (auto& event : program.events)
+        event.body = cnD2aFoldStatements(event.body, ctx, "");
+    // Events: resolve the node, check (kind, event), check the body, and
+    // mint the callback method.
+    std::vector<aster_cn::MethodDeclaration> eventMethods;
+    for (size_t eventIndex = 0; eventIndex < program.events.size(); ++eventIndex) {
+        const aster_cn::EventBlockDeclaration& event = program.events[eventIndex];
+        cnSetDiagnosticFile(event.sourceFile);
+        const auto byName = ctx.nodesByName.find(event.nodeName);
+        if (byName == ctx.nodesByName.end() || byName->second.empty())
+            throw Error(loc(event.line, event.column,
+                            "事件块引用的节点 '" + event.nodeName + "' 不存在"));
+        if (byName->second.size() > 1) {
+            std::string layouts;
+            for (const size_t index : byName->second) {
+                if (!layouts.empty()) layouts += "、";
+                layouts += ctx.nodes[index].layoutName;
+            }
+            throw Error(loc(event.line, event.column,
+                            "事件块引用的节点 '" + event.nodeName +
+                                           "' 有歧义：多个布局（" + layouts + "）含同名节点，请改名"));
+        }
+        const size_t nodeIndex = byName->second.front();
+        const CnD2aNodeInfo& node = ctx.nodes[nodeIndex];
+        std::string canonicalEvent;
+        const int eventClass = cnD2aCanonicalEvent(event.eventKind, canonicalEvent);
+        if (eventClass == 2)
+            throw Error(loc(event.line, event.column,
+                            "事件种 '" + event.eventKind +
+                                "' 不进事件模型：长按/捏合是全局手势登记（aui_long_press/aui_pinch），不能写事件块（节点 '" +
+                                event.nodeName + "'）"));
+        if (eventClass == 0)
+            throw Error(loc(event.line, event.column,
+                            "未知的事件种 '" +
+                                event.eventKind +
+                                "'（节点 '" + event.nodeName +
+                                "'）"));
+        const std::string canonicalKind =
+            cnD2aKindCanonical().count(node.kind)
+                ? cnD2aKindCanonical().at(node.kind)
+                : node.kind;
+        std::string allowed;
+        if (!cnD2aEventAllowed(canonicalKind, canonicalEvent, allowed))
+            throw Error(loc(event.line, event.column,
+                            "事件种 '" + event.eventKind +
+                                "' 不能用于节点 '" +
+                                event.nodeName +
+                                "'（种 '" + node.kind + "'" +
+                                (allowed.empty()
+                                     ? "，该种不接受任何事件"
+                                     : "，该种只接受 " +
+                                           (allowed)) +
+                                "）"));
+        const CnD2aKindInfo& kind = cnD2aKindTable().at(node.kind);
+        if (!kind.callback)
+            throw Error(loc(event.line, event.column,
+                            "节点种 '" +
+                                node.kind +
+                                "' 的构造器不接受回调，节点 '" +
+                                event.nodeName +
+                                "' 不能写事件块"));
+        const std::pair<uint32_t, std::string> identity{node.key, canonicalEvent};
+        if (ctx.eventsByKeyAndKind.count(identity))
+            throw Error(loc(event.line, event.column,
+                            "事件块重复：节点 '" + event.nodeName + "' 的事件 '" +
+                                           event.eventKind + "' 已声明过"));
+        ctx.eventsByKeyAndKind[identity] = eventIndex;
+        ctx.eventNode[eventIndex] = nodeIndex;
+        // The callback name is stable and readable; non-ASCII parts go
+        // through the §3.6 `__aster_cn_<hex>` mangling, so the minted name
+        // is pure ASCII.
+        auto manglePart = [](const std::string& part) {
+            return cnMangleAbiSymbol(part);
+        };
+        std::string functionName = "__aster_evt_" + manglePart(node.layoutName) +
+                                   "_" + manglePart(node.nodeName) + "_" +
+                                   manglePart(canonicalEvent);
+        if (ctx.methodNames.count(functionName) ||
+            ctx.declaredCallables.count(functionName))
+            throw Error(loc(event.line, event.column,
+                            "事件函数名冲突：'" +
+                                functionName +
+                                "' 已存在"));
+        ctx.eventFunctionName[eventIndex] = functionName;
+        ctx.methodNames.insert(functionName);
+        const std::string eventDesc = event.nodeName + ":" + event.eventKind;
+        std::vector<std::set<std::string>> scopes;
+        scopes.emplace_back();
+        cnD2aCheckEventStatements(event.body, ctx, ctx.layoutForbidden[node.layoutName],
+                                  scopes, eventDesc, event.sourceFile);
+        aster_cn::MethodDeclaration callback;
+        callback.name = functionName;
+        callback.returnType = "i32";
+        callback.sourceFile = event.sourceFile;
+        callback.line = event.line;
+        callback.column = event.column;
+        aster_cn::Parameter user;
+        user.name = "__aster_evt_user";
+        user.typeName = "ptr";
+        callback.parameters.push_back(user);
+        callback.body = event.body;
+        if (callback.body.empty() ||
+            callback.body.back().kind != "ReturnStatement")
+            callback.body.push_back(cnD2aReturnZero(event.line, event.column));
+        eventMethods.push_back(std::move(callback));
+    }
+    // Layouts become methods: same name and parameters, i32 return, the
+    // desugared body, and a trailing `return 0;`.
+    std::vector<aster_cn::MethodDeclaration> layoutMethods;
+    for (const auto& layout : program.layouts) {
+        cnSetDiagnosticFile(layout.sourceFile);
+        aster_cn::MethodDeclaration method;
+        method.name = layout.name;
+        method.returnType = "i32";
+        method.parameters = layout.parameters;
+        method.sourceFile = layout.sourceFile;
+        method.line = layout.line;
+        method.column = layout.column;
+        method.body = cnD2aDesugarStatements(layout.body, layout.name, ctx);
+        if (method.body.empty() || method.body.back().kind != "ReturnStatement")
+            method.body.push_back(cnD2aReturnZero(layout.line, layout.column));
+        layoutMethods.push_back(std::move(method));
+    }
+    for (auto& method : eventMethods) program.methods.push_back(std::move(method));
+    for (auto& method : layoutMethods) program.methods.push_back(std::move(method));
+}
+
+// Defaults reproduce the merged behaviour exactly, so every other existing
+// caller is unaffected.
+static std::vector<Function> cnProgramToAster(const aster_cn::Program& programInput,
                                               std::vector<Global>& globals,
                                               bool countCheck,
                                               const std::string& onlySource = "",
@@ -23713,6 +24792,11 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                                               const std::map<std::string, std::string>* packageFileOwners = nullptr,
                                               const std::map<std::string, std::string>* fileImportOwners = nullptr,
                                               uint64_t helperSalt = 0) {
+    // D-2a: desugar `布局`/`事件` into synthetic methods before anything
+    // else reads the program (a no-op walk when the program has none,
+    // except that a stray `键()` is still refused, with the name).
+    aster_cn::Program program = programInput;
+    cnD2aSynthesize(program);
     std::vector<Function> functions;
     // B-P4: a previous TU (per-source build) or test program (one process
     // lowers several) may have left another file's name behind; lowering

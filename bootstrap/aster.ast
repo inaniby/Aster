@@ -380,6 +380,9 @@ let sema_cn: i32 = 0;
 let lname: i32[64] = 0;
 let lname_depth: i32 = 0;
 let perr: i32 = 0;                // the first-error flag; every die_* sets it
+// D-2a (W-11): byte length of the declarative-layout form d2a_form_at just
+// matched, so die_d2a can echo its source spelling in the diagnostic.
+let d2a_len: i32 = 0;
 let numval: i64 = 0;              // the converted number (§6.2)
 let numu: u64 = 0;                // the same value, wide (§6.2, v0.23.77-dev)
 let numf: i64 = 0;                // the bits of a float literal (v0.23.77-dev)
@@ -1141,6 +1144,142 @@ fn read_source() -> i32 {
 // end of the branch. Both return 0, or 1 when a diagnostic aborted the run;
 // main propagates the 1 and writes nothing to stdout.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// D-2a (W-11): declarative-layout rejection. The bootstrap subset has no
+// layout syntax, so every D-2a form is refused with its own diagnostic
+// instead of falling through to a generic error or, worse, being accepted.
+// The Chinese spellings are matched here as UTF-8 byte sequences (the file
+// itself stays ASCII-only, so the bytes are numeric constants, verified
+// against the UTF-8 encoding of each form); the English spellings are
+// matched by the parser with name_is, next to the other subset rejections.
+// d2a_form_at answers which form starts at the cursor: 1 = layout
+// declaration, 2 = event block, 3 = key() builtin, 4 = node row; 0 = none.
+// A match must end at an ASCII byte (or EOF): a longer Chinese word that
+// merely starts with a node-kind character (for example a hypothetical
+// identifier starting with the same character) is not a D-2a form and falls
+// back to E6. Node-kind spellings follow d2a-design.md §3 (Column/Row/…)
+// and the Chinese kind names of the D-2a drafts.
+// ---------------------------------------------------------------------------
+fn d2a_at3(o: i32, a: i32, b: i32, c: i32) -> i32 {
+    if (peek_at(o) == a && peek_at(o + 1) == b && peek_at(o + 2) == c) { return 1; }
+    return 0;
+}
+fn d2a_form_at() -> i32 {
+    d2a_len = 0;
+    // 布局 (layout declaration): E5 B8 83 E5 B1 80.
+    if (d2a_at3(0, 229, 184, 131) == 1) {
+        if (d2a_at3(3, 229, 177, 128) == 1 && peek_at(6) < 128) { d2a_len = 6; return 1; }
+        return 0;
+    }
+    // 事件 (event block): E4 BA 8B E4 BB B6.
+    if (d2a_at3(0, 228, 186, 139) == 1) {
+        if (d2a_at3(3, 228, 187, 182) == 1 && peek_at(6) < 128) { d2a_len = 6; return 2; }
+        return 0;
+    }
+    // 键 (key() builtin): E9 94 AE.
+    if (d2a_at3(0, 233, 148, 174) == 1) {
+        if (peek_at(3) < 128) { d2a_len = 3; return 3; }
+        return 0;
+    }
+    // Node rows, one character: 列 E5 88 97, 行 E8 A1 8C.
+    if (d2a_at3(0, 229, 136, 151) == 1) {
+        if (peek_at(3) < 128) { d2a_len = 3; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 232, 161, 140) == 1) {
+        if (peek_at(3) < 128) { d2a_len = 3; return 4; }
+        return 0;
+    }
+    // Node rows, two characters: 堆叠, 滚动, 标签, 数字, 按钮, 选项, 开关, 滑杆.
+    if (d2a_at3(0, 229, 160, 134) == 1) {
+        if (d2a_at3(3, 229, 143, 160) == 1 && peek_at(6) < 128) { d2a_len = 6; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 230, 187, 154) == 1) {
+        if (d2a_at3(3, 229, 138, 168) == 1 && peek_at(6) < 128) { d2a_len = 6; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 230, 160, 135) == 1) {
+        if (d2a_at3(3, 231, 173, 190) == 1 && peek_at(6) < 128) { d2a_len = 6; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 230, 149, 176) == 1) {
+        if (d2a_at3(3, 229, 173, 151) == 1 && peek_at(6) < 128) { d2a_len = 6; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 230, 140, 137) == 1) {
+        if (d2a_at3(3, 233, 146, 174) == 1 && peek_at(6) < 128) { d2a_len = 6; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 233, 128, 137) == 1) {
+        if (d2a_at3(3, 233, 161, 185) == 1 && peek_at(6) < 128) { d2a_len = 6; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 229, 188, 128) == 1) {
+        if (d2a_at3(3, 229, 133, 179) == 1 && peek_at(6) < 128) { d2a_len = 6; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 230, 187, 145) == 1) {
+        if (d2a_at3(3, 230, 157, 134) == 1 && peek_at(6) < 128) { d2a_len = 6; return 4; }
+        return 0;
+    }
+    // Node rows, three characters: 文本框, 复选框, 进度条; four: 下拉选择.
+    if (d2a_at3(0, 230, 150, 135) == 1) {
+        if (d2a_at3(3, 230, 156, 172) == 1 && d2a_at3(6, 230, 161, 134) == 1 && peek_at(9) < 128) { d2a_len = 9; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 229, 164, 141) == 1) {
+        if (d2a_at3(3, 233, 128, 137) == 1 && d2a_at3(6, 230, 161, 134) == 1 && peek_at(9) < 128) { d2a_len = 9; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 232, 191, 155) == 1) {
+        if (d2a_at3(3, 229, 186, 166) == 1 && d2a_at3(6, 230, 157, 161) == 1 && peek_at(9) < 128) { d2a_len = 9; return 4; }
+        return 0;
+    }
+    if (d2a_at3(0, 228, 184, 139) == 1) {
+        if (d2a_at3(3, 230, 139, 137) == 1 && d2a_at3(6, 233, 128, 137) == 1 && d2a_at3(9, 230, 139, 169) == 1 && peek_at(12) < 128) { d2a_len = 12; return 4; }
+        return 0;
+    }
+    return 0;
+}
+fn die_d2a(f: i32, l: i32, c: i32) -> i32 {
+    die_open();
+    bputs("D-2a '");
+    bputraw(srcbuf + pos, d2a_len);
+    if (f == 1) { bputs("' layout declaration is not in the bootstrap subset"); }
+    else if (f == 2) { bputs("' event block is not in the bootstrap subset"); }
+    else if (f == 3) { bputs("' key() builtin is not in the bootstrap subset"); }
+    else { bputs("' node row is not in the bootstrap subset"); }
+    return die_close(l, c);
+}
+// Whether the current token spells a D-2a node kind (d2a-design.md §3 and
+// §5.6): the English kind names. Called only where an identifier followed
+// by another identifier can only be a node row — a statement or a top-level
+// item never validly starts that way — so no valid program is refused.
+fn is_node_kind_name() -> i32 {
+    if (name_is("Column") == 1) { return 1; }
+    if (name_is("Row") == 1) { return 1; }
+    if (name_is("Stack") == 1) { return 1; }
+    if (name_is("Scroll") == 1) { return 1; }
+    if (name_is("Label") == 1) { return 1; }
+    if (name_is("Number") == 1) { return 1; }
+    if (name_is("TextField") == 1) { return 1; }
+    if (name_is("Button") == 1) { return 1; }
+    if (name_is("Select") == 1) { return 1; }
+    if (name_is("Option") == 1) { return 1; }
+    if (name_is("Switch") == 1) { return 1; }
+    if (name_is("Checkbox") == 1) { return 1; }
+    if (name_is("Slider") == 1) { return 1; }
+    if (name_is("Progress") == 1) { return 1; }
+    if (name_is("Menu") == 1) { return 1; }
+    if (name_is("Dialog") == 1) { return 1; }
+    if (name_is("Tabs") == 1) { return 1; }
+    if (name_is("Split") == 1) { return 1; }
+    if (name_is("VList") == 1) { return 1; }
+    if (name_is("VTable") == 1) { return 1; }
+    return 0;
+}
+
 fn scan_one() -> i32 {
     let l: i32 = line;
     let c: i32 = col;
@@ -1241,7 +1380,13 @@ fn scan_one() -> i32 {
             return 0;
         }
         // --- anything above ASCII is refused before the operator table ---
-        if (ch > 127) { return die_e6(l, c); }
+        // D-2a (W-11): a declarative-layout form in Chinese spelling is
+        // refused here with its own diagnostic, not the generic E6.
+        if (ch > 127) {
+            let df: i32 = d2a_form_at();
+            if (df != 0) { return die_d2a(df, l, c); }
+            return die_e6(l, c);
+        }
         // --- operators and punctuation: one byte consumed, then lookahead ---
         let start: i32 = pos;
         take();
@@ -1926,6 +2071,16 @@ fn parse_expr() -> i32 {
                 let nt: i32 = ppos;
                 let nxt: i32 = nextk();
                 if (nxt == K_LParen) {
+                    // D-2a (W-11): `key(...)` is the name-to-key builtin; it
+                    // is refused here, next to the sizeof/len rejection
+                    // above, so it is never silently read as a call to an
+                    // ordinary function. A same-named user function cannot
+                    // be called either — the same rule sizeof/len already
+                    // carry in this subset.
+                    if (name_is("key") == 1) {
+                        die_at("D-2a 'key()' is not in the bootstrap subset", tok_line(nt), tok_col(nt));
+                        return 0;
+                    }
                     advance();
                     advance();
                     let c: i32 = newnode(E_Call, nt);
@@ -3263,6 +3418,26 @@ fn statement() -> i32 {
         die_at("labeled loops are not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
         return 0;
     }
+    // D-2a (W-11): a layout declaration, an event block, or a node row
+    // starting a statement (`layout Name ...`, `event Name:kind() ...`,
+    // `Column Name, ... { ... }`) is refused with its own diagnostic. The
+    // `Ident Ident` shape is never a valid statement here, so no valid
+    // program is refused; a variable merely named `layout` or `event` is
+    // untouched (assignment and call shapes do not match this check).
+    if (k == K_Ident && nextk() == K_Ident) {
+        if (name_is("layout") == 1) {
+            die_at("D-2a 'layout' declaration is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        if (name_is("event") == 1) {
+            die_at("D-2a 'event' block is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+            return 0;
+        }
+        if (is_node_kind_name() == 1) {
+            die_name_at("D-2a node row is not in the bootstrap subset: ", ppos);
+            return 0;
+        }
+    }
     // A discarded call: an identifier followed directly by '('. `main` is a
     // keyword, not an identifier, so `main();` falls through to P57 — the
     // host's isCallStatement reads the same way.
@@ -3427,6 +3602,26 @@ fn parse_program() -> i32 {
     prog_node = prog;
     while (curk() != K_End) {
         let k: i32 = curk();
+        // D-2a (W-11): a layout declaration, an event block, or a node row
+        // at the top level (`layout Name ...`, `event Name:kind() ...`,
+        // `Column Name, ... { ... }`) is refused with its own diagnostic
+        // instead of falling through to function_decl's generic
+        // "expected fn". A top-level item never validly starts with
+        // `Ident Ident`, so no valid program is refused.
+        if (k == K_Ident && nextk() == K_Ident) {
+            if (name_is("layout") == 1) {
+                die_at("D-2a 'layout' declaration is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (name_is("event") == 1) {
+                die_at("D-2a 'event' block is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
+                return 0;
+            }
+            if (is_node_kind_name() == 1) {
+                die_name_at("D-2a node row is not in the bootstrap subset: ", ppos);
+                return 0;
+            }
+        }
         if (k == K_Include) {
             die_at("include is not in the bootstrap subset", tok_line(ppos), tok_col(ppos));
             return 0;

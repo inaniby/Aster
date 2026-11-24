@@ -127,6 +127,14 @@ the source is required to be ASCII and the classes must not drift with locale:
 
 Any byte 0x80–0xFF is error E6 at the position where it is found (§10). 0x7F
 (DEL) is ASCII but matches no class and no operator, so it falls through to E7.
+Exception (D-2a, W-11): a byte sequence spelling a declarative-layout form
+in Chinese — `布局` (layout declaration), `事件` (event block), `键`
+(`key()` builtin), or a node-kind name (`列`/`行`/`堆叠`/`滚动`/`标签`/
+`数字`/`文本框`/`按钮`/`下拉选择`/`选项`/`开关`/`复选框`/`滑杆`/`进度条`)
+— is refused in the scanner with its own `D-2a ... is not in the bootstrap
+subset` diagnostic (the form's source spelling echoed in the message), not
+E6. The match must end at an ASCII byte or EOF, so a longer Chinese word
+that merely starts with a node-kind character is still E6.
 
 ## 5. Positions
 
