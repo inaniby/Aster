@@ -61,7 +61,7 @@ identifier    = ? ASCII letter / underscore / CJK U+4E00..U+9FFF, then those or 
 type          = "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
               | "f32" | "f64" | "bool" | "char" | "string" | "string_view" | "ptr"
               | identifier | closure_type | function_type ;
-closure_type  = "closure", "(", [ type, { ",", type } ], ")", ":", type ;
+closure_type  = "closure", "(", [ type, { ",", type } ], ")", ( ":" | "->" ), type ;
 function_type = "fn", "(", [ type, { ",", type } ], ")", ":", type ;
 floating      = ? decimal floating-point literal containing "." or "e"/"E" ? ;
 (* Class member annotations may stack; visibility annotations are mutually

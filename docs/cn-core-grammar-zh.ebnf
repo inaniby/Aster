@@ -62,7 +62,7 @@ type          = "字节" | "短整数" | "整数" | "长整数" | "逻辑型"
               | "u字节" | "u短整数" | "u整数" | "u长整数"
               | "单精度" | "小数" | "字符" | "字符串" | "字符串视图" | "指针" | "空"
               | identifier | closure_type | function_type ;
-closure_type  = "闭包", "(", [ type, { ",", type } ], ")", ":", type ;
+closure_type  = "闭包", "(", [ type, { ",", type } ], ")", ( ":" | "->" ), type ;
 function_type = "方法", "(", [ type, { ",", type } ], ")", ":", type ;
               (* "空" 只允许作方法返回类型，见设计 §2.3 D-03；变量/参数/字段类型位置拒绝。 *)
 floating      = ? decimal floating-point literal containing "." or "e"/"E" ? ;

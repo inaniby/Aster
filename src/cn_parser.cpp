@@ -494,7 +494,12 @@ private:
             }
         }
         expect("RParen", "expected ')' after closure parameter types");
-        expect("Colon", "expected ':' after closure parameter types");
+        // #8 (divergence): closure types accept both `->` (design §2.14
+        // canonical: `闭包(P) -> R` / `closure(P) -> R`) and `:` (compat,
+        // same dual-accept as `fn` types in parseFunctionType, C-1 P9).
+        // The internal type string stays `closure(…):…` either way.
+        if (!eat("Colon") && !eat("Arrow"))
+            fail("expected ':' or '->' after closure parameter types");
         const std::string result = parseType();
         std::string type = "closure(";
         for (size_t i = 0; i < parameters.size(); ++i) {
