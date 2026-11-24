@@ -23711,7 +23711,8 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                                               const std::set<std::string>* forceConstructedClasses = nullptr,
                                               uint64_t poolSalt = 0,
                                               const std::map<std::string, std::string>* packageFileOwners = nullptr,
-                                              const std::map<std::string, std::string>* fileImportOwners = nullptr) {
+                                              const std::map<std::string, std::string>* fileImportOwners = nullptr,
+                                              uint64_t helperSalt = 0) {
     std::vector<Function> functions;
     // B-P4: a previous TU (per-source build) or test program (one process
     // lowers several) may have left another file's name behind; lowering
@@ -23745,8 +23746,12 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     // here are only ever referenced by the TU that minted them, except the
     // string pool, which the linker remaps per input anyway.
     stringPool.next = poolSalt;
-    stringPool.nextClosure = poolSalt;
-    stringPool.nextInterfaceUpcast = poolSalt;
+    // LIB8: only the helper counters take the helper salt (see the
+    // function header); the string pool, enum tables and embed blobs
+    // keep poolSalt, so their numbering stays spelling-independent.
+    const uint64_t cnHelperSalt = helperSalt != 0 ? helperSalt : poolSalt;
+    stringPool.nextClosure = cnHelperSalt;
+    stringPool.nextInterfaceUpcast = cnHelperSalt;
     stringPool.nextEnumTable = poolSalt;
     // B-P2: the per-TU counter offset also salts embed symbols, so two
     // TUs that both embed without a recorded file name still mint
@@ -28351,8 +28356,23 @@ int main(int argc,char**argv){
             g_cnDiagnosticActive = true;
             g_cnDiagnosticLanguage = hasLanguageOverride ? languageOverride : aster_cn::Language::Zh;
             if (projectPath.empty()) {
-                if (fileExists("aster.proj")) projectPath = "aster.proj";
-                else {
+                // LIB8: the project a file belongs to is the nearest
+                // aster.proj in the INPUT file's own ancestors — that
+                // wins over the working directory, which is incidental
+                // (building a zh Gallery file from inside the en Gallery
+                // directory must still find the zh project, not the en
+                // one). The working directory and the source's own
+                // directory stay as fallbacks, in the old order.
+                std::string dir = parentDir(cnCanonicalPath(input));
+                while (true) {
+                    const std::string candidate = dir + "/aster.proj";
+                    if (fileExists(candidate)) { projectPath = candidate; break; }
+                    const std::string up = parentDir(dir);
+                    if (up == dir) break;
+                    dir = up;
+                }
+                if (projectPath.empty() && fileExists("aster.proj")) projectPath = "aster.proj";
+                else if (projectPath.empty()) {
                     const std::string besideSource = dirNameOf(input) + "/aster.proj";
                     if (fileExists(besideSource)) projectPath = besideSource;
                 }
@@ -28365,9 +28385,210 @@ int main(int argc,char**argv){
             std::vector<Global> globals;
             const aster_cn::Program parsed = aster_cn::parseProgram(source, language, input);
             if (!projectPath.empty()) packageRoots.push_back(dirNameOf(projectPath));
-            const aster_cn::Program resolved = cnResolvePackageImports(
-                parsed, projectLanguage, packageRoots);
-            std::vector<Function> functions = cnProgramToAster(resolved, globals, withCountCheck);
+            // LIB8: when the input is a listed source of its project,
+            // merge the whole project for registration context before
+            // lowering — exactly the merge `aster build` does. A TU may
+            // reference declarations from a sibling project source it
+            // does not import (Gallery page files use struct 应用 from
+            // app.ast); without the sibling's declaration the type is
+            // unknown and lowering fails with [A-060], even though the
+            // same TU builds fine inside `aster build`. Emission is
+            // still per-source (onlySource=input below, no owners maps),
+            // so the sibling's definitions stay in the sibling's own
+            // object. This is best-effort: if any listed source is
+            // missing or fails to parse, fall back to the single-file
+            // program (the old behaviour) instead of failing a build
+            // whose input alone is fine — `aster build` is the place
+            // that reports a broken project. Standalone files (no
+            // project, or not listed in it) are unaffected.
+            aster_cn::Program resolved;
+            bool mergedProject = false;
+            std::vector<std::string> objSources;
+            std::vector<aster_cn::Program> objParsedSources;
+            if (!projectPath.empty()) {
+                try {
+                    const ProjectSpec objSpec = parseProjectFile(projectPath);
+                    const std::string projDir = dirNameOf(projectPath);
+                    for (const auto& specSource : objSpec.sources)
+                        objSources.push_back(projDir.empty() ? specSource
+                                                             : projDir + "/" + specSource);
+                    size_t inputIndex = objSources.size();
+                    for (size_t i = 0; i < objSources.size(); ++i)
+                        if (cnCanonicalPath(objSources[i]) == cnCanonicalPath(input)) {
+                            inputIndex = i;
+                            break;
+                        }
+                    if (inputIndex < objSources.size()) {
+                        bool allPresent = true;
+                        for (const auto& specSource : objSources)
+                            if (!fileExists(specSource)) { allPresent = false; break; }
+                        if (allPresent) {
+                            objParsedSources.reserve(objSources.size());
+                            std::map<std::string, aster_cn::Language> objSourceLanguages;
+                            std::set<std::string> objKnownSources;
+                            for (size_t i = 0; i < objSources.size(); ++i) {
+                                if (i == inputIndex) {
+                                    objParsedSources.push_back(parsed);
+                                } else {
+                                    const std::string siblingSource = readFile(objSources[i]);
+                                    setSourceCache(objSources[i], siblingSource);
+                                    const aster_cn::Language siblingLanguage =
+                                        aster_cn::selectLanguage(siblingSource, false,
+                                                                 aster_cn::Language::Zh,
+                                                                 projectLanguage, objSources[i]);
+                                    objParsedSources.push_back(aster_cn::parseProgram(
+                                        siblingSource, siblingLanguage, objSources[i]));
+                                }
+                                objSourceLanguages[cnCanonicalPath(objSources[i])] =
+                                    objParsedSources.back().language;
+                                objKnownSources.insert(cnCanonicalPath(objSources[i]));
+                            }
+                            aster_cn::Program roots;
+                            roots.language = parsed.language;
+                            // LIB8: the merged root's file is the FIRST
+                            // listed source, exactly as `aster build`
+                            // sets it — NOT the input. cnResolveFileImports
+                            // seeds its cycle-detection set with the root
+                            // file; seeding it with the input makes any
+                            // other project source that includes the input
+                            // (font_runtime includes text/truetype/embeds)
+                            // look like a cycle, throws, and the
+                            // best-effort fallback silently rebuilds the
+                            // input merged — which re-emits the imported
+                            // definitions and duplicates them at link.
+                            roots.sourceFile = objParsedSources.front().sourceFile;
+                            for (const auto& parsedSource : objParsedSources) {
+                                roots.structures.insert(roots.structures.end(),
+                                    parsedSource.structures.begin(), parsedSource.structures.end());
+                                roots.enums.insert(roots.enums.end(),
+                                    parsedSource.enums.begin(), parsedSource.enums.end());
+                                roots.classes.insert(roots.classes.end(),
+                                    parsedSource.classes.begin(), parsedSource.classes.end());
+                                roots.interfaceClasses.insert(roots.interfaceClasses.end(),
+                                    parsedSource.interfaceClasses.begin(),
+                                    parsedSource.interfaceClasses.end());
+                                roots.globals.insert(roots.globals.end(),
+                                    parsedSource.globals.begin(), parsedSource.globals.end());
+                                roots.methods.insert(roots.methods.end(),
+                                    parsedSource.methods.begin(), parsedSource.methods.end());
+                                roots.imports.insert(roots.imports.end(),
+                                    parsedSource.imports.begin(), parsedSource.imports.end());
+                                roots.aliases.insert(roots.aliases.end(),
+                                    parsedSource.aliases.begin(), parsedSource.aliases.end());
+                                roots.fileImports.insert(roots.fileImports.end(),
+                                    parsedSource.fileImports.begin(),
+                                    parsedSource.fileImports.end());
+                            }
+                            resolved = cnResolvePackageImports(roots, projectLanguage,
+                                                               packageRoots, objKnownSources,
+                                                               objSourceLanguages);
+                            mergedProject = true;
+                        }
+                    }
+                } catch (...) {
+                    mergedProject = false;
+                }
+            }
+            if (!mergedProject) {
+                // B-P1: this file's resolved language, so its file imports
+                // inherit it (not the project default).
+                const std::map<std::string, aster_cn::Language> singleSourceLanguages{
+                    {cnCanonicalPath(input), parsed.language}};
+                resolved = cnResolvePackageImports(
+                    parsed, projectLanguage, packageRoots, {}, singleSourceLanguages);
+            }
+            // LIB8: package files have no TU of their own in a
+            // build-cn-obj link, so the importing TU emits their
+            // definitions (the old merged behaviour) — without an owner
+            // they are emitted nowhere and the link reports undefined
+            // symbols for the package's methods/factories. The link set
+            // is the whole project when the input is listed in it (the
+            // same owners `aster build` computes, so a package imported
+            // by two project sources is still emitted once), else just
+            // the input TU.
+            std::map<std::string, std::string> cnObjPackageOwners;
+            std::map<std::string, std::string> cnObjFileImportOwners;
+            {
+                std::vector<std::pair<std::string, const aster_cn::Program*>> objLinkSet;
+                if (mergedProject) {
+                    for (size_t i = 0; i < objSources.size(); ++i)
+                        objLinkSet.emplace_back(objSources[i], &objParsedSources[i]);
+                } else {
+                    objLinkSet.emplace_back(input, &parsed);
+                }
+                cnObjPackageOwners = cnPackageFileOwners(objLinkSet);
+                if (mergedProject) {
+                    // A file imported by a project source but not listed
+                    // in aster.proj has no TU of its own: the first
+                    // listed TU importing it (transitively) emits it,
+                    // exactly as `aster build` assigns it. A listed
+                    // imported file is never merged in the first place
+                    // (knownSources), so it keeps its own TU.
+                    cnObjFileImportOwners = cnFileImportOwners(objLinkSet);
+                } else {
+                    // Standalone build-cn-obj has no project link set:
+                    // the input TU is the only object that can carry
+                    // its transitive file imports, so it owns all of
+                    // them (the old merged behaviour for a lone file).
+                    // This is what the B-P1 import tests pin: they build
+                    // only the importer and link only its object.
+                    for (const auto& entry : g_cnFileImporters)
+                        cnObjFileImportOwners[entry.first] = input;
+                }
+            }
+            // LIB8 (治本): build-cn-obj now emits per-source, like the
+            // project build's cachedCnProjectObject: only the input TU's
+            // own definitions are emitted; declarations from files it
+            // includes/imports (or packages) are referenced through
+            // external stubs instead of being emitted again, so separately
+            // built objects of one file and its imports no longer define
+            // the same symbol twice (e.g. font_runtime.o used to carry
+            // ui_tt_set_clock from truetype.ast). Merged parsing and
+            // registration are untouched — only the emission boundary
+            // moves. `forceConstructedClasses` is the merged program's
+            // set, so the TU that defines a class emits its factory /
+            // initializer even when another TU constructs it. `helperSalt`
+            // is a deterministic hash of the canonical input path, so
+            // two separately built objects can never mint the same
+            // generated helper symbol (closure factories, adapter
+            // thunks, interface upcasts); it salts only those helpers —
+            // the string pool, enum tables and embed blobs keep
+            // sequential numbering, so two spellings of one file still
+            // produce byte-identical objects. The project build's index
+            // salts are in a different range and the two paths' objects
+            // are never linked together. File imports are owned per
+            // cnObjFileImportOwners above: a listed imported file keeps
+            // its own TU, an unlisted one is emitted by its importing
+            // TU, and a standalone build's imports are all emitted by
+            // the input TU; package files are owned per
+            // cnObjPackageOwners above, since no separate object emits
+            // them.
+            // requireMain=false (C-3) is unchanged: a file without
+            // 启动方法/main still builds as a library object (no _start),
+            // and a file that does define an entry still emits _start —
+            // hasMain is only set when this TU itself defines main.
+            const std::set<std::string> constructedClasses = cnFindConstructedClasses(resolved);
+            uint64_t helperSalt = 1000000000ULL;
+            {
+                const std::string saltHex = sha256Hex(cnCanonicalPath(input));
+                uint64_t saltValue = 0;
+                for (size_t i = 0; i < 12 && i < saltHex.size(); ++i) {
+                    const char c = saltHex[i];
+                    unsigned nibble = 0;
+                    if (c >= '0' && c <= '9') nibble = static_cast<unsigned>(c - '0');
+                    else if (c >= 'a' && c <= 'f') nibble = static_cast<unsigned>(c - 'a' + 10);
+                    else if (c >= 'A' && c <= 'F') nibble = static_cast<unsigned>(c - 'A' + 10);
+                    saltValue = (saltValue << 4) | nibble;
+                }
+                helperSalt += saltValue % 1000000000000ULL;
+            }
+            std::vector<Function> functions = cnProgramToAster(resolved, globals, withCountCheck,
+                                                                input, false, &constructedClasses,
+                                                                0, &cnObjPackageOwners,
+                                                                &cnObjFileImportOwners, helperSalt);
+            std::set<std::string> referencedSymbols, referencedTypes;
+            cnCollectEmittedReferences(functions, globals, referencedSymbols, referencedTypes);
+            cnAddExternalStubs(functions, globals, resolved, referencedSymbols);
             const auto compiled = compileProgram(functions, globals, false, true,
                                                  withBoundsCheck, withDebugInfo);
             const auto stableWarnings = cnStableValueWarnings(resolved, language);
