@@ -522,7 +522,7 @@ for i in range(0, len(args), 3):
 pathlib.Path('tmp-mut.cpp').write_text(s, encoding='utf-8')
 PY
     mv tmp-mut.cpp "$W/mut.cpp"
-    $CXX -std=c++17 -O2 -w "$W/mut.cpp" -o "$W/mut.aster" >/dev/null 2>&1 \
+    $CXX -std=c++17 -O2 -w -I src "$W/mut.cpp" -o "$W/mut.aster" >/dev/null 2>&1 \
         || fail "$label mutant does not compile"
     if mut_check "$W/mut.aster"; then
         # The aggregate mutation-score census greps for this exact wording.

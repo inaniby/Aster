@@ -300,7 +300,7 @@ sed -i 's/syscallInsn(80,e\.args/syscallInsn(79,e.args/' "$W/m_fstat.cpp"
 if ! grep -q 'syscallInsn(79,e.args' "$W/m_fstat.cpp"; then
     echo "FAIL: m_fstat — sed did not apply (the 80->79 renumber is gone?)" >&2; exit 1
 fi
-${CXX:-c++} -std=c++17 -O2 -w "$W/m_fstat.cpp" -o "$OUT/aster_m_fstat" 2>/dev/null
+${CXX:-c++} -std=c++17 -O2 -w -I src "$W/m_fstat.cpp" -o "$OUT/aster_m_fstat" 2>/dev/null
 emit_case fstat_size
 if "$OUT/aster_m_fstat" build-elf "$W/fstat_size.ast" -o "$W/fstat_size.mab" >/dev/null 2>&1; then
     mrc=0
@@ -323,7 +323,7 @@ sed -i '/if(e.name=="read"&&!functionArities.count(e.name)){/,/^                
 if grep -q 'if(e.name=="read"&&!functionArities.count(e.name)){' "$W/m_read.cpp"; then
     echo "FAIL: m_read_dispatch — sed did not remove the read dispatch" >&2; exit 1
 fi
-${CXX:-c++} -std=c++17 -O2 -w "$W/m_read.cpp" -o "$OUT/aster_m_read" 2>/dev/null
+${CXX:-c++} -std=c++17 -O2 -w -I src "$W/m_read.cpp" -o "$OUT/aster_m_read" 2>/dev/null
 emit_case cat_stdin
 if "$OUT/aster_m_read" build-elf "$W/cat_stdin.ast" -o "$W/cat_stdin.mab" >/dev/null 2>&1; then
     echo "FAIL: m_read_dispatch — cat_stdin still compiled without the read dispatch" >&2; exit 1

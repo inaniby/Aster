@@ -89,7 +89,7 @@ printf '%s\n' '[6/7] the harness has teeth: a mutated compiler is caught'
 sed 's|else                      base=wide?0xca000000u:0x4a000000u;   // EOR|else                      base=wide?0xca000000u:0x2a000000u;   // EOR->ORR (mutant)|' \
     src/aster.cpp > "$OUT/mutant.cpp"
 cmp -s src/aster.cpp "$OUT/mutant.cpp" && fail 'the EOR mutation stopped applying'
-$CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant compiler did not build'
+$CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant compiler did not build'
 caught=0
 seed=1
 while [ "$seed" -le 8 ]; do

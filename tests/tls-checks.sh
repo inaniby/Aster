@@ -502,7 +502,7 @@ sed 's|const uint32_t val=uint32_t(off);|const uint32_t val=uint32_t(off/2);|' \
     src/aster.cpp > "$OUT/mutant.cpp"
 grep -q 'const uint32_t val=uint32_t(off/2);' "$OUT/mutant.cpp" \
     || fail "the local-exec mutation stopped applying — the [9/9] guard is stale"
-${CXX:-c++} -std=c++17 -O2 "$OUT/mutant.cpp" -o "$OUT/mutant" 2>/dev/null \
+${CXX:-c++} -std=c++17 -O2 -I src "$OUT/mutant.cpp" -o "$OUT/mutant" 2>/dev/null \
     || fail "the local-exec mutation no longer compiles"
 if [ "$can_run" = yes ]; then
     "$OUT/mutant" build-elf "$OUT/split.ast" -o "$OUT/mut.elf" >/dev/null 2>&1
@@ -521,7 +521,7 @@ sed 's|r.info=kRelTlsTprel;r.addend=(int64_t)tlsGlobals\[i\].offset;|r.info=kRel
     src/aster.cpp > "$OUT/mutant2.cpp"
 grep -q 'r.info=kRelTlsTprel;r.addend=0;' "$OUT/mutant2.cpp" \
     || fail "the initial-exec mutation stopped applying — the [9/9] guard is stale"
-${CXX:-c++} -std=c++17 -O2 "$OUT/mutant2.cpp" -o "$OUT/mutant2" 2>/dev/null \
+${CXX:-c++} -std=c++17 -O2 -I src "$OUT/mutant2.cpp" -o "$OUT/mutant2" 2>/dev/null \
     || fail "the initial-exec mutation no longer compiles"
 "$OUT/mutant2" build-so examples/so_tls_demo.ast -o "$OUT/mut2.so" >/dev/null 2>&1
 if python3 - "$OUT/mut2.so" <<'PY'

@@ -72,3 +72,9 @@ __pycache__/
 *~
 .DS_Store
 Thumbs.db
+
+# §3.4 提交前清理：修前二进制快照不进仓库（aster-before-p1 已移出树外，
+# 保存于 ~/workspace/audit-cn-s1s2/aster-before-p1）；裸 .tmp 文件亦忽略
+#（已有 *.tmp.* 规则，补裸后缀）。
+aster-before-*
+*.tmp

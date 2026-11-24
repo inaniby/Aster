@@ -388,7 +388,7 @@ mutate() {   # mutate <name> <sed-script> <expectation...>
     if ! sed -i.bak "$script" "$OUT/mut.cpp" 2>/dev/null; then
         echo "FAIL: mutant $name could not be applied" >&2; exit 1
     fi
-    if ! $CXX -std=c++17 -O2 -w "$OUT/mut.cpp" -o "$OUT/mut.aster" >"$OUT/mut.build" 2>&1; then
+    if ! $CXX -std=c++17 -O2 -w -I src "$OUT/mut.cpp" -o "$OUT/mut.aster" >"$OUT/mut.build" 2>&1; then
         echo "FAIL: mutant $name does not build" >&2; sed -n '1,3p' "$OUT/mut.build" >&2; exit 1
     fi
     "$@"

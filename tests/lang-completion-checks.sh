@@ -127,7 +127,7 @@ sed 's|for(size_t at:loops.back().continues)patchBranch(at,condAt);|for(size_t a
     src/aster.cpp > "$OUT/mutant.cpp"
 grep -q 'for(size_t at:loops.back().continues)patchBranch(at,bodyStart);' "$OUT/mutant.cpp" \
     || fail 'the continue-target mutation stopped applying'
-$CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant no longer compiles'
+$CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant no longer compiles'
 printf 'fn main() -> i32 { let i: i32 = 0; let s: i32 = 0; do { i = i + 1; if (i == 3) { continue; } s = s + 1; } while (i < 3); return s * 10 + i; }\n' > "$OUT/mut.ast"
 "$OUT/mutant" build-elf "$OUT/mut.ast" -o "$OUT/mut.elf" >/dev/null 2>&1 || fail 'the mutant refused the continue case'
 chmod +x "$OUT/mut.elf"

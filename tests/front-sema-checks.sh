@@ -324,7 +324,7 @@ assert got == want, (got, want, old[:70])
 pathlib.Path('tmp-mut.cpp').write_text(s.replace(old, new), encoding='utf-8')
 PY
     mv tmp-mut.cpp "$W/mut.cpp"
-    $CXX -std=c++17 -O2 -w "$W/mut.cpp" -o "$W/mut.aster" >/dev/null 2>&1 \
+    $CXX -std=c++17 -O2 -w -I src "$W/mut.cpp" -o "$W/mut.aster" >/dev/null 2>&1 \
         || { echo "FAIL: $1 mutant does not compile" >&2; exit 1; }
     if mut_check "$W/mut.aster"; then
         # "went unnoticed" is the survivor-assertion wording the aggregate

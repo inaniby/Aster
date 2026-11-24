@@ -277,7 +277,7 @@ sed "s@$BEFORE@$AFTER@" "$WORK/broken.cpp" > "$WORK/broken.injected" \
 mv "$WORK/broken.injected" "$WORK/broken.cpp"
 grep -qF "$AFTER" "$WORK/broken.cpp" \
     || { echo "FAIL: the bug injection did not apply -- the proof would be vacuous"; exit 1; }
-if ! $REAL_CXX $SAN_FLAGS "$WORK/broken.cpp" -o "$WORK/broken-asan" 2>"$WORK/broken-build.log"; then
+if ! $REAL_CXX $SAN_FLAGS -I src "$WORK/broken.cpp" -o "$WORK/broken-asan" 2>"$WORK/broken-build.log"; then
     cat "$WORK/broken-build.log" >&2
     echo "FAIL: the injected-bug build failed"
     exit 1

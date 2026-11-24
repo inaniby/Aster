@@ -413,7 +413,7 @@ while IFS='~' read -r label kind program codes; do
         echo "FAIL: mutation '$label' did not apply (sed/awk matched nothing)" >&2; exit 1
     fi
     # shellcheck disable=SC2086
-    c++ -std=c++17 -O2 -w "$W/m$n.cpp" -o "$W/m$n-aster" 2>"$W/m$n.build.log" &
+    c++ -std=c++17 -O2 -w -I src "$W/m$n.cpp" -o "$W/m$n-aster" 2>"$W/m$n.build.log" &
     pids="$pids $!"
     if [ $((n % 4)) -eq 0 ]; then drain; fi
 done <<'MUT_EOF'

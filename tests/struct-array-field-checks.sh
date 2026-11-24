@@ -350,7 +350,7 @@ mutate() {   # mutate <name> <sed-script> <expectation...>
     if cmp -s "$OUT/mut.cpp" "$OUT/mut.cpp.bak"; then
         echo "FAIL: mutant $name changed nothing — its source pin is stale" >&2; exit 1
     fi
-    if ! $CXX -std=c++17 -O2 -w "$OUT/mut.cpp" -o "$OUT/mut.aster" >"$OUT/mut.build" 2>&1; then
+    if ! $CXX -std=c++17 -O2 -w -I src "$OUT/mut.cpp" -o "$OUT/mut.aster" >"$OUT/mut.build" 2>&1; then
         echo "FAIL: mutant $name does not build" >&2; sed -n '1,3p' "$OUT/mut.build" >&2; exit 1
     fi
     "$@"

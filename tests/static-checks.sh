@@ -128,7 +128,7 @@ printf '%s\n' '[9/9] mutation: the sequence number keeps two statics apart'
 sed 's|"__aster_static_"+std::to_string(staticSeq++)+"_"+local|"__aster_static_"+local|' \
     src/aster.cpp > "$OUT/mutant.cpp"
 cmp -s src/aster.cpp "$OUT/mutant.cpp" && fail 'the mangling mutation stopped applying'
-$CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant compiler did not build'
+$CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant compiler did not build'
 set +e
 "$OUT/mutant" build-elf "$OUT/twon.ast" -o "$OUT/mut.elf" >"$OUT/mut.log" 2>&1; mrc=$?
 if [ "$mrc" = 0 ]; then

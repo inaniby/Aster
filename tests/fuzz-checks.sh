@@ -127,7 +127,7 @@ sed "s|$BEFORE|$AFTER|" \
 mv "$OUT/broken.injected" "$OUT/broken.cpp"
 grep -q 'TK::Minus)){E x=unary();E z(new Expr(Expr::Neg));z->a=std::move(x);z->line=x->line' "$OUT/broken.cpp" \
     || { echo "FAIL: bug injection did not apply -- the proof would be vacuous"; exit 1; }
-$CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror "$OUT/broken.cpp" -o "$OUT/broken-aster"
+$CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -I src "$OUT/broken.cpp" -o "$OUT/broken-aster"
 
 caught=0
 for f in "$OUT"/corpus/*.ast; do

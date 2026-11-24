@@ -335,7 +335,7 @@ mutate() { # mutate <name> <sed-expr> <expected-value-source> <expected-value>
     if cmp -s src/aster.cpp "$OUT/m.cpp"; then
         echo "FAIL: mutation $1 did not change the source (the guard is stale)" >&2; exit 1
     fi
-    if ! $CXX -std=c++17 -O0 -w "$OUT/m.cpp" -o "$OUT/m.aster" 2>"$OUT/m.err"; then
+    if ! $CXX -std=c++17 -O0 -w -I src "$OUT/m.cpp" -o "$OUT/m.aster" 2>"$OUT/m.err"; then
         echo "FAIL: mutant $1 does not build" >&2; sed -n '1,3p' "$OUT/m.err" >&2; exit 1
     fi
     printf '%s\n' "$3" > "$OUT/m.ast"

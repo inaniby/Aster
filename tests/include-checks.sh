@@ -378,7 +378,7 @@ mutate() {
         grep -qF "$needle" "$OUT/mutant.cpp" \
             && fail "the mutation '$desc' no longer applies to src/aster.cpp (fix the guard)"
     fi
-    $CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
+    $CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
     echo "   mutated: $desc"
 }
 

@@ -466,7 +466,7 @@ printf '%s\n' '[9/9] The suite can still fail (mutation)'
 sed 's|pv16(verNeed,22,3);|pv16(verNeed,22,1);|' src/aster.cpp > "$OUT/mutant.cpp"
 [ "$(grep -cF 'pv16(verNeed,22,1);' "$OUT/mutant.cpp")" = 2 ] \
     || fail "the vna_other mutation stopped applying — the [9/9] guard is stale"
-${CXX:-c++} -std=c++17 -O2 "$OUT/mutant.cpp" -o "$OUT/mutant" 2>/dev/null \
+${CXX:-c++} -std=c++17 -O2 -I src "$OUT/mutant.cpp" -o "$OUT/mutant" 2>/dev/null \
     || fail "the vna_other mutation no longer compiles"
 "$OUT/mutant" build-so examples/so_link_import.ast -o "$OUT/mut.so" --needed libdyn.so >/dev/null 2>&1
 # The mutant must be *rejected* by the same reader the suite uses: if the

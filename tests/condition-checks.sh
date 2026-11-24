@@ -460,7 +460,7 @@ build_mutant() { # build_mutant <name> <sed-expr>
     if cmp -s src/aster.cpp "$OUT/m.$1/aster.cpp"; then
         echo "FAIL: mutation $1 did not change the source (the guard is stale)" >&2; exit 1
     fi
-    $CXX -std=c++17 -O0 -w "$OUT/m.$1/aster.cpp" -o "$OUT/m.$1/aster" 2>"$OUT/m.$1.err" \
+    $CXX -std=c++17 -O0 -w -I src "$OUT/m.$1/aster.cpp" -o "$OUT/m.$1/aster" 2>"$OUT/m.$1.err" \
         || { echo "FAIL: mutant $1 does not build" >&2; sed -n '1,3p' "$OUT/m.$1.err" >&2; exit 1; }
 }
 # m1: sema stops accepting an integer condition (the round's core rule, at the

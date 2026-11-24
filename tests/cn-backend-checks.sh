@@ -6,6 +6,16 @@ if [ ! -x "$ASTER_BIN" ]; then
     echo "set ASTER_BIN to a built Aster executable" >&2
     exit 2
 fi
+RUNNER=${RUNNER:-$ROOT/tests/run-aarch64.sh}
+# AArch64 guests run natively on an AArch64 host and under qemu-aarch64
+# elsewhere. Without either, execution checks SKIP cleanly (cf.
+# bootstrap-loop-checks.sh) instead of failing with Exec format error.
+if [ "$(uname -m)" = aarch64 ] || [ "$(uname -m)" = arm64 ] \
+    || command -v qemu-aarch64 >/dev/null 2>&1; then
+    CAN_RUN=1
+else
+    CAN_RUN=0
+fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
@@ -101,8 +111,8 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/omitted-void-en.ast" -o "$TMP/omitted-void-en.o"
 cmp "$TMP/omitted-void-zh.o" "$TMP/omitted-void-en.o"
 "$ASTER_BIN" link-obj "$TMP/omitted-void-zh.o" -o "$TMP/omitted-void"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    "$TMP/omitted-void"
+if [ "$CAN_RUN" -eq 1 ]; then
+    "$RUNNER" "$TMP/omitted-void"
 fi
 
 cat > "$TMP/extern-zh.ast" <<'SRC'
@@ -398,11 +408,11 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/wide-match-en.ast" -o "$TMP/wide-match-en.o"
 cmp "$TMP/wide-match-zh.o" "$TMP/wide-match-en.o"
 "$ASTER_BIN" link-obj "$TMP/wide-match-zh.o" -o "$TMP/wide-match"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/wide-match"; then status=0; else status=$?; fi
-    [ "$status" -eq 6 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/wide-match"; then status=0; else status=$?; fi
+    [ "$status" -eq 6 ] || { echo "FAIL: expected exit 6, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: execution requires AArch64 Linux'
+    echo 'SKIP: execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/enum-match-zh.ast" <<'SRC'
@@ -482,11 +492,11 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/enum-match-en.ast" -o "$TMP/enum-match-en.o"
 cmp "$TMP/enum-match-zh.o" "$TMP/enum-match-en.o"
 "$ASTER_BIN" link-obj "$TMP/enum-match-zh.o" -o "$TMP/enum-match"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/enum-match"; then status=0; else status=$?; fi
-    [ "$status" -eq 5 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/enum-match"; then status=0; else status=$?; fi
+    [ "$status" -eq 5 ] || { echo "FAIL: expected exit 5, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: execution requires AArch64 Linux'
+    echo 'SKIP: execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/truthiness-zh.ast" <<'SRC'
@@ -624,11 +634,11 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/truthiness-en.ast" -o "$TMP/truthiness-en.o"
 cmp "$TMP/truthiness-zh.o" "$TMP/truthiness-en.o"
 "$ASTER_BIN" link-obj "$TMP/truthiness-zh.o" -o "$TMP/truthiness"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/truthiness"; then status=0; else status=$?; fi
-    [ "$status" -eq 7 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/truthiness"; then status=0; else status=$?; fi
+    [ "$status" -eq 7 ] || { echo "FAIL: expected exit 7, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: execution requires AArch64 Linux'
+    echo 'SKIP: execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 printf '%s\n' '[2/19] signed count loops link and run on AArch64 Linux'
@@ -661,11 +671,11 @@ total = total + 1
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/flow.ast" -o "$TMP/flow.o"
 "$ASTER_BIN" link-obj "$TMP/flow.o" -o "$TMP/flow"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/flow"; then status=0; else status=$?; fi
-    [ "$status" -eq 220 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/flow"; then status=0; else status=$?; fi
+    [ "$status" -eq 220 ] || { echo "FAIL: expected exit 220, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: execution requires AArch64 Linux'
+    echo 'SKIP: execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 printf '%s\n' '[3/19] dynamic count-loop steps run once and zero traps by default'
@@ -702,11 +712,11 @@ total = total + i
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/dynamic-step.ast" -o "$TMP/dynamic-step.o"
 "$ASTER_BIN" link-obj "$TMP/dynamic-step.o" -o "$TMP/dynamic-step"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/dynamic-step"; then status=0; else status=$?; fi
-    [ "$status" -eq 15 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/dynamic-step"; then status=0; else status=$?; fi
+    [ "$status" -eq 15 ] || { echo "FAIL: expected exit 15, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: execution requires AArch64 Linux'
+    echo 'SKIP: execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/dynamic-zero-step.ast" <<'SRC'
@@ -723,13 +733,13 @@ SRC
 "$ASTER_BIN" link-obj "$TMP/dynamic-zero-step.o" -o "$TMP/dynamic-zero-step"
 "$ASTER_BIN" build-cn-obj --no-count-check "$TMP/dynamic-zero-step.ast" -o "$TMP/no-count-check.o"
 "$ASTER_BIN" link-obj "$TMP/no-count-check.o" -o "$TMP/no-count-check"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/dynamic-zero-step" >/dev/null 2>&1; then status=0; else status=$?; fi
-    [ "$status" -eq 133 ]
-    if "$TMP/no-count-check" >/dev/null 2>&1; then status=0; else status=$?; fi
-    [ "$status" -eq 17 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/dynamic-zero-step" >/dev/null 2>&1; then status=0; else status=$?; fi
+    [ "$status" -eq 133 ] || { echo "FAIL: expected exit 133, got $status" >&2; exit 1; }
+    if "$RUNNER" "$TMP/no-count-check" >/dev/null 2>&1; then status=0; else status=$?; fi
+    [ "$status" -eq 17 ] || { echo "FAIL: expected exit 17, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: execution requires AArch64 Linux'
+    echo 'SKIP: execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/large-step.ast" <<'SRC'
@@ -984,11 +994,11 @@ items[1] = items[0] + 2
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/arrays.ast" -o "$TMP/arrays.o"
 "$ASTER_BIN" link-obj "$TMP/arrays.o" -o "$TMP/arrays"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/arrays"; then status=0; else status=$?; fi
-    [ "$status" -eq 13 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/arrays"; then status=0; else status=$?; fi
+    [ "$status" -eq 13 ] || { echo "FAIL: expected exit 13, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: array execution requires AArch64 Linux'
+    echo 'SKIP: array execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/array-length-mismatch.ast" <<'SRC'
@@ -1039,11 +1049,11 @@ SRC
 "$ASTER_BIN" build-cn-obj "$TMP/foreach-en.ast" -o "$TMP/foreach-en.o"
 cmp "$TMP/foreach-zh.o" "$TMP/foreach-en.o"
 "$ASTER_BIN" link-obj "$TMP/foreach-zh.o" -o "$TMP/foreach"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/foreach"; then status=0; else status=$?; fi
-    [ "$status" -eq 33 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/foreach"; then status=0; else status=$?; fi
+    [ "$status" -eq 33 ] || { echo "FAIL: expected exit 33, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: foreach execution requires AArch64 Linux'
+    echo 'SKIP: foreach execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/foreach-read-only.ast" <<'SRC'
@@ -1110,11 +1120,11 @@ fn native_literal() -> i32 {
 SRC
 "$ASTER_BIN" build-obj "$TMP/string-native.ast" -o "$TMP/string-native.o"
 "$ASTER_BIN" link-obj "$TMP/string-zh.o" "$TMP/string-native.o" -o "$TMP/string"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/string"; then status=0; else status=$?; fi
-    [ "$status" -eq 80 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/string"; then status=0; else status=$?; fi
+    [ "$status" -eq 80 ] || { echo "FAIL: expected exit 80, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: string execution requires AArch64 Linux'
+    echo 'SKIP: string execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/string-default.ast" <<'SRC'
@@ -1129,11 +1139,11 @@ cat > "$TMP/string-default.ast" <<'SRC'
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/string-default.ast" -o "$TMP/string-default.o"
 "$ASTER_BIN" link-obj "$TMP/string-default.o" -o "$TMP/string-default"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/string-default"; then status=0; else status=$?; fi
-    [ "$status" -eq 0 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/string-default"; then status=0; else status=$?; fi
+    [ "$status" -eq 0 ] || { echo "FAIL: expected exit 0, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: string-default execution requires AArch64 Linux'
+    echo 'SKIP: string-default execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/string-return.ast" <<'SRC'
@@ -1150,11 +1160,11 @@ cat > "$TMP/string-return.ast" <<'SRC'
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/string-return.ast" -o "$TMP/string-return.o"
 "$ASTER_BIN" link-obj "$TMP/string-return.o" -o "$TMP/string-return"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/string-return"; then status=0; else status=$?; fi
-    [ "$status" -eq 29 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/string-return"; then status=0; else status=$?; fi
+    [ "$status" -eq 29 ] || { echo "FAIL: expected exit 29, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: string-return execution requires AArch64 Linux'
+    echo 'SKIP: string-return execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/string-nul.ast" <<'SRC'
@@ -1223,11 +1233,11 @@ cat > "$TMP/default-scalars.ast" <<'SRC'
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/default-scalars.ast" -o "$TMP/default-scalars.o"
 "$ASTER_BIN" link-obj "$TMP/default-scalars.o" -o "$TMP/default-scalars"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/default-scalars"; then status=0; else status=$?; fi
-    [ "$status" -eq 0 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/default-scalars"; then status=0; else status=$?; fi
+    [ "$status" -eq 0 ] || { echo "FAIL: expected exit 0, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: scalar-default execution requires AArch64 Linux'
+    echo 'SKIP: scalar-default execution requires qemu-aarch64 or AArch64 Linux'
 fi
 cat > "$TMP/default-void.ast" <<'SRC'
 // aster:language=zh
@@ -1277,11 +1287,11 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/scalar-casts-en.ast" -o "$TMP/scalar-casts-en.o"
 cmp "$TMP/scalar-casts.o" "$TMP/scalar-casts-en.o"
 "$ASTER_BIN" link-obj "$TMP/scalar-casts.o" -o "$TMP/scalar-casts"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/scalar-casts"; then status=0; else status=$?; fi
-    [ "$status" -eq 0 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/scalar-casts"; then status=0; else status=$?; fi
+    [ "$status" -eq 0 ] || { echo "FAIL: expected exit 0, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: scalar-cast execution requires AArch64 Linux'
+    echo 'SKIP: scalar-cast execution requires qemu-aarch64 or AArch64 Linux'
 fi
 cat > "$TMP/bad-cast-arity.ast" <<'SRC'
 // aster:language=zh
@@ -1361,11 +1371,11 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/struct-defaults-en.ast" -o "$TMP/struct-defaults-en.o"
 cmp "$TMP/struct-defaults-zh.o" "$TMP/struct-defaults-en.o"
 "$ASTER_BIN" link-obj "$TMP/struct-defaults-zh.o" -o "$TMP/struct-defaults"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/struct-defaults"; then status=0; else status=$?; fi
-    [ "$status" -eq 27 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/struct-defaults"; then status=0; else status=$?; fi
+    [ "$status" -eq 27 ] || { echo "FAIL: expected exit 27, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: structure-default execution requires AArch64 Linux'
+    echo 'SKIP: structure-default execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/struct-void-field.ast" <<'SRC'
@@ -1415,11 +1425,11 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/struct-literal-en.ast" -o "$TMP/struct-literal-en.o"
 cmp "$TMP/struct-literal-zh.o" "$TMP/struct-literal-en.o"
 "$ASTER_BIN" link-obj "$TMP/struct-literal-zh.o" -o "$TMP/struct-literal"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/struct-literal"; then status=0; else status=$?; fi
-    [ "$status" -eq 42 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/struct-literal"; then status=0; else status=$?; fi
+    [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: structure-literal execution requires AArch64 Linux'
+    echo 'SKIP: structure-literal execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/struct-literal-arity.ast" <<'SRC'
@@ -1474,11 +1484,11 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/struct-array-en.ast" -o "$TMP/struct-array-en.o"
 cmp "$TMP/struct-array-zh.o" "$TMP/struct-array-en.o"
 "$ASTER_BIN" link-obj "$TMP/struct-array-zh.o" -o "$TMP/struct-array"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/struct-array"; then status=0; else status=$?; fi
-    [ "$status" -eq 42 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/struct-array"; then status=0; else status=$?; fi
+    [ "$status" -eq 42 ] || { echo "FAIL: expected exit 42, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: structure-array execution requires AArch64 Linux'
+    echo 'SKIP: structure-array execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 printf '%s\n' '[15/19] automatic defaults remain readable without a second assignment'
@@ -1561,11 +1571,11 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/struct-array-element-en.ast" -o "$TMP/struct-array-element-en.o"
 cmp "$TMP/struct-array-element-zh.o" "$TMP/struct-array-element-en.o"
 "$ASTER_BIN" link-obj "$TMP/struct-array-element-zh.o" -o "$TMP/struct-array-element"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/struct-array-element"; then status=0; else status=$?; fi
-    [ "$status" -eq 44 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/struct-array-element"; then status=0; else status=$?; fi
+    [ "$status" -eq 44 ] || { echo "FAIL: expected exit 44, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: structure-array-element execution requires AArch64 Linux'
+    echo 'SKIP: structure-array-element execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 printf '%s\n' '[17/19] enumloop exposes bilingual structure field metadata'
@@ -1699,11 +1709,11 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/enumloop-en.ast" -o "$TMP/enumloop-en.o"
 cmp "$TMP/enumloop-zh.o" "$TMP/enumloop-en.o"
 "$ASTER_BIN" link-obj "$TMP/enumloop-zh.o" -o "$TMP/enumloop"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/enumloop"; then status=0; else status=$?; fi
-    [ "$status" -eq 0 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/enumloop"; then status=0; else status=$?; fi
+    [ "$status" -eq 0 ] || { echo "FAIL: expected exit 0, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: enumloop execution requires AArch64 Linux'
+    echo 'SKIP: enumloop execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/enumloop-scalar.ast" <<'SRC'
@@ -1780,7 +1790,7 @@ return stable + data.fixed + values[1] + conditional + explicit + constant + cha
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/stable-zh.ast" -o "$TMP/stable-zh.o" 2> "$TMP/stable-zh.err"
 "$ASTER_BIN" build-cn-obj --language en "$TMP/stable-en.ast" -o "$TMP/stable-en.o" 2> "$TMP/stable-en.err"
-cmp "$TMP/stable-zh.o" "$TMP/stable-en.o"
+cmp "$TMP/stable-zh.o" "$TMP/stable-en.o" || { echo "FAIL: \$TMP/stable-zh.o and \$TMP/stable-en.o differ" >&2; exit 1; }
 for language in zh en; do
     if [ "$language" = zh ]; then
         stable_warning="warning: 局部变量 'stable' 仅获得初始值"
@@ -1983,11 +1993,11 @@ if command -v strings >/dev/null 2>&1; then
     strings -n 2 "$TMP/signed-narrow-debug.o" | grep -qx 'i16'
 fi
 "$ASTER_BIN" link-obj "$TMP/signed-narrow-zh.o" -o "$TMP/signed-narrow"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/signed-narrow"; then status=0; else status=$?; fi
-    [ "$status" -eq 0 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/signed-narrow"; then status=0; else status=$?; fi
+    [ "$status" -eq 0 ] || { echo "FAIL: expected exit 0, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: signed-narrow execution requires AArch64 Linux'
+    echo 'SKIP: signed-narrow execution requires qemu-aarch64 or AArch64 Linux'
 fi
 cat > "$TMP/native-signed-narrow.ast" <<'SRC'
 fn narrow8(value: i8) -> i8 { return value; }
@@ -2001,11 +2011,11 @@ fn main() -> i32 {
 }
 SRC
 "$ASTER_BIN" build-elf "$TMP/native-signed-narrow.ast" -o "$TMP/native-signed-narrow"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/native-signed-narrow"; then status=0; else status=$?; fi
-    [ "$status" -eq 0 ]
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/native-signed-narrow"; then status=0; else status=$?; fi
+    [ "$status" -eq 0 ] || { echo "FAIL: expected exit 0, got $status" >&2; exit 1; }
 else
-    echo 'SKIP: native signed-narrow execution requires AArch64 Linux'
+    echo 'SKIP: native signed-narrow execution requires qemu-aarch64 or AArch64 Linux'
 fi
 for narrow_case in 'byte i8 128' 'short i16 32768'; do
     set -- $narrow_case
@@ -2783,39 +2793,39 @@ SRC
     -o "$TMP/closure-callback-plain-function-zh.o"
 
 if command -v readelf >/dev/null 2>&1; then
-    readelf -s "$TMP/closure-zero-en.o" | grep -q '__aster_cn_closure_'
-    readelf -s "$TMP/closure-zero-zh.o" | grep -q '__aster_cn_closure_'
-    readelf -s "$TMP/closure-callback-adapter-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-adapter-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-member-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-member-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-field-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-array-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-delayed-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-delayed-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-nested-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-nested-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-condition-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-condition-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-while-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-while-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-count-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-count-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-match-en.o" | grep -q '__aster_cn_adapter_thunk_'
-    readelf -s "$TMP/closure-callback-match-zh.o" | grep -q '__aster_cn_adapter_thunk_'
-    if readelf -s "$TMP/closure-callback-plain-function-en.o" | grep -q '__aster_cn_adapter_thunk_'; then
+    readelf -Ws "$TMP/closure-zero-en.o" | grep -q '__aster_cn_closure_'
+    readelf -Ws "$TMP/closure-zero-zh.o" | grep -q '__aster_cn_closure_'
+    readelf -Ws "$TMP/closure-callback-adapter-en.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-adapter-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-member-en.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-member-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-field-en.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-array-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-delayed-en.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-delayed-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-nested-en.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-nested-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-condition-en.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-condition-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-while-en.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-while-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-count-en.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-count-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-match-en.o" | grep -q '__aster_cn_adapter_thunk_'
+    readelf -Ws "$TMP/closure-callback-match-zh.o" | grep -q '__aster_cn_adapter_thunk_'
+    if readelf -Ws "$TMP/closure-callback-plain-function-en.o" | grep -q '__aster_cn_adapter_thunk_'; then
         echo 'FAIL: ordinary function pointer received an adapter thunk (en)' >&2
         exit 1
     fi
-    if readelf -s "$TMP/closure-callback-plain-function-zh.o" | grep -q '__aster_cn_adapter_thunk_'; then
+    if readelf -Ws "$TMP/closure-callback-plain-function-zh.o" | grep -q '__aster_cn_adapter_thunk_'; then
         echo 'FAIL: ordinary function pointer received an adapter thunk (zh)' >&2
         exit 1
     fi
 fi
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
+if [ "$CAN_RUN" -eq 1 ]; then
     "$ASTER_BIN" build-obj "$ROOT/stdlib/aster_std.ast" -o "$TMP/aster_std.o"
     "$ASTER_BIN" link-obj "$TMP/closure-valid-capture.o" "$TMP/aster_std.o" -o "$TMP/closure-valid-capture"
-    if "$TMP/closure-valid-capture"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/closure-valid-capture"; then status=0; else status=$?; fi
     [ "$status" -eq 42 ]
     cat > "$TMP/closure-valid-capture-zh.ast" <<'SRC'
 // aster:language=zh
@@ -2832,86 +2842,86 @@ SRC
         -o "$TMP/closure-valid-capture-zh.o"
     "$ASTER_BIN" link-obj "$TMP/closure-valid-capture-zh.o" "$TMP/aster_std.o" \
         -o "$TMP/closure-valid-capture-zh"
-    if "$TMP/closure-valid-capture-zh"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/closure-valid-capture-zh"; then status=0; else status=$?; fi
     [ "$status" -eq 42 ]
     "$ASTER_BIN" link-obj "$TMP/closure-zero-en.o" -o "$TMP/closure-zero-en"
-    if "$TMP/closure-zero-en"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/closure-zero-en"; then status=0; else status=$?; fi
     [ "$status" -eq 42 ]
     "$ASTER_BIN" link-obj "$TMP/closure-zero-zh.o" -o "$TMP/closure-zero-zh"
-    if "$TMP/closure-zero-zh"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/closure-zero-zh"; then status=0; else status=$?; fi
     [ "$status" -eq 42 ]
     for adapter_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-adapter-$adapter_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-adapter-$adapter_target"
-        if "$TMP/closure-callback-adapter-$adapter_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-callback-adapter-$adapter_target"; then status=0; else status=$?; fi
         [ "$status" -eq 42 ]
     done
     for member_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-member-$member_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-member-$member_target"
-        if "$TMP/closure-callback-member-$member_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-callback-member-$member_target"; then status=0; else status=$?; fi
         [ "$status" -eq 42 ]
     done
     "$ASTER_BIN" link-obj "$TMP/closure-callback-field-en.o" \
         "$TMP/aster_std.o" -o "$TMP/closure-callback-field-en"
-    if "$TMP/closure-callback-field-en"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/closure-callback-field-en"; then status=0; else status=$?; fi
     [ "$status" -eq 42 ]
     "$ASTER_BIN" link-obj "$TMP/closure-callback-array-zh.o" \
         "$TMP/aster_std.o" -o "$TMP/closure-callback-array-zh"
-    if "$TMP/closure-callback-array-zh"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/closure-callback-array-zh"; then status=0; else status=$?; fi
     [ "$status" -eq 43 ]
     for delayed_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-delayed-$delayed_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-delayed-$delayed_target"
-        if "$TMP/closure-callback-delayed-$delayed_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-callback-delayed-$delayed_target"; then status=0; else status=$?; fi
         [ "$status" -eq 85 ]
     done
     for nested_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-nested-$nested_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-nested-$nested_target"
-        if "$TMP/closure-callback-nested-$nested_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-callback-nested-$nested_target"; then status=0; else status=$?; fi
         [ "$status" -eq 42 ]
     done
     for condition_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-condition-$condition_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-condition-$condition_target"
-        if "$TMP/closure-callback-condition-$condition_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-callback-condition-$condition_target"; then status=0; else status=$?; fi
         [ "$status" -eq 42 ]
     done
     for while_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-while-$while_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-while-$while_target"
-        if "$TMP/closure-callback-while-$while_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-callback-while-$while_target"; then status=0; else status=$?; fi
         [ "$status" -eq 5 ]
     done
     for count_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-count-$count_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-count-$count_target"
-        if "$TMP/closure-callback-count-$count_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-callback-count-$count_target"; then status=0; else status=$?; fi
         [ "$status" -eq 4 ]
     done
     for match_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-match-$match_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-match-$match_target"
-        if "$TMP/closure-callback-match-$match_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-callback-match-$match_target"; then status=0; else status=$?; fi
         [ "$status" -eq 42 ]
     done
     for plain_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-callback-plain-function-$plain_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-callback-plain-function-$plain_target"
-        if "$TMP/closure-callback-plain-function-$plain_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-callback-plain-function-$plain_target"; then status=0; else status=$?; fi
         [ "$status" -eq 42 ]
     done
     for closure_target in field-en field-zh array-en array-zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-$closure_target.o" \
             -o "$TMP/closure-$closure_target"
-        if "$TMP/closure-$closure_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-$closure_target"; then status=0; else status=$?; fi
         [ "$status" -eq 42 ]
     done
     for capture_target in en zh; do
         "$ASTER_BIN" link-obj "$TMP/closure-array-capture-$capture_target.o" \
             "$TMP/aster_std.o" -o "$TMP/closure-array-capture-$capture_target"
-        if "$TMP/closure-array-capture-$capture_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/closure-array-capture-$capture_target"; then status=0; else status=$?; fi
         [ "$status" -eq 22 ]
     done
 
@@ -2961,7 +2971,7 @@ SRC
         "$ASTER_BIN" link-obj "$TMP/class-enum-public-$class_enum_target.o" \
             "$TMP/aster_std.o" \
             -o "$TMP/class-enum-public-$class_enum_target"
-        if "$TMP/class-enum-public-$class_enum_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/class-enum-public-$class_enum_target"; then status=0; else status=$?; fi
         [ "$status" -eq 1 ]
     done
 
@@ -2993,14 +3003,14 @@ SRC
             -o "$TMP/class-enum-null-$class_enum_target.o"
         "$ASTER_BIN" link-obj "$TMP/class-enum-null-$class_enum_target.o" \
             -o "$TMP/class-enum-null-$class_enum_target"
-        if "$TMP/class-enum-null-$class_enum_target"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/class-enum-null-$class_enum_target"; then status=0; else status=$?; fi
         [ "$status" -eq 133 ] || {
             echo "FAIL: $class_enum_target null class enumloop exited $status, expected 133" >&2
             exit 1
         }
     done
 else
-    echo 'SKIP: closure execution requires AArch64 Linux'
+    echo 'SKIP: closure execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/global-string-array-en.ast" <<'SRC'
@@ -3037,8 +3047,8 @@ for global_string_target in en zh; do
         -o "$TMP/global-string-array-$global_string_target.o"
     "$ASTER_BIN" link-obj "$TMP/global-string-array-$global_string_target.o" \
         -o "$TMP/global-string-array-$global_string_target"
-    if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-        if "$TMP/global-string-array-$global_string_target"; then status=0; else status=$?; fi
+    if [ "$CAN_RUN" -eq 1 ]; then
+        if "$RUNNER" "$TMP/global-string-array-$global_string_target"; then status=0; else status=$?; fi
         [ "$status" -eq 7 ] || {
             echo "FAIL: $global_string_target global string array exited $status, expected 7" >&2
             exit 1
@@ -3090,8 +3100,8 @@ done
 cmp "$TMP/global-struct-array-en.o" "$TMP/global-struct-array-zh.o"
 "$ASTER_BIN" link-obj "$TMP/global-struct-array-en.o" \
     -o "$TMP/global-struct-array"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/global-struct-array"; then status=0; else status=$?; fi
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/global-struct-array"; then status=0; else status=$?; fi
     [ "$status" -eq 16 ] || {
         echo "FAIL: global struct array exited $status, expected 16" >&2
         exit 1
@@ -3163,8 +3173,8 @@ for array_parameter_target in en zh; do
 done
 cmp "$TMP/array-parameter-en.o" "$TMP/array-parameter-zh.o"
 "$ASTER_BIN" link-obj "$TMP/array-parameter-en.o" -o "$TMP/array-parameter"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/array-parameter"; then status=0; else status=$?; fi
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/array-parameter"; then status=0; else status=$?; fi
     [ "$status" -eq 0 ] || {
         echo "FAIL: array parameter test exited $status, expected 0" >&2
         exit 1
@@ -3335,8 +3345,8 @@ done
 cmp "$TMP/class-array-parameter-en.o" "$TMP/class-array-parameter-zh.o"
 "$ASTER_BIN" link-obj "$TMP/class-array-parameter-en.o" \
     -o "$TMP/class-array-parameter"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
-    if "$TMP/class-array-parameter"; then status=0; else status=$?; fi
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/class-array-parameter"; then status=0; else status=$?; fi
     [ "$status" -eq 0 ] || {
         echo "FAIL: class array parameter test exited $status, expected 0" >&2
         exit 1

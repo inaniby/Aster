@@ -16486,8 +16486,35 @@ static bool cnIsParentConstructorCall(const aster_cn::Expression& expression) {
         expression.children.front().kind == "SuperExpression";
 }
 
+// P0-4: recursion depth guard for the bilingual lowering walkers. The limit
+// is 2048, not the parser's 256, deliberately: it mirrors the mainline
+// sema/codegen walks (RecursionGuard(..., 2048, ...) on expression type and
+// codegen), because the parser builds left-deep trees iteratively from flat
+// source — `1+1+1+...` with 1500 terms is a 1500-deep left spine that the
+// parser accepts and mainline compiles. A 256 lowering cap would newly
+// reject programs the pre-fix frontend and mainline both accept (verified:
+// flat 1500-term chain compiles in mainline, flat 2500 fails in mainline
+// codegen at 2048). The message starts with "expected " so reportError()'s
+// decorateDiagnostic() classifies it A-011. The parser caps (cn_parser.cpp)
+// bound every AST these walkers can see, so these guards are defense in
+// depth; each guarded function has its own function-local counter.
+struct CnLoweringDepthGuard {
+    unsigned& d;
+    CnLoweringDepthGuard(unsigned& depth, const char* what, unsigned line, unsigned column)
+        : d(depth) {
+        if (++d > 2048) {
+            --d;
+            throw Error(loc(line, column, std::string("expected ") + what +
+                            " nesting within 2048 levels"));
+        }
+    }
+    ~CnLoweringDepthGuard() { --d; }
+};
+
 static bool cnParentConstructorArgumentUsesThisOrSuper(
     const aster_cn::Expression& expression) {
+    static thread_local unsigned depth = 0;
+    CnLoweringDepthGuard guard(depth, "expression", expression.line, expression.column);
     if (expression.kind == "ThisExpression" || expression.kind == "SuperExpression")
         return true;
     if (expression.closure &&
@@ -16500,6 +16527,8 @@ static bool cnParentConstructorArgumentUsesThisOrSuper(
 }
 
 static size_t cnCountParentConstructorCalls(const aster_cn::Expression& expression) {
+    static thread_local unsigned depth = 0;
+    CnLoweringDepthGuard guard(depth, "expression", expression.line, expression.column);
     size_t count = cnIsParentConstructorCall(expression) ? 1 : 0;
     for (const auto& child : expression.children)
         count += cnCountParentConstructorCalls(child);
@@ -16507,6 +16536,8 @@ static size_t cnCountParentConstructorCalls(const aster_cn::Expression& expressi
 }
 
 static size_t cnCountParentConstructorCalls(const aster_cn::Statement& statement) {
+    static thread_local unsigned depth = 0;
+    CnLoweringDepthGuard guard(depth, "statement", statement.line, statement.column);
     size_t count = statement.hasExpression
         ? cnCountParentConstructorCalls(statement.expression) : 0;
     for (const auto& expression : statement.expressions)
@@ -16989,6 +17020,8 @@ static std::vector<uint8_t> cnStringValue(const std::string& spelling,
 static void cnValidateStringLiteralsStatement(const aster_cn::Statement& statement);
 
 static void cnValidateStringLiterals(const aster_cn::Expression& source) {
+    static thread_local unsigned depth = 0;
+    CnLoweringDepthGuard guard(depth, "expression", source.line, source.column);
     if (source.kind == "StringLiteral") {
         (void)cnStringValue(source.value, source.line, source.column);
         return;
@@ -17001,6 +17034,8 @@ static void cnValidateStringLiterals(const aster_cn::Expression& source) {
 }
 
 static void cnValidateStringLiteralsStatement(const aster_cn::Statement& statement) {
+    static thread_local unsigned depth = 0;
+    CnLoweringDepthGuard guard(depth, "statement", statement.line, statement.column);
     if (statement.hasExpression)
         cnValidateStringLiterals(statement.expression);
     for (const auto& expression : statement.expressions)
@@ -17334,6 +17369,8 @@ static uint64_t cnConstantScalarBits(Ty target, Ty actual, const Expr& value,
 static E cnExpressionToAster(const aster_cn::Expression& source,
                              CnStringPool* strings = nullptr,
                              const CnLoweringContext* context = nullptr) {
+    static thread_local unsigned depth = 0;
+    CnLoweringDepthGuard guard(depth, "expression", source.line, source.column);
     const unsigned line = source.line;
     const unsigned column = source.column;
     E result;
@@ -19504,6 +19541,8 @@ static E cnThisValue(const CnLoweringContext* context, unsigned line, unsigned c
 
 static Ty cnExpressionType(const aster_cn::Expression& source,
                            const CnLoweringContext& context) {
+    static thread_local unsigned depth = 0;
+    CnLoweringDepthGuard guard(depth, "expression", source.line, source.column);
     if (source.kind == "Identifier") {
         if (g_enumConsts.count(source.value)) return Ty::I32;
         for (auto scope = context.scopes.rbegin(); scope != context.scopes.rend(); ++scope) {
@@ -24753,6 +24792,10 @@ int main(int argc,char**argv){
                     "# kind apk compiles the sources into one shared object and wraps it\n"
                     "# in a signed NativeActivity APK; `aster build` writes build/<name>.apk.\n"
                     "kind apk\n"
+                    "# The scaffolded sources are English; the default is explicit so\n"
+                    "# the project builds under the compiler's Chinese default.\n"
+                    "[language]\n"
+                    "default = \"en\"\n"
                     "package com.example." + pkgSuffix + "\n"
                     "label " + name + "\n";
                 if(fileName!=name)proj+="name " + fileName + "\n";
@@ -24761,13 +24804,17 @@ int main(int argc,char**argv){
                 writeFileAtomic(dir+"/src/main.ast",
                     "// The shared object inside the APK. `aster build` compiles these\n"
                     "// sources for Android (PIC), links them, and signs the result.\n"
-                    "fn aster_main() -> i32 {\n"
+                    "fn aster_main(): i32 {\n"
                     "    return 0;\n"
                     "}\n");
             } else {
                 std::string proj="# aster.proj — one source per line, in link order.\n"
                     "# Initializers run in this order, and the object holding main must\n"
-                    "# hold at least one run-time initialized global (see A-21/A-22).\n";
+                    "# hold at least one run-time initialized global (see A-21/A-22).\n"
+                    "# The scaffolded sources are English; the default is explicit so\n"
+                    "# the project builds under the compiler's Chinese default.\n"
+                    "[language]\n"
+                    "default = \"en\"\n";
                 if(fileName!=name)proj+="name " + fileName + "\n";
                 proj+="src/main.ast\n"
                     "src/util.ast\n"
@@ -24776,20 +24823,18 @@ int main(int argc,char**argv){
                 writeFileAtomic(dir+"/src/main.ast",
                     "// `aster build` compiles the sources in aster.proj and links them\n"
                     "// into build/" + fileName + ".\n"
-                    "include \"util.ast\";\n\n"
-                    "fn main() -> i32 {\n"
+                    "fn main(): i32 {\n"
                     "    return add(40, 2) - 42;\n"
                     "}\n");
                 writeFileAtomic(dir+"/src/util.ast",
-                    "fn add(a: i32, b: i32) -> i32 {\n"
+                    "fn add(a: i32, b: i32): i32 {\n"
                     "    return a + b;\n"
                     "}\n");
                 if(!makeDirs(dir+"/tests")){std::cerr<<"aster new: cannot create "<<dir<<"/tests\n";return 1;}
                 writeFileAtomic(dir+"/tests/util_test.ast",
                     "// `aster test` builds this against the project's non-main sources\n"
                     "// and runs it: exit 0 is a pass.\n"
-                    "include \"../src/util.ast\";\n\n"
-                    "fn main() -> i32 {\n"
+                    "fn main(): i32 {\n"
                     "    if (add(2, 3) != 5) { return 1; }\n"
                     "    if (add(0, 0) != 0) { return 2; }\n"
                     "    return 0;\n"
@@ -24925,25 +24970,18 @@ int main(int argc,char**argv){
                 std::cerr<<"aster test: aster.proj lists no `test` sources (a line `test tests/foo.ast`)\n";
                 return 2;
             }
+            // P0-10: same default as build|run — the bilingual frontend is
+            // the default (design docs/ASTER-CN-DESIGN.md §0.1/§3.1: default
+            // zh). A project with no [language] config and no per-file
+            // directive is still a bilingual test project and its sources
+            // are parsed as zh; explicit en keeps working via [language] or
+            // a per-file directive. No aster.proj ancestor lookup is added
+            // here. The original-parser test path below is now unreachable
+            // and is left in place, unmodified, so this stays a minimal
+            // routing-default flip.
             aster_cn::ProjectLanguageConfig testLanguage;
             if(fileExists("aster.proj")) testLanguage=aster_cn::readProjectLanguage("aster.proj");
-            bool bilingualTestProject=testLanguage.hasDefault||testLanguage.hasAllowed;
-            if(!bilingualTestProject) {
-                for(const auto& path:spec.sources) if(fileExists(path)) {
-                    const std::string source=readFile(path);
-                    if(source.find("aster:language=zh")!=std::string::npos||
-                       source.find("aster:language=en")!=std::string::npos) {
-                        bilingualTestProject=true; break;
-                    }
-                }
-            }
-            if(!bilingualTestProject) for(const auto& path:spec.tests) if(fileExists(path)) {
-                const std::string source=readFile(path);
-                if(source.find("aster:language=zh")!=std::string::npos||
-                   source.find("aster:language=en")!=std::string::npos) {
-                    bilingualTestProject=true; break;
-                }
-            }
+            bool bilingualTestProject=true;
             if(bilingualTestProject) {
                 if(spec.kind=="apk") {
                     std::cerr<<"aster test: bilingual APK projects are not supported yet\n";
@@ -25362,25 +25400,20 @@ int main(int argc,char**argv){
             }
             ProjectSpec spec=parseProjectFile("aster.proj");
             if(spec.sources.empty()){std::cerr<<"aster "<<cmd<<": aster.proj lists no sources\n";return 2;}
-            // Projects that opt into the bilingual frontend through [language]
-            // or per-file language directives use the existing `build` command.
-            // Legacy projects without either signal retain the original parser.
-            bool bilingualProject=false;
+            // P0-10: the bilingual frontend is the default (design
+            // docs/ASTER-CN-DESIGN.md §0.1/§3.1: compiler default zh). A
+            // project with no [language] config and no per-file directive is
+            // still a bilingual project and its sources are parsed as zh;
+            // explicit en keeps working through [language] default/allowed
+            // or a per-file `aster:language=en` directive (selectLanguage
+            // below). No aster.proj ancestor lookup is added here. The
+            // original-parser path below is now unreachable for build/run;
+            // it is left in place, unmodified, so this stays a minimal
+            // routing-default flip.
+            bool bilingualProject=true;
             aster_cn::ProjectLanguageConfig bilingualLanguage;
             if(fileExists("aster.proj")) {
                 bilingualLanguage=aster_cn::readProjectLanguage("aster.proj");
-                bilingualProject=bilingualLanguage.hasDefault||bilingualLanguage.hasAllowed;
-            }
-            if(!bilingualProject) {
-                for(const auto& sourcePath:spec.sources) {
-                    if(!fileExists(sourcePath)) continue;
-                    const std::string source=readFile(sourcePath);
-                    if(source.find("aster:language=zh")!=std::string::npos||
-                       source.find("aster:language=en")!=std::string::npos) {
-                        bilingualProject=true;
-                        break;
-                    }
-                }
             }
             if(bilingualProject) {
                 if(spec.kind=="apk") {

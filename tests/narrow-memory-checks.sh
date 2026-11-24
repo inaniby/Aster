@@ -623,7 +623,7 @@ build_mutant(){ # build_mutant <tag> <sed-expr>
     if cmp -s src/aster.cpp "$OUT/$m.cpp"; then
         echo "FAIL: mutation $m did not change the source (the guard is stale)" >&2; exit 1
     fi
-    if ! ${CXX:-c++} -std=c++17 -O0 -w "$OUT/$m.cpp" -o "$OUT/$m.aster" 2>"$OUT/$m.err"; then
+    if ! ${CXX:-c++} -std=c++17 -O0 -w -I src "$OUT/$m.cpp" -o "$OUT/$m.aster" 2>"$OUT/$m.err"; then
         echo "FAIL: mutant $m does not build" >&2; sed -n '1,3p' "$OUT/$m.err" >&2; exit 1
     fi
 }

@@ -509,7 +509,7 @@ fi
 if cmp -s src/aster.cpp "$OUT/m1.cpp"; then
     echo 'FAIL: mutation 1 did not change the source (the guard is stale)' >&2; exit 1
 fi
-if ! ${CXX:-c++} -std=c++17 -O0 -w "$OUT/m1.cpp" -o "$OUT/m1.aster" 2>"$OUT/m1.err"; then
+if ! ${CXX:-c++} -std=c++17 -O0 -w -I src "$OUT/m1.cpp" -o "$OUT/m1.aster" 2>"$OUT/m1.err"; then
     echo 'FAIL: mutant 1 does not build' >&2; sed -n '1,3p' "$OUT/m1.err" >&2; exit 1
 fi
 if "$OUT/m1.aster" build-elf "$W/plain_no_else.ast" -o "$OUT/m1.a64" >/dev/null 2>&1; then
@@ -526,7 +526,7 @@ fi
 if cmp -s src/aster.cpp "$OUT/m2.cpp"; then
     echo 'FAIL: mutation 2 did not change the source (the guard is stale)' >&2; exit 1
 fi
-if ! ${CXX:-c++} -std=c++17 -O0 -w "$OUT/m2.cpp" -o "$OUT/m2.aster" 2>"$OUT/m2.err"; then
+if ! ${CXX:-c++} -std=c++17 -O0 -w -I src "$OUT/m2.cpp" -o "$OUT/m2.aster" 2>"$OUT/m2.err"; then
     echo 'FAIL: mutant 2 does not build' >&2; sed -n '1,3p' "$OUT/m2.err" >&2; exit 1
 fi
 if "$OUT/m2.aster" build-elf "$W/hex_small.ast" -o "$OUT/m2.a64" >/dev/null 2>&1; then

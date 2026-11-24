@@ -311,7 +311,7 @@ old = '    sf += "X-Android-APK-Signed: 2\\r\\n";\n'
 assert old in s, 'anti-stripping attribute anchor not found'
 open(p, 'w').write(s.replace(old, ''))
 PY
-c++ -std=c++17 -O2 -Wall -Wextra -Werror -o $TMPD/aster-apk-mut-bin $TMPD/aster-apk-mut/aster.cpp
+c++ -std=c++17 -O2 -Wall -Wextra -Werror -I src -o $TMPD/aster-apk-mut-bin $TMPD/aster-apk-mut/aster.cpp
 $TMPD/aster-apk-mut-bin build-so examples/so_math.ast -o $TMPD/aster-apk-mut.so > /dev/null
 rm -f $TMPD/aster-apk-mut.apk
 # Since v0.23.4 build-apk verifies the APK in memory before writing it, so the

@@ -166,7 +166,7 @@ printf '%s\n' '[9/14] mutation: the fixup recording is what lets the grid move'
 sed 's|if(!recordingScratch)return;|if(true)return;|' \
     src/aster.cpp > "$OUT/mutant.cpp"
 grep -q 'if(true)return;' "$OUT/mutant.cpp" || fail 'the fixup-recording mutation stopped applying'
-$CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant no longer compiles'
+$CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant no longer compiles'
 "$OUT/mutant" build-elf --compact-frames "$OUT/leaf.ast" -o "$OUT/mut" >/dev/null 2>&1 || fail 'the mutant refused the caller example'
 mf=$(frame_of "$OUT/mut" caller)
 [ "$mf" = 8192 ] || fail "with no fixups recorded the caller's frame is $mf — the grid move is not driven by the recording"

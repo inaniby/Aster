@@ -617,7 +617,7 @@ if [ "${ASTER_SKIP_ASAN:-}" != 1 ]; then
         || { echo 'FAIL: the main() rename no longer applies to src/aster.cpp' >&2; exit 1; }
     # -O0: the harness needs ASan, not optimisation, and -O0 builds this
     # translation unit in about a minute instead of four.
-    if $CXX -std=c++17 -O0 -g -fsanitize=address -fno-omit-frame-pointer \
+    if $CXX -std=c++17 -O0 -g -fsanitize=address -fno-omit-frame-pointer -I src \
             "$TMPD/bounds-harness.cpp" -o "$TMPD/bounds-harness-asan" > "$TMPD/bounds-harness-build.log" 2>&1; then
         if ! ASAN_OPTIONS=detect_leaks=0 "$TMPD/bounds-harness-asan" > "$TMPD/bounds-harness.log" 2>&1; then
             echo 'FAIL: resolveRelocations accepted an out-of-bounds patch (see the ASan report):' >&2

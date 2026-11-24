@@ -306,7 +306,7 @@ mutate() {   # mutate <name> <perl -0pi script> <expectation...>
     if cmp -s src/aster.cpp "$OUT/mut.cpp"; then
         echo "FAIL: mutant $name did not change the source" >&2; exit 1
     fi
-    if ! $CXX -std=c++17 -O2 -w "$OUT/mut.cpp" -o "$OUT/mut.aster" >"$OUT/mut.build" 2>&1; then
+    if ! $CXX -std=c++17 -O2 -w -I src "$OUT/mut.cpp" -o "$OUT/mut.aster" >"$OUT/mut.build" 2>&1; then
         echo "FAIL: mutant $name does not build" >&2; sed -n '1,3p' "$OUT/mut.build" >&2; exit 1
     fi
     "$@"

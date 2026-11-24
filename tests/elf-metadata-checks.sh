@@ -445,7 +445,7 @@ sed -e 's|const uint64_t need=(type==kRelTlsOff)?8u:4u;|const uint64_t need=(typ
 grep -q '(type==kRelTlsOff)?4u:4u' "$OUT/m1.cpp" \
     && grep -q '(r.type==kRelTlsOff)?4u:4u' "$OUT/m1.cpp" \
     || { echo 'FAIL: mutation (a) stopped applying' >&2; exit 1; }
-$CXX -std=c++17 -O2 -w "$OUT/m1.cpp" -o "$OUT/m1" 2>/dev/null \
+$CXX -std=c++17 -O2 -w -I src "$OUT/m1.cpp" -o "$OUT/m1" 2>/dev/null \
     || { echo 'FAIL: mutation (a) no longer compiles' >&2; exit 1; }
 if "$OUT/m1" link-obj "$OUT/tls.bad.o" -o "$OUT/m1.elf" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'mutation a) footprint back to 4 bytes' 'noticed ([5/9] catches it)'
@@ -457,7 +457,7 @@ fi
 sed 's|sh\[idxSym\].info=symBase;|sh[idxSym].info=1;|' src/aster.cpp > "$OUT/m2.cpp"
 grep -q 'sh\[idxSym\].info=1;' "$OUT/m2.cpp" \
     || { echo 'FAIL: mutation (b) stopped applying' >&2; exit 1; }
-$CXX -std=c++17 -O2 -w "$OUT/m2.cpp" -o "$OUT/m2" 2>/dev/null \
+$CXX -std=c++17 -O2 -w -I src "$OUT/m2.cpp" -o "$OUT/m2" 2>/dev/null \
     || { echo 'FAIL: mutation (b) no longer compiles' >&2; exit 1; }
 "$OUT/m2" build-obj --pic -g "$OUT/full.ast" -o "$OUT/m2.o" >/dev/null 2>&1
 # v0.23.77-dev (audit): the "local symbol" complaint is GNU readelf's own
@@ -479,7 +479,7 @@ sed 's|setSh(S_HASH,5,0x2,hashOff,hashOff,hashSize,S_DYNSYM,0,4,4);|setSh(S_HASH
     src/aster.cpp > "$OUT/m3.cpp"
 grep -q 'S_DYNSYM,0,4,0);' "$OUT/m3.cpp" \
     || { echo 'FAIL: mutation (c) stopped applying' >&2; exit 1; }
-$CXX -std=c++17 -O2 -w "$OUT/m3.cpp" -o "$OUT/m3" 2>/dev/null \
+$CXX -std=c++17 -O2 -w -I src "$OUT/m3.cpp" -o "$OUT/m3" 2>/dev/null \
     || { echo 'FAIL: mutation (c) no longer compiles' >&2; exit 1; }
 "$OUT/m3" build-so --soname libm3.so "$OUT/sofull.ast" -o "$OUT/m3.so" >/dev/null 2>&1
 if python3 "$OUT/decode.py" check "$OUT/m3.so" mutant-c | grep -q 'BAD:'; then

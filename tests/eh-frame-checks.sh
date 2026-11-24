@@ -432,7 +432,7 @@ sed 's|body.push_back(0x0e);ehUleb(body,frame);|body.push_back(0x0e);ehUleb(body
     src/aster.cpp > "$OUT/mutant.cpp"
 grep -q 'ehUleb(body,4096)' "$OUT/mutant.cpp" \
     || fail "the halved-CFA mutation no longer applies to src/aster.cpp"
-$CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
+$CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
 "$OUT/aster-mutant" build-elf "$SRC" -g -o "$OUT/mutant.elf" >/dev/null
 $DECODE --fdes "$OUT/mutant.elf" | grep -q 'r31+8192' \
     && fail "a halved CFA offset went unnoticed"
@@ -441,7 +441,7 @@ sed 's|body.push_back(0x9e);ehUleb(body,1);|body.push_back(0x00);|' \
     src/aster.cpp > "$OUT/mutant2.cpp"
 grep -q 'body.push_back(0x00);     // DW_CFA_offset' "$OUT/mutant2.cpp" \
     || fail "the dropped-return-address mutation no longer applies"
-$CXX -std=c++17 -O2 -w "$OUT/mutant2.cpp" -o "$OUT/aster-mutant2"
+$CXX -std=c++17 -O2 -w -I src "$OUT/mutant2.cpp" -o "$OUT/aster-mutant2"
 "$OUT/aster-mutant2" build-elf "$SRC" -g -o "$OUT/mutant2.elf" >/dev/null
 $DECODE --fdes "$OUT/mutant2.elf" | grep -q 'cfa-8' \
     && fail "losing the return-address rule went unnoticed"

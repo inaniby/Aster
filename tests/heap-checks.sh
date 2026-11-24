@@ -398,7 +398,7 @@ sed -i 's/syscallInsn(222,e\.args/syscallInsn(223,e.args/' "$W/m_mmap.cpp"
 if ! grep -q 'syscallInsn(223,e.args' "$W/m_mmap.cpp"; then
     echo "FAIL: m_mmap_num — sed did not apply (the 222 renumber is gone?)" >&2; exit 1
 fi
-${CXX:-c++} -std=c++17 -O2 -w "$W/m_mmap.cpp" -o "$OUT/aster_m_mmap" 2>/dev/null
+${CXX:-c++} -std=c++17 -O2 -w -I src "$W/m_mmap.cpp" -o "$OUT/aster_m_mmap" 2>/dev/null
 emit_case mmap_anon
 if "$OUT/aster_m_mmap" build-elf "$W/mmap_anon.ast" -o "$W/mmap_anon.mab" >/dev/null 2>&1; then
     mrc=0
@@ -420,7 +420,7 @@ sed -i 's/syscallInsn(214,e\.args/syscallInsn(215,e.args/' "$W/m_brk.cpp"
 if ! grep -q 'syscallInsn(215,e.args' "$W/m_brk.cpp"; then
     echo "FAIL: m_brk_num — sed did not apply (the 214 renumber is gone?)" >&2; exit 1
 fi
-${CXX:-c++} -std=c++17 -O2 -w "$W/m_brk.cpp" -o "$OUT/aster_m_brk" 2>/dev/null
+${CXX:-c++} -std=c++17 -O2 -w -I src "$W/m_brk.cpp" -o "$OUT/aster_m_brk" 2>/dev/null
 emit_case brk_grow
 if "$OUT/aster_m_brk" build-elf "$W/brk_grow.ast" -o "$W/brk_grow.mab" >/dev/null 2>&1; then
     mrc=0
@@ -445,7 +445,7 @@ sed -i 's/tyIs64(resultTy)?0xaa0003e0u:0x2a0003e0u/0x2a0003e0u/' "$W/m_res.cpp"
 if grep -q 'tyIs64(resultTy)?0xaa0003e0u:0x2a0003e0u' "$W/m_res.cpp"; then
     echo "FAIL: m_mmap_result — sed did not apply (the result-width choice is gone?)" >&2; exit 1
 fi
-${CXX:-c++} -std=c++17 -O2 -w "$W/m_res.cpp" -o "$OUT/aster_m_res" 2>/dev/null
+${CXX:-c++} -std=c++17 -O2 -w -I src "$W/m_res.cpp" -o "$OUT/aster_m_res" 2>/dev/null
 emit_case mmap_anon
 if "$OUT/aster_m_res" build-elf "$W/mmap_anon.ast" -o "$W/mmap_anon.rab" >/dev/null 2>&1; then
     mrc=0
@@ -467,7 +467,7 @@ sed -i 's/tyIs64(tys\[i\])?0xaa0003e0u/(tys[i]==Ty::Ptr)?0xaa0003e0u/' "$W/m_arg
 if grep -q 'tyIs64(tys\[i\])?0xaa0003e0u' "$W/m_arg.cpp"; then
     echo "FAIL: m_mmap_argwidth — sed did not apply (the i64 argument width is gone?)" >&2; exit 1
 fi
-${CXX:-c++} -std=c++17 -O2 -w "$W/m_arg.cpp" -o "$OUT/aster_m_arg" 2>/dev/null
+${CXX:-c++} -std=c++17 -O2 -w -I src "$W/m_arg.cpp" -o "$OUT/aster_m_arg" 2>/dev/null
 emit_case mmap_huge
 if "$OUT/aster_m_arg" build-elf "$W/mmap_huge.ast" -o "$W/mmap_huge.gab" >/dev/null 2>&1; then
     mrc=0
@@ -490,7 +490,7 @@ sed -i '/if(e.name=="mmap"&&!functionArities.count(e.name)){/,/^                
 if grep -q 'if(e.name=="mmap"&&!functionArities.count(e.name)){' "$W/m_disp.cpp"; then
     echo "FAIL: m_mmap_dispatch — sed did not remove the mmap dispatch" >&2; exit 1
 fi
-${CXX:-c++} -std=c++17 -O2 -w "$W/m_disp.cpp" -o "$OUT/aster_m_disp" 2>/dev/null
+${CXX:-c++} -std=c++17 -O2 -w -I src "$W/m_disp.cpp" -o "$OUT/aster_m_disp" 2>/dev/null
 emit_case mmap_anon
 if "$OUT/aster_m_disp" build-elf "$W/mmap_anon.ast" -o "$W/mmap_anon.dab" >/dev/null 2>&1; then
     echo "FAIL: m_mmap_dispatch — mmap_anon still compiled without the mmap dispatch" >&2; exit 1

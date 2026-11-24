@@ -575,7 +575,7 @@ printf '%s\n' '[8/8] Mutation: the checks above must fail on a damaged compiler'
 build_mutant(){ # build_mutant <tag> <sed-expr>
     m="$1"
     sed "$2" src/aster.cpp > "$OUT/$m.cpp"
-    if ! ${CXX:-c++} -std=c++17 -O0 -w "$OUT/$m.cpp" -o "$OUT/$m.aster" 2>"$OUT/$m.err"; then
+    if ! ${CXX:-c++} -std=c++17 -O0 -w -I src "$OUT/$m.cpp" -o "$OUT/$m.aster" 2>"$OUT/$m.err"; then
         echo "FAIL: mutant $m does not build" >&2; sed -n '1,3p' "$OUT/$m.err" >&2; exit 1
     fi
 }

@@ -512,7 +512,7 @@ mutate(){ # $1 = label, $2 = sed script
     if cmp -s src/aster.cpp "$OUT/$1.cpp"; then
         echo "FAIL: mutation $1 did not apply — blind" >&2; exit 1
     fi
-    $CXX -std=c++17 -O2 -w "$OUT/$1.cpp" -o "$OUT/$1" 2>/dev/null \
+    $CXX -std=c++17 -O2 -w -I src "$OUT/$1.cpp" -o "$OUT/$1" 2>/dev/null \
         || { echo "FAIL: mutation $1 no longer compiles" >&2; exit 1; }
 }
 # (a) An alias expands to whatever it was declared as — mutate that to "every

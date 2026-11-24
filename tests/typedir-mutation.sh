@@ -64,7 +64,7 @@ echo "PASS: pristine strict build and probe clean"
 cp "$SRC" "$OUT/mut1.cpp"
 sed -i 's/^        e\.type=t;$/        e.type=Ty::I64;  \/\/ MUTATION1/' "$OUT/mut1.cpp"
 grep -q 'MUTATION1' "$OUT/mut1.cpp" || fail "mutation 1 did not apply"
-"$CXX" $STRICT "$OUT/mut1.cpp" -o "$OUT/aster_mut1" 2>/dev/null || fail "mutation 1 failed to build"
+"$CXX" $STRICT -I "$HERE/src" "$OUT/mut1.cpp" -o "$OUT/aster_mut1" 2>/dev/null || fail "mutation 1 failed to build"
 if "$OUT/aster_mut1" build-obj "$OUT/probe.ast" -o "$OUT/p1.o" >"$OUT/m1.log" 2>&1; then
     fail "mutation 1 (annotate writes Ty::I64) was NOT caught -- guard/annotate not consumed"
 fi
@@ -77,7 +77,7 @@ echo "PASS: mutation 1 (annotate corruption) caught by the contract guard"
 cp "$SRC" "$OUT/mut2.cpp"
 sed -i 's/^    Ty annotateExpr(Expr& e){$/    Ty annotateExpr(Expr\& e){ if(true) return Ty::I32;  \/\/ MUTATION2: no annotate/' "$OUT/mut2.cpp"
 grep -q 'MUTATION2' "$OUT/mut2.cpp" || fail "mutation 2 did not apply"
-"$CXX" $STRICT "$OUT/mut2.cpp" -o "$OUT/aster_mut2" 2>/dev/null || fail "mutation 2 failed to build"
+"$CXX" $STRICT -I "$HERE/src" "$OUT/mut2.cpp" -o "$OUT/aster_mut2" 2>/dev/null || fail "mutation 2 failed to build"
 if "$OUT/aster_mut2" build-obj "$OUT/probe.ast" -o "$OUT/p2.o" >"$OUT/m2.log" 2>&1; then
     fail "mutation 2 (annotate removed) was NOT caught -- e.type not consumed"
 fi

@@ -113,7 +113,7 @@ printf '%s\n' '[8/8] mutation: the exponent sign is load-bearing'
 sed "s~if(peek()=='+'||peek()=='-')x+=take();~if(false)x+=take();~" \
     src/aster.cpp > "$OUT/mutant.cpp"
 cmp -s src/aster.cpp "$OUT/mutant.cpp" && fail 'the sign mutation stopped applying'
-$CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant compiler did not build'
+$CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/mutant" || fail 'the mutant compiler did not build'
 set +e
 "$OUT/mutant" build-elf "$OUT/e_down.ast" -o "$OUT/mut.elf" >"$OUT/mut.log" 2>&1; mrc=$?
 if [ "$mrc" = 0 ]; then chmod +x "$OUT/mut.elf"; "$RUNNER" "$OUT/mut.elf" >/dev/null 2>&1; mrun=$?; else mrun=-1; fi

@@ -240,7 +240,7 @@ sed 's|if(emitLineInfo&&s.line!=0)lineRows.push_back({(uint32_t)code.size(),s.li
     src/aster.cpp > "$OUT/mutant.cpp"
 grep -q 's.line+1' "$OUT/mutant.cpp" \
     || fail "the off-by-one mutation no longer applies to src/aster.cpp"
-$CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
+$CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
 "$OUT/aster-mutant" build-elf "$OUT/lines.ast" -g -o "$OUT/mutant.elf" >/dev/null
 $DECODE "$OUT/mutant.elf" > "$OUT/rows.mutant"
 mut=$(awk '{print $2}' "$OUT/rows.mutant" | sort -n -u | tr '\n' ' ' | sed 's/ *$//')

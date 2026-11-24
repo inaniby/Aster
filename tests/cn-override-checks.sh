@@ -6,6 +6,16 @@ if [ ! -x "$ASTER_BIN" ]; then
     echo "set ASTER_BIN to a built Aster executable" >&2
     exit 2
 fi
+RUNNER=${RUNNER:-$ROOT/tests/run-aarch64.sh}
+# AArch64 guests run natively on an AArch64 host and under qemu-aarch64
+# elsewhere. Without either, execution checks SKIP cleanly (cf.
+# bootstrap-loop-checks.sh) instead of failing with Exec format error.
+if [ "$(uname -m)" = aarch64 ] || [ "$(uname -m)" = arm64 ] \
+    || command -v qemu-aarch64 >/dev/null 2>&1; then
+    CAN_RUN=1
+else
+    CAN_RUN=0
+fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
@@ -107,15 +117,15 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/override-en.ast" -o "$TMP/override-en.o"
 "$ASTER_BIN" build-obj "$ROOT/stdlib/aster_std.ast" -o "$TMP/aster_std.o"
 
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
+if [ "$CAN_RUN" -eq 1 ]; then
     for language in zh en; do
         "$ASTER_BIN" link-obj "$TMP/override-$language.o" "$TMP/aster_std.o" \
             -o "$TMP/override-$language"
-        if "$TMP/override-$language"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/override-$language"; then status=0; else status=$?; fi
         [ "$status" -eq 161 ]
     done
 else
-    echo 'SKIP: override execution requires AArch64 Linux'
+    echo 'SKIP: override execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/static-fields-zh.ast" <<'SRC'
@@ -186,10 +196,10 @@ for language in zh en; do
         "$ASTER_BIN" build-cn-obj --language en "$TMP/static-fields-en.ast" \
             -o "$TMP/static-fields-$language.o"
     fi
-    if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
+    if [ "$CAN_RUN" -eq 1 ]; then
         "$ASTER_BIN" link-obj "$TMP/static-fields-$language.o" "$TMP/aster_std.o" \
             -o "$TMP/static-fields-$language"
-        if "$TMP/static-fields-$language"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/static-fields-$language"; then status=0; else status=$?; fi
         [ "$status" -eq 20 ] || {
             echo "FAIL: $language static field result was $status, expected 20" >&2
             exit 1
@@ -259,11 +269,15 @@ for language in zh en; do
     fi
     "$ASTER_BIN" link-obj "$TMP/static-struct-field-$language.o" \
         -o "$TMP/static-struct-field-$language"
-    if "$TMP/static-struct-field-$language"; then status=0; else status=$?; fi
-    [ "$status" -eq 46 ] || {
-        echo "FAIL: $language static struct field result was $status, expected 46" >&2
-        exit 1
-    }
+    if [ "$CAN_RUN" -eq 1 ]; then
+        if "$RUNNER" "$TMP/static-struct-field-$language"; then status=0; else status=$?; fi
+        [ "$status" -eq 46 ] || {
+            echo "FAIL: $language static struct field result was $status, expected 46" >&2
+            exit 1
+        }
+    else
+        echo 'SKIP: static struct field execution requires qemu-aarch64 or AArch64 Linux'
+    fi
 done
 
 cat > "$TMP/static-function-field-zh.ast" <<'SRC'
@@ -309,11 +323,15 @@ for language in zh en; do
     fi
     "$ASTER_BIN" link-obj "$TMP/static-function-field-$language.o" \
         -o "$TMP/static-function-field-$language"
-    if "$TMP/static-function-field-$language"; then status=0; else status=$?; fi
-    [ "$status" -eq 42 ] || {
-        echo "FAIL: $language static function field result was $status, expected 42" >&2
-        exit 1
-    }
+    if [ "$CAN_RUN" -eq 1 ]; then
+        if "$RUNNER" "$TMP/static-function-field-$language"; then status=0; else status=$?; fi
+        [ "$status" -eq 42 ] || {
+            echo "FAIL: $language static function field result was $status, expected 42" >&2
+            exit 1
+        }
+    else
+        echo 'SKIP: static function field execution requires qemu-aarch64 or AArch64 Linux'
+    fi
 done
 
 cat > "$TMP/null-class-zh.ast" <<'SRC'
@@ -340,20 +358,20 @@ return value.run();
 }
 SRC
 
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
+if [ "$CAN_RUN" -eq 1 ]; then
     for language in zh en; do
         "$ASTER_BIN" build-cn-obj --language "$language" \
             "$TMP/null-class-$language.ast" -o "$TMP/null-class-$language.o"
         "$ASTER_BIN" link-obj "$TMP/null-class-$language.o" \
             -o "$TMP/null-class-$language"
-        if "$TMP/null-class-$language"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/null-class-$language"; then status=0; else status=$?; fi
         [ "$status" -eq 133 ] || {
             echo "FAIL: $language null class method call exited $status, expected 133" >&2
             exit 1
         }
     done
 else
-    echo 'SKIP: null class execution requires AArch64 Linux'
+    echo 'SKIP: null class execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/null-returned-class-zh.ast" <<'SRC'
@@ -380,21 +398,21 @@ fn empty(): Box { return null; }
 fn main(): i32 { return empty().run(); }
 SRC
 
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
+if [ "$CAN_RUN" -eq 1 ]; then
     for language in zh en; do
         "$ASTER_BIN" build-cn-obj --language "$language" \
             "$TMP/null-returned-class-$language.ast" \
             -o "$TMP/null-returned-class-$language.o"
         "$ASTER_BIN" link-obj "$TMP/null-returned-class-$language.o" \
             -o "$TMP/null-returned-class-$language"
-        if "$TMP/null-returned-class-$language"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/null-returned-class-$language"; then status=0; else status=$?; fi
         [ "$status" -eq 133 ] || {
             echo "FAIL: $language returned-null class method call exited $status, expected 133" >&2
             exit 1
         }
     done
 else
-    echo 'SKIP: returned-null class execution requires AArch64 Linux'
+    echo 'SKIP: returned-null class execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/null-class-field-zh.ast" <<'SRC'
@@ -521,7 +539,7 @@ return 0;
 }
 SRC
 
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
+if [ "$CAN_RUN" -eq 1 ]; then
     for operation in field field-write field-call returned-field field-array field-array-write; do
         for language in zh en; do
             "$ASTER_BIN" build-cn-obj --language "$language" \
@@ -529,7 +547,7 @@ if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
                 -o "$TMP/null-class-$operation-$language.o"
             "$ASTER_BIN" link-obj "$TMP/null-class-$operation-$language.o" \
                 -o "$TMP/null-class-$operation-$language"
-            if "$TMP/null-class-$operation-$language"; then status=0; else status=$?; fi
+            if "$RUNNER" "$TMP/null-class-$operation-$language"; then status=0; else status=$?; fi
             [ "$status" -eq 133 ] || {
                 echo "FAIL: $language null class $operation exited $status, expected 133" >&2
                 exit 1
@@ -537,7 +555,7 @@ if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
         done
     done
 else
-    echo 'SKIP: null class field execution requires AArch64 Linux'
+    echo 'SKIP: null class field execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/static-function-array-en.ast" <<'SRC'
@@ -557,11 +575,15 @@ SRC
     -o "$TMP/static-function-array-en.o"
 "$ASTER_BIN" link-obj "$TMP/static-function-array-en.o" \
     -o "$TMP/static-function-array-en"
-if "$TMP/static-function-array-en"; then status=0; else status=$?; fi
-[ "$status" -eq 86 ] || {
-    echo "FAIL: English static function pointer array exited $status, expected 86" >&2
-    exit 1
-}
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/static-function-array-en"; then status=0; else status=$?; fi
+    [ "$status" -eq 86 ] || {
+        echo "FAIL: English static function pointer array exited $status, expected 86" >&2
+        exit 1
+    }
+else
+    echo 'SKIP: static function pointer array execution requires qemu-aarch64 or AArch64 Linux'
+fi
 
 cat > "$TMP/static-function-array-zh.ast" <<'SRC'
 // aster:language=zh
@@ -584,11 +606,15 @@ SRC
     -o "$TMP/static-function-array-zh.o"
 "$ASTER_BIN" link-obj "$TMP/static-function-array-zh.o" \
     -o "$TMP/static-function-array-zh"
-if "$TMP/static-function-array-zh"; then status=0; else status=$?; fi
-[ "$status" -eq 86 ] || {
-    echo "FAIL: Chinese static function pointer array exited $status, expected 86" >&2
-    exit 1
-}
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/static-function-array-zh"; then status=0; else status=$?; fi
+    [ "$status" -eq 86 ] || {
+        echo "FAIL: Chinese static function pointer array exited $status, expected 86" >&2
+        exit 1
+    }
+else
+    echo 'SKIP: static function pointer array execution requires qemu-aarch64 or AArch64 Linux'
+fi
 
 cat > "$TMP/static-function-array-bad.ast" <<'SRC'
 // aster:language=en
@@ -671,10 +697,10 @@ for language in zh en; do
     "$ASTER_BIN" build-cn-obj --language "$language" \
         "$TMP/instance-function-array-$language.ast" \
         -o "$TMP/instance-function-array-$language.o"
-    if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
+    if [ "$CAN_RUN" -eq 1 ]; then
         "$ASTER_BIN" link-obj "$TMP/instance-function-array-$language.o" "$TMP/aster_std.o" \
             -o "$TMP/instance-function-array-$language"
-        if "$TMP/instance-function-array-$language"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/instance-function-array-$language"; then status=0; else status=$?; fi
         [ "$status" -eq 84 ] || {
             echo "FAIL: $language instance/structure function pointer array result was $status, expected 84" >&2
             exit 1
@@ -702,11 +728,15 @@ SRC
     -o "$TMP/static-string-array-en.o"
 "$ASTER_BIN" link-obj "$TMP/static-string-array-en.o" \
     -o "$TMP/static-string-array-en"
-if "$TMP/static-string-array-en"; then status=0; else status=$?; fi
-[ "$status" -eq 3 ] || {
-    echo "FAIL: English static string array exited $status, expected 3" >&2
-    exit 1
-}
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/static-string-array-en"; then status=0; else status=$?; fi
+    [ "$status" -eq 3 ] || {
+        echo "FAIL: English static string array exited $status, expected 3" >&2
+        exit 1
+    }
+else
+    echo 'SKIP: static string array execution requires qemu-aarch64 or AArch64 Linux'
+fi
 
 cat > "$TMP/static-string-array-zh.ast" <<'SRC'
 // aster:language=zh
@@ -732,11 +762,15 @@ SRC
     -o "$TMP/static-string-array-zh.o"
 "$ASTER_BIN" link-obj "$TMP/static-string-array-zh.o" \
     -o "$TMP/static-string-array-zh"
-if "$TMP/static-string-array-zh"; then status=0; else status=$?; fi
-[ "$status" -eq 3 ] || {
-    echo "FAIL: Chinese static string array exited $status, expected 3" >&2
-    exit 1
-}
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/static-string-array-zh"; then status=0; else status=$?; fi
+    [ "$status" -eq 3 ] || {
+        echo "FAIL: Chinese static string array exited $status, expected 3" >&2
+        exit 1
+    }
+else
+    echo 'SKIP: static string array execution requires qemu-aarch64 or AArch64 Linux'
+fi
 
 cat > "$TMP/object-static-field.ast" <<'SRC'
 // aster:language=en

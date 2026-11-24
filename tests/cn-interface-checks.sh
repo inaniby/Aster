@@ -6,6 +6,16 @@ if [ ! -x "$ASTER_BIN" ]; then
     echo "set ASTER_BIN to a built Aster executable" >&2
     exit 2
 fi
+RUNNER=${RUNNER:-$ROOT/tests/run-aarch64.sh}
+# AArch64 guests run natively on an AArch64 host and under qemu-aarch64
+# elsewhere. Without either, execution checks SKIP cleanly (cf.
+# bootstrap-loop-checks.sh) instead of failing with Exec format error.
+if [ "$(uname -m)" = aarch64 ] || [ "$(uname -m)" = arm64 ] \
+    || command -v qemu-aarch64 >/dev/null 2>&1; then
+    CAN_RUN=1
+else
+    CAN_RUN=0
+fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
@@ -191,19 +201,19 @@ SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/omitted-void-interface-en.ast" \
     -o "$TMP/omitted-void-interface-en.o"
 cmp "$TMP/omitted-void-interface-zh.o" "$TMP/omitted-void-interface-en.o"
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
+if [ "$CAN_RUN" -eq 1 ]; then
     "$ASTER_BIN" link-obj "$TMP/omitted-void-interface-zh.o" "$TMP/aster_std.o" \
         -o "$TMP/omitted-void-interface"
-    if "$TMP/omitted-void-interface"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/omitted-void-interface"; then status=0; else status=$?; fi
     [ "$status" -eq 2 ]
 fi
 
-if [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ]; then
+if [ "$CAN_RUN" -eq 1 ]; then
     "$ASTER_BIN" link-obj "$TMP/interface-zh.o" "$TMP/aster_std.o" -o "$TMP/interface-zh"
     "$ASTER_BIN" link-obj "$TMP/interface-en.o" "$TMP/aster_std.o" -o "$TMP/interface-en"
-    if "$TMP/interface-zh"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/interface-zh"; then status=0; else status=$?; fi
     [ "$status" -eq 120 ]
-    if "$TMP/interface-en"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/interface-en"; then status=0; else status=$?; fi
     [ "$status" -eq 120 ]
 
     cat > "$TMP/interface-storage-zh.ast" <<'SRC'
@@ -270,7 +280,7 @@ SRC
             -o "$TMP/interface-storage-$language.o"
         "$ASTER_BIN" link-obj "$TMP/interface-storage-$language.o" \
             "$TMP/aster_std.o" -o "$TMP/interface-storage-$language"
-        if "$TMP/interface-storage-$language"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/interface-storage-$language"; then status=0; else status=$?; fi
         [ "$status" -eq 0 ] || {
             echo "FAIL: $language interface field and array storage result was $status, expected 0" >&2
             exit 1
@@ -281,9 +291,9 @@ SRC
         "$TMP/aster_std.o" -o "$TMP/array-parameter-interface-zh"
     "$ASTER_BIN" link-obj "$TMP/array-parameter-interface-en.o" \
         "$TMP/aster_std.o" -o "$TMP/array-parameter-interface-en"
-    if "$TMP/array-parameter-interface-zh"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/array-parameter-interface-zh"; then status=0; else status=$?; fi
     [ "$status" -eq 0 ]
-    if "$TMP/array-parameter-interface-en"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/array-parameter-interface-en"; then status=0; else status=$?; fi
     [ "$status" -eq 0 ]
 
     cat > "$TMP/null-interface-zh.ast" <<'SRC'
@@ -348,7 +358,7 @@ SRC
             -o "$TMP/null-interface-$language.o"
         "$ASTER_BIN" link-obj "$TMP/null-interface-$language.o" \
             "$TMP/aster_std.o" -o "$TMP/null-interface-$language"
-        if "$TMP/null-interface-$language"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/null-interface-$language"; then status=0; else status=$?; fi
         [ "$status" -eq 133 ]
 
         "$ASTER_BIN" build-cn-obj --language "$language" \
@@ -356,7 +366,7 @@ SRC
             -o "$TMP/null-returned-interface-$language.o"
         "$ASTER_BIN" link-obj "$TMP/null-returned-interface-$language.o" \
             "$TMP/aster_std.o" -o "$TMP/null-returned-interface-$language"
-        if "$TMP/null-returned-interface-$language"; then status=0; else status=$?; fi
+        if "$RUNNER" "$TMP/null-returned-interface-$language"; then status=0; else status=$?; fi
         [ "$status" -eq 133 ]
     done
 
@@ -384,7 +394,7 @@ SRC
     "$ASTER_BIN" build-cn-obj --language en --module-dir "$TMP/packages" \
         "$TMP/app/call-chinese.ast" -o "$TMP/call-chinese.o"
     "$ASTER_BIN" link-obj "$TMP/call-chinese.o" "$TMP/aster_std.o" -o "$TMP/call-chinese"
-    if "$TMP/call-chinese"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/call-chinese"; then status=0; else status=$?; fi
     [ "$status" -eq 17 ]
 
     cat > "$TMP/packages/english.ast" <<'SRC'
@@ -408,10 +418,10 @@ SRC
     "$ASTER_BIN" build-cn-obj --language zh --module-dir "$TMP/packages" \
         "$TMP/app/call-english.ast" -o "$TMP/call-english.o"
     "$ASTER_BIN" link-obj "$TMP/call-english.o" "$TMP/aster_std.o" -o "$TMP/call-english"
-    if "$TMP/call-english"; then status=0; else status=$?; fi
+    if "$RUNNER" "$TMP/call-english"; then status=0; else status=$?; fi
     [ "$status" -eq 29 ]
 else
-    echo 'SKIP: interface execution requires AArch64 Linux'
+    echo 'SKIP: interface execution requires qemu-aarch64 or AArch64 Linux'
 fi
 
 cat > "$TMP/non-implementer.ast" <<'SRC'

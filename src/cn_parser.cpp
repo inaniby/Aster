@@ -66,6 +66,31 @@ public:
     Parser(std::vector<Token> tokens, Language language, std::string sourceFile)
         : tokens_(std::move(tokens)), language_(language), sourceFile_(std::move(sourceFile)) {}
 
+    // P0-4: recursion depth guard, mirroring the mainline parser's
+    // DepthGuard(256) on expr()/statement()/parseType. Without it a hostile
+    // input such as 10000 nested parentheses drove the recursive-descent
+    // parser off the C stack (segfault, exit 139). Each guarded function has
+    // its own counter so one construct nests 256 deep before the guard trips;
+    // the counters are per-Parser, so sequential siblings do not accumulate.
+    // The message starts with "expected " so classifyDiagnostic() reports it
+    // as A-011, and parseProgram()'s decorateDiagnostic() keeps it a single
+    // clean diagnostic. This lives in cn_parser.cpp (not aster.cpp) because
+    // this file is also compiled standalone by cn_parse_main.cpp, where the
+    // mainline RecursionGuard/DepthGuard do not exist.
+    static constexpr unsigned kMaxNestingDepth = 256;
+    struct DepthGuard {
+        unsigned& d;
+        DepthGuard(unsigned& depth, const char* what, const Token& token) : d(depth) {
+            if (++d > kMaxNestingDepth) {
+                --d;
+                throw std::runtime_error(std::string("expected ") + what +
+                    " nesting within 256 levels at " + std::to_string(token.line) +
+                    ":" + std::to_string(token.column));
+            }
+        }
+        ~DepthGuard() { --d; }
+    };
+
     std::vector<std::string> readPackageHeader() {
         skipNewlines();
         if (!eat("PackageKw")) return {};
@@ -182,6 +207,21 @@ private:
     Language language_;
     std::string sourceFile_;
     std::size_t position_ = 0;
+    // P0-4: one depth counter per guarded recursive function (see DepthGuard).
+    unsigned exprDepth_ = 0;
+    unsigned unaryDepth_ = 0;
+    unsigned primaryDepth_ = 0;
+    unsigned stmtDepth_ = 0;
+    unsigned stmtsUntilDepth_ = 0;
+    unsigned blockDepth_ = 0;
+    unsigned ifDepth_ = 0;
+    unsigned typeDepth_ = 0;
+    unsigned closureTypeDepth_ = 0;
+    unsigned functionTypeDepth_ = 0;
+    // D-2a: >0 while parsing a layout body (including its `如果` branches
+    // and node-row child blocks), so parseStatement() accepts node rows
+    // there and rejects them anywhere else.
+    unsigned layoutDepth_ = 0;
     std::set<std::string> structureNames_;
     std::set<std::string> classNames_;
     std::set<std::string> interfaceClassNames_;
@@ -363,6 +403,7 @@ private:
         return annotations;
     }
     std::string parseClosureType() {
+        DepthGuard guard(closureTypeDepth_, "closure type", current());
         expect("Closure", "expected a closure type");
         expect("LParen", "expected '(' after closure");
         std::vector<std::string> parameters;
@@ -380,6 +421,7 @@ private:
         return type + "):" + result;
     }
     std::string parseFunctionType() {
+        DepthGuard guard(functionTypeDepth_, "function type", current());
         expect("Method", "expected a function type");
         expect("LParen", "expected '(' after the function type");
         std::vector<std::string> parameters;
@@ -397,6 +439,7 @@ private:
         return type + "):" + result;
     }
     std::string parseType() {
+        DepthGuard guard(typeDepth_, "type", current());
         if (at("Closure")) return parseClosureType();
         if (at("Method")) return parseFunctionType();
         const Token token = current();
@@ -829,6 +872,7 @@ private:
         return enumeration;
     }
     std::vector<Statement> parseBlock(const char* expectedEndKind) {
+        DepthGuard guard(blockDepth_, "block", current());
         if (language_ == Language::En) {
             skipNewlines();
             expect("LBrace", "expected '{' to open a block");
@@ -859,6 +903,7 @@ private:
         fail("unexpected end of file inside a block");
     }
     Statement parseStatement() {
+        DepthGuard guard(stmtDepth_, "statement", current());
         if (at("VarDecl")) return parseVariable(false);
         if (at("ConstDecl")) return parseVariable(true);
         if (at("Return")) return parseReturn();
@@ -1097,6 +1142,7 @@ private:
         return statement;
     }
     Statement parseIf() {
+        DepthGuard guard(ifDepth_, "if statement", current());
         const Token start = current();
         ++position_;
         Statement statement;
@@ -1159,6 +1205,7 @@ private:
         return kind;
     }
     Expression parseExpression(int minimumPrecedence = 1) {
+        DepthGuard guard(exprDepth_, "expression", current());
         Expression left = parseUnary();
         while (true) {
             const int priority = precedence(current().kind);
@@ -1176,6 +1223,7 @@ private:
         return left;
     }
     Expression parseUnary() {
+        DepthGuard guard(unaryDepth_, "unary expression", current());
         if (at("Minus") || at("Not") || at("Tilde") || at("Amp") || at("Star")) {
             const std::string op = operatorName(current().kind);
             ++position_;
@@ -1188,6 +1236,7 @@ private:
         return parsePostfix(parsePrimary());
     }
     Expression parsePrimary() {
+        DepthGuard guard(primaryDepth_, "expression", current());
         const Token token = current();
         auto make = [&](const char* kind, const std::string& value) {
             Expression expression{kind, value, {}, nullptr, token.line, token.column};
@@ -1291,6 +1340,24 @@ private:
     }
 };
 
+// P0-4: dump walks an already-parsed AST, so it is bounded by the parser
+// caps above — but only loosely: one root-to-leaf dump path can stack
+// statement nesting (<=256) and expression nesting (<=256) plus closure
+// bodies, so the dump limit is 1024, not 256, to never false-trip on legal
+// input. The message still starts with "expected " so it classifies A-011.
+thread_local unsigned g_cnDumpDepth = 0;
+struct CnDumpDepthGuard {
+    CnDumpDepthGuard(const char* what, unsigned line, unsigned column) {
+        if (++g_cnDumpDepth > 1024) {
+            --g_cnDumpDepth;
+            throw std::runtime_error(std::string("expected ") + what +
+                " nesting within 1024 levels at " + std::to_string(line) +
+                ":" + std::to_string(column));
+        }
+    }
+    ~CnDumpDepthGuard() { --g_cnDumpDepth; }
+};
+
 void dumpStatements(std::ostringstream& out, const std::vector<Statement>& statements);
 
 void dumpParameter(std::ostringstream& out, const Parameter& parameter) {
@@ -1306,6 +1373,7 @@ void dumpParameter(std::ostringstream& out, const Parameter& parameter) {
 }
 
 void dumpExpression(std::ostringstream& out, const Expression& expression) {
+    CnDumpDepthGuard guard("expression", expression.line, expression.column);
     out << '(' << expression.kind;
     if (!expression.value.empty()) out << ' ' << quoted(expression.value);
     for (const auto& child : expression.children) {
@@ -1326,6 +1394,8 @@ void dumpExpression(std::ostringstream& out, const Expression& expression) {
 }
 
 void dumpStatements(std::ostringstream& out, const std::vector<Statement>& statements) {
+    CnDumpDepthGuard guard("statement", statements.empty() ? 0 : statements.front().line,
+                           statements.empty() ? 0 : statements.front().column);
     out << "(Block";
     for (const auto& statement : statements) {
         out << " (" << statement.kind;

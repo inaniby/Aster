@@ -500,7 +500,7 @@ eqaddr "$(awk '{print $2}' "$OUT/units.pie")" "$(section_addr "$OUT/dbg.pie" .te
 sed 's|slot\*8);return e;|slot*8+8);return e;|' src/aster.cpp > "$OUT/mutant.cpp"
 grep -q 'slot\*8+8);return e;' "$OUT/mutant.cpp" \
     || fail "the shifted-slot mutation no longer applies to src/aster.cpp"
-$CXX -std=c++17 -O2 -w "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
+$CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
 "$OUT/aster-mutant" build-elf "$SRC" -g -o "$OUT/mutant.elf" >/dev/null
 $DECODE --vars "$OUT/mutant.elf" > "$OUT/vars.mutant"
 # --- 10. a malformed .debug_info is refused (S-10) --------------------------------
