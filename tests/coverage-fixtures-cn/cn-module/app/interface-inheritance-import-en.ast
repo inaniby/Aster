@@ -1,0 +1,11 @@
+// aster:language=en
+@import("demo.oop").alias("oop")
+let passCount: i32 = 0;
+fn useRoot(value: oop.RootValue): i32 { return value.root(); }
+fn useBase(value: oop.ReadableValue): i32 { return value.read(); }
+fn passChild(value: oop.AdvancedValue): oop.AdvancedValue { passCount = passCount + 1; return value; }
+fn useChild(value: oop.AdvancedValue): i32 { return useBase(passChild(value)) + useRoot(passChild(value)) + value.extra(); }
+fn useReturnedChild(value: oop.AdvancedValue): i32 { return useBase(value.asAdvanced()); }
+fn useClassReturnedRoot(value: oop.AdvancedObject): i32 { return useRoot(value.childView()); }
+fn useInterfaceReturnedRoot(value: oop.AdvancedValue): i32 { return useRoot(value.childView()); }
+fn main(): i32 { return useRoot(oop.AdvancedObject()) + useBase(oop.AdvancedObject()) + useChild(oop.AdvancedObject()) + useReturnedChild(oop.AdvancedObject()) + useClassReturnedRoot(oop.AdvancedObject()) + useInterfaceReturnedRoot(oop.AdvancedObject()) + passCount - 276; }

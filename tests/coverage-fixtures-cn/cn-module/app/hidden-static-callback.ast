@@ -1,0 +1,4 @@
+@导入("demo.oop").别名("oop")
+方法 启动方法(): 整数
+返回 oop.CallbackBox.hiddenCallback(1)
+结束 方法

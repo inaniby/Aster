@@ -1,0 +1,52 @@
+// headless.ast — Gallery 模板无窗口检查（中文）。
+//
+// 每页各渲染一次（aui_headless_render），并断言计数在切页后保持。
+// 返回码：0 通过；1 无绘制命令；2 计数页未渲染；3 切页后计数丢失；
+// 4 导航页未渲染；5 输入页未渲染；90 字体加载失败。
+//
+// 本文件不列入 aster.proj（apk 工程不能跑 `aster test`）；build.sh
+// 用 build-cn-obj + link-obj 手工编译链接。只用双语前端。
+外部("aui_rt_set_font_path") 方法 设置运行时字体路径(路径: 指针): 整数
+外部("aui_set_font") 方法 设置字体(字体: 指针, 缩放: 整数): 整数
+外部("aui_headless_render") 方法 无窗口渲染(宽: 整数, 高: 整数, 输出: 指针): 整数
+外部("gallery_headless_init") 方法 gallery_headless_init(): 整数
+外部("gallery_set_tab") 方法 gallery_set_tab(页: 整数): 整数
+外部("gallery_tab") 方法 gallery_tab(): 整数
+外部("gallery_count") 方法 gallery_count(): 整数
+外部("gallery_add_one") 方法 gallery_add_one(): 整数
+变量 宽: 整数 = 320
+变量 高: 整数 = 240
+变量 g_buf: u字节[307200] = 0
+变量 g_font: 指针 = 0
+方法 启动方法(): 整数
+    变量 字体结果: 整数 = 设置运行时字体路径(指针("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"))
+    如果 字体结果 != 1
+        返回 90
+    结束 如果
+    设置字体(g_font, 1)
+    gallery_headless_init()
+    变量 n0: 整数 = 无窗口渲染(宽, 高, g_buf)
+    如果 n0 <= 0
+        返回 1
+    结束 如果
+    gallery_add_one()
+    gallery_set_tab(1)
+    变量 n1: 整数 = 无窗口渲染(宽, 高, g_buf)
+    如果 n1 <= 0
+        返回 5
+    结束 如果
+    gallery_set_tab(2)
+    变量 n2: 整数 = 无窗口渲染(宽, 高, g_buf)
+    如果 n2 <= 0
+        返回 4
+    结束 如果
+    gallery_set_tab(0)
+    变量 n3: 整数 = 无窗口渲染(宽, 高, g_buf)
+    如果 n3 <= 0
+        返回 2
+    结束 如果
+    如果 gallery_count() != 1
+        返回 3
+    结束 如果
+    返回 0
+结束 方法

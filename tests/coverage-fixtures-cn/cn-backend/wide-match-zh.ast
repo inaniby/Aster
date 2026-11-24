@@ -1,0 +1,47 @@
+// aster:language=zh
+方法 启动方法(): 整数
+变量 selected: 整数 = 0
+变量 unsigned32: u整数 = 4294967295u
+变量 signed64: 长整数 = 4294967296L
+变量 unsigned64: u长整数 = 18446744073709551615uL
+变量 byteValue: u字节 = u字节(255)
+变量 wordValue: u短整数 = u短整数(65535)
+变量 letter: 字符 = 字符(65)
+假如 unsigned32
+是 4294967295u
+selected = selected + 1
+否则
+返回 0
+结束 假如
+假如 signed64
+是 4294967296L
+selected = selected + 1
+否则
+返回 0
+结束 假如
+假如 unsigned64
+是 18446744073709551615uL
+selected = selected + 1
+否则
+返回 0
+结束 假如
+假如 byteValue
+是 255
+selected = selected + 1
+否则
+返回 0
+结束 假如
+假如 wordValue
+是 65535
+selected = selected + 1
+否则
+返回 0
+结束 假如
+假如 letter
+是 65
+selected = selected + 1
+否则
+返回 0
+结束 假如
+返回 selected
+结束 方法

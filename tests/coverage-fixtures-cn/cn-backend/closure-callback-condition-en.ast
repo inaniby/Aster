@@ -1,0 +1,14 @@
+// aster:language=en
+fn register(callback: fn(ptr): i32, user: ptr): i32 {
+    return callback(user);
+}
+fn main(): i32 {
+    let callback = fn [] (user: ptr): i32 {
+        return 42;
+    };
+    if (register(callback, null)) {
+        return 42;
+    } else {
+        return 7;
+    }
+}

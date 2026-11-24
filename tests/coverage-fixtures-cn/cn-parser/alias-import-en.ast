@@ -1,0 +1,4 @@
+// aster:language=en
+type UserId = i32;
+include "math.ast";
+fn main(): i32 { let x: UserId = 0; return x; }

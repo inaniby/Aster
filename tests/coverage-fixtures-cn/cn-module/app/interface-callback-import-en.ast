@@ -1,0 +1,4 @@
+// aster:language=en
+@import("demo.oop").alias("oop")
+fn use(value: oop.HasValue): i32 { return value.value(); }
+fn main(): i32 { return use(oop.InterfaceCallback()) - 42; }

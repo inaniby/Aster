@@ -1,0 +1,8 @@
+// aster:language=en
+fn main(): i32 {
+    let values: i32[2] = [20, 22];
+    let callback = fn [values] (index: i32): i32 {
+        return values[index];
+    };
+    return callback(1);
+}

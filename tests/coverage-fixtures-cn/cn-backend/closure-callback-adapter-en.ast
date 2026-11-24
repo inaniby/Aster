@@ -1,0 +1,16 @@
+// aster:language=en
+let observed: i32 = 0;
+fn register(callback: fn(ptr): i32, user: ptr): i32 {
+    return callback(user);
+}
+fn main(): i32 {
+    let offset: i32 = 41;
+    let callback = fn [offset] (user: ptr): i32 {
+        observed = offset + 1;
+        return 0;
+    };
+    register(callback, null);
+    let value: i32 = register(callback, null);
+    value = register(callback, null);
+    return observed + value;
+}

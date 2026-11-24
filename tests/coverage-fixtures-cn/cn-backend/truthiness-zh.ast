@@ -1,0 +1,65 @@
+// aster:language=zh
+枚举 Flag
+Off = 0
+On = 1
+结束 枚举
+方法 启动方法(): 整数
+变量 total: 整数 = 0
+变量 state: Flag = On
+如果 (state)
+total = total + 1
+结束 如果
+state = Off
+如果 (state)
+返回 99
+结束 如果
+变量 loopState: Flag = On
+循环 (loopState)
+total = total + 1
+loopState = Off
+结束 循环
+变量 count: 长整数 = 1
+循环 (count)
+total = total + 1
+count = count - 1
+结束 循环
+如果 (0)
+返回 90
+结束 如果
+变量 target: 整数 = 0
+变量 pointer: 指针 = 空
+如果 (pointer)
+返回 91
+结束 如果
+pointer = &target
+如果 (pointer)
+total = total + 1
+结束 如果
+pointer = 空
+如果 (pointer)
+返回 92
+结束 如果
+变量 precise: f64 = 0.0
+如果 (precise)
+返回 93
+结束 如果
+precise = 1.5
+如果 (precise)
+total = total + 1
+结束 如果
+变量 single: 单精度 = 单精度(0.0)
+如果 (single)
+返回 94
+结束 如果
+single = 单精度(2.0)
+如果 (single)
+total = total + 1
+结束 如果
+如果 (空)
+返回 95
+结束 如果
+如果 ("text")
+total = total + 1
+结束 如果
+返回 total
+结束 方法

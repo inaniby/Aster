@@ -1,0 +1,8 @@
+// aster:language=en
+// package metadata ignores comments and blank lines
+
+package 标准库.数学 = standard.math;
+@import("标准库.字符串").alias("text")
+fn main(): i32 {
+return 0;
+}

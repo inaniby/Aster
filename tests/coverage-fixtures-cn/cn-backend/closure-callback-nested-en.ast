@@ -1,0 +1,12 @@
+// aster:language=en
+fn register(callback: fn(ptr): i32, user: ptr): i32 {
+    return callback(user);
+}
+fn bump(value: i32): i32 { return value + 1; }
+fn main(): i32 {
+    let offset: i32 = 41;
+    let callback = fn [offset] (user: ptr): i32 {
+        return offset;
+    };
+    return bump(register(callback, null));
+}

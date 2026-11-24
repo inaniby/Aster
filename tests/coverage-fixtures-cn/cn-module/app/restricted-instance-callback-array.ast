@@ -1,0 +1,5 @@
+@导入("demo.oop").别名("oop")
+方法 启动方法(): 整数
+变量 基类对象: oop.CallbackBase
+返回 基类对象.inheritedCallbacks[0](1)
+结束 方法

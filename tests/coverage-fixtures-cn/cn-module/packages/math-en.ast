@@ -1,0 +1,5 @@
+// aster:language=en
+package 标准库.数学 = standard.math;
+fn cube(value: i32): i32 {
+return value * value * value;
+}

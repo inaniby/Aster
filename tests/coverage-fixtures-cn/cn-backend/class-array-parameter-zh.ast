@@ -1,0 +1,18 @@
+// aster:language=zh
+类 ArrayOps
+@静态
+方法 update(values: 整数[2]): 整数
+values[1] = values[1] + 10
+返回 values[0] + values[1]
+结束 方法
+结束 类
+方法 启动方法(): 整数
+变量 values: 整数[2] = [4, 6]
+如果 ArrayOps.update(values) != 20
+返回 1
+结束 如果
+如果 values[1] != 16
+返回 2
+结束 如果
+返回 0
+结束 方法

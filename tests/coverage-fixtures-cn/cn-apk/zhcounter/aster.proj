@@ -1,0 +1,5 @@
+kind apk
+package com.example.zhcounter
+label 计数器
+src/main.ast
+src/counter.ast

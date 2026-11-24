@@ -1,0 +1,3 @@
+包名 demo.hidden_global
+@隐藏
+变量 secret: 整数 = 8

@@ -1,0 +1,7 @@
+kind apk
+package com.example.encounter
+label Counter
+[language]
+default = "en"
+src/main.ast
+src/counter.ast

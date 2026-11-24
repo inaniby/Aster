@@ -1,0 +1,62 @@
+// aster:language=en
+enum Flag { Off = 0, On = 1 }
+fn main(): i32 {
+let total: i32 = 0;
+let state: Flag = On;
+if (state) {
+total = total + 1;
+}
+state = Off;
+if (state) {
+return 99;
+}
+let loopState: Flag = On;
+while (loopState) {
+total = total + 1;
+loopState = Off;
+}
+let count: i64 = 1;
+while (count) {
+total = total + 1;
+count = count - 1;
+}
+if (0) {
+return 90;
+}
+let target: i32 = 0;
+let pointer: ptr = null;
+if (pointer) {
+return 91;
+}
+pointer = &target;
+if (pointer) {
+total = total + 1;
+}
+pointer = null;
+if (pointer) {
+return 92;
+}
+let precise: f64 = 0.0;
+if (precise) {
+return 93;
+}
+precise = 1.5;
+if (precise) {
+total = total + 1;
+}
+let single: f32 = f32(0.0);
+if (single) {
+return 94;
+}
+single = f32(2.0);
+if (single) {
+total = total + 1;
+}
+if (null) {
+return 95;
+}
+if ("text") {
+total = total + 1;
+}
+return total;
+}

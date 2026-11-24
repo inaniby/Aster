@@ -1,0 +1,14 @@
+// aster:language=en
+fn touch() {
+let marker: i32 = 1;
+marker = marker + 1;
+}
+fn touchExplicit(): void {
+let marker: i32 = 1;
+marker = marker + 1;
+}
+fn main(): i32 {
+touch();
+touchExplicit();
+return 0;
+}

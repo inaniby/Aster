@@ -1,0 +1,202 @@
+struct App {
+    count: i32,
+    tab: i32,
+    lang: i32,
+    notify: i32,
+    promo: i32,
+    slider: i32,
+    sel_open: i32
+}
+let g_app: App = App { 0, 0, 0, 1, 0, 500, 0 };
+let keylog: i32[32];
+let logn: i32 = 0;
+let endn: i32 = 0;
+let padn: i32 = 0;
+let gapn: i32 = 0;
+let statev: i32 = 0;
+let savedDec: fn(ptr) -> i32 = null;
+let savedInc: fn(ptr) -> i32 = null;
+let savedReset: fn(ptr) -> i32 = null;
+let savedUser: ptr = null;
+fn logKey(key: i32) -> i32 {
+    keylog[logn] = key;
+    logn = logn + 1;
+    return 0;
+}
+fn aui_column(key: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_row(key: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_label(key: i32, text: ptr) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_text_i32(key: i32, value: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+    logKey(key);
+    if (key == 1786076415) {
+        savedDec = cb;
+    } else if (key == 183326715) {
+        savedInc = cb;
+    } else if (key == -1039401196) {
+        savedReset = cb;
+    }
+    savedUser = user;
+    return 0;
+}
+fn aui_pad(dp: i32) -> i32 {
+    padn = padn + 1;
+    return 0;
+}
+fn aui_gap(dp: i32) -> i32 {
+    gapn = gapn + 1;
+    return 0;
+}
+fn aui_state_set(key: i32, value: i32) -> i32 {
+    if (key == 1) {
+        statev = value;
+    }
+    return 0;
+}
+fn aui_invalidate() -> i32 {
+    return 0;
+}
+fn aui_end() -> i32 {
+    endn = endn + 1;
+    return 0;
+}
+fn main() -> i32 {
+    let p: ptr<App> = &g_app;
+    let r: i32 = page_counter(p, p);
+    if (r != 0) {
+        return 11;
+    }
+    if (logn != 9) {
+        return 12;
+    }
+    if (keylog[0] != 324013166) {
+        return 13;
+    }
+    if (keylog[1] != 1056240053) {
+        return 13;
+    }
+    if (keylog[2] != 1599418147) {
+        return 13;
+    }
+    if (keylog[3] != 1786076415) {
+        return 13;
+    }
+    if (keylog[4] != 1227156576) {
+        return 13;
+    }
+    if (keylog[5] != 183326715) {
+        return 13;
+    }
+    if (keylog[6] != -1039401196) {
+        return 13;
+    }
+    if (keylog[7] != 840075724) {
+        return 13;
+    }
+    if (keylog[8] != -1552151513) {
+        return 13;
+    }
+    if (endn != 2) {
+        return 14;
+    }
+    if (padn != 1) {
+        return 15;
+    }
+    if (gapn != 2) {
+        return 16;
+    }
+    let up: ptr = p;
+    if (savedUser != up) {
+        return 17;
+    }
+    let c0: i32 = savedDec(savedUser);
+    if (g_app.count != -1) {
+        return 21;
+    }
+    if (statev != -1) {
+        return 22;
+    }
+    let c1: i32 = savedInc(savedUser);
+    if (g_app.count != 0) {
+        return 23;
+    }
+    g_app.count = 5;
+    let c2: i32 = savedReset(savedUser);
+    if (g_app.count != 0) {
+        return 24;
+    }
+    if (statev != 0) {
+        return 25;
+    }
+    return 0;
+}
+// counter-en.ast — D-2a syntax draft, NOT compilable (needs the compiler work order to land).
+// Source: new-line Gallery Counter tab (68 lines); work-order target 54 lines, measured in the D2A report.
+// Node name is identity (name -> key = FNV-1a(declName.nodeName)); event blocks join by name.
+// Body rule: event blocks use globals only (g_app), never capture build locals.
+// Note: the if/else branches shared key 108; under name-uniqueness they are
+// named Zero / NonZero, so the key forks (labels are stateless, no behavior change; see work order W-O4).
+
+extern fn aui_column(key: i32) -> i32;
+extern fn aui_row(key: i32) -> i32;
+extern fn aui_pad(dp: i32) -> i32;
+extern fn aui_gap(dp: i32) -> i32;
+extern fn aui_label(key: i32, text: ptr) -> i32;
+extern fn aui_text_i32(key: i32, value: i32) -> i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_state_set(key: i32, value: i32) -> i32;
+extern fn aui_invalidate() -> i32;
+extern fn aui_end() -> i32;
+
+// on_add: +1.
+event Inc:tap() {
+    g_app.count = g_app.count + 1;
+    aui_state_set(1, g_app.count);
+    aui_invalidate();
+}
+
+// on_dec: -1.
+event Dec:tap() {
+    g_app.count = g_app.count - 1;
+    aui_state_set(1, g_app.count);
+    aui_invalidate();
+}
+
+// on_reset: back to zero.
+event Reset:tap() {
+    g_app.count = 0;
+    aui_state_set(1, 0);
+    aui_invalidate();
+}
+
+// page_counter: the tab body. The row holds - / value / +; Reset sits
+// below it, and the status line reads the live count, not a copy.
+layout page_counter(s: ptr<App>, user: ptr) -> View {
+    Column MainCol, Padding(20), Gap(16) {
+        Label Title, ptr("Counter")
+        Row ButtonRow, Gap(12) {
+            Button Dec, ptr("-")
+            Number Count, s.count
+            Button Inc, ptr("+")
+        }
+        Button Reset, ptr("Reset")
+        Label Hint, ptr("Tap + to count up, - to count down.")
+        if (s.count == 0) {
+            Label Zero, ptr("Count is zero.")
+        } else {
+            Label NonZero, ptr("Count is non-zero.")
+        }
+    }
+}

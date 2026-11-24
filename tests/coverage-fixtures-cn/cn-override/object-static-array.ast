@@ -1,0 +1,7 @@
+// aster:language=en
+class Counter {
+@static
+let values: i32[2] = [1, 2];
+fn read(object: Counter): i32 { return object.values[0]; }
+}
+fn main(): i32 { return 0; }

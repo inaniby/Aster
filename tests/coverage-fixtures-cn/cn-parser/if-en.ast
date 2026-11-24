@@ -1,0 +1,12 @@
+// aster:language=en
+fn main(): i32 {
+let count: i32 = 1;
+if (count == 1) {
+return 10;
+} else if (count == 2) {
+return 20;
+} else {
+return 30;
+}
+return 0;
+}

@@ -1,0 +1,6 @@
+name bilingual_test_collision
+[language]
+default = "en"
+allowed = ["zh", "en"]
+test tests/one/same.ast
+test tests/two/same.ast

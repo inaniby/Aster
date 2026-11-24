@@ -1,0 +1,5 @@
+包名 demo.point_api
+@导入("model.types").别名("model")
+方法 get_x(point: model.Point): 整数
+返回 point.x
+结束 方法

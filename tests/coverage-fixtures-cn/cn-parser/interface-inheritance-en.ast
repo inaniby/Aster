@@ -1,0 +1,8 @@
+// aster:language=en
+interface class 可读 {
+fn 读取(): i32;
+}
+interface class 可增强: 可读 {
+fn 增强(): i32;
+}
+fn main(): i32 { return 0; }

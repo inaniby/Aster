@@ -1,0 +1,9 @@
+// aster:language=en
+struct Holder { callback: closure(i32): i32 }
+fn main(): i32 {
+let holder: Holder;
+holder.callback = fn [] (value: i32): i32 {
+return value + 1;
+};
+return holder.callback(41);
+}

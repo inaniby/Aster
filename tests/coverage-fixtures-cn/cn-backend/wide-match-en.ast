@@ -1,0 +1,46 @@
+fn main(): i32 {
+let selected: i32 = 0;
+let unsigned32: u32 = 4294967295u;
+let signed64: i64 = 4294967296L;
+let unsigned64: u64 = 18446744073709551615uL;
+let byteValue: u8 = u8(255);
+let wordValue: u16 = u16(65535);
+let letter: char = char(65);
+switch (unsigned32) {
+case 4294967295u
+selected = selected + 1;
+else
+return 0;
+}
+switch (signed64) {
+case 4294967296L
+selected = selected + 1;
+else
+return 0;
+}
+switch (unsigned64) {
+case 18446744073709551615uL
+selected = selected + 1;
+else
+return 0;
+}
+switch (byteValue) {
+case 255
+selected = selected + 1;
+else
+return 0;
+}
+switch (wordValue) {
+case 65535
+selected = selected + 1;
+else
+return 0;
+}
+switch (letter) {
+case 65
+selected = selected + 1;
+else
+return 0;
+}
+return selected;
+}

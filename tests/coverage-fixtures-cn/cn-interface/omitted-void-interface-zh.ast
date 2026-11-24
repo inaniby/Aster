@@ -1,0 +1,20 @@
+// aster:language=zh
+接口类 Ping
+方法 ping()
+方法 pingExplicit(): 空
+结束 接口类
+变量 count: 整数 = 0
+类 Impl : Ping
+方法 ping(): 空
+count = count + 1
+结束 方法
+方法 pingExplicit()
+count = count + 1
+结束 方法
+结束 类
+方法 启动方法(): 整数
+变量 value: Ping = Impl()
+value.ping()
+value.pingExplicit()
+返回 count
+结束 方法

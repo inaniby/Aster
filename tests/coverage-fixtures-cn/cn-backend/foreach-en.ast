@@ -1,0 +1,13 @@
+// aster:language=en
+fn main(): i32 {
+let items: i32[3] = [4, 5, 6];
+let total: i32 = 0;
+foreach item in items {
+total = total + item;
+}
+foreach index, item2 in items {
+total = total + index;
+total = total + item2;
+}
+return total;
+}

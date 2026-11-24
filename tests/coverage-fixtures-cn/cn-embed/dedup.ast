@@ -1,0 +1,11 @@
+// aster:language=en
+const g_len: i32 = @embed_len("data.bin");
+fn first() -> ptr {
+    return @embed("data.bin");
+}
+fn second() -> ptr {
+    return @embed("data.bin");
+}
+fn main() -> i32 {
+    return load_u8(first()) + load_u8(second()) + g_len;
+}

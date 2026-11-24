@@ -1,0 +1,10 @@
+// aster:language=en
+class Base {
+@restricted
+fn inherited(): i32 {
+return 1;
+}
+}
+fn main(): i32 {
+return 0;
+}

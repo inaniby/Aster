@@ -1,0 +1,5 @@
+// aster:language=en
+fn main() -> i32 {
+    let p: ptr = @embed("empty.bin");
+    return load_u8(p);
+}

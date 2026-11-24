@@ -1,0 +1,9 @@
+// aster:language=en
+package demo.restricted_interface;
+interface class PublicContract {
+fn apply(): i32;
+}
+class RestrictedImplementation: PublicContract {
+@protected
+fn apply(): i32 { return 1; }
+}

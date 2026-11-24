@@ -1,0 +1,5 @@
+// aster:language=en
+include "lib.ast";
+fn main(): i32 {
+return add_one(41);
+}

@@ -1,0 +1,7 @@
+// aster:language=en
+class PublicFields { let visible: i32; }
+fn main(): i32 {
+let object: PublicFields;
+enumloop field in object { return 1; }
+return 0;
+}

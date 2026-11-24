@@ -1,0 +1,3 @@
+// aster:language=en
+let labels: string[2] = ["ok", 1];
+fn main(): i32 { return 0; }

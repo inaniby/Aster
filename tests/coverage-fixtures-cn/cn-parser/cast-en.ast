@@ -1,0 +1,6 @@
+// aster:language=en
+fn main(): i32 {
+let single: f32 = f32(1.0);
+let precise: f64 = f64(1);
+return 0;
+}

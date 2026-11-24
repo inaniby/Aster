@@ -1,0 +1,4 @@
+// aster:language=en
+struct Labeled { label: string, value: i32 }
+let values: Labeled[1] = [Labeled { "bad", 1 }];
+fn main(): i32 { return 0; }

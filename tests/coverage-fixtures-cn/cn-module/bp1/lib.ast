@@ -1,0 +1,7 @@
+include "base.ast";
+fn add_one(x: i32): i32 {
+return x + 1 + base_value();
+}
+fn count_bytes(p: ptr<u8>, n: i32): i32 {
+return n;
+}

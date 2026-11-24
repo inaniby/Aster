@@ -1,0 +1,5 @@
+// aster:language=en
+class FieldState {
+let first: i32 = 4;
+let second: i32 = this.first + 2;
+}

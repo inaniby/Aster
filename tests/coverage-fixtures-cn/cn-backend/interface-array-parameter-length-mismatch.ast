@@ -1,0 +1,12 @@
+// aster:language=en
+interface class ArrayReader {
+fn readValues(values: i32[3]): i32;
+}
+class ArrayOps: ArrayReader {
+fn readValues(values: i32[3]): i32 { return values[0]; }
+}
+fn main(): i32 {
+let reader: ArrayReader = ArrayOps();
+let values: i32[2] = [1, 2];
+return reader.readValues(values);
+}

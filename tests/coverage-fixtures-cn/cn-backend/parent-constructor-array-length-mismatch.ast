@@ -1,0 +1,14 @@
+// aster:language=en
+class Base {
+@constructor
+fn init(values: i32[3]): void {}
+}
+class Derived: Base {
+@constructor
+fn init(values: i32[2]): void { super(values); }
+}
+fn main(): i32 {
+let values: i32[2] = [1, 2];
+let object: Derived = Derived(values);
+return 0;
+}

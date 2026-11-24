@@ -1,0 +1,8 @@
+// aster:language=en
+@import("demo.oop").alias("oop")
+fn main(): i32 {
+let box: oop.CallbackStruct;
+box.callbacks[1] = oop.addTwo;
+let object: oop.CallbackBox = oop.CallbackBox();
+return box.callbacks[1](40) + object.instanceCallbacks[0](40) - 84;
+}

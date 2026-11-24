@@ -1,0 +1,68 @@
+// page_counter.ast — Gallery Counter tab (APP).
+// State lives in App (app.ast); buttons use plain fn callbacks (B-1 (a)).
+// The count is the single source of truth: each button mutates App.count,
+// then publishes it with aui_state_set and requests a rebuild.
+// Counting scope for the 68/68 target: this file only (three callbacks
+// + page body + comments/blank lines; App.count lives in app.ast).
+
+extern fn aui_column(key: i32) -> i32;
+extern fn aui_row(key: i32) -> i32;
+extern fn aui_pad(dp: i32) -> i32;
+extern fn aui_gap(dp: i32) -> i32;
+extern fn aui_label(key: i32, text: ptr) -> i32;
+extern fn aui_text_i32(key: i32, value: i32) -> i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_state_set(key: i32, value: i32) -> i32;
+extern fn aui_invalidate() -> i32;
+extern fn aui_end() -> i32;
+
+// on_add: +1. The callback receives the App pointer as user.
+fn on_add(user: ptr) -> i32 {
+    let a: ptr<App> = user;
+    a.count = a.count + 1;
+    aui_state_set(1, a.count);
+    aui_invalidate();
+    return 0;
+}
+
+// on_dec: -1.
+fn on_dec(user: ptr) -> i32 {
+    let a: ptr<App> = user;
+    a.count = a.count - 1;
+    aui_state_set(1, a.count);
+    aui_invalidate();
+    return 0;
+}
+
+// on_reset: back to zero.
+fn on_reset(user: ptr) -> i32 {
+    let a: ptr<App> = user;
+    a.count = 0;
+    aui_state_set(1, 0);
+    aui_invalidate();
+    return 0;
+}
+
+// page_counter: the tab body. The row holds - / value / +; Reset sits
+// below it, and the status line reads the live count, not a copy.
+fn page_counter(s: ptr<App>, user: ptr) -> i32 {
+    aui_column(100);
+    aui_pad(20);
+    aui_gap(16);
+    aui_label(101, ptr("Counter"));
+    aui_row(102);
+    aui_gap(12);
+    aui_button(103, ptr("-"), on_dec, user);
+    aui_text_i32(104, s.count);
+    aui_button(105, ptr("+"), on_add, user);
+    aui_end();
+    aui_button(106, ptr("Reset"), on_reset, user);
+    aui_label(107, ptr("Tap + to count up, - to count down."));
+    if (s.count == 0) {
+        aui_label(108, ptr("Count is zero."));
+    } else {
+        aui_label(108, ptr("Count is non-zero."));
+    }
+    aui_end();
+    return 0;
+}

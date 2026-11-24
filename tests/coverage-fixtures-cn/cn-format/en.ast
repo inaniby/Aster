@@ -1,0 +1,9 @@
+// aster:language=en
+fn main(): i32 {
+let text: string = "{ } // literal";
+if (true) {
+return 0;
+} else {
+return 1;
+}
+}

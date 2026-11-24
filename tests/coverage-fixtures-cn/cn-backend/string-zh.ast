@@ -1,0 +1,8 @@
+// aster:language=zh
+方法 take(text: 字符串): 整数
+返回 40
+结束 方法
+方法 启动方法(): 整数
+变量 greeting: 字符串 = "你好"
+返回 take(greeting) + take("世界")
+结束 方法

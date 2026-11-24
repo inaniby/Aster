@@ -1,0 +1,4 @@
+// aster:language=en
+fn 加一(value: i32): i32 {
+return value + 1;
+}

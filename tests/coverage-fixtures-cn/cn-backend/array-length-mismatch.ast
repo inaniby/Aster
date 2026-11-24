@@ -1,0 +1,5 @@
+// aster:language=zh
+方法 启动方法(): 整数
+变量 items: 整数[2] = [1, 2, 3]
+返回 items[0]
+结束 方法

@@ -1,0 +1,6 @@
+name bp1-mixed
+[language]
+default = "zh"
+"src/fw_en.ast" = "en"
+src/fw_en.ast
+src/app_zh.ast

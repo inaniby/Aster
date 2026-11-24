@@ -1,0 +1,8 @@
+// aster:language=en
+package test.english;
+interface class Reader {
+fn read(): i32;
+}
+class Item: Reader {
+fn read(): i32 { return 29; }
+}

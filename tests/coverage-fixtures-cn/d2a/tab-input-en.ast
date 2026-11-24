@@ -1,0 +1,102 @@
+// tab-input-en.ast — D-2a syntax draft, NOT compilable (needs the compiler work order to land).
+// Source: new-line Gallery Input tab (116 lines); work-order target 99 lines, measured in the D2A report.
+// The 130 sentinel now goes through key(Language); event kinds follow the skeleton event set (change).
+extern fn aui_scroll(key: i32) -> i32;
+extern fn aui_weight(w: i32) -> i32;
+extern fn aui_column(key: i32) -> i32;
+extern fn aui_row(key: i32) -> i32;
+extern fn aui_pad(dp: i32) -> i32;
+extern fn aui_gap(dp: i32) -> i32;
+extern fn aui_label(key: i32, text: ptr) -> i32;
+extern fn aui_text_field(key: i32, hint: ptr) -> i32;
+extern fn aui_text_value(key: i32) -> ptr;
+extern fn aui_focus_get() -> i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_option(key: i32, text: ptr) -> i32;
+extern fn aui_select_value(key: i32) -> i32;
+extern fn aui_select_reason() -> i32;
+extern fn aui_switch(key: i32, on: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_slider_value(key: i32) -> i32;
+extern fn aui_progress(key: i32, value: i32) -> i32;
+extern fn aui_keyboard(target_key: i32) -> i32;
+extern fn aui_text_clear(key: i32) -> i32;
+extern fn aui_focus(key: i32) -> i32;
+extern fn aui_invalidate() -> i32;
+extern fn aui_end() -> i32;
+event Clear:tap() {
+    aui_text_clear(key(Input));
+    aui_invalidate();
+}
+event Focus:tap() {
+    aui_focus(key(Input));
+    aui_invalidate();
+}
+event NotifySwitch:change() {
+    g_app.notify = 1 - g_app.notify;
+    aui_invalidate();
+}
+event Promo:change() {
+    g_app.promo = 1 - g_app.promo;
+    aui_invalidate();
+}
+event Volume:change() {
+    g_app.slider = aui_slider_value(key(Volume));
+    aui_invalidate();
+}
+event Language:change() {
+    let why: i32 = aui_select_reason();
+    if (why == 0) {
+        g_app.sel_open = key(Language);
+    } else if (why == 1) {
+        let v: i32 = aui_select_value(key(Language));
+        if (v >= 0) {
+            g_app.lang = v;
+        }
+        g_app.sel_open = 0;
+    } else {
+        g_app.sel_open = 0;
+    }
+    aui_invalidate();
+}
+layout page_input(s: ptr<App>, user: ptr) -> View {
+    Scroll MainScroll, Weight(1) {
+        Column MainCol, Padding(20), Gap(12) {
+            Label Title, ptr("Text field + select")
+            TextField Input, ptr("Tap to type...")
+            if (aui_focus_get() == 0) {
+                Label Echo, ptr("Live value")
+                Row EchoRow, Padding(12) {
+                    Label EchoValue, aui_text_value(key(Input)), Weight(1)
+                }
+            }
+            Row ButtonRow, Gap(8) {
+                Button Clear, ptr("Clear")
+                Button Focus, ptr("Focus")
+            }
+            Label LangTitle, ptr("Language")
+            let open: i32 = 0;
+            if (s.sel_open == key(Language)) {
+                open = 1;
+            }
+            Select Language, s.lang, open, ptr("Choose a language") {
+                Option English, ptr("English")
+                Option German, ptr("German")
+                Option Chinese, ptr("Chinese")
+            }
+            Row NotifyRow, Gap(8) {
+                Label Notify, ptr("Notify"), Weight(1)
+                Switch NotifySwitch, s.notify
+            }
+            Checkbox Promo, ptr("Promotions"), s.promo
+            Label VolumeTitle, ptr("Volume")
+            Slider Volume, s.slider, 10
+            Progress Progress, s.slider
+        }
+    }
+    if (aui_focus_get() != 0) {
+        aui_keyboard(key(Input));
+    }
+}

@@ -1,0 +1,8 @@
+// aster:language=en
+let shared: i32 = 3;
+fn main(): i32 {
+let callback = fn [shared] (): i32 {
+return 0;
+};
+return 0;
+}

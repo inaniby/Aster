@@ -1,0 +1,577 @@
+// font_runtime.ast -- AsterUI v1.48.6 whole-package adoption, W2 font surgery.
+//
+// The seam between the reference text stack (stdlib/asterui/aui_impl.ast)
+// and OUR runtime glyph source (asterui/render/truetype.ast +
+// asterui/render/text.ast). The reference assumed AUF1 bitmap fonts
+// embedded with @embed; those files do not exist in this repo (they
+// derived from Noto Sans CJK, OFL -- the user forbids carrying any
+// font licence), so the reference text code must never dereference
+// an AUF blob again. aui_impl.ast calls the aui_rt_* API below; this
+// file answers it from:
+//
+//   1. the runtime TrueType engine when a system font is loaded
+//      (ui_sysfont_init chain, or an explicit path via
+//      aui_rt_set_font_path -- the headless test points it at the
+//      VM's font files, which are READ only, never copied); and
+//   2. the hand-drawn fallback when no system font is present:
+//      ASCII from the 8x8 font (render/text.ast ui_font_row) and
+//      CJK from OUR OWN 56-glyph 16x16 atlas (ui_cjk_find /
+//      ui_cjk_row -- hand-drawn bitmaps, zero third-party font IP,
+//      zero licence file; see asterui/M3-NOTES.md). The fallback
+//      glyphs are upscaled x3 into the 48 px em cell so fallback
+//      text has the same metrics as system-font text.
+//
+// Sizing (preserves the reference 48 px layout metrics as far as
+// possible): the native em is 48 px at scale 1 (the reference
+// font_latin48/font_cjk48 size), line height 60 px (48 * 60/48,
+// the reference line_h). aui_impl.ast still multiplies by
+// g_aui_text_scale, so scale 1 in the examples keeps 48/60 and
+// scale 2 (old tests) gives 96/120. Advances come from the font's
+// hmtx table (advance_units * 48 / upm), NOT from ink width: CJK
+// advances a full em (48), Latin advances proportionally
+// (Noto Sans CJK SC 'A' is ~0.6 em). The TrueType bitmap is the
+// whole em box (xoff/yoff 0); the reference's per-glyph xoff/yoff
+// metadata has no equivalent here and is deliberately dropped --
+// the em-box mapping (typo ascender at the cell top) is what the
+// M4 engine already pins, and emit_text_lines centres the 48 px
+// glyph box in the 60 px line exactly as it did for the 48 px
+// .auf fonts.
+//
+// What this file does NOT do: no shaping, no bidi, no kerning,
+// no fractional sizes -- the same v1 boundary the reference
+// design doc states. No .auf file is read, embedded, or shipped
+// by this file; the only .auf bytes reachable are OUR OWN
+// hand-drawn 16x16 atlas, embedded once in asterui/assets/
+// embeds.ast and reached through render/text.ast (never as a
+// file in the APK -- see the unzip -l proof in ADOPTION-NOTES.md).
+//
+// All sources ASCII-only; no floats anywhere. Nested-call rule
+// (M3.2 crash): an i32-returning call with field/pointer arguments
+// is never nested inside another call; results are materialised
+// into locals first.
+
+include "aster_std.ast";
+include "render/truetype.ast";
+include "render/text.ast";
+
+// Native em size (px) at scale 1, and line height (px) at scale 1.
+// Chosen to match font_latin48/font_cjk48 (48 px, line_h 60).
+let AUI_RT_PIXEL: i32 = 48;
+let AUI_RT_LINE_H: i32 = 60;
+
+// v2.15：当前排版 cell（px，字形光栅化的 em 尺寸）。默认 48（与
+// v2.14 完全一致）；排版角色经 aui_rt_set_cell 改写它（Body 48 /
+// Title 64）。上限 64 = 字形缓存槽 4096 字节恰好装下 64x64 位图。
+// 回退位图仍是固定的 24/48 px 暂存（见下），cell > 48 时回退字形
+// 按 cell 推进、但只画出 48 px 宽——记录在案的已知限制。
+let g_rt_cell: i32 = 48;
+
+// v2.15：设置当前 cell（夹到 [8, 64]）。aui_impl.ast 的
+// text_style_for_node 在每次排版/绘制前调它，跨编译单元传 cell。
+fn aui_rt_set_cell(cell: i32) -> i32 {
+    if (cell < 8) { cell = 8; }
+    if (cell > 64) { cell = 64; }
+    g_rt_cell = cell;
+    return 0;
+}
+
+// Fallback cell geometry: ASCII 8x8 upscaled x3 -> 24 px, centred
+// vertically in the 48 px em cell; CJK 16x16 upscaled x3 -> 48 px.
+let AUI_RT_FB_ASCII_W: i32 = 24;
+let AUI_RT_FB_ASCII_YOFF: i32 = 12;
+
+// Glyph source codes reported by aui_rt_src().
+let AUI_RT_SRC_TT: i32 = 1;
+let AUI_RT_SRC_ASCII: i32 = 2;
+let AUI_RT_SRC_CJK: i32 = 3;
+
+let g_rt_tried: i32 = 0;          // 1 once ensure()/set_font_path ran
+let g_rt_tt: i32 = 0;             // 1 while a system font is loaded
+let g_rt_fallback_events: i32 = 0; // times we fell back (no system font)
+let g_rt_fallback_reason: i32 = 0; // ui_sysfont_err() of the last fallback
+let g_rt_missing: i32 = 0;        // code points with no glyph anywhere
+// Custom fonts (v2.5): one active face at a time. The path of the
+// face active before the first custom load (the system font on
+// the device) is snapshotted so restore goes back to it; loading
+// custom B over custom A must NOT overwrite the snapshot.
+let g_rt_prev_path: u8[256] = 0;  // snapshot of the pre-custom face path
+let g_rt_prev_has: i32 = 0;       // 1 when the snapshot is valid
+let g_rt_custom_active: i32 = 0;  // 1 while a custom font is the active face
+let g_rt_custom_err: i32 = 0;     // ui_sysfont_err() of the last failed custom load
+let g_rt_custom_ms: i32 = 0;      // ms the last custom load took
+let g_rt_custom_path: u8[256] = 0; // path of the active custom font ("" when none)
+let g_rt_bm: ptr = 0;             // last glyph bitmap (8bpp coverage)
+let g_rt_bw: i32 = 0;
+let g_rt_bh: i32 = 0;
+let g_rt_xo: i32 = 0;
+let g_rt_yo: i32 = 0;
+let g_rt_src: i32 = 0;
+let g_rt_bm_ascii: u8[576] = 0;   // 24x24 fallback scratch
+let g_rt_bm_cjk: u8[2304] = 0;    // 48x48 fallback scratch
+
+fn aui_rt_pixel() -> i32 {
+    // v2.15：字形 em 尺寸跟当前 cell（默认 48，与 v2.14 恒等）。
+    return g_rt_cell;
+}
+
+fn aui_rt_line_h() -> i32 {
+    // v2.15：行高按 cell 等比缩放（60 px @ 48 em；Title 64 em 时 80 px）。
+    return AUI_RT_LINE_H * g_rt_cell / AUI_RT_PIXEL;
+}
+
+// 1 when a system font is loaded and usable, else 0. Does NOT
+// trigger a load by itself; call aui_rt_ensure() first.
+fn aui_rt_active() -> i32 {
+    if (g_rt_tt == 1) {
+        return 1;
+    } else {
+    }
+    return 0;
+}
+
+fn aui_rt_fallback_events() -> i32 {
+    return g_rt_fallback_events;
+}
+
+fn aui_rt_fallback_reason() -> i32 {
+    return g_rt_fallback_reason;
+}
+
+// Code points that had no glyph in any source (TT, ASCII, CJK).
+// Incremented by aui_rt_glyph only, never by measurement.
+fn aui_rt_missing() -> i32 {
+    return g_rt_missing;
+}
+
+fn aui_rt_bm() -> ptr {
+    return g_rt_bm;
+}
+
+fn aui_rt_bw() -> i32 {
+    return g_rt_bw;
+}
+
+fn aui_rt_bh() -> i32 {
+    return g_rt_bh;
+}
+
+fn aui_rt_xo() -> i32 {
+    return g_rt_xo;
+}
+
+fn aui_rt_yo() -> i32 {
+    return g_rt_yo;
+}
+
+fn aui_rt_src() -> i32 {
+    return g_rt_src;
+}
+
+// Record a fallback event (no system font). The reason is the
+// TrueType engine's error code (1 = no file in the chain,
+// 3 = not a font, 4 = no usable cmap, 5 = no outline table,
+// 6 = CFF2 present but unparsable). On Android the backend logs
+// assert the counters.
+fn aui_rt_note_fallback() -> i32 {
+    g_rt_fallback_events = g_rt_fallback_events + 1;
+    g_rt_fallback_reason = ui_sysfont_err();
+    g_rt_tt = 0;
+    return 0;
+}
+
+// Lazy init through the default system-font chain
+// (/system/fonts/NotoSansCJK-Regular.ttc, NotoSansSC-Regular.otf,
+// DroidSansFallback.ttf). Answers 1 when a system font is active,
+// 0 when we fell back. Runs at most once per explicit path set.
+fn aui_rt_ensure() -> i32 {
+    if (g_rt_tried == 1) {
+        return g_rt_tt;
+    } else {
+    }
+    g_rt_tried = 1;
+    let r: i32 = ui_sysfont_init();
+    if (r == 1) {
+        g_rt_tt = 1;
+        return 1;
+    } else {
+    }
+    let n: i32 = aui_rt_note_fallback();
+    return 0;
+}
+
+// Test / diagnostic hook: load the font at path explicitly
+// (SC auto-selection for a TTC, -1 face). Answers 1 on success.
+// A nonexistent path answers 0 with reason 1 and switches to
+// fallback mode -- that is how the headless test simulates a
+// device with no system font. The device never calls this.
+fn aui_rt_set_font_path(path: ptr) -> i32 {
+    g_rt_tried = 1;
+    let r: i32 = ui_sysfont_load_face(path, -1);
+    if (r == 1) {
+        g_rt_tt = 1;
+        return 1;
+    } else {
+    }
+    let n: i32 = aui_rt_note_fallback();
+    return 0;
+}
+
+// ---- Custom fonts (v2.5) ----
+// One active face at a time; a custom font is loaded on demand
+// and the previously active face is remembered so the app can go
+// back to it. The model is a single-slot snapshot, not a
+// registry: the engine holds exactly one face (g_tt_* globals),
+// the adapter holds exactly one snapshot, and a registry would
+// only duplicate the 15-32 MB font buffer per entry for no
+// benefit -- switching is a re-parse of one file (tens of ms
+// for a 15 MB TTF, logged via aui_rt_custom_load_ms), not a
+// cache lookup. The engine reuses one persistent buffer across
+// loads (see ui_tt_read_font), so switching costs no memory.
+
+// Remember the currently active face's path, but only when
+// leaving a non-custom face: loading custom B over custom A must
+// not overwrite the system snapshot, or restore would go back to
+// A instead of the system font. Answers 1 when a snapshot was
+// taken. The path is COPIED: the engine's path pointer may alias
+// a shared join buffer that later loads overwrite.
+fn aui_rt_custom_snapshot() -> i32 {
+    if (g_rt_custom_active != 0) { return 0; }
+    if (g_rt_tt != 1) { return 0; }
+    let p: ptr = ui_sysfont_path();
+    if (p == 0) { return 0; }
+    let n: i32 = strlen(p);
+    if (n > 255) { n = 255; }
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(g_rt_prev_path + i, load_u8(p + i));
+        i = i + 1;
+    }
+    store_u8(g_rt_prev_path + n, 0);
+    g_rt_prev_has = 1;
+    return 1;
+}
+
+// Load the font at path as the active custom face. Answers 1 on
+// success; on failure answers 0, records the reason in
+// aui_rt_custom_err(), and restores the face that was active
+// before the load -- never a silent fallback, never a blank
+// screen. Only when there was no face to restore (the app
+// started in bitmap-fallback mode) do we stay in fallback mode,
+// and that IS a fallback event.
+fn aui_rt_set_custom_font(path: ptr) -> i32 {
+    g_rt_tried = 1;
+    let t0: i64 = ui_tt_now_ms();
+    let s: i32 = aui_rt_custom_snapshot();
+    let r: i32 = ui_sysfont_load_face(path, -1);
+    let t1: i64 = ui_tt_now_ms();
+    let ms: i32 = i32(t1 - t0);
+    if (ms < 0) { ms = 0; }
+    g_rt_custom_ms = ms;
+    if (r == 1) {
+        g_rt_tt = 1;
+        g_rt_custom_active = 1;
+        g_rt_custom_err = 0;
+        let n: i32 = strlen(path);
+        if (n > 255) { n = 255; }
+        let i: i32 = 0;
+        while (i < n) {
+            store_u8(g_rt_custom_path + i, load_u8(path + i));
+            i = i + 1;
+        }
+        store_u8(g_rt_custom_path + n, 0);
+        return 1;
+    }
+    g_rt_custom_err = ui_sysfont_err();
+    g_rt_custom_active = 0;
+    store_u8(g_rt_custom_path, 0);
+    if (g_rt_prev_has == 1) {
+        let rr: i32 = ui_sysfont_load_face(g_rt_prev_path, -1);
+        if (rr == 1) {
+            g_rt_tt = 1;
+            return 0;
+        }
+    }
+    let n2: i32 = aui_rt_note_fallback();
+    return 0;
+}
+
+// Restore the face that was active before the first custom load
+// (the system font on the device). Answers 1 when a system font
+// is active afterwards, 0 when the app ends up in bitmap-fallback
+// mode (no snapshot: there never was a system font).
+fn aui_rt_restore_system_font() -> i32 {
+    if (g_rt_prev_has == 1) {
+        let r: i32 = ui_sysfont_load_face(g_rt_prev_path, -1);
+        if (r == 1) {
+            g_rt_tt = 1;
+            g_rt_custom_active = 0;
+            g_rt_custom_err = 0;
+            store_u8(g_rt_custom_path, 0);
+            return 1;
+        }
+        // The saved system font no longer loads: fall through to
+        // fallback mode rather than leaving a half-loaded face.
+        g_rt_custom_err = ui_sysfont_err();
+    }
+    let u: i32 = ui_sysfont_unload();
+    g_rt_tt = 0;
+    g_rt_custom_active = 0;
+    store_u8(g_rt_custom_path, 0);
+    g_rt_fallback_events = g_rt_fallback_events + 1;
+    g_rt_fallback_reason = 1;
+    return 0;
+}
+
+fn aui_rt_custom_active() -> i32 {
+    return g_rt_custom_active;
+}
+
+fn aui_rt_custom_err() -> i32 {
+    return g_rt_custom_err;
+}
+
+fn aui_rt_custom_load_ms() -> i32 {
+    return g_rt_custom_ms;
+}
+
+// Path of the active custom font, or 0 when no custom font is
+// active. The buffer is owned by the adapter; copy it out.
+fn aui_rt_custom_path() -> ptr {
+    if (g_rt_custom_active == 0) { return 0; }
+    return g_rt_custom_path;
+}
+
+// Path of the face restore goes back to, or 0 when no snapshot
+// exists (no system font was ever active).
+fn aui_rt_system_path() -> ptr {
+    if (g_rt_prev_has == 0) { return 0; }
+    return g_rt_prev_path;
+}
+
+// Weight of the active face: fvar wght when the font has one
+// (system CFF2: 400), else the family-name suffix (HYZhengYuan:
+// 300/400/500/700), else OS/2, else -1.
+fn aui_rt_font_weight() -> i32 {
+    let w: i32 = ui_sysfont_fvar_wght();
+    if (w >= 0) { return w; }
+    return ui_sysfont_name_weight();
+}
+
+// hmtx advance for cp in native px (48 px em), or -1 when the
+// font has no hmtx entry for it. Scans the sfnt directory for
+// the 'hmtx' table with the engine's own readers (the engine
+// parses hhea but does not retain the hmtx offset, so the scan
+// lives here, next to its only use). numOfLongHorMetrics comes
+// from hhea+34; glyphs past it reuse the last advance, per spec.
+fn aui_rt_hmtx_adv(cp: i32) -> i32 {
+    let gid: i32 = ui_tt_cmap(cp);
+    if (gid == 0) {
+        return -1;
+    } else {
+    }
+    let n: i32 = ui_tt_u16(g_tt_base + 4);
+    let hm: i32 = -1;
+    let i: i32 = 0;
+    while (i < n) {
+        let e: i32 = g_tt_base + 12 + i * 16;
+        if (ui_tt_tag(e, 104, 109, 116, 120) == 1) {
+            hm = ui_tt_u32(e + 8);
+            i = n;
+        } else {
+            i = i + 1;
+        }
+    }
+    if (hm < 0) {
+        return -1;
+    } else {
+    }
+    if (g_tt_off_hhea < 0) {
+        return -1;
+    } else {
+    }
+    let nh: i32 = ui_tt_u16(g_tt_off_hhea + 34);
+    if (nh <= 0) {
+        return -1;
+    } else {
+    }
+    // The hmtx directory entry is scanned here, not retained by
+    // the engine: a corrupt entry could point past the file, so
+    // the whole advance array must be inside it before reading.
+    if (ui_tt_inrange(hm, nh * 4) == 0) {
+        return -1;
+    } else {
+    }
+    let g: i32 = gid;
+    if (g >= nh) {
+        g = nh - 1;
+    } else {
+    }
+    let adv: i32 = ui_tt_u16(hm + g * 4);
+    if (g_tt_upm <= 0) {
+        return -1;
+    } else {
+    }
+    let px: i32 = adv * AUI_RT_PIXEL / g_tt_upm;
+    if (px < 1) {
+        px = 1;
+    } else {
+    }
+    if (px > 96) {
+        px = 96;
+    } else {
+    }
+    return px;
+}
+
+// Advance for cp in native px (scale 1). TrueType: hmtx, with an
+// em-proportional fallback when hmtx is absent. Fallback: ASCII
+// 24 (half em, the 8x8 cell upscaled x3), CJK 48 (full em).
+// A code point with no glyph anywhere still advances (wide 48,
+// narrow 24) so text never collapses onto itself; the miss is
+// counted by aui_rt_glyph, not here.
+fn aui_rt_advance(cp: i32) -> i32 {
+    let e: i32 = aui_rt_ensure();
+    // 先按 48 em 算基准 advance（与 v2.14 完全一致），再按当前
+    // cell 等比缩放；cell=48 时恒等。回退路径的 24/48 同样缩放。
+    let base: i32 = 0;
+    if (g_rt_tt == 1) {
+        if (ui_tt_has_glyph(cp) == 1) {
+            let a: i32 = aui_rt_hmtx_adv(cp);
+            if (a > 0) {
+                base = a;
+            } else {
+                if (ui_text_is_wide(cp) == 1) {
+                    base = AUI_RT_PIXEL;
+                } else {
+                    base = AUI_RT_FB_ASCII_W;
+                }
+            }
+        }
+    }
+    if (base <= 0) {
+        if (cp >= 32 && cp <= 126) {
+            base = AUI_RT_FB_ASCII_W;
+        } else if (ui_cjk_find(cp) >= 0) {
+            base = AUI_RT_PIXEL;
+        } else if (ui_text_is_wide(cp) == 1) {
+            base = AUI_RT_PIXEL;
+        } else {
+            base = AUI_RT_FB_ASCII_W;
+        }
+    }
+    return base * g_rt_cell / AUI_RT_PIXEL;
+}
+
+// Expand one 8x8 ASCII row set into the 24x24 scratch (3x nearest
+// neighbour, 255 = ink). Only called for 32 <= cp <= 126.
+fn aui_rt_expand_ascii(cp: i32) -> i32 {
+    let z: i32 = memset(g_rt_bm_ascii, 0, 576);
+    let row: i32 = 0;
+    while (row < 8) {
+        let byte: i32 = ui_font_row(cp, row);
+        let col: i32 = 0;
+        while (col < 8) {
+            if (ui_glyph_bit(byte, col) == 1) {
+                let dy: i32 = 0;
+                while (dy < 3) {
+                    let dx: i32 = 0;
+                    while (dx < 3) {
+                        let s: i32 = store_u8(g_rt_bm_ascii + (row * 3 + dy) * 24 + col * 3 + dx, 255);
+                        dx = dx + 1;
+                    }
+                    dy = dy + 1;
+                }
+            } else {
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    return 0;
+}
+
+// Expand one 16x16 hand-drawn CJK glyph into the 48x48 scratch
+// (3x nearest neighbour, 255 = ink). Only called when
+// ui_cjk_find(cp) >= 0.
+fn aui_rt_expand_cjk(cp: i32) -> i32 {
+    let z: i32 = memset(g_rt_bm_cjk, 0, 2304);
+    let row: i32 = 0;
+    while (row < 16) {
+        let bits: i32 = ui_cjk_row(cp, row);
+        let col: i32 = 0;
+        while (col < 16) {
+            if (ui_glyph_bit16(bits, col) == 1) {
+                let dy: i32 = 0;
+                while (dy < 3) {
+                    let dx: i32 = 0;
+                    while (dx < 3) {
+                        let s: i32 = store_u8(g_rt_bm_cjk + (row * 3 + dy) * 48 + col * 3 + dx, 255);
+                        dx = dx + 1;
+                    }
+                    dy = dy + 1;
+                }
+            } else {
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    return 0;
+}
+
+// Rasterize / look up cp and stage the result behind the
+// aui_rt_bm/bw/bh/xo/yo/src getters. Answers 1 when a glyph was
+// staged, 0 when cp has no glyph anywhere (the caller advances
+// by aui_rt_advance and draws nothing; the miss is counted
+// here, once per draw call). Source order: system font first,
+// then the hand-drawn ASCII/CJK fallback. The TrueType bitmap
+// lives in the engine's 32-entry cache and stays valid until
+// the next rasterize call, so callers must blit before asking
+// for the next glyph (draw_text_run does exactly that).
+fn aui_rt_glyph(cp: i32) -> i32 {
+    let e: i32 = aui_rt_ensure();
+    if (g_rt_tt == 1) {
+        if (ui_tt_has_glyph(cp) == 1) {
+            let slot: i32 = ui_tt_rasterize(cp, g_rt_cell, g_rt_cell);
+            if (slot >= 0) {
+                g_rt_bm = ui_tt_last_bitmap();
+                g_rt_bw = ui_tt_last_bmp_w();
+                g_rt_bh = ui_tt_last_bmp_h();
+                g_rt_xo = 0;
+                g_rt_yo = 0;
+                g_rt_src = AUI_RT_SRC_TT;
+                return 1;
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    if (cp >= 32) {
+        if (cp <= 126) {
+            let x: i32 = aui_rt_expand_ascii(cp);
+            g_rt_bm = g_rt_bm_ascii;
+            g_rt_bw = AUI_RT_FB_ASCII_W;
+            g_rt_bh = AUI_RT_FB_ASCII_W;
+            g_rt_xo = 0;
+            g_rt_yo = AUI_RT_FB_ASCII_YOFF;
+            g_rt_src = AUI_RT_SRC_ASCII;
+            return 1;
+        } else {
+        }
+    } else {
+    }
+    if (ui_cjk_find(cp) >= 0) {
+        let y: i32 = aui_rt_expand_cjk(cp);
+        g_rt_bm = g_rt_bm_cjk;
+        g_rt_bw = AUI_RT_PIXEL;
+        g_rt_bh = AUI_RT_PIXEL;
+        g_rt_xo = 0;
+        g_rt_yo = 0;
+        g_rt_src = AUI_RT_SRC_CJK;
+        return 1;
+    } else {
+    }
+    g_rt_missing = g_rt_missing + 1;
+    return 0;
+}

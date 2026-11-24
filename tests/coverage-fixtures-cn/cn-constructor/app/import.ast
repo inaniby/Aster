@@ -1,0 +1,5 @@
+// aster:language=zh
+@导入("fixture.model").别名("model")
+方法 启动方法(): 整数
+返回 model.Token(41).read() - 41 + model.Ready().read() - 41
+结束 方法

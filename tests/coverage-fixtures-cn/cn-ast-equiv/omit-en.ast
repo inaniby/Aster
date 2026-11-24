@@ -1,0 +1,5 @@
+// aster:language=en
+fn log() {
+return;
+}
+fn main(): i32 { return 0; }

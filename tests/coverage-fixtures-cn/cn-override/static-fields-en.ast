@@ -1,0 +1,26 @@
+// aster:language=en
+class Counter {
+@static
+let value: i32 = 4;
+@static
+let baseline: i32;
+@static
+let values: i32[2] = [7, 8];
+@static
+fn increment(): i32 {
+Counter.value = Counter.value + 1;
+return Counter.value;
+}
+@static
+fn incrementFirst(): i32 {
+Counter.values[0] = Counter.values[0] + 1;
+return Counter.values[0];
+}
+fn read(): i32 { return Counter.value; }
+}
+class DerivedCounter: Counter {}
+fn main(): i32 {
+let first: Counter = Counter();
+let second: Counter = Counter();
+return Counter.increment() + DerivedCounter.value + first.read() + second.read() + Counter.baseline + Counter.incrementFirst() + DerivedCounter.values[0] + Counter.values[1] - 24;
+}

@@ -1,0 +1,16 @@
+// aster:language=en
+struct Inner { value: i32, label: string }
+struct Record { nested: Inner, ready: bool, single: f32, precise: f64, tail: string, pointer: ptr }
+fn main(): i32 {
+let item: Record;
+if (item.nested.label == null) { return 1; }
+if (item.tail == null) { return 2; }
+if (item.nested.value != 0) { return 3; }
+if (item.ready) { return 4; }
+if (item.single != f32(0.0)) { return 5; }
+if (item.precise != 0.0) { return 6; }
+if (item.pointer != null) { return 7; }
+item.nested.value = 27;
+item.tail = "ready";
+return item.nested.value;
+}

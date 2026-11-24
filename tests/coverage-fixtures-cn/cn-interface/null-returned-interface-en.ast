@@ -1,0 +1,9 @@
+// aster:language=en
+interface class Required {
+fn run(): i32;
+}
+class Available: Required {
+fn run(): i32 { return 1; }
+}
+fn empty(): Required { return null; }
+fn main(): i32 { return empty().run(); }

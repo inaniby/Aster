@@ -1,0 +1,2 @@
+// aster:language=xx
+fn main(): i32 { return 0; }

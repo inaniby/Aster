@@ -1,0 +1,23 @@
+@导入("demo.interface_base").别名("基接口")
+@导入("demo.interface_child").别名("子接口")
+变量 传递次数: 整数 = 0
+方法 使用基接口(值: 基接口.ReadableContract): 整数
+返回 值.read()
+结束 方法
+方法 使用根接口(值: 基接口.RootContract): 整数
+返回 值.root()
+结束 方法
+方法 传递子接口(值: 子接口.AdvancedContract): 子接口.AdvancedContract
+传递次数 = 传递次数 + 1
+返回 值
+结束 方法
+方法 使用子接口(值: 子接口.AdvancedContract): 整数
+返回 使用基接口(传递子接口(值)) + 值.extra()
+结束 方法
+方法 使用返回根接口(值: 子接口.AdvancedContract): 整数
+返回 使用根接口(值.childView())
+结束 方法
+方法 启动方法(): 整数
+变量 值: 子接口.ContractImplementation = 子接口.ContractImplementation()
+返回 使用基接口(值) + 使用根接口(传递子接口(值)) + 使用根接口(值.childView()) + 使用子接口(值) + 使用返回根接口(值) + 传递次数 - 198
+结束 方法

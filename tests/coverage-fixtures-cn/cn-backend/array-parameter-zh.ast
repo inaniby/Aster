@@ -1,0 +1,23 @@
+// aster:language=zh
+变量 shared: 整数[3] = [1, 2, 3]
+方法 update(values: 整数[3]): 整数
+values[1] = values[1] + 5
+返回 values[0] + values[1] + values[2]
+结束 方法
+方法 启动方法(): 整数
+变量 values: 整数[3] = [10, 20, 30]
+变量 total: 整数 = update(values)
+如果 total != 65
+返回 1
+结束 如果
+如果 values[1] != 25
+返回 2
+结束 如果
+如果 update(shared) != 11
+返回 3
+结束 如果
+如果 shared[1] != 7
+返回 4
+结束 如果
+返回 0
+结束 方法

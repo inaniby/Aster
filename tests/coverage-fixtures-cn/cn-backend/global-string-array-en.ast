@@ -1,0 +1,10 @@
+// aster:language=en
+let labels: string[2] = ["first", "second"];
+let empty: string[2];
+fn main(): i32 {
+labels[1] = "changed";
+if (labels[0] == "first" && labels[1] == "changed" && empty[0] == "") {
+return 7;
+}
+return 0;
+}

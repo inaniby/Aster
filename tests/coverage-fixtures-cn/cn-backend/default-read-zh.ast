@@ -1,0 +1,23 @@
+// aster:language=zh
+结构 Defaults
+count: 整数
+label: 字符串
+items: 整数[2]
+结束 结构
+方法 启动方法(): 整数
+变量 scalar: 整数
+变量 value: Defaults
+如果 scalar != 0
+返回 1
+结束 如果
+如果 value.count != 0
+返回 2
+结束 如果
+如果 value.label == 空
+返回 3
+结束 如果
+如果 value.items[0] != 0
+返回 4
+结束 如果
+返回 0
+结束 方法

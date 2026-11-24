@@ -1,0 +1,3 @@
+// aster:language=en
+@protected
+fn main(): i32 { return 0; }

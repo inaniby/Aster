@@ -1,0 +1,64 @@
+// embeds.ast -- AsterUI: single owner of every @embed data symbol.
+//
+// The compiler numbers @embed blobs per file starting at 0, so two
+// files that each use @embed both emit __aster_embed_0 and the link
+// fails with a duplicate global symbol (found when strings.ast added
+// its two @embeds next to the font's one in render/text.ast). The
+// rule is therefore: every @embed / @embed_len in the framework
+// lives in THIS file, and only here. Other modules call the
+// accessors below; the data symbols exist only in embeds.o.
+//
+// The @embed calls are inside functions, never top-level global
+// initializers (M1 finding 2: a top-level `let g = @embed(...)`
+// fails the link because run-time global initializers must live in
+// the object holding _start). The font keeps its lazy global in
+// render/text.ast; these accessors just return the blob pointer.
+
+include "../src/aster_std.ast";
+
+const g_embed_font_len: i32 = @embed_len("font8x8.bin");
+const g_embed_str_en_len: i32 = @embed_len("strings_en.txt");
+const g_embed_str_zh_len: i32 = @embed_len("strings_zh.txt");
+const g_embed_font_cjk16_len: i32 = @embed_len("font_cjk16.auf");
+
+fn ui_embed_font() -> ptr {
+    return @embed("font8x8.bin");
+}
+
+// M3.2: self-authored 16x16 CJK atlas (assets/cjk16.txt -> generated
+// font_cjk16.auf). Hand-drawn bitmaps, no third-party font IP, no
+// licence file. See asterui/M3-NOTES.md.
+fn ui_embed_font_cjk16() -> ptr {
+    return @embed("font_cjk16.auf");
+}
+
+fn ui_embed_strings_en() -> ptr {
+    return @embed("strings_en.txt");
+}
+
+fn ui_embed_strings_zh() -> ptr {
+    return @embed("strings_zh.txt");
+}
+
+// W2 (whole-package adoption): the reference ui_hello example's icon.
+// The framework's single-@embed-owner rule (see the header comment)
+// forbids a second file from using @embed -- the compiler numbers
+// blobs per file (__aster_embed_0), so ui_hello.o and embeds.o would
+// collide at link-so. The icon therefore lives here, with the other
+// blobs; ui_hello calls these accessors. PNG/bin are not fonts.
+// The durable fix for multi-file @embed is compiler-side (see
+// ADOPTION-NOTES.md, compiler item C-2); this follows the existing
+// rule for the one example the APK proof needs.
+const g_embed_icon48_png_len: i32 = @embed_len("../examples/assets/icon48.png");
+
+fn ui_embed_icon48_png() -> ptr {
+    return @embed("../examples/assets/icon48.png");
+}
+
+fn ui_embed_icon48_png_len() -> i32 {
+    return g_embed_icon48_png_len;
+}
+
+fn ui_embed_icon48_raw() -> ptr {
+    return @embed("../examples/assets/icon48.bin");
+}

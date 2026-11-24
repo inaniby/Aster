@@ -1,0 +1,14 @@
+// aster:language=en
+fn main(): i32 {
+let value: i32 = 20;
+let result: i32 = 0;
+switch (value) {
+case 18
+result = 1;
+case 20, 21
+result = 2;
+else
+result = 3;
+}
+return result;
+}

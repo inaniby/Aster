@@ -1,0 +1,6 @@
+// aster:language=en
+fn main(): i32 {
+let items: i32[3] = [4, 5, 6];
+items[1] = items[0] + 2;
+return items[1];
+}

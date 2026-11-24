@@ -1,0 +1,8 @@
+结构 Pair
+left: 整数
+right: 整数
+结束 结构
+方法 启动方法(): 整数
+变量 pair: Pair = Pair { 10, 20 }
+返回 pair.left + pair.right
+结束 方法

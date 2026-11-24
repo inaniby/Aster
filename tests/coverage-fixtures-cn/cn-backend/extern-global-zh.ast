@@ -1,0 +1,6 @@
+// aster:language=zh
+外部("native_counter") 变量 计数: 整数
+方法 启动方法(): 整数
+计数 = 计数 + 2
+返回 计数
+结束 方法

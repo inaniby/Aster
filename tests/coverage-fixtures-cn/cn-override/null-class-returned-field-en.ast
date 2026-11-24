@@ -1,0 +1,4 @@
+// aster:language=en
+class Box { let value: i32; }
+fn empty(): Box { return null; }
+fn main(): i32 { return empty().value; }

@@ -1,0 +1,6 @@
+// aster:language=zh
+@导入("fixture.model").别名("model")
+方法 启动方法(): 整数
+变量 值: model.HiddenToken = model.HiddenToken(1)
+返回 0
+结束 方法

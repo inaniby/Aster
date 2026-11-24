@@ -1,0 +1,42 @@
+// headless.ast — Gallery template headless check (English).
+//
+// Renders every tab with aui_headless_render and asserts the counter
+// survives a tab switch. Exit 0 = pass; 1 = no draw commands;
+// 2 = Counter tab did not render; 3 = count lost across tabs;
+// 4 = Nav tab did not render; 5 = Input tab did not render.
+//
+// This file is NOT listed in aster.proj (an apk project cannot run
+// `aster test`); build.sh compiles + links it by hand against the
+// framework objects. It uses only the bilingual frontend.
+extern fn aui_rt_set_font_path(path: ptr) -> i32;
+extern fn aui_set_font(font: ptr, scale: i32) -> i32;
+extern fn aui_headless_render(w: i32, h: i32, out: ptr) -> i32;
+extern fn gallery_headless_init() -> i32;
+extern fn gallery_set_tab(t: i32) -> i32;
+extern fn gallery_tab() -> i32;
+extern fn gallery_count() -> i32;
+extern fn gallery_add_one() -> i32;
+let W: i32 = 320;
+let H: i32 = 240;
+let g_buf: u8[307200] = 0;
+let g_font: ptr = 0;
+fn main() -> i32 {
+    let font_ok: i32 = aui_rt_set_font_path(ptr("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"));
+    if (font_ok != 1) { return 90; }
+    aui_set_font(g_font, 1);
+    gallery_headless_init();
+    let n0: i32 = aui_headless_render(W, H, g_buf);
+    if (n0 <= 0) { return 1; }
+    gallery_add_one();
+    gallery_set_tab(1);
+    let n1: i32 = aui_headless_render(W, H, g_buf);
+    if (n1 <= 0) { return 5; }
+    gallery_set_tab(2);
+    let n2: i32 = aui_headless_render(W, H, g_buf);
+    if (n2 <= 0) { return 4; }
+    gallery_set_tab(0);
+    let n3: i32 = aui_headless_render(W, H, g_buf);
+    if (n3 <= 0) { return 2; }
+    if (gallery_count() != 1) { return 3; }
+    return 0;
+}

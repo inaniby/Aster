@@ -1,0 +1,8 @@
+// aster:language=en
+fn apply(callback: closure(i32, string): i32): closure(): void {
+return null;
+}
+fn main(): i32 {
+let callback: closure(closure(i32): i32, ptr): void;
+return 0;
+}

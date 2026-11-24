@@ -1,0 +1,8 @@
+结构 Table
+items: 整数[2]
+结束 结构
+方法 启动方法(): 整数
+变量 table: Table
+table.items[1] = 8
+返回 table.items[1]
+结束 方法

@@ -1,0 +1,81 @@
+// aster:language=en
+class Base {
+let value: i32;
+@constructor
+fn constructor(value: i32) {
+this.value = value;
+}
+}
+class Derived: Base {
+let extra: i32;
+@constructor
+fn initialize(value: i32): void {
+super(value + 38);
+this.extra = value;
+}
+fn total(): i32 { return this.value + this.extra; }
+}
+class FieldBase {
+let score: i32 = 10;
+@constructor
+fn constructor() { this.score = this.score + 1; }
+}
+class FieldChild: FieldBase {
+let copied: i32 = this.score + 2;
+let values: i32[2] = [3, 4];
+@constructor
+fn constructor() { this.copied = this.copied + 1; }
+fn total(): i32 { return this.score + this.copied + this.values[0] + this.values[1]; }
+}
+class ConstructorSource {
+let value: i32;
+@constructor
+fn constructor(input: i32) {
+this.value = input;
+}
+fn get(): i32 { return this.value; }
+}
+class Wrapped: Base {
+@constructor
+fn constructor() {
+super(ConstructorSource(5).get());
+}
+fn get(): i32 { return this.value; }
+}
+class Middle: Base {
+let middle: i32;
+@constructor
+fn constructor(value: i32): void {
+super(value + 1);
+this.middle = value;
+}
+}
+class Leaf: Middle {
+let leaf: i32;
+@constructor
+fn constructor(value: i32): void {
+super(value * 2);
+this.leaf = value;
+}
+fn total(): i32 { return this.value + this.middle + this.leaf; }
+}
+class Legacy {
+let value: i32;
+fn set(value: i32) {
+this.value = value;
+}
+fn get(): i32 { return this.value; }
+}
+let calls: i32 = 0;
+fn next(): i32 { calls = calls + 1; return 2; }
+fn noValue() { calls = calls + 0; }
+fn main(): i32 {
+let object: Derived = Derived(next());
+let wrapped: Wrapped = Wrapped();
+let deep: Leaf = Leaf(3);
+let fields: FieldChild = FieldChild();
+let legacy: Legacy = Legacy();
+legacy.set(0);
+noValue();
+return object.total() - 42 + wrapped.get() - 5 + deep.total() - 16 + fields.total() - 32 + calls - 1 + legacy.get();
+}

@@ -1,0 +1,41 @@
+// aster:language=en
+struct Record { id: i32, score: i64, label: string, items: i32[2] }
+struct Holder { item: Record }
+fn main(): i32 {
+let record: Record;
+record.id = 11;
+record.score = 29;
+record.label = "value";
+let seen: i32 = 0;
+enumloop field in record {
+if (field.name == null) { return 1; }
+if (field.value == null) { return 2; }
+if (field.type == 1) {
+if (field.value == &record.id) { seen = seen + 1; }
+if (field.value == &record.items[0]) { seen = seen + 10; }
+continue;
+}
+if (field.type == 2) { if (field.value == &record.score) { seen = seen + 100; } }
+if (field.type == 3) { if (field.value == &record.label) { seen = seen + 1000; } }
+}
+if (seen != 1111) { return 3; }
+let holder: Holder;
+holder.item.id = 23;
+let memberSeen: i32 = 0;
+enumloop entry in holder.item { if (entry.value == &holder.item.id) { memberSeen = memberSeen + 1; } }
+if (memberSeen != 1) { return 4; }
+let records: Record[2];
+records[0].id = 31;
+records[1].id = 47;
+let selected: i32 = 0;
+let arraySeen: i32 = 0;
+enumloop entry in records[selected] {
+selected = 1;
+if (entry.value == &records[0].id) { arraySeen = arraySeen + 1; }
+if (entry.value == &records[1].id) { arraySeen = arraySeen + 100; }
+}
+if (arraySeen != 1) { return 5; }
+let visits: i32 = 0;
+enumloop item in record { visits = visits + 1; break; }
+return visits - 1;
+}

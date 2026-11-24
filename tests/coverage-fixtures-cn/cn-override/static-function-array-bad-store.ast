@@ -1,0 +1,11 @@
+// aster:language=en
+fn addTwo(value: i32): i32 { return value + 2; }
+fn wrong(): i32 { return 0; }
+class StaticCallback {
+@static
+let callbacks: fn(i32): i32[2] = [addTwo, addTwo];
+}
+fn main(): i32 {
+StaticCallback.callbacks[0] = wrong;
+return 0;
+}

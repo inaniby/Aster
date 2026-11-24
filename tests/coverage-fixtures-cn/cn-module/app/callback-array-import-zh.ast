@@ -1,0 +1,7 @@
+@导入("demo.oop").别名("oop")
+方法 启动方法(): 整数
+变量 盒: oop.CallbackStruct
+盒.callbacks[1] = oop.addTwo
+变量 对象: oop.CallbackBox = oop.CallbackBox()
+返回 盒.callbacks[1](40) + 对象.instanceCallbacks[0](40) - 84
+结束 方法

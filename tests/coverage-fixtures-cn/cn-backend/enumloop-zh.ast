@@ -1,0 +1,81 @@
+// aster:language=zh
+结构 Record
+id: 整数
+score: 长整数
+label: 字符串
+items: 整数[2]
+结束 结构
+结构 Holder
+item: Record
+结束 结构
+方法 启动方法(): 整数
+变量 record: Record
+record.id = 11
+record.score = 29
+record.label = "value"
+变量 seen: 整数 = 0
+枚举循环 (field -> record)
+如果 field.名称 == 空
+返回 1
+结束 如果
+如果 field.值 == 空
+返回 2
+结束 如果
+如果 field.类型 == 1
+如果 field.值 == &record.id
+seen = seen + 1
+结束 如果
+如果 field.值 == &record.items[0]
+seen = seen + 10
+结束 如果
+跳过循环
+结束 如果
+如果 field.类型 == 2
+如果 field.值 == &record.score
+seen = seen + 100
+结束 如果
+结束 如果
+如果 field.类型 == 3
+如果 field.值 == &record.label
+seen = seen + 1000
+结束 如果
+结束 如果
+结束 枚举循环
+如果 seen != 1111
+返回 3
+结束 如果
+变量 holder: Holder
+holder.item.id = 23
+变量 memberSeen: 整数 = 0
+枚举循环 (entry -> holder.item)
+如果 entry.值 == &holder.item.id
+memberSeen = memberSeen + 1
+结束 如果
+结束 枚举循环
+如果 memberSeen != 1
+返回 4
+结束 如果
+变量 records: Record[2]
+records[0].id = 31
+records[1].id = 47
+变量 selected: 整数 = 0
+变量 arraySeen: 整数 = 0
+枚举循环 (entry -> records[selected])
+selected = 1
+如果 entry.值 == &records[0].id
+arraySeen = arraySeen + 1
+结束 如果
+如果 entry.值 == &records[1].id
+arraySeen = arraySeen + 100
+结束 如果
+结束 枚举循环
+如果 arraySeen != 1
+返回 5
+结束 如果
+变量 visits: 整数 = 0
+枚举循环 (item -> record)
+visits = visits + 1
+退出循环
+结束 枚举循环
+返回 visits - 1
+结束 方法

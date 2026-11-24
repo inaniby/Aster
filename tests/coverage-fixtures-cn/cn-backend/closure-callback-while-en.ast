@@ -1,0 +1,17 @@
+// aster:language=en
+let visits: i32 = 0;
+fn register(callback: fn(ptr): i32, user: ptr): i32 {
+    visits = visits + 1;
+    return visits;
+}
+fn main(): i32 {
+    let callback = fn [] (user: ptr): i32 {
+        return 0;
+    };
+    let body_visits: i32 = 0;
+    while (register(callback, null) < 3) {
+        body_visits = body_visits + 1;
+        continue;
+    }
+    return visits + body_visits;
+}

@@ -1,0 +1,11 @@
+// aster:language=en
+struct Defaults { count: i32, label: string, items: i32[2] }
+fn main(): i32 {
+let scalar: i32;
+let value: Defaults;
+if (scalar != 0) { return 1; }
+if (value.count != 0) { return 2; }
+if (value.label == null) { return 3; }
+if (value.items[0] != 0) { return 4; }
+return 0;
+}

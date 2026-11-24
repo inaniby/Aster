@@ -1,0 +1,32 @@
+// aster:language=en
+let saved0: fn(ptr): i32 = null;
+let saved1: fn(ptr): i32 = null;
+let user0: ptr = null;
+let user1: ptr = null;
+fn register(callback: fn(ptr): i32, user: ptr, slot: i32): i32 {
+    if (slot == 0) {
+        saved0 = callback;
+        user0 = user;
+    } else {
+        saved1 = callback;
+        user1 = user;
+    }
+    return 0;
+}
+fn install(offset: i32, slot: i32, user: ptr): i32 {
+    let callback = fn [offset] (user: ptr): i32 {
+        if (user == null) { return offset; }
+        return offset + 1;
+    };
+    register(callback, user, slot);
+    return 0;
+}
+fn invoke0(): i32 { return saved0(user0); }
+fn invoke1(): i32 { return saved1(user1); }
+fn main(): i32 {
+    let marker0: i32 = 0;
+    let marker1: i32 = 0;
+    install(41, 0, &marker0);
+    install(42, 1, &marker1);
+    return invoke0() + invoke1();
+}

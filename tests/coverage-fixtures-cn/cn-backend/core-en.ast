@@ -1,0 +1,19 @@
+fn add(a: i32, b: i32): i32 {
+return a + b;
+}
+fn main(): i32 {
+let sum: i32 = 0;
+let selected: i32 = 0;
+for (i = 1, 3) {
+sum = sum + i;
+}
+switch (sum) {
+case 6
+selected = 2;
+case 7, 8
+selected = 3;
+else
+selected = 4;
+}
+return add(20, 22) + sum + selected;
+}

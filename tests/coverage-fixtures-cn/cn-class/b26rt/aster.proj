@@ -1,0 +1,6 @@
+kind exe
+[language]
+default = "en"
+src/std.ast
+src/widget.ast
+src/main.ast

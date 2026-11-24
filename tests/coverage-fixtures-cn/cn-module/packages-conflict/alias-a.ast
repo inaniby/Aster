@@ -1,0 +1,4 @@
+包名 demo.alias_a = shared.alias
+方法 value(): 整数
+返回 1
+结束 方法

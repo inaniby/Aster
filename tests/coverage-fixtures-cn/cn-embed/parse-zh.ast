@@ -1,0 +1,8 @@
+// aster:language=zh
+常量 g_data_len: 整数 = @embed_len("data.bin")
+方法 data_ptr(): 指针
+    返回 @embed("data.bin", 16)
+结束 方法
+方法 启动方法(): 整数
+    返回 g_data_len
+结束 方法

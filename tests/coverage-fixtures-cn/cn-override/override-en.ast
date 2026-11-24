@@ -1,0 +1,33 @@
+// aster:language=en
+class Base {
+let observed: i32;
+@constructor
+fn initialize(): void { this.observed = this.value(); }
+fn value(): i32 { return 10; }
+}
+class Child: Base {
+@override
+fn value(): i32 { return 20; }
+fn parentValue(): i32 { return super.value(); }
+}
+class Empty {}
+interface class Value {
+fn get(): i32;
+}
+class InterfaceBase: Value {
+fn get(): i32 { return 30; }
+}
+class InterfaceChild: InterfaceBase {
+@override
+fn get(): i32 { return 40; }
+}
+fn read(object: Base): i32 { return object.value(); }
+fn readInterface(object: Value): i32 { return object.get(); }
+fn readBaseInterface(object: InterfaceBase): i32 { return readInterface(object); }
+let makeCount: i32 = 0;
+fn make(): Child { makeCount = makeCount + 1; return Child(); }
+fn main(): i32 {
+let object: Child = Child();
+let emptyObject: Empty = Empty();
+return read(object) + object.parentValue() + object.value() + object.observed + make().value() + makeCount + readInterface(InterfaceChild()) + readBaseInterface(InterfaceChild());
+}

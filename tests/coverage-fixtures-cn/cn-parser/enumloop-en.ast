@@ -1,0 +1,7 @@
+// aster:language=en
+fn main(): i32 {
+enumloop 条目 in 用户甲 {
+return 0;
+}
+return 0;
+}

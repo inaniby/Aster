@@ -1,0 +1,9 @@
+fn narrow8(value: i8) -> i8 { return value; }
+fn widen16(value: i16) -> i64 { return value; }
+fn main() -> i32 {
+    let byte: i8 = i8(255);
+    let short: i16 = i16(65534);
+    if (narrow8(byte) != -1) { return 1; }
+    if (widen16(short) != -2) { return 2; }
+    return 0;
+}

@@ -1,0 +1,13 @@
+方法 启动方法(): 整数
+变量 value: 整数 = 20
+变量 result: 整数 = 0
+假如 value
+是 18
+result = 1
+是 20, 21
+result = 2
+否则
+result = 3
+结束 假如
+返回 result
+结束 方法

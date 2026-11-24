@@ -1,0 +1,20 @@
+// aster:language=zh
+@导入("demo.arrays").别名("数组")
+方法 启动方法(): 整数
+变量 values: 整数[2] = [4, 6]
+变量 first: 整数 = 数组.bump(values)
+如果 first != 13
+返回 1
+结束 如果
+如果 values[0] != 7
+返回 2
+结束 如果
+变量 second: 整数 = 数组.ArrayOps().bump(values)
+如果 second != 17
+返回 3
+结束 如果
+如果 values[1] != 10
+返回 4
+结束 如果
+返回 0
+结束 方法

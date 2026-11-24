@@ -1,0 +1,3 @@
+// aster:language=en
+struct Pair { x: i32, y: i32, }
+fn main(): i32 { return sizeof(i32) + sizeof(Pair) + sizeof(u8); }

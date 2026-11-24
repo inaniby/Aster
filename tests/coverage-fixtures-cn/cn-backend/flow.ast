@@ -1,0 +1,25 @@
+// aster:language=zh
+方法 启动方法(): 整数
+变量 total: 整数 = 0
+计次循环 (up = 1, 5, 2)
+total = total + up
+结束 计次循环
+计次循环 (down = 5, 1, -2)
+total = total + down
+结束 计次循环
+计次循环 (0, 1)
+total = total + 100
+结束 计次循环
+计次循环 (upper = 2147483647, 2147483647)
+total = total + 1
+结束 计次循环
+计次循环 (lower = -2147483648, -2147483648, -1)
+total = total + 1
+结束 计次循环
+假如 total
+是 220, 221
+返回 total
+否则
+返回 99
+结束 假如
+结束 方法

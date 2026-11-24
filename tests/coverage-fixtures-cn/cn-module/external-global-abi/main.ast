@@ -1,0 +1,6 @@
+// aster:language=zh
+@导入("external.counter").别名("计数")
+方法 启动方法(): 整数
+计数.native_values[1] = 计数.native_values[0] + 1
+返回 计数.native_callback(计数.native_counter) + 计数.native_values[1]
+结束 方法

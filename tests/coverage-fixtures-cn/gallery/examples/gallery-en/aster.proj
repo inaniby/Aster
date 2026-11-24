@@ -1,0 +1,21 @@
+# aster.proj — AsterUI Gallery APP (English).
+# Gallery app: Counter / Input / Nav tabs. Build with ./build.sh.
+kind apk
+package com.example.asterui.gallery
+label AsterUI Gallery
+version-code 1
+version-name 0.1-cn
+target-sdk 35
+page-size 16384
+[language]
+default = "en"
+../../src/aui_impl.ast
+../../src/font_runtime.ast
+../../src/render/truetype.ast
+../../src/render/text.ast
+../../assets/embeds.ast
+../../src/aster_std.ast
+src/app.ast
+src/page_counter.ast
+src/page_input.ast
+src/page_nav.ast

@@ -1,0 +1,4 @@
+类 FieldState
+变量 first: 整数 = 4
+变量 second: 整数 = 本对象.first + 2
+结束 类

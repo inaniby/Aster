@@ -1,0 +1,9 @@
+枚举 Color
+Red
+Green = 4
+Blue = Green + 3
+结束 枚举
+方法 启动方法(): 整数
+变量 selected: Color = Blue
+返回 selected
+结束 方法

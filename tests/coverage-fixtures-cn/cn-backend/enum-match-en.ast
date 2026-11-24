@@ -1,0 +1,31 @@
+// aster:language=en
+enum Color { Green = 4, Blue = Green + 3, Red = -2 }
+struct Box { color: Color, colors: Color[2] }
+fn main(): i32 {
+let total: i32 = 0;
+let color: Color;
+let box: Box;
+let selected: Color = Blue;
+let colors: Color[2];
+switch (color) {
+case Green
+total = total + 1;
+}
+switch (colors[1]) {
+case Green
+total = total + 1;
+}
+switch (box.color) {
+case Green
+total = total + 1;
+}
+switch (box.colors[1]) {
+case Green
+total = total + 1;
+}
+switch (selected) {
+case Blue
+total = total + 1;
+}
+return total;
+}

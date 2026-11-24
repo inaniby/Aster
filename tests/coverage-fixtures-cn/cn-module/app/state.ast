@@ -1,0 +1,4 @@
+@导入("demo.state").别名("state")
+方法 启动方法(): 整数
+返回 state.增加() + state.count
+结束 方法

@@ -1,0 +1,5 @@
+@导入("demo.oop").别名("oop")
+方法 启动方法(): 整数
+oop.StaticPoint.points[1].x = 9
+返回 oop.Item.double(oop.Color.Blue) + oop.Item().value() + oop.Derived().from_base() + oop.Item.increment() + oop.Item.count + oop.ChildItem.readCount() + oop.Item.incrementFirst() + oop.ChildItem.readSecond() + oop.Item.values[0] + oop.CallbackBox.run(40) + oop.CallbackBox.runArray(40) + oop.CallbackChild.run(40) + oop.CallbackChild.readRestricted(40) + oop.CallbackBox().instanceCallback(40) + oop.Item().回调(40) + oop.StaticPoint.adjust() + oop.StaticPoint.origin.x + oop.StaticPoint.origin.y + oop.StaticPoint.zero.x + oop.StaticPoint.zero.y + oop.StaticPoint.points[1].x + oop.StaticPoint.points[1].y + oop.StaticPoint.zeroPoints[0].x + oop.StaticPoint.zeroPoints[0].y + oop.CallbackBase().readInherited(40) + oop.CallbackDerived().readInheritedFromChild(40) - 219
+结束 方法

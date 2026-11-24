@@ -1,0 +1,8 @@
+结构 Point
+x: 整数
+y: 整数
+结束 结构
+方法 启动方法(): 整数
+变量 points: Point[2] = [Point { 1, 2 }, Point { 3, 4 }]
+返回 points[1].y
+结束 方法

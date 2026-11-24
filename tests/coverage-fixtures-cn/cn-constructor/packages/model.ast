@@ -1,0 +1,19 @@
+// aster:language=en
+package fixture.model;
+let initialValue: i32 = 41;
+class Token {
+let value: i32;
+@constructor
+fn constructor(value: i32): void { this.value = value; }
+fn read(): i32 { return this.value; }
+}
+class Ready {
+let value: i32 = initialValue;
+fn read(): i32 { return this.value; }
+}
+class HiddenToken {
+let value: i32;
+@private
+@constructor
+fn constructor(value: i32): void { this.value = value; }
+}

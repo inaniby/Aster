@@ -1,0 +1,14 @@
+// aster:language=en
+class ArrayOps {
+@static
+fn update(values: i32[2]): i32 {
+values[1] = values[1] + 10;
+return values[0] + values[1];
+}
+}
+fn main(): i32 {
+let values: i32[2] = [4, 6];
+if (ArrayOps.update(values) != 20) { return 1; }
+if (values[1] != 16) { return 2; }
+return 0;
+}

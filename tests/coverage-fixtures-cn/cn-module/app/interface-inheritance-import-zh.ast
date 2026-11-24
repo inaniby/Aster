@@ -1,0 +1,27 @@
+@导入("demo.oop").别名("oop")
+变量 传递次数: 整数 = 0
+方法 使用根接口(值: oop.RootValue): 整数
+返回 值.root()
+结束 方法
+方法 使用基接口(值: oop.ReadableValue): 整数
+返回 值.read()
+结束 方法
+方法 传递子接口(值: oop.AdvancedValue): oop.AdvancedValue
+传递次数 = 传递次数 + 1
+返回 值
+结束 方法
+方法 使用子接口(值: oop.AdvancedValue): 整数
+返回 使用基接口(传递子接口(值)) + 使用根接口(传递子接口(值)) + 值.extra()
+结束 方法
+方法 使用返回子接口(值: oop.AdvancedValue): 整数
+返回 使用基接口(值.asAdvanced())
+结束 方法
+方法 使用类方法返回根接口(值: oop.AdvancedObject): 整数
+返回 使用根接口(值.childView())
+结束 方法
+方法 使用接口方法返回根接口(值: oop.AdvancedValue): 整数
+返回 使用根接口(值.childView())
+结束 方法
+方法 启动方法(): 整数
+返回 使用根接口(oop.AdvancedObject()) + 使用基接口(oop.AdvancedObject()) + 使用子接口(oop.AdvancedObject()) + 使用返回子接口(oop.AdvancedObject()) + 使用类方法返回根接口(oop.AdvancedObject()) + 使用接口方法返回根接口(oop.AdvancedObject()) + 传递次数 - 276
+结束 方法

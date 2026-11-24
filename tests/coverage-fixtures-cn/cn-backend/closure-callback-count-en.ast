@@ -1,0 +1,16 @@
+// aster:language=en
+let calls: i32 = 0;
+fn register(callback: fn(ptr): i32, user: ptr): i32 {
+    calls = calls + 1;
+    return calls;
+}
+fn main(): i32 {
+    let callback = fn [] (user: ptr): i32 {
+        return 0;
+    };
+    let body: i32 = 0;
+    for (i = register(callback, null), register(callback, null), register(callback, null)) {
+        body = body + 1;
+    }
+    return calls + body;
+}

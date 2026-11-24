@@ -1,0 +1,6 @@
+name bilingual
+[language]
+default = "zh"
+allowed = ["zh", "en"]
+src/main.ast
+src/helper.ast

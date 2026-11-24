@@ -1,0 +1,6 @@
+// aster:language=en
+extern let native_counter: i32;
+fn main(): i32 {
+native_counter = native_counter + 2;
+return native_counter;
+}

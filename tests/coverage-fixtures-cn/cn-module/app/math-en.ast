@@ -1,0 +1,5 @@
+// aster:language=en
+@import("standard.math").alias("math")
+fn main(): i32 {
+return math.cube(2) + math.平方(3);
+}

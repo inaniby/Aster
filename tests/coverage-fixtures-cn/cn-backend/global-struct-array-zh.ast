@@ -1,0 +1,11 @@
+// aster:language=zh
+结构 Point
+x: 整数
+y: 整数
+结束 结构
+变量 points: Point[2] = [Point { 1, 2 }, Point { 3, 4 }]
+变量 emptyPoints: Point[2]
+方法 启动方法(): 整数
+points[1].x = 9
+返回 points[0].x + points[0].y + points[1].x + points[1].y + emptyPoints[0].x + emptyPoints[0].y
+结束 方法

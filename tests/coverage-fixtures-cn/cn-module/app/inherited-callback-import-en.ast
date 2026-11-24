@@ -1,0 +1,8 @@
+// aster:language=en
+@import("demo.oop").alias("oop")
+class LocalCallback: oop.CallbackBase {
+fn read(value: i32): i32 {
+return this.inheritedCallbacks[0](value);
+}
+}
+fn main(): i32 { return LocalCallback().read(40) - 42; }

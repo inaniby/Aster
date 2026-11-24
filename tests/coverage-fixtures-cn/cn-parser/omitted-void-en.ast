@@ -1,0 +1,8 @@
+// aster:language=en
+fn 触碰() {}
+fn 另一个(): void {}
+fn main(): i32 {
+触碰();
+另一个();
+return 0;
+}

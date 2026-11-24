@@ -1,0 +1,6 @@
+// aster:language=en
+fn main(): i32 {
+let first: f64 = 1.25e1;
+let mask: i32 = 0xDE;
+return 0;
+}

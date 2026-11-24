@@ -1,0 +1,6 @@
+// aster:language=en
+extern let native_values: i32[2];
+fn main(): i32 {
+native_values[1] = native_values[0] + 1;
+return native_values[1];
+}

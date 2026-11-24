@@ -1,0 +1,6 @@
+// aster:language=en
+class Box { let callback: fn(i32): i32; }
+fn main(): i32 {
+let box: Box;
+return box.callback(1);
+}

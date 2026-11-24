@@ -1,0 +1,5 @@
+// aster:language=en
+extern let native_callback: fn(i32): i32;
+fn main(): i32 {
+return native_callback(41);
+}

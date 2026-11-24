@@ -1,0 +1,10 @@
+// aster:language=en
+fn a_ptr() -> ptr {
+    return @embed("a.bin", 1);
+}
+fn b_ptr() -> ptr {
+    return @embed("b.bin", 64);
+}
+fn main() -> i32 {
+    return load_u8(a_ptr()) + load_u8(b_ptr());
+}

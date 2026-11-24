@@ -1,0 +1,12 @@
+// aster:language=en
+class Counter {
+let value: i32 = 0;
+fn increase(x: i32): i32 {
+this.value = this.value + x;
+return this.value;
+}
+}
+fn main(): i32 {
+let first: Counter = Counter();
+return first.increase(41);
+}

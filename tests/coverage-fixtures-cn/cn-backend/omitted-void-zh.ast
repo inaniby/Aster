@@ -1,0 +1,14 @@
+// aster:language=zh
+方法 touch()
+变量 marker: 整数 = 1
+marker = marker + 1
+结束 方法
+方法 touchExplicit(): 空
+变量 marker: 整数 = 1
+marker = marker + 1
+结束 方法
+方法 启动方法(): 整数
+touch()
+touchExplicit()
+返回 0
+结束 方法

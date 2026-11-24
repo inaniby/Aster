@@ -1,0 +1,30 @@
+// aster:language=zh
+结构 Data
+fixed: 整数
+changed: 整数
+escaped: 整数
+结束 结构
+方法 inspect(value: 指针): 空
+返回
+结束 方法
+方法 启动方法(): 整数
+变量 stable: 整数
+变量 changed: 整数
+changed = 2
+变量 escaped: 整数
+变量 escapedPointer: 指针 = 指针(&escaped)
+变量 data: Data
+data.changed = 5
+变量 fieldPointer: 指针 = 指针(&data.escaped)
+变量 values: 整数[2]
+values[0] = 1
+变量 passed: 整数[2]
+inspect(passed)
+变量 conditional: 整数
+如果 (真)
+conditional = 9
+结束 如果
+变量 explicit: 整数 = 7
+常量 constant: 整数 = 3
+返回 stable + data.fixed + values[1] + conditional + explicit + constant + changed + escaped + data.changed
+结束 方法

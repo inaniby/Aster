@@ -1,0 +1,8 @@
+// aster:language=en
+struct Point { x: i32, y: i32 }
+let points: Point[2] = [Point { 1, 2 }, Point { 3, 4 }];
+let emptyPoints: Point[2];
+fn main(): i32 {
+points[1].x = 9;
+return points[0].x + points[0].y + points[1].x + points[1].y + emptyPoints[0].x + emptyPoints[0].y;
+}

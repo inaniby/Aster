@@ -1,0 +1,8 @@
+// aster:language=en
+fn main(): i32 { let p: Point = Point(3, 4); return p.x + p.y; }
+class Point {
+let x: i32;
+let y: i32;
+@constructor
+fn constructor(x: i32, y: i32) { this.x = x; this.y = y; }
+}

@@ -1,0 +1,5 @@
+// aster:language=en
+@import("demo.test_helper").alias("helper")
+fn main(): i32 {
+return helper.add_one(41) - 42;
+}

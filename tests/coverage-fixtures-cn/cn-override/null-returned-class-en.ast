@@ -1,0 +1,6 @@
+// aster:language=en
+class Box {
+fn run(): i32 { return 1; }
+}
+fn empty(): Box { return null; }
+fn main(): i32 { return empty().run(); }

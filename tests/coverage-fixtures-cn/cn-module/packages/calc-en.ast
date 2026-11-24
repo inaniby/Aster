@@ -1,0 +1,5 @@
+// aster:language=en
+package demo.calc;
+fn 加一(value: i32): i32 {
+return 乘二(value) + 1;
+}

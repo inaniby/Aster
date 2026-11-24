@@ -1,0 +1,13 @@
+// aster:language=en
+@import("demo.interface_base").alias("base")
+@import("demo.interface_child").alias("child")
+let passCount: i32 = 0;
+fn useRoot(value: base.RootContract): i32 { return value.root(); }
+fn useBase(value: base.ReadableContract): i32 { return value.read(); }
+fn passChild(value: child.AdvancedContract): child.AdvancedContract { passCount = passCount + 1; return value; }
+fn useChild(value: child.AdvancedContract): i32 { return useBase(passChild(value)) + value.extra(); }
+fn useReturnedRoot(value: child.AdvancedContract): i32 { return useRoot(value.childView()); }
+fn main(): i32 {
+let value: child.ContractImplementation = child.ContractImplementation();
+return useBase(value) + useRoot(passChild(value)) + useRoot(value.childView()) + useChild(value) + useReturnedRoot(value) + passCount - 198;
+}

@@ -1,0 +1,13 @@
+// aster:language=en
+package demo.interface_child;
+@import("demo.interface_base").alias("base")
+interface class AdvancedContract: base.ReadableContract {
+fn extra(): i32;
+fn childView(): AdvancedContract;
+}
+class ContractImplementation: AdvancedContract {
+fn root(): i32 { return 38; }
+fn read(): i32 { return 40; }
+fn extra(): i32 { return 2; }
+fn childView(): AdvancedContract { return this; }
+}

@@ -1,0 +1,8 @@
+// aster:language=en
+class ArrayOps {
+fn readValues(values: i32[3]): i32 { return values[0]; }
+}
+fn main(): i32 {
+let values: i32[2] = [1, 2];
+return ArrayOps().readValues(values);
+}

@@ -1,0 +1,17 @@
+// aster:language=en
+interface class ArrayUpdater {
+fn update(values: i32[2]): i32;
+}
+class AddFive: ArrayUpdater {
+fn update(values: i32[2]): i32 {
+values[0] = values[0] + 5;
+return values[0] + values[1];
+}
+}
+fn main(): i32 {
+let updater: ArrayUpdater = AddFive();
+let values: i32[2] = [4, 6];
+if (updater.update(values) != 15) { return 1; }
+if (values[0] != 9) { return 2; }
+return 0;
+}

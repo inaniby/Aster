@@ -1,0 +1,11 @@
+// aster:language=en
+fn register(callback: fn(ptr): void, user: ptr): void {
+    callback(user);
+}
+fn consume(value: i32): i32 { return value; }
+fn main(): i32 {
+    let callback = fn [] (user: ptr): void {
+        return;
+    };
+    return consume(register(callback, null));
+}

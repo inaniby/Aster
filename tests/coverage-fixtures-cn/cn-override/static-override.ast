@@ -1,0 +1,11 @@
+// aster:language=en
+class Base {
+@static
+fn value(): i32 { return 1; }
+}
+class Child: Base {
+@override
+@static
+fn value(): i32 { return 2; }
+}
+fn main(): i32 { return 0; }

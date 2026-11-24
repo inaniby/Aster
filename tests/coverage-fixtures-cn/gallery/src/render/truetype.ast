@@ -1,0 +1,4228 @@
+// truetype.ast -- AsterUI M4.1: runtime system-font TrueType rasterizer.
+//
+// The APK ships NO font file. At runtime this module opens the
+// device's own system font (/system/fonts, first existing path wins)
+// and parses it with our own pure-Aster code: TTC container, sfnt
+// table directory, cmap (format 4 and 12), and TWO outline engines
+// behind one interface -- TrueType glyf (quadratic) and CFF Type 2
+// CharStrings (cubic). The two engines exist because the two system
+// fonts are different kinds (see the CFF finding below); they share
+// the container, cmap, file, cache and scanline code.
+//
+// CFF FINDING (verified with fontTools on the VM's font files, NOT
+// assumed from the task brief): NotoSansCJK-Regular.ttc -- the font
+// the task's step 2 assumed to be glyf -- has NO glyf/loca tables
+// at all. All 10 faces are CFF-outlined (tables: BASE, CFF , GDEF,
+// GPOS, GSUB, OS/2, cmap, head, hhea, hmtx, maxp, name, post, ...).
+// A glyf-only rasterizer would render Latin from DejaVuSans.ttf
+// and NOTHING from Noto CJK -- it would fail the headline item
+// (arbitrary CJK at system quality). So this module implements the
+// CFF path for real (Top DICT, CharStrings INDEX, FDSelect/FDArray,
+// Private Subrs, Global/Local subroutines, Type 2 operators, cubic
+// flattening) AND the glyf path (simple + compound glyphs) for
+// TrueType fonts such as DejaVu. No third-party font IP is copied:
+// the parser reads the font file at runtime; nothing from any font
+// file is embedded, generated, or shipped (see M4-NOTES.md).
+//
+// FACE SELECTION: a .ttc holds several faces. The SC face is picked
+// by NAME (nameID 1, platform 3, UTF-16BE): the first face whose
+// family contains "SC" and does not contain "Mono". For the VM's
+// NotoSansCJK-Regular.ttc that is face 2 ("Noto Sans CJK SC");
+// face 0 is JP, 1 KR, 3 TC, 4 HK, 5..9 the Mono variants. The
+// selection is by name, not by index, so a different face order or
+// count on the device still picks SC. If no SC face exists, face 0
+// is used and ui_sysfont_err() answers 2 (visible, not silent).
+// Verified cross-checks (fontTools): SC cmap gives U+4E2D -> 9544,
+// U+6587 -> 20036, U+589E -> 13837; the JP face gives U+6587 ->
+// 20035, so the face test distinguishes them.
+//
+// RASTERIZATION: outlines are flattened to polylines (quadratic:
+// 8 subdivisions; cubic: 16, direct Bernstein in i32, no floats)
+// in font units, scaled to a 4x supersampled grid, scanline-filled
+// with non-zero winding, then box-averaged 4x4 to 8bpp coverage
+// (alpha = coverage * 255 / 16). That IS the anti-aliasing: a
+// pixel that is half covered answers ~127, never just 0/255. The
+// test proves it by counting strictly-partial pixels (> 0).
+// Vertical mapping: the em box maps onto the requested cell at
+// the cell scale (cell_w px per upm on x, cell_h px per span on y;
+// the vertical origin is the OS/2 typo ascender, hhea is the
+// fallback when OS/2 is absent; Noto 880/-120, DejaVu 1556/-492).
+// For the test fonts span == upm, so the mapping is square.
+// The bitmap height is per glyph: it grows past the requested
+// cell height when the outline descends below it (v2.3: Latin
+// descenders reach -250 while the typo descender is only -120,
+// so a fixed 48-row cell cut the tails of g/p/y/j/q at the cell
+// bottom -- the device bug of 2026-11-14). The growth changes
+// only the clip height, never the scale: ui_tt_scale always takes
+// the REQUESTED cell height, ui_tt_scan takes the grown height,
+// so the baseline row inside the bitmap never moves and
+// non-descender glyphs are byte-identical. The height is clamped
+// to 64 rows (the cache slot size); a glyph deeper than that
+// still clips, as before.
+//
+// CACHE: 512-entry ring keyed by (code point, cell_w, cell_h),
+// v2.7: 32 -> 128. A single screen holds far more than 32 distinct
+// glyphs (probe scene: 62; Gallery Fonts tab: ~90 incl. CJK specimen
+// + Latin + tab labels). With 32 the ring thrashed: every scroll
+// frame re-rasterized every visible glyph from its outline, and each
+// fb_replay re-staged them again, so the scroll blit cost MORE than a
+// full repaint. 128 covers every screen built so far; untouched slots
+// are zero pages and cost no RAM. Pool = 128 * 4096 B.
+// v2.19.3: 128 -> 512. 128 stopped covering the app: the device-
+// faithful probe (all 14 Gallery tabs + ribbon + 2 scale-slider
+// scrubs + Refresh dump + debug panel, 1216x2688 @520dpi) requests
+// 254 distinct keys -- the tab working set alone is ~143 keys at
+// 48/64, the full-range scale scrub adds ~108 more (6 quantized
+// cells x ~25 preview glyphs). At 128 the revisit of the same tabs
+// re-missed 143 glyphs and a scrub round re-missed up to 151; at
+// 256 the same workload is exactly 254 keys with 0 evictions, i.e.
+// 256 is the cliff edge (2 slots of headroom), so 512: 2x headroom
+// over today's union. A single array caps at 1048576 elements, so
+// the 2 MB pool is two 256-slot halves (tt_cache_bm). The lookup
+// is still a linear scan; a hash index is future work if the ring
+// grows again.
+// round-robin eviction, counted -- the same discipline as the CJK
+// atlas cache in render/text.ast, but a SEPARATE table, for a
+// recorded reason: the payload differs (a rasterized 8bpp bitmap
+// up to 64x64 bytes, not an atlas record offset) and the key has a
+// size (the atlas key is code point only). Unifying them would
+// force the atlas path through a bitmap conversion and risk the
+// frozen hashes; the two caches share the discipline, not the
+// storage. Each entry holds a bitmap rasterized at min(cell, 64);
+// larger cells remap from the 64px bitmap (same nearest-neighbour
+// remap the rasterizer already uses). The bitmap height is per
+// glyph (see the vertical-mapping note above): entries for
+// descender glyphs are taller than the requested cell, which is
+// fine because the height is a pure function of (code point,
+// cell_w, cell_h) and the font, so the cache key still
+// identifies it.
+//
+// FILE: the whole font file is slurped once (slurp_bytes, growable
+// arena; the 19.5 MB TTC fits the 64 MB chunk cap) and parsed from
+// memory. Tables are read by absolute file offset; every table
+// read is bounds-checked against the file length. The file is
+// loaded once per process (ui_sysfont_load replaces the state;
+// ui_sysfont_unload drops back to the fallback for tests).
+//
+// FALLBACK: when no system font is found, ui_tt_active() is 0 and
+// the rasterizer takes exactly its old path (8x8 ASCII, hand-drawn
+// CJK atlas, placeholder + missing counter). The fallback is
+// explicit: ui_sysfont_ok() == 0 and ui_sysfont_err() says why
+// (1 = no file in the chain, 3 = not a font, 4 = no usable cmap,
+// 5 = no outline table). The Android backend logs the outcome in
+// onCreate; headless tests assert it.
+//
+// NESTED-CALL RULE (M3.2 crash): this file obeys it everywhere --
+// an i32-returning call with field/pointer arguments is never
+// nested inside another call; its result is materialised into a
+// local first. Functions are kept small for the same reason.
+// `len` is a reserved intrinsic and is never a variable name here.
+// All sources ASCII-only; no floats anywhere (fixed-point i32).
+
+include "../aster_std.ast";
+
+// Timing is an injected clock (the logger's pattern): the Android
+// backend passes its cheap in-memory clock in onCreate; headless
+// tests leave it unset (the getters then answer 0) and time
+// aggregate loops themselves with /proc/uptime (a libc
+// clock_gettime extern cannot link into a static link-obj test
+// binary). The clock answers milliseconds.
+let g_tt_clock: fn() -> i64 = 0;
+let g_tt_clock_set: i32 = 0;
+
+// Clock source for raster timing. The function must be defined in
+// the file that passes it (same rule as ui_log_set_clock).
+fn ui_tt_set_clock(f: fn() -> i64) -> i32 {
+    g_tt_clock = f;
+    g_tt_clock_set = 1;
+    return 0;
+}
+
+// Milliseconds from the injected clock, or -1 when none is set.
+fn ui_tt_clock_ms() -> i64 {
+    if (g_tt_clock_set == 0) {
+        return -1;
+    } else {
+    }
+    return g_tt_clock();
+}
+
+// ---- State: loaded font ---------------------------------------------
+
+let g_tt_buf: ptr = 0;
+let g_tt_flen: i32 = 0;
+// Persistent font-data buffer (v2.5): one allocation, reused
+// across face switches. slurp_bytes allocates a fresh chunk per
+// load and free is a documented no-op, so loading a font through
+// it grows the process heap by one font (15-32 MB) per switch;
+// this buffer grows only when a larger file arrives, so repeated
+// weight switching costs no memory at all. It is never freed: a
+// cache, bounded by the largest font ever loaded.
+let g_tt_buf_mem: ptr = 0;
+let g_tt_buf_cap: i32 = 0;
+let g_tt_tried: i32 = 0;
+let g_tt_ok: i32 = 0;
+let g_tt_is_ttc: i32 = 0;
+let g_tt_face: i32 = 0;
+let g_tt_err: i32 = 0;
+let g_tt_path: ptr = 0;
+let g_tt_face_name: u8[64] = 0;
+let g_tt_base: i32 = 0;
+
+// Table offsets (absolute file offsets, -1 when absent).
+let g_tt_off_head: i32 = -1;
+let g_tt_off_maxp: i32 = -1;
+let g_tt_off_hhea: i32 = -1;
+let g_tt_off_cmap: i32 = -1;
+let g_tt_off_loca: i32 = -1;
+let g_tt_off_glyf: i32 = -1;
+let g_tt_off_cff: i32 = -1;
+let g_tt_off_name: i32 = -1;
+let g_tt_off_os2: i32 = -1;
+
+// Table lengths (from the directory; bounds checks use these).
+let g_tt_len_head: i32 = 0;
+let g_tt_len_maxp: i32 = 0;
+let g_tt_len_hhea: i32 = 0;
+let g_tt_len_cmap: i32 = 0;
+let g_tt_len_loca: i32 = 0;
+let g_tt_len_glyf: i32 = 0;
+let g_tt_len_cff: i32 = 0;
+let g_tt_len_name: i32 = 0;
+let g_tt_len_os2: i32 = 0;
+
+// Metrics.
+let g_tt_upm: i32 = 0;
+let g_tt_num_glyphs: i32 = 0;
+let g_tt_loca_fmt: i32 = 0;
+let g_tt_map_asc: i32 = 0;
+let g_tt_map_desc: i32 = 0;
+let g_tt_has_cff: i32 = 0;
+let g_tt_has_glyf: i32 = 0;
+let g_tt_has_cff2: i32 = 0;
+let g_tt_off_cff2: i32 = -1;
+let g_tt_len_cff2: i32 = 0;
+
+// fvar: variation axis table (the CFF2 default instance
+// weight is read from here, never hardcoded).
+let g_tt_off_fvar: i32 = -1;
+let g_tt_len_fvar: i32 = 0;
+let g_tt_has_fvar: i32 = 0;
+let g_tt_fvar_wght: i32 = -1;
+
+// Probe record: one row per candidate path tried by the font chain
+// (ui_sysfont_try_path). Bounded at 24 rows; further tries still
+// run, only the record stops growing. size is the file size clamped
+// to i32 (2000000000 cap), -1 when the path does not exist; err is
+// the load error code (0 = loaded). The path is copied into the
+// row's 64-byte slot. The log probe in aui_impl.ast reads this
+// table, so the next device run says exactly which names were tried.
+let g_tt_probe_namebuf: u8[1536] = 0;
+let g_tt_probe_size: i32[24] = 0;
+let g_tt_probe_err: i32[24] = 0;
+let g_tt_probe_n: i32 = 0;
+
+// Best loadable candidate seen during the init scan, as a probe
+// table row (-1 = none yet). Regular weight wins over Bold: the
+// phone's Regular TTC may be CFF2-only (err 6, unusable today),
+// in which case the first loadable Bold is the fallback. Updated
+// by ui_sysfont_try_path on every successful load; ui_sysfont_init
+// reloads this row after the full enumeration, so the engine ends
+// on the preferred face rather than the last one tried.
+let g_tt_best_row: i32 = -1;
+let g_tt_best_bold: i32 = 0;
+
+// Scratch buffer for ui_tt_join_path (dir + "/" + name).
+let g_tt_join_buf: u8[128] = 0;
+
+// cmap: absolute offset of the chosen subtable + its format (4/12/0).
+let g_tt_cmap_off: i32 = -1;
+let g_tt_cmap_fmt: i32 = 0;
+let g_tt_cmap_len: i32 = 0;
+
+// ---- State: outline decode (font units, all points on-curve) --------
+// Points are appended here by both outline engines; contours are
+// closed implicitly (last point joins the first). g_tt_ce holds the
+// end index of each contour. Caps are hard: exceeding them aborts
+// the glyph (decode failure, counted), never an overrun.
+let g_tt_px: i32[4096] = 0;
+let g_tt_py: i32[4096] = 0;
+let g_tt_ce: i32[128] = 0;
+let g_tt_npts: i32 = 0;
+let g_tt_ncon: i32 = 0;
+let g_tt_cont_open: i32 = 0;
+let g_tt_cont_start: i32 = 0;
+let g_tt_abort: i32 = 0;
+// Raw glyf points (before flattening), with on-curve flags.
+let g_tt_tx: i32[4096] = 0;
+let g_tt_ty: i32[4096] = 0;
+let g_tt_ton: i32[4096] = 0;
+let g_tt_tfl: i32[4096] = 0;
+// Scaled outline (supersampled pixel coords, 4x) for the scanline.
+let g_tt_sx: i32[4096] = 0;
+let g_tt_sy: i32[4096] = 0;
+
+// ---- State: CFF ------------------------------------------------------
+// All offsets below are absolute file offsets unless noted.
+let g_tt_cff_base: i32 = 0;
+let g_tt_cff_cs_off: i32 = -1;
+let g_tt_cff_cs_count: i32 = 0;
+let g_tt_cff_cs_osize: i32 = 0;
+let g_tt_cff_cs_data: i32 = 0;
+let g_tt_cff_gsub_off: i32 = -1;
+let g_tt_cff_gsub_count: i32 = 0;
+let g_tt_cff_gsub_osize: i32 = 0;
+let g_tt_cff_gsub_data: i32 = 0;
+let g_tt_cff_fdselect_off: i32 = -1;
+let g_tt_cff_fdselect_fmt: i32 = 0;
+let g_tt_cff_fdarray_off: i32 = -1;
+let g_tt_cff_fdarray_count: i32 = 0;
+let g_tt_cff_fdarray_osize: i32 = 0;
+let g_tt_cff_fdarray_data: i32 = 0;
+// Local subroutines of the FD currently cached (-1 = none cached).
+let g_tt_cff_lsub_fd: i32 = -1;
+let g_tt_cff_lsub_off: i32 = -1;
+let g_tt_cff_lsub_count: i32 = 0;
+let g_tt_cff_lsub_osize: i32 = 0;
+let g_tt_cff_lsub_data: i32 = 0;
+// Type 2 interpreter state (shared across subr calls, per glyph).
+let g_tt_st: i32[64] = 0;
+let g_tt_nst: i32 = 0;
+let g_tt_cx: i32 = 0;
+let g_tt_cy: i32 = 0;
+let g_tt_stems: i32 = 0;
+let g_tt_width_done: i32 = 0;
+let g_tt_endchar: i32 = 0;
+let g_tt_cff_parsed: i32 = 0;
+// CFF2: 1 when the loaded outline table is CFF2 (u32 INDEX
+// counts); VarStore data offset (-1 = none, and note the
+// Top DICT offset points at the u16 length prefix, so the
+// stored offset is raw + 2); current vsindex; and the
+// Private DICT default vsindex for the current FD.
+let g_tt_cff_is2: i32 = 0;
+let g_tt_cff_varstore_off: i32 = -1;
+let g_tt_cff_vsindex: i32 = 0;
+let g_tt_cff_priv_vsindex: i32 = 0;
+
+// ---- State: scanline scratch + glyph cache --------------------------
+let g_tt_ss: u8[65536] = 0;
+let g_tt_row_x: i32[128] = 0;
+let g_tt_row_d: i32[128] = 0;
+let g_tt_row_n: i32 = 0;
+let g_tt_scan_overflow: i32 = 0;
+let g_tt_cache_cp: i32[512] = 0;
+let g_tt_cache_cw: i32[512] = 0;
+let g_tt_cache_ch: i32[512] = 0;
+let g_tt_cache_bw: i32[512] = 0;
+let g_tt_cache_bh: i32[512] = 0;
+let g_tt_cache_valid: i32[512] = 0;
+let g_tt_cache_next: i32 = 0;
+let g_tt_cache_hits: i32 = 0;
+let g_tt_cache_misses: i32 = 0;
+let g_tt_cache_evictions: i32 = 0;
+let g_tt_cache_live: i32 = 0;
+// v2.19.3: 512 slots need 2 MB of bitmap pool, but one Aster array
+// caps at 1048576 elements, so the pool is two 256-slot halves;
+// tt_cache_bm(slot) is the only place that knows the split.
+let g_tt_cache_bm0: u8[1048576] = 0;
+let g_tt_cache_bm1: u8[1048576] = 0;
+let g_tt_last_bm: ptr = 0;
+let g_tt_last_bw: i32 = 0;
+let g_tt_last_bh: i32 = 0;
+let g_tt_decode_fail: i32 = 0;
+
+// Bitmap pool slot -> pointer. The pool is two 256-slot halves
+// (v2.19.3); callers never index g_tt_cache_bm0/bm1 directly.
+fn tt_cache_bm(slot: i32) -> ptr {
+    if (slot < 256) {
+        return g_tt_cache_bm0 + slot * 4096;
+    } else {
+        return g_tt_cache_bm1 + (slot - 256) * 4096;
+    }
+}
+
+// ---- State: timing + DICT/INDEX scratch -----------------------------
+let g_tt_raster_ms: i64 = 0;
+let g_tt_raster_n: i32 = 0;
+let g_tt_nv: i32 = 0;
+let g_tt_nn: i32 = 0;
+let g_tt_it_start: i32 = 0;
+let g_tt_it_end: i32 = 0;
+let g_tt_idx_count: i32 = 0;
+let g_tt_idx_osize: i32 = 0;
+let g_tt_idx_data: i32 = 0;
+let g_tt_dict_v: i32[16] = 0;
+let g_tt_dict_n: i32 = 0;
+
+// ---- Big-endian readers (offsets/lengths stay under 2^31) -----------
+
+fn ui_tt_u16(off: i32) -> i32 {
+    let b0: i32 = load_u8(g_tt_buf + off);
+    let b1: i32 = load_u8(g_tt_buf + off + 1);
+    return b0 * 256 + b1;
+}
+
+fn ui_tt_i16(off: i32) -> i32 {
+    let v: i32 = ui_tt_u16(off);
+    if (v >= 32768) {
+        return v - 65536;
+    } else {
+    }
+    return v;
+}
+
+fn ui_tt_u32(off: i32) -> i32 {
+    let b0: i32 = load_u8(g_tt_buf + off);
+    let b1: i32 = load_u8(g_tt_buf + off + 1);
+    let b2: i32 = load_u8(g_tt_buf + off + 2);
+    let b3: i32 = load_u8(g_tt_buf + off + 3);
+    return b0 * 16777216 + b1 * 65536 + b2 * 256 + b3;
+}
+
+// 1 when [off, off + n) lies inside the file, else 0.
+fn ui_tt_inrange(off: i32, n: i32) -> i32 {
+    if (off < 0) {
+        return 0;
+    } else {
+    }
+    if (n < 0) {
+        return 0;
+    } else {
+    }
+    if (off + n > g_tt_flen) {
+        return 0;
+    } else {
+    }
+    return 1;
+}
+
+// 1 when the 4 bytes at off equal the tag (a, b, c, d), else 0.
+fn ui_tt_tag(off: i32, a: i32, b: i32, c: i32, d: i32) -> i32 {
+    if (load_u8(g_tt_buf + off) != a) {
+        return 0;
+    } else {
+    }
+    if (load_u8(g_tt_buf + off + 1) != b) {
+        return 0;
+    } else {
+    }
+    if (load_u8(g_tt_buf + off + 2) != c) {
+        return 0;
+    } else {
+    }
+    if (load_u8(g_tt_buf + off + 3) != d) {
+        return 0;
+    } else {
+    }
+    return 1;
+}
+
+// Milliseconds from the injected clock, or -1 when none is set
+// (the name keeps the old call sites; the unit is ms).
+fn ui_tt_now_ms() -> i64 {
+    return ui_tt_clock_ms();
+}
+
+// floor(v / 256) with C-truncation-safe behaviour for negatives.
+fn ui_tt_floor256(v: i32) -> i32 {
+    if (v >= 0) {
+        return v / 256;
+    } else {
+    }
+    let q: i32 = -v;
+    let r: i32 = (q + 255) / 256;
+    return 0 - r;
+}
+
+// ceil(v / 256).
+fn ui_tt_ceil256(v: i32) -> i32 {
+    let nv: i32 = 0 - v;
+    let f: i32 = ui_tt_floor256(nv);
+    return 0 - f;
+}
+
+// ---- Public status getters ------------------------------------------
+
+fn ui_sysfont_ok() -> i32 {
+    return g_tt_ok;
+}
+
+fn ui_sysfont_path() -> ptr {
+    return g_tt_path;
+}
+
+fn ui_sysfont_face() -> i32 {
+    return g_tt_face;
+}
+
+fn ui_sysfont_face_name() -> ptr {
+    return g_tt_face_name;
+}
+
+fn ui_sysfont_glyphs() -> i32 {
+    return g_tt_num_glyphs;
+}
+
+fn ui_sysfont_upm() -> i32 {
+    return g_tt_upm;
+}
+
+fn ui_sysfont_is_cff() -> i32 {
+    return g_tt_has_cff;
+}
+
+fn ui_sysfont_is_glyf() -> i32 {
+    return g_tt_has_glyf;
+}
+
+fn ui_sysfont_is_cff2() -> i32 {
+    return g_tt_has_cff2;
+}
+
+fn ui_sysfont_cmap_fmt() -> i32 {
+    return g_tt_cmap_fmt;
+}
+
+fn ui_sysfont_probe_n() -> i32 {
+    return g_tt_probe_n;
+}
+
+fn ui_sysfont_probe_path(i: i32) -> ptr {
+    if (i < 0) {
+        return 0;
+    } else {
+    }
+    if (i >= g_tt_probe_n) {
+        return 0;
+    } else {
+    }
+    return g_tt_probe_namebuf + i * 64;
+}
+
+fn ui_sysfont_probe_size(i: i32) -> i32 {
+    if (i < 0) {
+        return -1;
+    } else {
+    }
+    if (i >= g_tt_probe_n) {
+        return -1;
+    } else {
+    }
+    return g_tt_probe_size[i];
+}
+
+fn ui_sysfont_probe_err(i: i32) -> i32 {
+    if (i < 0) {
+        return -1;
+    } else {
+    }
+    if (i >= g_tt_probe_n) {
+        return -1;
+    } else {
+    }
+    return g_tt_probe_err[i];
+}
+
+fn ui_sysfont_err() -> i32 {
+    return g_tt_err;
+}
+
+fn ui_tt_cache_hits() -> i32 {
+    return g_tt_cache_hits;
+}
+
+fn ui_tt_cache_misses() -> i32 {
+    return g_tt_cache_misses;
+}
+
+fn ui_tt_cache_evictions() -> i32 {
+    return g_tt_cache_evictions;
+}
+
+fn ui_tt_cache_live() -> i32 {
+    return g_tt_cache_live;
+}
+
+fn ui_tt_raster_ms() -> i64 {
+    return g_tt_raster_ms;
+}
+
+fn ui_tt_raster_n() -> i32 {
+    return g_tt_raster_n;
+}
+
+fn ui_tt_avg_ms() -> i32 {
+    if (g_tt_raster_n <= 0) {
+        return 0;
+    } else {
+    }
+    let t: i64 = g_tt_raster_ms / g_tt_raster_n;
+    return i32(t);
+}
+
+fn ui_tt_decode_failures() -> i32 {
+    return g_tt_decode_fail;
+}
+
+fn ui_tt_scan_overflows() -> i32 {
+    return g_tt_scan_overflow;
+}
+
+fn ui_tt_last_bitmap() -> ptr {
+    return g_tt_last_bm;
+}
+
+fn ui_tt_last_bmp_w() -> i32 {
+    return g_tt_last_bw;
+}
+
+fn ui_tt_last_bmp_h() -> i32 {
+    return g_tt_last_bh;
+}
+
+// ---- Container: TTC + sfnt directory + metrics + cmap ---------------
+
+// 1 when the NUL-terminated string s contains the 2-char needle
+// (a, b) anywhere, else 0.
+fn ui_tt_has_sub(s: ptr, a: i32, b: i32) -> i32 {
+    let i: i32 = 0;
+    while (1) {
+        let c0: i32 = load_u8(s + i);
+        if (c0 == 0) {
+            return 0;
+        } else {
+        }
+        let c1: i32 = load_u8(s + i + 1);
+        if (c0 == a) {
+            if (c1 == b) {
+                return 1;
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Read the family name (nameID 1, platform 3, encoding 1) of the
+// face whose sfnt directory starts at face_base into out (cap
+// bytes, NUL terminated). Answers the length, or 0 when the face
+// has no such name. Non-ASCII units become '?'.
+fn ui_tt_face_name_of(face_base: i32, out: ptr, cap: i32) -> i32 {
+    if (ui_tt_inrange(face_base, 12) == 0) {
+        return 0;
+    } else {
+    }
+    let ntab: i32 = ui_tt_u16(face_base + 4);
+    let i: i32 = 0;
+    let name_off: i32 = -1;
+    let name_len: i32 = 0;
+    while (i < ntab) {
+        let rec: i32 = face_base + 12 + i * 16;
+        let is_name: i32 = ui_tt_tag(rec, 110, 97, 109, 101);
+        if (is_name == 1) {
+            let o: i32 = ui_tt_u32(rec + 8);
+            let l: i32 = ui_tt_u32(rec + 12);
+            // Absolute file offset (see ui_tt_parse_sfnt).
+            name_off = o;
+            name_len = l;
+        } else {
+        }
+        i = i + 1;
+    }
+    if (name_off < 0) {
+        return 0;
+    } else {
+    }
+    if (ui_tt_inrange(name_off, name_len) == 0) {
+        return 0;
+    } else {
+    }
+    if (ui_tt_inrange(name_off, 6) == 0) {
+        return 0;
+    } else {
+    }
+    let cnt: i32 = ui_tt_u16(name_off + 2);
+    let soff: i32 = ui_tt_u16(name_off + 4);
+    let j: i32 = 0;
+    while (j < cnt) {
+        let r: i32 = name_off + 6 + j * 12;
+        let plat: i32 = ui_tt_u16(r);
+        let enc: i32 = ui_tt_u16(r + 2);
+        let nid: i32 = ui_tt_u16(r + 6);
+        if (plat == 3) {
+            if (enc == 1) {
+                if (nid == 1) {
+                    let sl: i32 = ui_tt_u16(r + 8);
+                    let so: i32 = ui_tt_u16(r + 10);
+                    let src: i32 = name_off + soff + so;
+                    let k: i32 = 0;
+                    let n: i32 = 0;
+                    while (k + 1 < sl) {
+                        if (n + 1 >= cap) {
+                            break;
+                        } else {
+                        }
+                        let u: i32 = ui_tt_u16(src + k);
+                        if (u < 128) {
+                            let w: i32 = store_u8(out + n, u);
+                        } else {
+                            let w2: i32 = store_u8(out + n, 63);
+                        }
+                        n = n + 1;
+                        k = k + 2;
+                    }
+                    let z: i32 = store_u8(out + n, 0);
+                    return n;
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        j = j + 1;
+    }
+    return 0;
+}
+
+// Parse the sfnt directory at face_base into the g_tt_off_* /
+// g_tt_len_* globals. Answers 1 on a recognised sfnt version, else 0.
+fn ui_tt_parse_sfnt(face_base: i32) -> i32 {
+    if (ui_tt_inrange(face_base, 12) == 0) {
+        return 0;
+    } else {
+    }
+    let v0: i32 = load_u8(g_tt_buf + face_base);
+    let v1: i32 = load_u8(g_tt_buf + face_base + 1);
+    let v2: i32 = load_u8(g_tt_buf + face_base + 2);
+    let v3: i32 = load_u8(g_tt_buf + face_base + 3);
+    let is_tt: i32 = 0;
+    if (v0 == 0) {
+        if (v1 == 1) {
+            if (v2 == 0) {
+                if (v3 == 0) {
+                    is_tt = 1;
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    if (v0 == 79) {
+        if (v1 == 84) {
+            if (v2 == 84) {
+                if (v3 == 79) {
+                    is_tt = 1;
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    if (v0 == 116) {
+        if (v1 == 114) {
+            if (v2 == 117) {
+                if (v3 == 101) {
+                    is_tt = 1;
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    if (is_tt == 0) {
+        return 0;
+    } else {
+    }
+    g_tt_off_head = -1;
+    g_tt_off_maxp = -1;
+    g_tt_off_hhea = -1;
+    g_tt_off_cmap = -1;
+    g_tt_off_loca = -1;
+    g_tt_off_glyf = -1;
+    g_tt_off_cff = -1;
+    g_tt_off_cff2 = -1;
+    g_tt_off_fvar = -1;
+    g_tt_off_name = -1;
+    g_tt_off_os2 = -1;
+    g_tt_len_head = 0;
+    g_tt_len_maxp = 0;
+    g_tt_len_hhea = 0;
+    g_tt_len_cmap = 0;
+    g_tt_len_loca = 0;
+    g_tt_len_glyf = 0;
+    g_tt_len_cff = 0;
+    g_tt_len_cff2 = 0;
+    g_tt_len_fvar = 0;
+    g_tt_len_name = 0;
+    g_tt_len_os2 = 0;
+    let ntab: i32 = ui_tt_u16(face_base + 4);
+    if (ntab > 64) {
+        ntab = 64;
+    } else {
+    }
+    let i: i32 = 0;
+    while (i < ntab) {
+        let rec: i32 = face_base + 12 + i * 16;
+        if (ui_tt_inrange(rec, 16) == 0) {
+            return 0;
+        } else {
+        }
+        let o: i32 = ui_tt_u32(rec + 8);
+        let l: i32 = ui_tt_u32(rec + 12);
+        // Table offsets are ABSOLUTE file offsets, NOT face-relative:
+        // in a TTC the faces share tables (face 2's name table lives
+        // near the end of the file, not at face_base + o). For a
+        // plain .ttf the face base is 0 so both readings coincide.
+        // Only the directory RECORDS live at face_base (rec above).
+        let abs: i32 = o;
+        if (ui_tt_tag(rec, 104, 101, 97, 100) == 1) {
+            g_tt_off_head = abs;
+            g_tt_len_head = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 109, 97, 120, 112) == 1) {
+            g_tt_off_maxp = abs;
+            g_tt_len_maxp = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 104, 104, 101, 97) == 1) {
+            g_tt_off_hhea = abs;
+            g_tt_len_hhea = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 99, 109, 97, 112) == 1) {
+            g_tt_off_cmap = abs;
+            g_tt_len_cmap = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 108, 111, 99, 97) == 1) {
+            g_tt_off_loca = abs;
+            g_tt_len_loca = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 103, 108, 121, 102) == 1) {
+            g_tt_off_glyf = abs;
+            g_tt_len_glyf = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 67, 70, 70, 32) == 1) {
+            g_tt_off_cff = abs;
+            g_tt_len_cff = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 67, 70, 70, 50) == 1) {
+            g_tt_off_cff2 = abs;
+            g_tt_len_cff2 = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 102, 118, 97, 114) == 1) {
+            g_tt_off_fvar = abs;
+            g_tt_len_fvar = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 110, 97, 109, 101) == 1) {
+            g_tt_off_name = abs;
+            g_tt_len_name = l;
+        } else {
+        }
+        if (ui_tt_tag(rec, 79, 83, 47, 50) == 1) {
+            g_tt_off_os2 = abs;
+            g_tt_len_os2 = l;
+        } else {
+        }
+        i = i + 1;
+    }
+    // A truncated or corrupt file can claim tables far beyond the
+    // bytes actually loaded (HYZhengYuan lays head/maxp/hhea at
+    // ~14.5 MB; a 1 KB truncation still lists them). Any table
+    // whose [offset, offset+length) is not inside the file is
+    // marked absent, so the required-table checks in
+    // ui_tt_parse_metrics / ui_tt_parse_cmap fail cleanly (err
+    // 3/4) instead of reading unmapped memory. (Seen 2026-11-14:
+    // a 1024-byte truncation segfaulted in parse_metrics.)
+    if (g_tt_off_head >= 0 && ui_tt_inrange(g_tt_off_head, g_tt_len_head) == 0) {
+        g_tt_off_head = -1;
+        g_tt_len_head = 0;
+    }
+    if (g_tt_off_maxp >= 0 && ui_tt_inrange(g_tt_off_maxp, g_tt_len_maxp) == 0) {
+        g_tt_off_maxp = -1;
+        g_tt_len_maxp = 0;
+    }
+    if (g_tt_off_hhea >= 0 && ui_tt_inrange(g_tt_off_hhea, g_tt_len_hhea) == 0) {
+        g_tt_off_hhea = -1;
+        g_tt_len_hhea = 0;
+    }
+    if (g_tt_off_cmap >= 0 && ui_tt_inrange(g_tt_off_cmap, g_tt_len_cmap) == 0) {
+        g_tt_off_cmap = -1;
+        g_tt_len_cmap = 0;
+    }
+    if (g_tt_off_loca >= 0 && ui_tt_inrange(g_tt_off_loca, g_tt_len_loca) == 0) {
+        g_tt_off_loca = -1;
+        g_tt_len_loca = 0;
+    }
+    if (g_tt_off_glyf >= 0 && ui_tt_inrange(g_tt_off_glyf, g_tt_len_glyf) == 0) {
+        g_tt_off_glyf = -1;
+        g_tt_len_glyf = 0;
+    }
+    if (g_tt_off_cff >= 0 && ui_tt_inrange(g_tt_off_cff, g_tt_len_cff) == 0) {
+        g_tt_off_cff = -1;
+        g_tt_len_cff = 0;
+    }
+    if (g_tt_off_cff2 >= 0 && ui_tt_inrange(g_tt_off_cff2, g_tt_len_cff2) == 0) {
+        g_tt_off_cff2 = -1;
+        g_tt_len_cff2 = 0;
+    }
+    if (g_tt_off_fvar >= 0 && ui_tt_inrange(g_tt_off_fvar, g_tt_len_fvar) == 0) {
+        g_tt_off_fvar = -1;
+        g_tt_len_fvar = 0;
+    }
+    if (g_tt_off_name >= 0 && ui_tt_inrange(g_tt_off_name, g_tt_len_name) == 0) {
+        g_tt_off_name = -1;
+        g_tt_len_name = 0;
+    }
+    if (g_tt_off_os2 >= 0 && ui_tt_inrange(g_tt_off_os2, g_tt_len_os2) == 0) {
+        g_tt_off_os2 = -1;
+        g_tt_len_os2 = 0;
+    }
+    return 1;
+}
+
+// Read the fvar default weight (wght axis) for the CFF2
+// default instance. Answers 1 when a wght axis was found
+// (g_tt_fvar_wght is its default, e.g. 400), else 0 with
+// g_tt_fvar_wght staying -1. Never fails the font load:
+// a font without fvar simply has no variation axes.
+// fvar header: u32 version (1.0), u16 offsetToData,
+// u16 countSizePairs, u16 axisCount, u16 axisSize, ...;
+// each axis is axisSize bytes: tag, min/max/default as
+// 16.16 fixed (default at axis + 8).
+fn ui_tt_parse_fvar() -> i32 {
+    g_tt_has_fvar = 0;
+    g_tt_fvar_wght = -1;
+    if (g_tt_off_fvar < 0) {
+        return 0;
+    } else {
+    }
+    if (g_tt_len_fvar < 16) {
+        return 0;
+    } else {
+    }
+    let fv: i32 = g_tt_off_fvar;
+    if (ui_tt_inrange(fv, 16) == 0) {
+        return 0;
+    } else {
+    }
+    if (ui_tt_u32(fv) != 65536) {
+        return 0;
+    } else {
+    }
+    let data_off: i32 = ui_tt_u16(fv + 4);
+    let acount: i32 = ui_tt_u16(fv + 8);
+    let asize: i32 = ui_tt_u16(fv + 10);
+    if (acount <= 0) {
+        return 0;
+    } else {
+    }
+    if (acount > 64) {
+        acount = 64;
+    } else {
+    }
+    if (asize < 20) {
+        return 0;
+    } else {
+    }
+    if (data_off < 16) {
+        return 0;
+    } else {
+    }
+    let i: i32 = 0;
+    while (i < acount) {
+        let ax: i32 = fv + data_off + i * asize;
+        if (ui_tt_inrange(ax, 20) == 0) {
+            return 0;
+        } else {
+        }
+        if (ui_tt_tag(ax, 119, 103, 104, 116) == 1) {
+            let dv: i32 = ui_tt_u32(ax + 8);
+            g_tt_fvar_wght = dv / 65536;
+            g_tt_has_fvar = 1;
+            return 1;
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// fvar wght default, or -1 when the font has no fvar/wght axis.
+fn ui_sysfont_fvar_wght() -> i32 {
+    return g_tt_fvar_wght;
+}
+
+// Weight of the active face from its family name: the ZTE/Hanyi
+// convention puts the weight in the family-name suffix "-45S"
+// (Light 300) / "-55S" (Regular 400) / "-65S" (Medium 500) /
+// "-75S" (Bold 700). The name-table subfamily is "Regular" for
+// all four weights, and OS/2 usWeightClass is 400 for all four,
+// so neither distinguishes them; the suffix is the only
+// per-file weight signal. Falls back to OS/2 usWeightClass when
+// no suffix matches, else -1.
+fn ui_sysfont_name_weight() -> i32 {
+    let n: i32 = strlen(g_tt_face_name);
+    let i: i32 = 0;
+    while (i + 2 < n) {
+        if (load_u8(g_tt_face_name + i) == 45) {
+            let d0: i32 = load_u8(g_tt_face_name + i + 1);
+            let d1: i32 = load_u8(g_tt_face_name + i + 2);
+            if (d0 >= 48 && d0 <= 57 && d1 >= 48 && d1 <= 57) {
+                let after: i32 = 0;
+                if (i + 3 >= n) {
+                    after = 1;
+                } else if (load_u8(g_tt_face_name + i + 3) == 83) {
+                    after = 1;
+                }
+                if (after == 1) {
+                    let nn: i32 = (d0 - 48) * 10 + (d1 - 48);
+                    if (nn == 45) { return 300; }
+                    if (nn == 55) { return 400; }
+                    if (nn == 65) { return 500; }
+                    if (nn == 75) { return 700; }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    if (g_tt_off_os2 >= 0 && g_tt_len_os2 >= 6) {
+        return ui_tt_u16(g_tt_off_os2 + 4);
+    }
+    return 0 - 1;
+}
+
+// Metrics: unitsPerEm, glyph count, loca format, and the vertical
+// mapping (OS/2 typo ascender/descender when usable, else hhea).
+// Answers 1, or 0 when a required table is missing or too short.
+fn ui_tt_parse_metrics() -> i32 {
+    if (g_tt_off_head < 0) {
+        return 0;
+    } else {
+    }
+    if (g_tt_off_maxp < 0) {
+        return 0;
+    } else {
+    }
+    if (g_tt_off_hhea < 0) {
+        return 0;
+    } else {
+    }
+    if (g_tt_len_head < 54) {
+        return 0;
+    } else {
+    }
+    if (g_tt_len_maxp < 6) {
+        return 0;
+    } else {
+    }
+    if (g_tt_len_hhea < 36) {
+        return 0;
+    } else {
+    }
+    let upm0: i32 = ui_tt_u16(g_tt_off_head + 18);
+    let ng0: i32 = ui_tt_u16(g_tt_off_maxp + 4);
+    let lf0: i32 = ui_tt_i16(g_tt_off_head + 50);
+    let ha0: i32 = ui_tt_i16(g_tt_off_hhea + 4);
+    let hd0: i32 = ui_tt_i16(g_tt_off_hhea + 6);
+    if (upm0 <= 0) {
+        return 0;
+    } else {
+    }
+    if (ng0 <= 0) {
+        return 0;
+    } else {
+    }
+    g_tt_upm = upm0;
+    g_tt_num_glyphs = ng0;
+    g_tt_loca_fmt = lf0;
+    g_tt_map_asc = ha0;
+    g_tt_map_desc = hd0;
+    if (g_tt_off_os2 >= 0) {
+        if (g_tt_len_os2 >= 72) {
+            let ta: i32 = ui_tt_i16(g_tt_off_os2 + 68);
+            let td: i32 = ui_tt_i16(g_tt_off_os2 + 70);
+            if (ta > td) {
+                g_tt_map_asc = ta;
+                g_tt_map_desc = td;
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    if (g_tt_map_asc <= g_tt_map_desc) {
+        g_tt_map_asc = g_tt_upm;
+        g_tt_map_desc = 0;
+    } else {
+    }
+    return 1;
+}
+
+// Choose the cmap subtable: (3,10) fmt 12 first, then (3,1) fmt 4,
+// then (0,4) fmt 12, then (0,3) fmt 4. Answers 1, or 0 when no
+// usable subtable exists.
+fn ui_tt_parse_cmap() -> i32 {
+    if (g_tt_off_cmap < 0) {
+        return 0;
+    } else {
+    }
+    if (g_tt_len_cmap < 4) {
+        return 0;
+    } else {
+    }
+    let n: i32 = ui_tt_u16(g_tt_off_cmap + 2);
+    if (n > 32) {
+        n = 32;
+    } else {
+    }
+    let best_rank: i32 = 99;
+    let best_off: i32 = -1;
+    let best_fmt: i32 = 0;
+    let i: i32 = 0;
+    while (i < n) {
+        let rec: i32 = g_tt_off_cmap + 4 + i * 8;
+        if (ui_tt_inrange(rec, 8) == 0) {
+            return 0;
+        } else {
+        }
+        let plat: i32 = ui_tt_u16(rec);
+        let enc: i32 = ui_tt_u16(rec + 2);
+        let off: i32 = ui_tt_u32(rec + 4);
+        let rank: i32 = 99;
+        if (plat == 3) {
+            if (enc == 10) {
+                rank = 0;
+            } else {
+                if (enc == 1) {
+                    rank = 1;
+                } else {
+                }
+            }
+        } else {
+        }
+        if (plat == 0) {
+            if (enc == 4) {
+                rank = 2;
+            } else {
+                if (enc == 3) {
+                    rank = 3;
+                } else {
+                }
+            }
+        } else {
+        }
+        if (rank < best_rank) {
+            let sub: i32 = g_tt_off_cmap + off;
+            if (ui_tt_inrange(sub, 4) == 1) {
+                best_rank = rank;
+                best_off = sub;
+                best_fmt = ui_tt_u16(sub);
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    if (best_off < 0) {
+        return 0;
+    } else {
+    }
+    if (best_fmt != 4) {
+        if (best_fmt != 12) {
+            return 0;
+        } else {
+        }
+    } else {
+    }
+    g_tt_cmap_off = best_off;
+    g_tt_cmap_fmt = best_fmt;
+    if (best_fmt == 4) {
+        g_tt_cmap_len = ui_tt_u16(best_off + 2);
+    } else {
+        g_tt_cmap_len = ui_tt_u32(best_off + 4);
+    }
+    return 1;
+}
+
+// cmap format 4 lookup (BMP). Answers the glyph id, or 0.
+fn ui_tt_cmap4(cp: i32) -> i32 {
+    if (cp > 65535) {
+        return 0;
+    } else {
+    }
+    let seg2: i32 = ui_tt_u16(g_tt_cmap_off + 6);
+    let seg: i32 = seg2 / 2;
+    let end_base: i32 = g_tt_cmap_off + 14;
+    let start_base: i32 = end_base + seg2 + 2;
+    let delta_base: i32 = start_base + seg2;
+    let ro_base: i32 = delta_base + seg2;
+    let i: i32 = 0;
+    while (i < seg) {
+        let eoff: i32 = end_base + i * 2;
+        if (ui_tt_inrange(eoff, 2) == 0) {
+            return 0;
+        } else {
+        }
+        let ec: i32 = ui_tt_u16(eoff);
+        if (cp <= ec) {
+            let soff: i32 = start_base + i * 2;
+            let sc: i32 = ui_tt_u16(soff);
+            if (cp < sc) {
+                return 0;
+            } else {
+            }
+            let dl: i32 = ui_tt_i16(delta_base + i * 2);
+            let ro: i32 = ui_tt_u16(ro_base + i * 2);
+            if (ro == 0) {
+                let g: i32 = cp + dl;
+                if (g < 0) {
+                    g = g + 65536;
+                } else {
+                }
+                if (g >= 65536) {
+                    g = g - 65536;
+                } else {
+                }
+                return g;
+            } else {
+                let aoff: i32 = ro_base + i * 2 + ro + (cp - sc) * 2;
+                if (ui_tt_inrange(aoff, 2) == 0) {
+                    return 0;
+                } else {
+                }
+                let g2: i32 = ui_tt_u16(aoff) + dl;
+                if (g2 < 0) {
+                    g2 = g2 + 65536;
+                } else {
+                }
+                if (g2 >= 65536) {
+                    g2 = g2 - 65536;
+                } else {
+                }
+                return g2;
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// cmap format 12 lookup (full Unicode). Binary search over the
+// groups; answers the glyph id, or 0.
+fn ui_tt_cmap12(cp: i32) -> i32 {
+    let ngrp: i32 = ui_tt_u32(g_tt_cmap_off + 12);
+    let lo: i32 = 0;
+    let hi: i32 = ngrp - 1;
+    while (lo <= hi) {
+        let mid: i32 = (lo + hi) / 2;
+        let goff: i32 = g_tt_cmap_off + 16 + mid * 12;
+        if (ui_tt_inrange(goff, 12) == 0) {
+            return 0;
+        } else {
+        }
+        let start: i32 = ui_tt_u32(goff);
+        let end: i32 = ui_tt_u32(goff + 4);
+        let gid: i32 = ui_tt_u32(goff + 8);
+        if (cp < start) {
+            hi = mid - 1;
+        } else {
+            if (cp > end) {
+                lo = mid + 1;
+            } else {
+                return gid + (cp - start);
+            }
+        }
+    }
+    return 0;
+}
+
+// Glyph id for code point cp, or 0 when unmapped.
+fn ui_tt_cmap(cp: i32) -> i32 {
+    if (g_tt_ok == 0) {
+        return 0;
+    } else {
+    }
+    if (cp < 0) {
+        return 0;
+    } else {
+    }
+    if (cp > 1114111) {
+        return 0;
+    } else {
+    }
+    if (g_tt_cmap_fmt == 12) {
+        return ui_tt_cmap12(cp);
+    } else {
+    }
+    if (g_tt_cmap_fmt == 4) {
+        return ui_tt_cmap4(cp);
+    } else {
+    }
+    return 0;
+}
+
+// 1 when cp maps to a real glyph (gid != 0), else 0.
+fn ui_tt_has_glyph(cp: i32) -> i32 {
+    let g: i32 = ui_tt_cmap(cp);
+    if (g == 0) {
+        return 0;
+    } else {
+    }
+    return 1;
+}
+
+// Reset the glyph cache and the per-load counters.
+fn ui_tt_cache_reset() -> i32 {
+    let i: i32 = 0;
+    while (i < 512) {
+        g_tt_cache_valid[i] = 0;
+        i = i + 1;
+    }
+    g_tt_cache_next = 0;
+    g_tt_cache_hits = 0;
+    g_tt_cache_misses = 0;
+    g_tt_cache_evictions = 0;
+    g_tt_cache_live = 0;
+    g_tt_decode_fail = 0;
+    g_tt_raster_ms = 0;
+    g_tt_raster_n = 0;
+    g_tt_scan_overflow = 0;
+    return 0;
+}
+
+// Read the whole font file at path into the persistent buffer,
+// growing the buffer (ralloc) only when the file is larger than
+// the current capacity. Answers the byte count, or -1 when the
+// file cannot be opened, sized, read, or held. The buffer keeps
+// its contents across loads; every load re-parses from scratch
+// (ui_sysfont_load_face resets all per-face state first), so
+// switching fonts never sees stale table offsets.
+fn ui_tt_read_font(path: ptr) -> i32 {
+    let fd: i32 = fd_open(path, 0, 0);
+    if (fd < 0) { return 0 - 1; }
+    let st: u8[128] = 0;
+    let r: i32 = fstat(fd, &st);
+    if (r != 0) { fd_close(fd); return 0 - 1; }
+    let size: i64 = load_i64(&st + 48);
+    if (size <= 0) { fd_close(fd); return 0 - 1; }
+    if (size > 67108864) { fd_close(fd); return 0 - 1; }
+    let need: i32 = i32(size) + 1;
+    if (need > g_tt_buf_cap) {
+        // Fresh allocation, not ralloc: the buffer is empty at
+        // load start (its old contents are about to be
+        // overwritten), so copying them would only waste time.
+        // The old chunk is abandoned, as ralloc would abandon
+        // it too; growth happens only when a larger file arrives.
+        let nb: ptr = alloc(need);
+        if (nb == 0) { fd_close(fd); return 0 - 1; }
+        g_tt_buf_mem = nb;
+        g_tt_buf_cap = need;
+    }
+    let count: i32 = 0;
+    let space: i32 = need - 1;
+    while (1) {
+        if (space > 0) {
+            let n: i32 = read(fd, g_tt_buf_mem + count, space);
+            if (n < 0) { fd_close(fd); return 0 - 1; }
+            if (n == 0) { break; }
+            count = count + n;
+            space = space - n;
+        } else {
+            // Buffer exactly full: the file may have grown since
+            // fstat, or we are at EOF. Probe one byte into the
+            // NUL slot: EOF means we are done with NO growth --
+            // blindly doubling here would try to allocate twice
+            // the (already large) capacity and fail the load
+            // once 2x cap passes the 64 MB arena chunk limit
+            // (seen 2026-11-14: a 14.6 MB file failed after
+            // earlier 28 MB doublings). A byte means the file
+            // really grew, and only then do we double.
+            let pb: i32 = read(fd, g_tt_buf_mem + count, 1);
+            if (pb < 0) { fd_close(fd); return 0 - 1; }
+            if (pb == 0) { break; }
+            count = count + 1;
+            let bigger: ptr = ralloc(g_tt_buf_mem, g_tt_buf_cap, g_tt_buf_cap * 2);
+            if (bigger == 0) { fd_close(fd); return 0 - 1; }
+            g_tt_buf_mem = bigger;
+            g_tt_buf_cap = g_tt_buf_cap * 2;
+            space = g_tt_buf_cap - 1 - count;
+        }
+    }
+    fd_close(fd);
+    store_u8(g_tt_buf_mem + count, 0);
+    return count;
+}
+
+// Load the font at path, auto-selecting the SC face of a TTC
+// (face_want < 0) or forcing face face_want (>= 0, test-only).
+// Answers 1 on success, 0 on failure (see ui_sysfont_err()).
+fn ui_sysfont_load_face(path: ptr, face_want: i32) -> i32 {
+    g_tt_tried = 1;
+    g_tt_ok = 0;
+    g_tt_err = 0;
+    g_tt_buf = 0;
+    g_tt_flen = 0;
+    g_tt_path = 0;
+    g_tt_face = 0;
+    g_tt_has_cff = 0;
+    g_tt_has_glyf = 0;
+    g_tt_has_cff2 = 0;
+    g_tt_cmap_fmt = 0;
+    g_tt_cmap_off = -1;
+    // The CFF table parse is lazy (ui_tt_cff_parse runs on first
+    // outline) and keyed only by this flag: without resetting it,
+    // switching fonts in one process reuses the previous font's
+    // CFF offsets against the new buffer and every glyph fails
+    // to decode. (Seen 2026-11-14: Regular -> Bold switch in the
+    // headless repro decoded nothing until this reset.)
+    g_tt_cff_parsed = 0;
+    g_tt_cff_is2 = 0;
+    g_tt_cff_varstore_off = -1;
+    g_tt_cff_vsindex = 0;
+    g_tt_cff_priv_vsindex = 0;
+    let r0: i32 = ui_tt_cache_reset();
+    let fl: i32 = ui_tt_read_font(path);
+    if (fl < 0) {
+        g_tt_err = 1;
+        return 0;
+    } else {
+    }
+    if (fl < 12) {
+        g_tt_err = 3;
+        return 0;
+    } else {
+    }
+    g_tt_buf = g_tt_buf_mem;
+    g_tt_flen = fl;
+    let is_ttc: i32 = ui_tt_tag(0, 116, 116, 99, 102);
+    g_tt_is_ttc = is_ttc;
+    let face_base: i32 = 0;
+    if (is_ttc == 1) {
+        let nf: i32 = ui_tt_u32(8);
+        if (nf <= 0) {
+            g_tt_err = 3;
+            return 0;
+        } else {
+        }
+        if (ui_tt_inrange(12, nf * 4) == 0) {
+            g_tt_err = 3;
+            return 0;
+        } else {
+        }
+        if (face_want >= 0) {
+            if (face_want >= nf) {
+                g_tt_err = 3;
+                return 0;
+            } else {
+            }
+            g_tt_face = face_want;
+            let fo: i32 = ui_tt_u32(12 + face_want * 4);
+            face_base = fo;
+        } else {
+            let cap: i32 = nf;
+            if (cap > 32) {
+                cap = 32;
+            } else {
+            }
+            let picked: i32 = -1;
+            let k: i32 = 0;
+            while (k < cap) {
+                let fo2: i32 = ui_tt_u32(12 + k * 4);
+                let nm: i32 = ui_tt_face_name_of(fo2, g_tt_face_name, 64);
+                if (nm > 0) {
+                    let has_sc: i32 = ui_tt_has_sub(g_tt_face_name, 83, 67);
+                    let has_mo: i32 = ui_tt_has_sub(g_tt_face_name, 77, 111);
+                    if (has_sc == 1) {
+                        if (has_mo == 0) {
+                            picked = k;
+                            face_base = fo2;
+                            k = cap;
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+                k = k + 1;
+            }
+            if (picked < 0) {
+                g_tt_face = 0;
+                let fo3: i32 = ui_tt_u32(12);
+                face_base = fo3;
+                g_tt_err = 2;
+            } else {
+                g_tt_face = picked;
+            }
+        }
+    } else {
+        g_tt_face = 0;
+        face_base = 0;
+    }
+    g_tt_base = face_base;
+    let nm2: i32 = ui_tt_face_name_of(face_base, g_tt_face_name, 64);
+    if (ui_tt_parse_sfnt(face_base) == 0) {
+        g_tt_err = 3;
+        return 0;
+    } else {
+    }
+    if (ui_tt_parse_metrics() == 0) {
+        g_tt_err = 3;
+        return 0;
+    } else {
+    }
+    if (ui_tt_parse_cmap() == 0) {
+        g_tt_err = 4;
+        return 0;
+    } else {
+    }
+    let pfv: i32 = ui_tt_parse_fvar();
+    if (g_tt_off_cff >= 0) {
+        g_tt_has_cff = 1;
+    } else {
+    }
+    if (g_tt_off_glyf >= 0) {
+        if (g_tt_off_loca >= 0) {
+            g_tt_has_glyf = 1;
+        } else {
+        }
+    } else {
+    }
+    if (g_tt_off_cff2 >= 0) {
+        g_tt_has_cff2 = 1;
+    } else {
+    }
+    if (g_tt_has_cff == 0) {
+        if (g_tt_has_glyf == 0) {
+            if (g_tt_has_cff2 == 1) {
+                // CFF2-only font: render it through the CFF2
+                // path (default instance). has_cff is set so
+                // the outline engine takes the CFF branch;
+                // the parse is eager here so a bad CFF2 table
+                // still reports err 6 (and the probe row
+                // stays accurate) instead of failing later
+                // at first raster.
+                g_tt_has_cff = 1;
+                if (ui_tt_cff_parse() == 0) {
+                    g_tt_has_cff = 0;
+                    g_tt_err = 6;
+                    return 0;
+                } else {
+                }
+            } else {
+                g_tt_err = 5;
+                return 0;
+            }
+        } else {
+        }
+    } else {
+    }
+    g_tt_path = path;
+    g_tt_ok = 1;
+    if (g_tt_err == 2) {
+    } else {
+        g_tt_err = 0;
+    }
+    return 1;
+}
+
+// Load the font at path with SC auto-selection.
+fn ui_sysfont_load(path: ptr) -> i32 {
+    return ui_sysfont_load_face(path, -1);
+}
+
+// Record one candidate attempt in the probe table (path copied
+// into the row's 64-byte slot, truncated with NUL). Rows beyond 24
+// are dropped; the attempt itself still runs.
+fn ui_tt_probe_note(path: ptr, size: i32, err: i32) -> i32 {
+    if (g_tt_probe_n >= 24) {
+        return 0;
+    } else {
+    }
+    let row: i32 = g_tt_probe_n;
+    let dst: ptr = g_tt_probe_namebuf + row * 64;
+    let n: i32 = strlen(path);
+    if (n > 63) {
+        n = 63;
+    } else {
+    }
+    let i: i32 = 0;
+    while (i < n) {
+        let c: i32 = store_u8(dst + i, load_u8(path + i));
+        i = i + 1;
+    }
+    let z: i32 = store_u8(dst + n, 0);
+    g_tt_probe_size[row] = size;
+    g_tt_probe_err[row] = err;
+    g_tt_probe_n = row + 1;
+    return 0;
+}
+
+// Join dir + "/" + name into the shared path buffer. Answers the
+// buffer, or 0 when the result would overflow it (127 bytes).
+// Callers must consume the result before the next join (the probe
+// table copies the path, so recording is safe).
+fn ui_tt_join_path(dir: ptr, name: ptr) -> ptr {
+    let dl: i32 = strlen(dir);
+    let nl: i32 = strlen(name);
+    if (dl + 1 + nl > 127) {
+        return 0;
+    } else {
+    }
+    let i: i32 = 0;
+    while (i < dl) {
+        let c: i32 = store_u8(g_tt_join_buf + i, load_u8(dir + i));
+        i = i + 1;
+    }
+    let s: i32 = store_u8(g_tt_join_buf + dl, 47);
+    let j: i32 = 0;
+    while (j < nl) {
+        let c2: i32 = store_u8(g_tt_join_buf + dl + 1 + j, load_u8(name + j));
+        j = j + 1;
+    }
+    let z: i32 = store_u8(g_tt_join_buf + dl + 1 + nl, 0);
+    return g_tt_join_buf;
+}
+
+// Try one candidate path; records (path, size, err) in the probe
+// table. Answers 1 when the font loaded. A missing path costs one
+// failed openat and records err 1; a present-but-unusable file
+// records the parse error (3/4/5/6) from ui_sysfont_err().
+fn ui_sysfont_try_path(path: ptr) -> i32 {
+    let sz: i64 = file_size(path);
+    if (sz < 0) {
+        let n0: i32 = ui_tt_probe_note(path, -1, 1);
+        return 0;
+    } else {
+    }
+    let sz32: i32 = 0;
+    if (sz > i64(2000000000)) {
+        sz32 = 2000000000;
+    } else {
+        sz32 = i32(sz);
+    }
+    let l: i32 = ui_sysfont_load(path);
+    if (l == 1) {
+        let n1: i32 = ui_tt_probe_note(path, sz32, 0);
+        // Track the preferred loadable candidate: the first
+        // non-Bold success wins; a Bold success only wins while
+        // no non-Bold one has been seen. The probe row is the
+        // row just recorded (probe_n advanced by one).
+        let row: i32 = g_tt_probe_n - 1;
+        let is_bold: i32 = ui_tt_has_sub(path, 66, 111);
+        if (g_tt_best_row < 0) {
+            g_tt_best_row = row;
+            g_tt_best_bold = is_bold;
+        } else {
+            if (g_tt_best_bold == 1) {
+                if (is_bold == 0) {
+                    g_tt_best_row = row;
+                    g_tt_best_bold = 0;
+                } else {
+                }
+            } else {
+            }
+        }
+        return 1;
+    } else {
+    }
+    let e: i32 = ui_sysfont_err();
+    let n2: i32 = ui_tt_probe_note(path, sz32, e);
+    return 0;
+}
+
+// Try every candidate name in dir, in preference order. The first
+// name is the legacy AOSP name; the variable-TTC name is what
+// Android 15+ ships (NotoSansCJK-wght-400-900.ttf.ttc). A name that
+// is absent costs one failed openat. Tries ALL seven names (no
+// early return): the init scan enumerates the whole inventory so
+// the device log shows every candidate, and the best loadable one
+// (Regular over Bold) is picked afterwards. Answers 1 when any
+// candidate loaded.
+fn ui_sysfont_scan_dir(dir: ptr) -> i32 {
+    let any: i32 = 0;
+    let p0: ptr = ui_tt_join_path(dir, "NotoSansCJK-Regular.ttc");
+    if (p0 != 0) {
+        if (ui_sysfont_try_path(p0) == 1) {
+            any = 1;
+        } else {
+        }
+    } else {
+    }
+    let p1: ptr = ui_tt_join_path(dir, "NotoSansCJK-wght-400-900.ttf.ttc");
+    if (p1 != 0) {
+        if (ui_sysfont_try_path(p1) == 1) {
+            any = 1;
+        } else {
+        }
+    } else {
+    }
+    let p2: ptr = ui_tt_join_path(dir, "NotoSansCJK-VF.ttf");
+    if (p2 != 0) {
+        if (ui_sysfont_try_path(p2) == 1) {
+            any = 1;
+        } else {
+        }
+    } else {
+    }
+    let p3: ptr = ui_tt_join_path(dir, "NotoSansSC-Regular.otf");
+    if (p3 != 0) {
+        if (ui_sysfont_try_path(p3) == 1) {
+            any = 1;
+        } else {
+        }
+    } else {
+    }
+    let p4: ptr = ui_tt_join_path(dir, "NotoSansSC-VF.otf");
+    if (p4 != 0) {
+        if (ui_sysfont_try_path(p4) == 1) {
+            any = 1;
+        } else {
+        }
+    } else {
+    }
+    let p5: ptr = ui_tt_join_path(dir, "DroidSansFallback.ttf");
+    if (p5 != 0) {
+        if (ui_sysfont_try_path(p5) == 1) {
+            any = 1;
+        } else {
+        }
+    } else {
+    }
+    let p6: ptr = ui_tt_join_path(dir, "NotoSansCJK-Bold.ttc");
+    if (p6 != 0) {
+        if (ui_sysfont_try_path(p6) == 1) {
+            any = 1;
+        } else {
+        }
+    } else {
+    }
+    return any;
+}
+
+// Discovery-based init (replaces the three hardcoded
+// /system/fonts paths, which never matched the device's actual
+// font file). Scans /system/fonts, then /product/fonts, then
+// /system_ext/fonts, enumerating EVERY candidate (the probe table
+// records all attempts), then loads the best one: the first
+// loadable Regular-weight face, else the first loadable Bold.
+// When nothing loads, the error is the last parse error from a
+// file that existed, else 1 (no file anywhere) -- so the fallback
+// reason says which.
+fn ui_sysfont_init() -> i32 {
+    if (g_tt_tried == 1) {
+        return g_tt_ok;
+    } else {
+    }
+    g_tt_tried = 1;
+    g_tt_best_row = -1;
+    g_tt_best_bold = 0;
+    let s0: i32 = ui_sysfont_scan_dir("/system/fonts");
+    let s1: i32 = ui_sysfont_scan_dir("/product/fonts");
+    let s2: i32 = ui_sysfont_scan_dir("/system_ext/fonts");
+    if (g_tt_best_row >= 0) {
+        let bp: ptr = ui_sysfont_probe_path(g_tt_best_row);
+        let bl: i32 = ui_sysfont_load(bp);
+        if (bl == 1) {
+            return 1;
+        } else {
+        }
+    } else {
+    }
+    let le: i32 = 1;
+    let k: i32 = 0;
+    while (k < g_tt_probe_n) {
+        if (g_tt_probe_size[k] >= 0) {
+            if (g_tt_probe_err[k] != 0) {
+                le = g_tt_probe_err[k];
+            } else {
+            }
+        } else {
+        }
+        k = k + 1;
+    }
+    g_tt_ok = 0;
+    g_tt_err = le;
+    return 0;
+}
+
+// 1 when a system font is loaded and usable, else 0. Lazily runs
+// the chain once, so the first text draw on a fresh process finds
+// the font without any backend call (onCreate calls
+// ui_sysfont_init() early so the load does not land mid-frame).
+fn ui_tt_active() -> i32 {
+    if (g_tt_tried == 0) {
+        let r: i32 = ui_sysfont_init();
+    } else {
+    }
+    return g_tt_ok;
+}
+
+// Drop back to the fallback (no system font) until the next
+// explicit load. Test-only: the device never unloads.
+fn ui_sysfont_unload() -> i32 {
+    g_tt_ok = 0;
+    g_tt_tried = 1;
+    g_tt_buf = 0;
+    g_tt_flen = 0;
+    g_tt_path = 0;
+    g_tt_err = 0;
+    g_tt_has_cff = 0;
+    g_tt_has_glyf = 0;
+    g_tt_cff_parsed = 0;
+    g_tt_cff_is2 = 0;
+    g_tt_cff_varstore_off = -1;
+    g_tt_cff_vsindex = 0;
+    g_tt_cff_priv_vsindex = 0;
+    let r: i32 = ui_tt_cache_reset();
+    return 0;
+}
+
+// ---- Outline buffers + flattening --------------------------------------
+
+// Bit k of v (0/1). Same division shape as ui_glyph_bit.
+fn ui_tt_bit(v: i32, k: i32) -> i32 {
+    let p: i32 = 1;
+    let j: i32 = 0;
+    while (j < k) {
+        p = p * 2;
+        j = j + 1;
+    }
+    let t: i32 = v / p;
+    return t - (t / 2) * 2;
+}
+
+fn ui_tt_outline_reset() -> i32 {
+    g_tt_npts = 0;
+    g_tt_ncon = 0;
+    g_tt_cont_open = 0;
+    g_tt_cont_start = 0;
+    g_tt_abort = 0;
+    g_tt_cx = 0;
+    g_tt_cy = 0;
+    return 0;
+}
+
+// Append one on-curve point. Answers 1, or 0 when the buffer is
+// full (sets the abort flag).
+fn ui_tt_outline_append(x: i32, y: i32) -> i32 {
+    if (g_tt_npts >= 4096) {
+        g_tt_abort = 1;
+        return 0;
+    } else {
+    }
+    g_tt_px[g_tt_npts] = x;
+    g_tt_py[g_tt_npts] = y;
+    g_tt_npts = g_tt_npts + 1;
+    return 1;
+}
+
+// Close the open contour (if it holds any points).
+fn ui_tt_outline_end() -> i32 {
+    if (g_tt_cont_open == 0) {
+        return 0;
+    } else {
+    }
+    g_tt_cont_open = 0;
+    if (g_tt_npts <= g_tt_cont_start) {
+        return 0;
+    } else {
+    }
+    if (g_tt_ncon >= 128) {
+        g_tt_abort = 1;
+        return 0;
+    } else {
+    }
+    g_tt_ce[g_tt_ncon] = g_tt_npts - 1;
+    g_tt_ncon = g_tt_ncon + 1;
+    return 0;
+}
+
+fn ui_tt_move_to(x: i32, y: i32) -> i32 {
+    let e: i32 = ui_tt_outline_end();
+    let a: i32 = ui_tt_outline_append(x, y);
+    g_tt_cont_start = g_tt_npts - 1;
+    g_tt_cont_open = 1;
+    g_tt_cx = x;
+    g_tt_cy = y;
+    return 0;
+}
+
+fn ui_tt_line_to(x: i32, y: i32) -> i32 {
+    if (g_tt_cont_open == 0) {
+        let m: i32 = ui_tt_move_to(x, y);
+        return 0;
+    } else {
+    }
+    let a: i32 = ui_tt_outline_append(x, y);
+    g_tt_cx = x;
+    g_tt_cy = y;
+    return 0;
+}
+
+// Quadratic Bezier from the current point via (x1, y1) to (x2, y2),
+// 8 subdivisions, direct Bernstein at denominator 64.
+fn ui_tt_quad_to(x1: i32, y1: i32, x2: i32, y2: i32) -> i32 {
+    if (g_tt_cont_open == 0) {
+        let m: i32 = ui_tt_move_to(g_tt_cx, g_tt_cy);
+    } else {
+    }
+    let x0: i32 = g_tt_cx;
+    let y0: i32 = g_tt_cy;
+    let k: i32 = 1;
+    while (k <= 8) {
+        let a: i32 = 8 - k;
+        let aa: i32 = a * a;
+        let ak: i32 = 2 * a * k;
+        let kk: i32 = k * k;
+        let xn: i32 = aa * x0 + ak * x1 + kk * x2;
+        let yn: i32 = aa * y0 + ak * y1 + kk * y2;
+        let xx: i32 = xn / 64;
+        let yy: i32 = yn / 64;
+        let ap: i32 = ui_tt_outline_append(xx, yy);
+        k = k + 1;
+    }
+    g_tt_cx = x2;
+    g_tt_cy = y2;
+    return 0;
+}
+
+// Cubic Bezier from the current point via (x1, y1), (x2, y2) to
+// (x3, y3), 16 subdivisions, direct Bernstein at denominator 4096.
+fn ui_tt_cubic_to(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) -> i32 {
+    if (g_tt_cont_open == 0) {
+        let m: i32 = ui_tt_move_to(g_tt_cx, g_tt_cy);
+    } else {
+    }
+    let x0: i32 = g_tt_cx;
+    let y0: i32 = g_tt_cy;
+    let k: i32 = 1;
+    while (k <= 16) {
+        let a: i32 = 16 - k;
+        let a2: i32 = a * a;
+        let a3: i32 = a2 * a;
+        let b: i32 = k;
+        let b2: i32 = b * b;
+        let b3: i32 = b2 * b;
+        let c0: i32 = a3;
+        let c1: i32 = 3 * a2 * b;
+        let c2: i32 = 3 * a * b2;
+        let c3: i32 = b3;
+        let xn: i32 = c0 * x0 + c1 * x1 + c2 * x2 + c3 * x3;
+        let yn: i32 = c0 * y0 + c1 * y1 + c2 * y2 + c3 * y3;
+        let xx: i32 = xn / 4096;
+        let yy: i32 = yn / 4096;
+        let ap: i32 = ui_tt_outline_append(xx, yy);
+        k = k + 1;
+    }
+    g_tt_cx = x3;
+    g_tt_cy = y3;
+    return 0;
+}
+
+// ---- glyf: simple + compound ------------------------------------------
+
+// loca entry for gid: the glyph's byte offset inside the glyf
+// table, or -1 when out of range.
+fn ui_tt_loca_off(gid: i32) -> i32 {
+    if (gid < 0) {
+        return -1;
+    } else {
+    }
+    if (gid > g_tt_num_glyphs) {
+        return -1;
+    } else {
+    }
+    if (g_tt_loca_fmt == 0) {
+        let off: i32 = g_tt_off_loca + gid * 2;
+        if (ui_tt_inrange(off, 2) == 0) {
+            return -1;
+        } else {
+        }
+        return ui_tt_u16(off) * 2;
+    } else {
+        let off2: i32 = g_tt_off_loca + gid * 4;
+        if (ui_tt_inrange(off2, 4) == 0) {
+            return -1;
+        } else {
+        }
+        return ui_tt_u32(off2);
+    }
+}
+
+// Flatten one raw contour (indices s..e in g_tt_tx/ty/ton) into the
+// outline buffer. Answers 0, or -1 on abort.
+fn ui_tt_glyf_flatten(s: i32, e: i32) -> i32 {
+    let n: i32 = e - s + 1;
+    if (n <= 0) {
+        return 0;
+    } else {
+    }
+    if (n == 1) {
+        let m: i32 = ui_tt_move_to(g_tt_tx[s], g_tt_ty[s]);
+        let en: i32 = ui_tt_outline_end();
+        return 0;
+    } else {
+    }
+    let on0: i32 = g_tt_ton[s];
+    let on_last: i32 = g_tt_ton[e];
+    let spos: i32 = 0;
+    let sx: i32 = 0;
+    let sy: i32 = 0;
+    if (on0 == 1) {
+        spos = 0;
+        sx = g_tt_tx[s];
+        sy = g_tt_ty[s];
+    } else {
+        if (on_last == 1) {
+            spos = n - 1;
+            sx = g_tt_tx[e];
+            sy = g_tt_ty[e];
+        } else {
+            spos = n - 1;
+            sx = (g_tt_tx[e] + g_tt_tx[s]) / 2;
+            sy = (g_tt_ty[e] + g_tt_ty[s]) / 2;
+        }
+    }
+    let mv: i32 = ui_tt_move_to(sx, sy);
+    let j: i32 = 0;
+    while (j < n) {
+        let p: i32 = spos + 1 + j;
+        if (p >= n) {
+            p = p - n;
+        } else {
+        }
+        let q: i32 = s + p;
+        if (g_tt_ton[q] == 1) {
+            let l: i32 = ui_tt_line_to(g_tt_tx[q], g_tt_ty[q]);
+            j = j + 1;
+        } else {
+            if (j == n - 1) {
+                let c0: i32 = ui_tt_quad_to(g_tt_tx[q], g_tt_ty[q], sx, sy);
+                j = j + 1;
+            } else {
+                let p2: i32 = p + 1;
+                if (p2 >= n) {
+                    p2 = p2 - n;
+                } else {
+                }
+                let q2: i32 = s + p2;
+                if (g_tt_ton[q2] == 1) {
+                    let c: i32 = ui_tt_quad_to(g_tt_tx[q], g_tt_ty[q], g_tt_tx[q2], g_tt_ty[q2]);
+                    j = j + 2;
+                } else {
+                    let mx: i32 = (g_tt_tx[q] + g_tt_tx[q2]) / 2;
+                    let my: i32 = (g_tt_ty[q] + g_tt_ty[q2]) / 2;
+                    let c3: i32 = ui_tt_quad_to(g_tt_tx[q], g_tt_ty[q], mx, my);
+                    j = j + 1;
+                }
+            }
+        }
+        if (g_tt_abort == 1) {
+            return -1;
+        } else {
+        }
+    }
+    if (g_tt_cx != sx) {
+        let l2: i32 = ui_tt_line_to(sx, sy);
+    } else {
+        if (g_tt_cy != sy) {
+            let l3: i32 = ui_tt_line_to(sx, sy);
+        } else {
+        }
+    }
+    let en2: i32 = ui_tt_outline_end();
+    if (g_tt_abort == 1) {
+        return -1;
+    } else {
+    }
+    return 0;
+}
+
+// Decode one glyf glyph (simple or compound) into the outline
+// buffer. Answers 0, or -1 on failure. depth caps compound nesting.
+fn ui_tt_glyf_glyph(gid: i32, depth: i32) -> i32 {
+    if (depth > 8) {
+        return -1;
+    } else {
+    }
+    if (gid < 0) {
+        return -1;
+    } else {
+    }
+    if (gid >= g_tt_num_glyphs) {
+        return -1;
+    } else {
+    }
+    let o0: i32 = ui_tt_loca_off(gid);
+    let o1: i32 = ui_tt_loca_off(gid + 1);
+    if (o0 < 0) {
+        return -1;
+    } else {
+    }
+    if (o1 < 0) {
+        return -1;
+    } else {
+    }
+    if (o1 <= o0) {
+        return 0;
+    } else {
+    }
+    let g0: i32 = g_tt_off_glyf + o0;
+    let gl: i32 = o1 - o0;
+    if (ui_tt_inrange(g0, gl) == 0) {
+        return -1;
+    } else {
+    }
+    if (gl < 10) {
+        return -1;
+    } else {
+    }
+    let nc: i32 = ui_tt_i16(g0);
+    if (nc == 0) {
+        return 0;
+    } else {
+    }
+    if (nc > 0) {
+        if (nc > 128) {
+            return -1;
+        } else {
+        }
+        let npts: i32 = ui_tt_u16(g0 + 10 + (nc - 1) * 2) + 1;
+        if (npts > 4096) {
+            return -1;
+        } else {
+        }
+        if (npts <= 0) {
+            return -1;
+        } else {
+        }
+        let ilen: i32 = ui_tt_u16(g0 + 10 + nc * 2);
+        let foff: i32 = g0 + 12 + nc * 2 + ilen;
+        if (ui_tt_inrange(foff, 1) == 0) {
+            return -1;
+        } else {
+        }
+        let i: i32 = 0;
+        let pos: i32 = 0;
+        while (i < npts) {
+            let f: i32 = load_u8(g_tt_buf + foff + pos);
+            pos = pos + 1;
+            g_tt_tfl[i] = f;
+            i = i + 1;
+            if (ui_tt_bit(f, 3) == 1) {
+                let rep: i32 = load_u8(g_tt_buf + foff + pos);
+                pos = pos + 1;
+                let r: i32 = 0;
+                while (r < rep) {
+                    if (i >= npts) {
+                        break;
+                    } else {
+                    }
+                    g_tt_tfl[i] = f;
+                    i = i + 1;
+                    r = r + 1;
+                }
+            } else {
+            }
+        }
+        let xoff: i32 = foff + pos;
+        let x: i32 = 0;
+        let xi: i32 = 0;
+        let xp: i32 = xoff;
+        while (xi < npts) {
+            let f2: i32 = g_tt_tfl[xi];
+            let dx: i32 = 0;
+            if (ui_tt_bit(f2, 1) == 1) {
+                let b: i32 = load_u8(g_tt_buf + xp);
+                xp = xp + 1;
+                if (ui_tt_bit(f2, 4) == 1) {
+                    dx = b;
+                } else {
+                    dx = 0 - b;
+                }
+            } else {
+                if (ui_tt_bit(f2, 4) == 1) {
+                    dx = 0;
+                } else {
+                    let w: i32 = ui_tt_i16(xp);
+                    xp = xp + 2;
+                    dx = w;
+                }
+            }
+            x = x + dx;
+            g_tt_tx[xi] = x;
+            if (ui_tt_bit(f2, 0) == 1) {
+                g_tt_ton[xi] = 1;
+            } else {
+                g_tt_ton[xi] = 0;
+            }
+            xi = xi + 1;
+        }
+        let y: i32 = 0;
+        let yi: i32 = 0;
+        let yp: i32 = xp;
+        while (yi < npts) {
+            let f3: i32 = g_tt_tfl[yi];
+            let dy: i32 = 0;
+            if (ui_tt_bit(f3, 2) == 1) {
+                let b2: i32 = load_u8(g_tt_buf + yp);
+                yp = yp + 1;
+                if (ui_tt_bit(f3, 5) == 1) {
+                    dy = b2;
+                } else {
+                    dy = 0 - b2;
+                }
+            } else {
+                if (ui_tt_bit(f3, 5) == 1) {
+                    dy = 0;
+                } else {
+                    let w2: i32 = ui_tt_i16(yp);
+                    yp = yp + 2;
+                    dy = w2;
+                }
+            }
+            y = y + dy;
+            g_tt_ty[yi] = y;
+            yi = yi + 1;
+        }
+        let c: i32 = 0;
+        while (c < nc) {
+            let cs: i32 = 0;
+            if (c == 0) {
+                cs = 0;
+            } else {
+                let pe: i32 = ui_tt_u16(g0 + 10 + (c - 1) * 2);
+                cs = pe + 1;
+            }
+            let ce: i32 = ui_tt_u16(g0 + 10 + c * 2);
+            let fr: i32 = ui_tt_glyf_flatten(cs, ce);
+            if (fr != 0) {
+                return -1;
+            } else {
+            }
+            c = c + 1;
+        }
+        return 0;
+    } else {
+        if (nc != -1) {
+            return -1;
+        } else {
+        }
+        let p: i32 = g0 + 10;
+        while (1) {
+            if (ui_tt_inrange(p, 4) == 0) {
+                return -1;
+            } else {
+            }
+            let flags: i32 = ui_tt_u16(p);
+            let comp: i32 = ui_tt_u16(p + 2);
+            p = p + 4;
+            let a1: i32 = 0;
+            let a2: i32 = 0;
+            if (ui_tt_bit(flags, 0) == 1) {
+                a1 = ui_tt_i16(p);
+                a2 = ui_tt_i16(p + 2);
+                p = p + 4;
+            } else {
+                let b1: i32 = load_u8(g_tt_buf + p);
+                let b2: i32 = load_u8(g_tt_buf + p + 1);
+                p = p + 2;
+                if (b1 >= 128) {
+                    a1 = b1 - 256;
+                } else {
+                    a1 = b1;
+                }
+                if (b2 >= 128) {
+                    a2 = b2 - 256;
+                } else {
+                    a2 = b2;
+                }
+            }
+            let xs: i32 = 16384;
+            let s01: i32 = 0;
+            let s10: i32 = 0;
+            let ys: i32 = 16384;
+            let has_scale: i32 = 0;
+            if (ui_tt_bit(flags, 3) == 1) {
+                xs = ui_tt_i16(p);
+                ys = xs;
+                has_scale = 1;
+                p = p + 2;
+            } else {
+                if (ui_tt_bit(flags, 7) == 1) {
+                    xs = ui_tt_i16(p);
+                    ys = ui_tt_i16(p + 2);
+                    has_scale = 1;
+                    p = p + 4;
+                } else {
+                    if (ui_tt_bit(flags, 8) == 1) {
+                        xs = ui_tt_i16(p);
+                        s01 = ui_tt_i16(p + 2);
+                        s10 = ui_tt_i16(p + 4);
+                        ys = ui_tt_i16(p + 6);
+                        has_scale = 1;
+                        p = p + 8;
+                    } else {
+                    }
+                }
+            }
+            let base_pts: i32 = g_tt_npts;
+            let rc: i32 = ui_tt_glyf_glyph(comp, depth + 1);
+            if (rc != 0) {
+                return -1;
+            } else {
+            }
+            let added: i32 = g_tt_npts - base_pts;
+            if (added > 0) {
+                if (has_scale == 1) {
+                    let ti: i32 = base_pts;
+                    while (ti < g_tt_npts) {
+                        let ox0: i32 = g_tt_px[ti];
+                        let oy0: i32 = g_tt_py[ti];
+                        let nx0: i32 = (ox0 * xs + oy0 * s01) / 16384;
+                        let ny0: i32 = (ox0 * s10 + oy0 * ys) / 16384;
+                        g_tt_px[ti] = nx0;
+                        g_tt_py[ti] = ny0;
+                        ti = ti + 1;
+                    }
+                } else {
+                }
+                let dx: i32 = 0;
+                let dy: i32 = 0;
+                if (ui_tt_bit(flags, 1) == 1) {
+                    dx = a1;
+                    dy = a2;
+                    if (ui_tt_bit(flags, 12) == 1) {
+                        if (has_scale == 1) {
+                            let sx2: i32 = (dx * xs + dy * s01) / 16384;
+                            let sy2: i32 = (dx * s10 + dy * ys) / 16384;
+                            dx = sx2;
+                            dy = sy2;
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                    if (a1 >= added) {
+                        return -1;
+                    } else {
+                    }
+                    if (a2 >= base_pts) {
+                        return -1;
+                    } else {
+                    }
+                    let px1: i32 = g_tt_px[a2];
+                    let py1: i32 = g_tt_py[a2];
+                    let px2: i32 = g_tt_px[base_pts + a1];
+                    let py2: i32 = g_tt_py[base_pts + a1];
+                    dx = px1 - px2;
+                    dy = py1 - py2;
+                }
+                let tj: i32 = base_pts;
+                while (tj < g_tt_npts) {
+                    g_tt_px[tj] = g_tt_px[tj] + dx;
+                    g_tt_py[tj] = g_tt_py[tj] + dy;
+                    tj = tj + 1;
+                }
+            } else {
+            }
+            if (ui_tt_bit(flags, 5) == 1) {
+            } else {
+                break;
+            }
+        }
+        return 0;
+    }
+}
+
+// ---- CFF: INDEX + DICT readers ----------------------------------------
+
+// Read one offSize-byte big-endian value at off. Answers the value.
+fn ui_tt_cff_offval(off: i32, osz: i32) -> i32 {
+    let v: i32 = 0;
+    let i: i32 = 0;
+    while (i < osz) {
+        let b: i32 = load_u8(g_tt_buf + off + i);
+        v = v * 256 + b;
+        i = i + 1;
+    }
+    return v;
+}
+
+// Parse the INDEX at absolute offset off into the g_tt_idx_*
+// globals (count, offSize, data start). Answers 1, or 0 when the
+// INDEX header is out of range or malformed.
+fn ui_tt_cff_index(off: i32) -> i32 {
+    // CFF2 INDEX counts are Card32 (5-byte header: count +
+    // offSize); CFF counts are Card16 (3-byte header). hdr
+    // is the header size; the offset array and data follow it.
+    let hdr: i32 = 3;
+    if (g_tt_cff_is2 == 1) {
+        hdr = 5;
+    } else {
+    }
+    if (ui_tt_inrange(off, hdr) == 0) {
+        return 0;
+    } else {
+    }
+    let cnt: i32 = 0;
+    if (g_tt_cff_is2 == 1) {
+        cnt = ui_tt_u32(off);
+    } else {
+        cnt = ui_tt_u16(off);
+    }
+    if (cnt == 0) {
+        g_tt_idx_count = 0;
+        g_tt_idx_osize = 0;
+        g_tt_idx_data = off + hdr - 1;
+        return 1;
+    } else {
+    }
+    let osz: i32 = load_u8(g_tt_buf + off + hdr - 1);
+    if (osz < 1) {
+        return 0;
+    } else {
+    }
+    if (osz > 4) {
+        return 0;
+    } else {
+    }
+    let data: i32 = off + hdr + (cnt + 1) * osz;
+    if (ui_tt_inrange(off, hdr + (cnt + 1) * osz) == 0) {
+        return 0;
+    } else {
+    }
+    g_tt_idx_count = cnt;
+    g_tt_idx_osize = osz;
+    g_tt_idx_data = data;
+    return 1;
+}
+
+
+// Byte offset just past the INDEX at off, or -1 when malformed.
+fn ui_tt_cff_index_end(off: i32) -> i32 {
+    let ok: i32 = ui_tt_cff_index(off);
+    if (ok == 0) {
+        return -1;
+    } else {
+    }
+    if (g_tt_idx_count == 0) {
+        if (g_tt_cff_is2 == 1) {
+            return off + 4;
+        } else {
+            return off + 2;
+        }
+    } else {
+    }
+    let hdr: i32 = 3;
+    if (g_tt_cff_is2 == 1) {
+        hdr = 5;
+    } else {
+    }
+    let last: i32 = ui_tt_cff_offval(off + hdr + g_tt_idx_count * g_tt_idx_osize, g_tt_idx_osize);
+    return g_tt_idx_data + last - 1;
+}
+
+
+// Item i of the INDEX parsed by ui_tt_cff_index: sets
+// g_tt_it_start/end to its absolute file offsets. Answers 1, or 0.
+fn ui_tt_cff_index_item(i: i32) -> i32 {
+    if (i < 0) {
+        return 0;
+    } else {
+    }
+    if (i >= g_tt_idx_count) {
+        return 0;
+    } else {
+    }
+    let hdr: i32 = 3;
+    if (g_tt_cff_is2 == 1) {
+        hdr = 5;
+    } else {
+    }
+    let base: i32 = g_tt_idx_data - hdr - (g_tt_idx_count + 1) * g_tt_idx_osize;
+    let o0: i32 = ui_tt_cff_offval(base + hdr + i * g_tt_idx_osize, g_tt_idx_osize);
+    let o1: i32 = ui_tt_cff_offval(base + hdr + (i + 1) * g_tt_idx_osize, g_tt_idx_osize);
+    g_tt_it_start = g_tt_idx_data + o0 - 1;
+    g_tt_it_end = g_tt_idx_data + o1 - 1;
+    if (g_tt_it_start < 0) {
+        return 0;
+    } else {
+    }
+    if (g_tt_it_end < g_tt_it_start) {
+        return 0;
+    } else {
+    }
+    if (ui_tt_inrange(g_tt_it_start, g_tt_it_end - g_tt_it_start) == 0) {
+        return 0;
+    } else {
+    }
+    return 1;
+}
+
+
+// Decode one DICT number at absolute offset pc (end bounds the
+// blob). Sets g_tt_nv (value) and g_tt_nn (next offset). Answers 1,
+// or 0 when pc is out of range. Real numbers (op 30) answer 0 and
+// advance past the nibbles (our keys never use them).
+fn ui_tt_dict_num(pc: i32, end: i32) -> i32 {
+    if (pc >= end) {
+        return 0;
+    } else {
+    }
+    let b: i32 = load_u8(g_tt_buf + pc);
+    if (b >= 32) {
+        if (b <= 246) {
+            g_tt_nv = b - 139;
+            g_tt_nn = pc + 1;
+            return 1;
+        } else {
+        }
+        if (b <= 250) {
+            if (pc + 1 >= end) {
+                return 0;
+            } else {
+            }
+            let b2: i32 = load_u8(g_tt_buf + pc + 1);
+            g_tt_nv = (b - 247) * 256 + b2 + 108;
+            g_tt_nn = pc + 2;
+            return 1;
+        } else {
+        }
+        if (b <= 254) {
+            if (pc + 1 >= end) {
+                return 0;
+            } else {
+            }
+            let b3: i32 = load_u8(g_tt_buf + pc + 1);
+            g_tt_nv = 0 - (b - 251) * 256 - b3 - 108;
+            g_tt_nn = pc + 2;
+            return 1;
+        } else {
+        }
+        g_tt_nv = 0;
+        g_tt_nn = pc + 1;
+        return 1;
+    } else {
+    }
+    if (b == 28) {
+        if (pc + 2 >= end) {
+            return 0;
+        } else {
+        }
+        g_tt_nv = ui_tt_i16(pc + 1);
+        g_tt_nn = pc + 3;
+        return 1;
+    } else {
+    }
+    if (b == 29) {
+        if (pc + 4 >= end) {
+            return 0;
+        } else {
+        }
+        g_tt_nv = ui_tt_u32(pc + 1);
+        g_tt_nn = pc + 5;
+        return 1;
+    } else {
+    }
+    if (b == 30) {
+        let p: i32 = pc + 1;
+        while (p < end) {
+            let by: i32 = load_u8(g_tt_buf + p);
+            let hi: i32 = by / 16;
+            let lo: i32 = by - hi * 16;
+            p = p + 1;
+            if (hi == 15) {
+                break;
+            } else {
+            }
+            if (lo == 15) {
+                break;
+            } else {
+            }
+        }
+        g_tt_nv = 0;
+        g_tt_nn = p;
+        return 1;
+    } else {
+    }
+    if (b == 255) {
+        if (pc + 4 >= end) {
+            return 0;
+        } else {
+        }
+        let raw: i32 = ui_tt_u32(pc + 1);
+        g_tt_nv = raw / 65536;
+        g_tt_nn = pc + 5;
+        return 1;
+    } else {
+    }
+    return 0;
+}
+
+// Find operator want in the DICT blob [off, off + nbytes).
+// Single-byte operators are their byte value; escapes are
+// 1200 + second byte (FDArray = 1236, FDSelect = 1237). On a hit,
+// the operands are in g_tt_dict_v[0..n-1] and the answer is n;
+// on a miss the answer is 0. NOTE: DICT numbers are not only
+// bytes >= 32: shortint (28), longint (29) and real (30) also
+// start below 32, and the big offsets (CharStrings, FDArray,
+// FDSelect) are shortint-encoded in real fonts. Treating every
+// byte < 32 as an operator desynchronises the scan and misses
+// them, so 28/29/30 take the number path too.
+fn ui_tt_dict_find(off: i32, nbytes: i32, want: i32) -> i32 {
+    let end: i32 = off + nbytes;
+    let pc: i32 = off;
+    let nst2: i32 = 0;
+    while (pc < end) {
+        let b: i32 = load_u8(g_tt_buf + pc);
+        let is_num: i32 = 0;
+        if (b >= 32) {
+            is_num = 1;
+        } else {
+        }
+        if (b == 28) {
+            is_num = 1;
+        } else {
+        }
+        if (b == 29) {
+            is_num = 1;
+        } else {
+        }
+        if (b == 30) {
+            is_num = 1;
+        } else {
+        }
+        if (is_num == 1) {
+            let ok: i32 = ui_tt_dict_num(pc, end);
+            if (ok == 0) {
+                return 0;
+            } else {
+            }
+            if (nst2 < 16) {
+                g_tt_dict_v[nst2] = g_tt_nv;
+                nst2 = nst2 + 1;
+            } else {
+            }
+            pc = g_tt_nn;
+        } else {
+            let op: i32 = b;
+            pc = pc + 1;
+            if (b == 12) {
+                if (pc >= end) {
+                    return 0;
+                } else {
+                }
+                let b2: i32 = load_u8(g_tt_buf + pc);
+                pc = pc + 1;
+                op = 1200 + b2;
+            } else {
+            }
+            if (op == want) {
+                g_tt_dict_n = nst2;
+                return nst2;
+            } else {
+            }
+            nst2 = 0;
+        }
+    }
+    return 0;
+}
+
+// Parse the CFF table (Top DICT, CharStrings, GlobalSubrs, FDArray
+// when present). Answers 1, or 0 when the table is unusable.
+fn ui_tt_cff_parse() -> i32 {
+    // Table: CFF when a CFF table is present, else CFF2. The two
+    // share the CharStrings / FDSelect / FDArray / GlobalSubrs
+    // tail; only the header, the INDEX counts, and the table
+    // order differ. CFF2 INDEX counts are Card32 with a 5-byte
+    // header; CFF counts are Card16 with a 3-byte header, and
+    // CFF2 puts GlobalSubrs right after the Top DICT, before
+    // CharStrings.
+    let base: i32 = 0;
+    if (g_tt_off_cff >= 0) {
+        base = g_tt_off_cff;
+    } else {
+        base = g_tt_off_cff2;
+    }
+    if (base < 0) {
+        return 0;
+    } else {
+    }
+    g_tt_cff_base = base;
+    if (ui_tt_inrange(base, 5) == 0) {
+        return 0;
+    } else {
+    }
+    let major: i32 = load_u8(g_tt_buf + base);
+    if (major == 2) {
+        g_tt_cff_is2 = 1;
+    } else {
+        g_tt_cff_is2 = 0;
+    }
+    let hsz: i32 = load_u8(g_tt_buf + base + 2);
+    let top_start: i32 = 0;
+    let top_len: i32 = 0;
+    if (g_tt_cff_is2 == 1) {
+        // CFF2: header is [major, minor, headerSize, topDictLength
+        // u16]; the Top DICT sits at base + headerSize, and the
+        // GlobalSubrs INDEX follows it immediately.
+        if (hsz < 5) {
+            return 0;
+        } else {
+        }
+        let tlen: i32 = ui_tt_u16(base + 3);
+        if (tlen <= 0) {
+            return 0;
+        } else {
+        }
+        top_start = base + hsz;
+        top_len = tlen;
+        if (ui_tt_inrange(top_start, top_len) == 0) {
+            return 0;
+        } else {
+        }
+        let gsub_off: i32 = top_start + top_len;
+        let gok: i32 = ui_tt_cff_index(gsub_off);
+        if (gok == 0) {
+            return 0;
+        } else {
+        }
+        g_tt_cff_gsub_off = gsub_off;
+        g_tt_cff_gsub_count = g_tt_idx_count;
+        g_tt_cff_gsub_osize = g_tt_idx_osize;
+        g_tt_cff_gsub_data = g_tt_idx_data;
+    } else {
+        // CFF: Name INDEX, Top DICT INDEX (one dict), String INDEX,
+        // then GlobalSubrs. (Body unchanged from before CFF2.)
+        if (hsz < 4) {
+            return 0;
+        } else {
+        }
+        let pos: i32 = base + hsz;
+        let e1: i32 = ui_tt_cff_index_end(pos);
+        if (e1 < 0) {
+            return 0;
+        } else {
+        }
+        pos = e1;
+        let tok: i32 = ui_tt_cff_index(pos);
+        if (tok == 0) {
+            return 0;
+        } else {
+        }
+        if (g_tt_idx_count != 1) {
+            return 0;
+        } else {
+        }
+        let ti: i32 = ui_tt_cff_index_item(0);
+        if (ti == 0) {
+            return 0;
+        } else {
+        }
+        top_start = g_tt_it_start;
+        let top_end: i32 = g_tt_it_end;
+        top_len = top_end - top_start;
+        let e2: i32 = ui_tt_cff_index_end(pos);
+        if (e2 < 0) {
+            return 0;
+        } else {
+        }
+        pos = e2;
+        let e3: i32 = ui_tt_cff_index_end(pos);
+        if (e3 < 0) {
+            return 0;
+        } else {
+        }
+        let gsub_off: i32 = e3;
+        let gok: i32 = ui_tt_cff_index(gsub_off);
+        if (gok == 0) {
+            return 0;
+        } else {
+        }
+        g_tt_cff_gsub_off = gsub_off;
+        g_tt_cff_gsub_count = g_tt_idx_count;
+        g_tt_cff_gsub_osize = g_tt_idx_osize;
+        g_tt_cff_gsub_data = g_tt_idx_data;
+    }
+    // Shared tail: CharStrings, FDSelect, FDArray. Offsets in the
+    // Top DICT are relative to the table base in both CFF and CFF2.
+    let ncs: i32 = ui_tt_dict_find(top_start, top_len, 17);
+    if (ncs < 1) {
+        return 0;
+    } else {
+    }
+    let cs_off: i32 = base + g_tt_dict_v[0];
+    let cok: i32 = ui_tt_cff_index(cs_off);
+    if (cok == 0) {
+        return 0;
+    } else {
+    }
+    g_tt_cff_cs_off = cs_off;
+    g_tt_cff_cs_count = g_tt_idx_count;
+    g_tt_cff_cs_osize = g_tt_idx_osize;
+    g_tt_cff_cs_data = g_tt_idx_data;
+    g_tt_cff_fdselect_off = -1;
+    g_tt_cff_fdselect_fmt = 0;
+    g_tt_cff_fdarray_off = -1;
+    g_tt_cff_fdarray_count = 0;
+    g_tt_cff_fdarray_osize = 0;
+    g_tt_cff_fdarray_data = 0;
+    let nfd: i32 = ui_tt_dict_find(top_start, top_len, 1237);
+    if (nfd >= 1) {
+        g_tt_cff_fdselect_off = base + g_tt_dict_v[0];
+        if (ui_tt_inrange(g_tt_cff_fdselect_off, 1) == 1) {
+            g_tt_cff_fdselect_fmt = load_u8(g_tt_buf + g_tt_cff_fdselect_off);
+        } else {
+        }
+    } else {
+    }
+    let nfa: i32 = ui_tt_dict_find(top_start, top_len, 1236);
+    if (nfa >= 1) {
+        let fa_off: i32 = base + g_tt_dict_v[0];
+        let fok: i32 = ui_tt_cff_index(fa_off);
+        if (fok == 1) {
+            g_tt_cff_fdarray_off = fa_off;
+            g_tt_cff_fdarray_count = g_tt_idx_count;
+            g_tt_cff_fdarray_osize = g_tt_idx_osize;
+            g_tt_cff_fdarray_data = g_tt_idx_data;
+        } else {
+        }
+    } else {
+    }
+    // CFF2 only: VarStore (Top DICT op 24). The offset points at
+    // the u16 length prefix; the data starts 2 bytes later.
+    g_tt_cff_varstore_off = -1;
+    if (g_tt_cff_is2 == 1) {
+        let nvs: i32 = ui_tt_dict_find(top_start, top_len, 24);
+        if (nvs >= 1) {
+            g_tt_cff_varstore_off = base + g_tt_dict_v[0] + 2;
+        } else {
+        }
+    } else {
+    }
+    g_tt_cff_lsub_fd = -1;
+    g_tt_cff_lsub_off = -1;
+    g_tt_cff_lsub_count = 0;
+    g_tt_cff_lsub_osize = 0;
+    g_tt_cff_lsub_data = 0;
+    g_tt_cff_parsed = 1;
+    return 1;
+}
+
+
+// FD index for glyph gid (0 when there is no FDArray / FDSelect).
+fn ui_tt_cff_fd(gid: i32) -> i32 {
+    if (g_tt_cff_fdarray_off < 0) {
+        return 0;
+    } else {
+    }
+    if (g_tt_cff_fdselect_off < 0) {
+        return 0;
+    } else {
+    }
+    if (g_tt_cff_fdselect_fmt == 0) {
+        // Format 0: one format byte, then one fd byte per glyph.
+        let off: i32 = g_tt_cff_fdselect_off + 1 + gid;
+        if (ui_tt_inrange(off, 1) == 0) {
+            return 0;
+        } else {
+        }
+        return load_u8(g_tt_buf + off);
+    } else {
+        if (g_tt_cff_fdselect_fmt == 3) {
+            // Format 3: format byte, nRanges u16, then 3-byte
+            // ranges (first u16, fd u8), then a sentinel first u16.
+            // All range offsets are +3 past the table start, not +2.
+            let nr: i32 = ui_tt_u16(g_tt_cff_fdselect_off + 1);
+            let i: i32 = 0;
+            while (i < nr) {
+                let eoff: i32 = g_tt_cff_fdselect_off + 3 + i * 3;
+                if (ui_tt_inrange(eoff, 3) == 0) {
+                    return 0;
+                } else {
+                }
+                let first: i32 = ui_tt_u16(eoff);
+                let fd: i32 = load_u8(g_tt_buf + eoff + 2);
+                let nfirst: i32 = 0;
+                if (i + 1 < nr) {
+                    let eoff2: i32 = g_tt_cff_fdselect_off + 3 + (i + 1) * 3;
+                    nfirst = ui_tt_u16(eoff2);
+                } else {
+                    let soff: i32 = g_tt_cff_fdselect_off + 3 + nr * 3;
+                    if (ui_tt_inrange(soff, 2) == 0) {
+                        return 0;
+                    } else {
+                    }
+                    nfirst = ui_tt_u16(soff);
+                }
+                if (gid >= first) {
+                    if (gid < nfirst) {
+                        return fd;
+                    } else {
+                    }
+                } else {
+                }
+                i = i + 1;
+            }
+            return 0;
+        } else {
+        }
+    }
+    return 0;
+}
+
+// Load the LocalSubrs INDEX of FD fd into the cache (or record that
+// the FD has none). Answers 1, or 0 when the FD index is bad.
+fn ui_tt_cff_load_lsub(fd: i32) -> i32 {
+    if (fd == g_tt_cff_lsub_fd) {
+        return 1;
+    } else {
+    }
+    g_tt_cff_lsub_fd = fd;
+    g_tt_cff_lsub_off = -1;
+    g_tt_cff_lsub_count = 0;
+    g_tt_cff_lsub_osize = 0;
+    g_tt_cff_lsub_data = 0;
+    g_tt_cff_priv_vsindex = 0;
+    if (g_tt_cff_fdarray_off < 0) {
+        return 1;
+    } else {
+    }
+    if (fd < 0) {
+        return 0;
+    } else {
+    }
+    if (fd >= g_tt_cff_fdarray_count) {
+        return 0;
+    } else {
+    }
+    let sv_count: i32 = g_tt_idx_count;
+    let sv_osize: i32 = g_tt_idx_osize;
+    let sv_data: i32 = g_tt_idx_data;
+    g_tt_idx_count = g_tt_cff_fdarray_count;
+    g_tt_idx_osize = g_tt_cff_fdarray_osize;
+    g_tt_idx_data = g_tt_cff_fdarray_data;
+    let it: i32 = ui_tt_cff_index_item(fd);
+    g_tt_idx_count = sv_count;
+    g_tt_idx_osize = sv_osize;
+    g_tt_idx_data = sv_data;
+    if (it == 0) {
+        return 0;
+    } else {
+    }
+    let fd_start: i32 = g_tt_it_start;
+    let fd_end: i32 = g_tt_it_end;
+    let fd_len: i32 = fd_end - fd_start;
+    let np: i32 = ui_tt_dict_find(fd_start, fd_len, 18);
+    if (np < 2) {
+        return 1;
+    } else {
+    }
+    let psize: i32 = g_tt_dict_v[0];
+    let poff: i32 = g_tt_dict_v[1];
+    let priv_off: i32 = g_tt_cff_base + poff;
+    if (ui_tt_inrange(priv_off, psize) == 0) {
+        return 1;
+    } else {
+    }
+    let nvs: i32 = ui_tt_dict_find(priv_off, psize, 22);
+    if (nvs >= 1) {
+        g_tt_cff_priv_vsindex = g_tt_dict_v[0];
+    } else {
+    }
+    let ns: i32 = ui_tt_dict_find(priv_off, psize, 19);
+    if (ns < 1) {
+        return 1;
+    } else {
+    }
+    let sub_off: i32 = priv_off + g_tt_dict_v[0];
+    let ok: i32 = ui_tt_cff_index(sub_off);
+    if (ok == 0) {
+        return 1;
+    } else {
+    }
+    g_tt_cff_lsub_off = sub_off;
+    g_tt_cff_lsub_count = g_tt_idx_count;
+    g_tt_cff_lsub_osize = g_tt_idx_osize;
+    g_tt_cff_lsub_data = g_tt_idx_data;
+    return 1;
+}
+
+// Subroutine bias for a subr INDEX of count entries.
+fn ui_tt_cff_bias(count: i32) -> i32 {
+    if (count < 1240) {
+        return 107;
+    } else {
+    }
+    if (count < 33900) {
+        return 1131;
+    } else {
+    }
+    return 32768;
+}
+
+// Region count of the current VarData (CFF2 blend). Answers the
+// count, or -1 when there is no VarStore or the vsindex is out of
+// range. ItemVariationStore, offsets from the VarStore data start
+// (AFTER the u16 length prefix): u16 format, u32 regionListOffset,
+// u16 varDataCount, u32 varDataOffsets[count]; each VarData starts
+// u16 itemCount, u16 numShorts, u16 regionIndexCount.
+fn ui_tt_cff_num_regions() -> i32 {
+    if (g_tt_cff_varstore_off < 0) {
+        return -1;
+    } else {
+    }
+    let vs: i32 = g_tt_cff_varstore_off;
+    if (ui_tt_inrange(vs, 8) == 0) {
+        return -1;
+    } else {
+    }
+    let cnt: i32 = ui_tt_u16(vs + 6);
+    let vi: i32 = g_tt_cff_vsindex;
+    if (vi < 0) {
+        return -1;
+    } else {
+    }
+    if (vi >= cnt) {
+        return -1;
+    } else {
+    }
+    if (ui_tt_inrange(vs + 8 + vi * 4, 4) == 0) {
+        return -1;
+    } else {
+    }
+    let doff: i32 = ui_tt_u32(vs + 8 + vi * 4);
+    if (doff < 0) {
+        return -1;
+    } else {
+    }
+    if (doff > 16777216) {
+        return -1;
+    } else {
+    }
+    let dpos: i32 = vs + doff;
+    if (ui_tt_inrange(dpos, 6) == 0) {
+        return -1;
+    } else {
+    }
+    let nreg: i32 = ui_tt_u16(dpos + 4);
+    return nreg;
+}
+
+// ---- CFF: Type 2 CharString interpreter -------------------------------
+
+// Decode one Type 2 number at absolute offset pc (end bounds the
+// charstring). Sets g_tt_nv / g_tt_nn. Answers 1, or 0 when pc does
+// not hold a number.
+fn ui_tt_cff_num(pc: i32, end: i32) -> i32 {
+    if (pc >= end) {
+        return 0;
+    } else {
+    }
+    let b: i32 = load_u8(g_tt_buf + pc);
+    if (b == 28) {
+        if (pc + 2 >= end) {
+            return 0;
+        } else {
+        }
+        g_tt_nv = ui_tt_i16(pc + 1);
+        g_tt_nn = pc + 3;
+        return 1;
+    } else {
+    }
+    if (b == 255) {
+        if (pc + 4 >= end) {
+            return 0;
+        } else {
+        }
+        let raw: i32 = ui_tt_u32(pc + 1);
+        g_tt_nv = raw / 65536;
+        g_tt_nn = pc + 5;
+        return 1;
+    } else {
+    }
+    if (b >= 32) {
+        if (b <= 246) {
+            g_tt_nv = b - 139;
+            g_tt_nn = pc + 1;
+            return 1;
+        } else {
+        }
+        if (b <= 250) {
+            if (pc + 1 >= end) {
+                return 0;
+            } else {
+            }
+            let b2: i32 = load_u8(g_tt_buf + pc + 1);
+            g_tt_nv = (b - 247) * 256 + b2 + 108;
+            g_tt_nn = pc + 2;
+            return 1;
+        } else {
+        }
+        if (b <= 254) {
+            if (pc + 1 >= end) {
+                return 0;
+            } else {
+            }
+            let b3: i32 = load_u8(g_tt_buf + pc + 1);
+            g_tt_nv = 0 - (b - 251) * 256 - b3 - 108;
+            g_tt_nn = pc + 2;
+            return 1;
+        } else {
+        }
+        g_tt_nv = 0;
+        g_tt_nn = pc + 1;
+        return 1;
+    } else {
+    }
+    return 0;
+}
+
+fn ui_tt_push(v: i32) -> i32 {
+    if (g_tt_nst >= 64) {
+        g_tt_abort = 1;
+        return 0;
+    } else {
+    }
+    g_tt_st[g_tt_nst] = v;
+    g_tt_nst = g_tt_nst + 1;
+    return 1;
+}
+
+fn ui_tt_pop() -> i32 {
+    if (g_tt_nst <= 0) {
+        g_tt_abort = 1;
+        return 0;
+    } else {
+    }
+    g_tt_nst = g_tt_nst - 1;
+    return g_tt_st[g_tt_nst];
+}
+
+// The width is the first operand when the operand count before the
+// first stem / move / hint / endchar operator is odd. Drop it once.
+fn ui_tt_maybe_width() -> i32 {
+    if (g_tt_width_done == 1) {
+        return 0;
+    } else {
+    }
+    g_tt_width_done = 1;
+    let odd: i32 = g_tt_nst - (g_tt_nst / 2) * 2;
+    if (odd == 1) {
+        let i: i32 = 0;
+        while (i + 1 < g_tt_nst) {
+            g_tt_st[i] = g_tt_st[i + 1];
+            i = i + 1;
+        }
+        g_tt_nst = g_tt_nst - 1;
+    } else {
+    }
+    return 0;
+}
+
+// One rrcurveto segment from the current point, args relative.
+fn ui_tt_cff_rrseg(a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32) -> i32 {
+    let x0: i32 = g_tt_cx;
+    let y0: i32 = g_tt_cy;
+    let c1x: i32 = x0 + a0;
+    let c1y: i32 = y0 + a1;
+    let c2x: i32 = x0 + a0 + a2;
+    let c2y: i32 = y0 + a1 + a3;
+    let ex: i32 = x0 + a0 + a2 + a4;
+    let ey: i32 = y0 + a1 + a3 + a5;
+    let c: i32 = ui_tt_cubic_to(c1x, c1y, c2x, c2y, ex, ey);
+    return 0;
+}
+
+// Run the charstring [start, end) for FD fd. Answers 1 when endchar
+// stopped the whole glyph, 0 on return / normal end, -1 on abort.
+fn ui_tt_cff_run(start: i32, end: i32, fd: i32, depth: i32) -> i32 {
+    if (depth > 10) {
+        return -1;
+    } else {
+    }
+    let pc: i32 = start;
+    while (pc < end) {
+        if (g_tt_abort == 1) {
+            return -1;
+        } else {
+        }
+        if (g_tt_endchar == 1) {
+            return 1;
+        } else {
+        }
+        let b: i32 = load_u8(g_tt_buf + pc);
+        if (b == 28) {
+            let ok: i32 = ui_tt_cff_num(pc, end);
+            if (ok == 0) {
+                return -1;
+            } else {
+            }
+            let pu: i32 = ui_tt_push(g_tt_nv);
+            pc = g_tt_nn;
+        } else {
+            if (b == 255) {
+                let ok2: i32 = ui_tt_cff_num(pc, end);
+                if (ok2 == 0) {
+                    return -1;
+                } else {
+                }
+                let pu2: i32 = ui_tt_push(g_tt_nv);
+                pc = g_tt_nn;
+            } else {
+                if (b >= 32) {
+                    let ok3: i32 = ui_tt_cff_num(pc, end);
+                    if (ok3 == 0) {
+                        return -1;
+                    } else {
+                    }
+                    let pu3: i32 = ui_tt_push(g_tt_nv);
+                    pc = g_tt_nn;
+                } else {
+                    pc = pc + 1;
+                    let op: i32 = b;
+                    if (b == 12) {
+                        if (pc >= end) {
+                            return -1;
+                        } else {
+                        }
+                        let b2: i32 = load_u8(g_tt_buf + pc);
+                        pc = pc + 1;
+                        op = 1200 + b2;
+                    } else {
+                    }
+                    if (op == 1) {
+                        let w: i32 = ui_tt_maybe_width();
+                        g_tt_stems = g_tt_stems + g_tt_nst / 2;
+                        g_tt_nst = 0;
+                    } else {
+                        if (op == 3) {
+                            let w2: i32 = ui_tt_maybe_width();
+                            g_tt_stems = g_tt_stems + g_tt_nst / 2;
+                            g_tt_nst = 0;
+                        } else {
+                            if (op == 18) {
+                                let w3: i32 = ui_tt_maybe_width();
+                                g_tt_stems = g_tt_stems + g_tt_nst / 2;
+                                g_tt_nst = 0;
+                            } else {
+                                if (op == 23) {
+                                    let w4: i32 = ui_tt_maybe_width();
+                                    g_tt_stems = g_tt_stems + g_tt_nst / 2;
+                                    g_tt_nst = 0;
+                                } else {
+                                    if (op == 19) {
+                                        let w5: i32 = ui_tt_maybe_width();
+                                        // hintmask may carry stem values
+                                        // on the stack (implicit stems
+                                        // with no stem operator): they
+                                        // count toward the mask length.
+                                        g_tt_stems = g_tt_stems + g_tt_nst / 2;
+                                        g_tt_nst = 0;
+                                        pc = pc + (g_tt_stems + 7) / 8;
+                                        if (pc > end) {
+                                            return -1;
+                                        } else {
+                                        }
+                                    } else {
+                                        if (op == 20) {
+                                            let w6: i32 = ui_tt_maybe_width();
+                                            g_tt_stems = g_tt_stems + g_tt_nst / 2;
+                                            g_tt_nst = 0;
+                                            pc = pc + (g_tt_stems + 7) / 8;
+                                            if (pc > end) {
+                                                return -1;
+                                            } else {
+                                            }
+                                        } else {
+                                            if (op == 4) {
+                                                let w7: i32 = ui_tt_maybe_width();
+                                                let dy: i32 = g_tt_st[0];
+                                                let m: i32 = ui_tt_move_to(g_tt_cx, g_tt_cy + dy);
+                                                g_tt_nst = 0;
+                                            } else {
+                                                if (op == 22) {
+                                                    let w8: i32 = ui_tt_maybe_width();
+                                                    let dx: i32 = g_tt_st[0];
+                                                    let m2: i32 = ui_tt_move_to(g_tt_cx + dx, g_tt_cy);
+                                                    g_tt_nst = 0;
+                                                } else {
+                                                    if (op == 21) {
+                                                        let w9: i32 = ui_tt_maybe_width();
+                                                        let dx2: i32 = g_tt_st[0];
+                                                        let dy2: i32 = g_tt_st[1];
+                                                        let m3: i32 = ui_tt_move_to(g_tt_cx + dx2, g_tt_cy + dy2);
+                                                        g_tt_nst = 0;
+                                                    } else {
+                                                        if (op == 5) {
+                                                            let i: i32 = 0;
+                                                            while (i + 1 < g_tt_nst) {
+                                                                let lx: i32 = g_tt_cx + g_tt_st[i];
+                                                                let ly: i32 = g_tt_cy + g_tt_st[i + 1];
+                                                                let l: i32 = ui_tt_line_to(lx, ly);
+                                                                i = i + 2;
+                                                            }
+                                                            g_tt_nst = 0;
+                                                        } else {
+                                                            if (op == 6) {
+                                                                let i2: i32 = 0;
+                                                                let horiz: i32 = 1;
+                                                                while (i2 < g_tt_nst) {
+                                                                    if (horiz == 1) {
+                                                                        let lx2: i32 = g_tt_cx + g_tt_st[i2];
+                                                                        let l2: i32 = ui_tt_line_to(lx2, g_tt_cy);
+                                                                        horiz = 0;
+                                                                    } else {
+                                                                        let ly2: i32 = g_tt_cy + g_tt_st[i2];
+                                                                        let l3: i32 = ui_tt_line_to(g_tt_cx, ly2);
+                                                                        horiz = 1;
+                                                                    }
+                                                                    i2 = i2 + 1;
+                                                                }
+                                                                g_tt_nst = 0;
+                                                            } else {
+                                                                if (op == 7) {
+                                                                    let i3: i32 = 0;
+                                                                    let vert: i32 = 1;
+                                                                    while (i3 < g_tt_nst) {
+                                                                        if (vert == 1) {
+                                                                            let ly3: i32 = g_tt_cy + g_tt_st[i3];
+                                                                            let l4: i32 = ui_tt_line_to(g_tt_cx, ly3);
+                                                                            vert = 0;
+                                                                        } else {
+                                                                            let lx3: i32 = g_tt_cx + g_tt_st[i3];
+                                                                            let l5: i32 = ui_tt_line_to(lx3, g_tt_cy);
+                                                                            vert = 1;
+                                                                        }
+                                                                        i3 = i3 + 1;
+                                                                    }
+                                                                    g_tt_nst = 0;
+                                                                } else {
+                                                                    if (op == 8) {
+                                                                        let i4: i32 = 0;
+                                                                        while (i4 + 5 < g_tt_nst) {
+                                                                            let s: i32 = ui_tt_cff_rrseg(g_tt_st[i4], g_tt_st[i4 + 1], g_tt_st[i4 + 2], g_tt_st[i4 + 3], g_tt_st[i4 + 4], g_tt_st[i4 + 5]);
+                                                                            i4 = i4 + 6;
+                                                                        }
+                                                                        g_tt_nst = 0;
+                                                                    } else {
+                                                                        if (op == 24) {
+                                                                            let nc2: i32 = (g_tt_nst - 2) / 6;
+                                                                            let i5: i32 = 0;
+                                                                            while (i5 < nc2) {
+                                                                                let b5: i32 = i5 * 6;
+                                                                                let s2: i32 = ui_tt_cff_rrseg(g_tt_st[b5], g_tt_st[b5 + 1], g_tt_st[b5 + 2], g_tt_st[b5 + 3], g_tt_st[b5 + 4], g_tt_st[b5 + 5]);
+                                                                                i5 = i5 + 1;
+                                                                            }
+                                                                            let lx4: i32 = g_tt_cx + g_tt_st[nc2 * 6];
+                                                                            let ly4: i32 = g_tt_cy + g_tt_st[nc2 * 6 + 1];
+                                                                            let l6: i32 = ui_tt_line_to(lx4, ly4);
+                                                                            g_tt_nst = 0;
+                                                                        } else {
+                                                                            if (op == 25) {
+                                                                                let nl: i32 = (g_tt_nst - 6) / 2;
+                                                                                let i6: i32 = 0;
+                                                                                while (i6 < nl) {
+                                                                                    let lx5: i32 = g_tt_cx + g_tt_st[i6 * 2];
+                                                                                    let ly5: i32 = g_tt_cy + g_tt_st[i6 * 2 + 1];
+                                                                                    let l7: i32 = ui_tt_line_to(lx5, ly5);
+                                                                                    i6 = i6 + 1;
+                                                                                }
+                                                                                let b6: i32 = nl * 2;
+                                                                                let s3: i32 = ui_tt_cff_rrseg(g_tt_st[b6], g_tt_st[b6 + 1], g_tt_st[b6 + 2], g_tt_st[b6 + 3], g_tt_st[b6 + 4], g_tt_st[b6 + 5]);
+                                                                                g_tt_nst = 0;
+                                                                            } else {
+                                                                                if (op == 26) {
+                                                                                    // vvcurveto (Type 2 op 26): dx1? {dya dxb dyb dyc}+.
+                                                                                    // One curve per 4 args after an optional leading dx1
+                                                                                    // (odd arg count). The old code drew a single curve and
+                                                                                    // dropped the rest, which corrupted every bowl glyph
+                                                                                    // that uses it with more than 5 args (e, o, 0, 5, 6).
+                                                                                    let i26: i32 = 0;
+                                                                                    let dx26: i32 = 0;
+                                                                                    if ((g_tt_nst - (g_tt_nst / 2) * 2) == 1) {
+                                                                                        dx26 = g_tt_st[0];
+                                                                                        i26 = 1;
+                                                                                    } else {
+                                                                                    }
+                                                                                    while (i26 + 3 < g_tt_nst) {
+                                                                                        let x26: i32 = g_tt_cx;
+                                                                                        let y26: i32 = g_tt_cy;
+                                                                                        let dya26: i32 = g_tt_st[i26];
+                                                                                        let dxb26: i32 = g_tt_st[i26 + 1];
+                                                                                        let dyb26: i32 = g_tt_st[i26 + 2];
+                                                                                        let dyc26: i32 = g_tt_st[i26 + 3];
+                                                                                        let c26: i32 = ui_tt_cubic_to(x26 + dx26, y26 + dya26, x26 + dx26 + dxb26, y26 + dya26 + dyb26, x26 + dx26 + dxb26, y26 + dya26 + dyb26 + dyc26);
+                                                                                        dx26 = 0;
+                                                                                        i26 = i26 + 4;
+                                                                                    }
+                                                                                    g_tt_nst = 0;
+                                                                                } else {
+                                                                                    if (op == 27) {
+                                                                                        // hhcurveto (Type 2 op 27): dy1? {dxa dxb dyb dxc}+.
+                                                                                        // One curve per 4 args after an optional leading dy1
+                                                                                        // (odd arg count). Same single-curve bug as op 26.
+                                                                                        let i27: i32 = 0;
+                                                                                        let dy27: i32 = 0;
+                                                                                        if ((g_tt_nst - (g_tt_nst / 2) * 2) == 1) {
+                                                                                            dy27 = g_tt_st[0];
+                                                                                            i27 = 1;
+                                                                                        } else {
+                                                                                        }
+                                                                                        while (i27 + 3 < g_tt_nst) {
+                                                                                            let x27: i32 = g_tt_cx;
+                                                                                            let y27: i32 = g_tt_cy;
+                                                                                            let dxa27: i32 = g_tt_st[i27];
+                                                                                            let dxb27: i32 = g_tt_st[i27 + 1];
+                                                                                            let dyb27: i32 = g_tt_st[i27 + 2];
+                                                                                            let dxc27: i32 = g_tt_st[i27 + 3];
+                                                                                            let c27: i32 = ui_tt_cubic_to(x27 + dxa27, y27 + dy27, x27 + dxa27 + dxb27, y27 + dy27 + dyb27, x27 + dxa27 + dxb27 + dxc27, y27 + dy27 + dyb27);
+                                                                                            dy27 = 0;
+                                                                                            i27 = i27 + 4;
+                                                                                        }
+                                                                                        g_tt_nst = 0;
+                                                                                    } else {
+                                                                                        if (op == 30) {
+                                                                                            // vhcurveto (Type 2 op 30): vertical curve, then
+                                                                                            // horizontal, alternating; each curve takes 4 args and
+                                                                                            // the LAST curve of the run takes an optional 5th
+                                                                                            // (dyc for a v-curve, dxc for an h-curve). The old code
+                                                                                            // drew one curve and dropped the rest.
+                                                                                            let i30: i32 = 0;
+                                                                                            let vert30: i32 = 1;
+                                                                                            while (i30 + 3 < g_tt_nst) {
+                                                                                                if (vert30 == 1) {
+                                                                                                    let xv30: i32 = g_tt_cx;
+                                                                                                    let yv30: i32 = g_tt_cy;
+                                                                                                    let dya30: i32 = g_tt_st[i30];
+                                                                                                    let dxb30: i32 = g_tt_st[i30 + 1];
+                                                                                                    let dyb30: i32 = g_tt_st[i30 + 2];
+                                                                                                    let dxc30: i32 = g_tt_st[i30 + 3];
+                                                                                                    let dyc30: i32 = 0;
+                                                                                                    if ((i30 + 5) == g_tt_nst) {
+                                                                                                        dyc30 = g_tt_st[i30 + 4];
+                                                                                                        i30 = i30 + 5;
+                                                                                                    } else {
+                                                                                                        i30 = i30 + 4;
+                                                                                                    }
+                                                                                                    let cv30: i32 = ui_tt_cubic_to(xv30, yv30 + dya30, xv30 + dxb30, yv30 + dya30 + dyb30, xv30 + dxb30 + dxc30, yv30 + dya30 + dyb30 + dyc30);
+                                                                                                    vert30 = 0;
+                                                                                                } else {
+                                                                                                    let xh30: i32 = g_tt_cx;
+                                                                                                    let yh30: i32 = g_tt_cy;
+                                                                                                    let dxa30: i32 = g_tt_st[i30];
+                                                                                                    let dxb30h: i32 = g_tt_st[i30 + 1];
+                                                                                                    let dyb30h: i32 = g_tt_st[i30 + 2];
+                                                                                                    let dyc30h: i32 = g_tt_st[i30 + 3];
+                                                                                                    let dxc30h: i32 = 0;
+                                                                                                    if ((i30 + 5) == g_tt_nst) {
+                                                                                                        dxc30h = g_tt_st[i30 + 4];
+                                                                                                        i30 = i30 + 5;
+                                                                                                    } else {
+                                                                                                        i30 = i30 + 4;
+                                                                                                    }
+                                                                                                    let ch30: i32 = ui_tt_cubic_to(xh30 + dxa30, yh30, xh30 + dxa30 + dxb30h, yh30 + dyb30h, xh30 + dxa30 + dxb30h + dxc30h, yh30 + dyb30h + dyc30h);
+                                                                                                    vert30 = 1;
+                                                                                                }
+                                                                                            }
+                                                                                            g_tt_nst = 0;
+                                                                                        } else {
+                                                                                            if (op == 31) {
+                                                                                                // hvcurveto (Type 2 op 31): horizontal curve, then
+                                                                                                // vertical, alternating; same 4-args-per-curve rule
+                                                                                                // and optional trailing arg as op 30. Same bug.
+                                                                                                let i31: i32 = 0;
+                                                                                                let vert31: i32 = 0;
+                                                                                                while (i31 + 3 < g_tt_nst) {
+                                                                                                    if (vert31 == 0) {
+                                                                                                        let xh31: i32 = g_tt_cx;
+                                                                                                        let yh31: i32 = g_tt_cy;
+                                                                                                        let dxa31: i32 = g_tt_st[i31];
+                                                                                                        let dxb31: i32 = g_tt_st[i31 + 1];
+                                                                                                        let dyb31: i32 = g_tt_st[i31 + 2];
+                                                                                                        let dyc31: i32 = g_tt_st[i31 + 3];
+                                                                                                        let dxc31: i32 = 0;
+                                                                                                        if ((i31 + 5) == g_tt_nst) {
+                                                                                                            dxc31 = g_tt_st[i31 + 4];
+                                                                                                            i31 = i31 + 5;
+                                                                                                        } else {
+                                                                                                            i31 = i31 + 4;
+                                                                                                        }
+                                                                                                        let ch31: i32 = ui_tt_cubic_to(xh31 + dxa31, yh31, xh31 + dxa31 + dxb31, yh31 + dyb31, xh31 + dxa31 + dxb31 + dxc31, yh31 + dyb31 + dyc31);
+                                                                                                        vert31 = 1;
+                                                                                                    } else {
+                                                                                                        let xv31: i32 = g_tt_cx;
+                                                                                                        let yv31: i32 = g_tt_cy;
+                                                                                                        let dya31: i32 = g_tt_st[i31];
+                                                                                                        let dxb31v: i32 = g_tt_st[i31 + 1];
+                                                                                                        let dyb31v: i32 = g_tt_st[i31 + 2];
+                                                                                                        let dxc31v: i32 = g_tt_st[i31 + 3];
+                                                                                                        let dyc31v: i32 = 0;
+                                                                                                        if ((i31 + 5) == g_tt_nst) {
+                                                                                                            dyc31v = g_tt_st[i31 + 4];
+                                                                                                            i31 = i31 + 5;
+                                                                                                        } else {
+                                                                                                            i31 = i31 + 4;
+                                                                                                        }
+                                                                                                        let cv31: i32 = ui_tt_cubic_to(xv31, yv31 + dya31, xv31 + dxb31v, yv31 + dya31 + dyb31v, xv31 + dxb31v + dxc31v, yv31 + dya31 + dyb31v + dyc31v);
+                                                                                                        vert31 = 0;
+                                                                                                    }
+                                                                                                }
+                                                                                                g_tt_nst = 0;
+                                                                                            } else {
+                                                                                                if (op == 10) {
+                                                                                                    let sub: i32 = ui_tt_pop();
+                                                                                                    let ld: i32 = ui_tt_cff_load_lsub(fd);
+                                                                                                    let bias: i32 = ui_tt_cff_bias(g_tt_cff_lsub_count);
+                                                                                                    let idx: i32 = sub + bias;
+                                                                                                    let sv_count2: i32 = g_tt_idx_count;
+                                                                                                    let sv_osize2: i32 = g_tt_idx_osize;
+                                                                                                    let sv_data2: i32 = g_tt_idx_data;
+                                                                                                    g_tt_idx_count = g_tt_cff_lsub_count;
+                                                                                                    g_tt_idx_osize = g_tt_cff_lsub_osize;
+                                                                                                    g_tt_idx_data = g_tt_cff_lsub_data;
+                                                                                                    let it2: i32 = ui_tt_cff_index_item(idx);
+                                                                                                    g_tt_idx_count = sv_count2;
+                                                                                                    g_tt_idx_osize = sv_osize2;
+                                                                                                    g_tt_idx_data = sv_data2;
+                                                                                                    if (it2 == 0) {
+                                                                                                        return -1;
+                                                                                                    } else {
+                                                                                                    }
+                                                                                                    let sstart: i32 = g_tt_it_start;
+                                                                                                    let send: i32 = g_tt_it_end;
+                                                                                                    let rr: i32 = ui_tt_cff_run(sstart, send, fd, depth + 1);
+                                                                                                    if (rr != 0) {
+                                                                                                        return rr;
+                                                                                                    } else {
+                                                                                                    }
+                                                                                                } else {
+                                                                                                    if (op == 29) {
+                                                                                                        let sub2: i32 = ui_tt_pop();
+                                                                                                        let bias2: i32 = ui_tt_cff_bias(g_tt_cff_gsub_count);
+                                                                                                        let idx2: i32 = sub2 + bias2;
+                                                                                                        let sv_count3: i32 = g_tt_idx_count;
+                                                                                                        let sv_osize3: i32 = g_tt_idx_osize;
+                                                                                                        let sv_data3: i32 = g_tt_idx_data;
+                                                                                                        g_tt_idx_count = g_tt_cff_gsub_count;
+                                                                                                        g_tt_idx_osize = g_tt_cff_gsub_osize;
+                                                                                                        g_tt_idx_data = g_tt_cff_gsub_data;
+                                                                                                        let it3: i32 = ui_tt_cff_index_item(idx2);
+                                                                                                        g_tt_idx_count = sv_count3;
+                                                                                                        g_tt_idx_osize = sv_osize3;
+                                                                                                        g_tt_idx_data = sv_data3;
+                                                                                                        if (it3 == 0) {
+                                                                                                            return -1;
+                                                                                                        } else {
+                                                                                                        }
+                                                                                                        let sstart2: i32 = g_tt_it_start;
+                                                                                                        let send2: i32 = g_tt_it_end;
+                                                                                                        let rr2: i32 = ui_tt_cff_run(sstart2, send2, fd, depth + 1);
+                                                                                                        if (rr2 != 0) {
+                                                                                                            return rr2;
+                                                                                                        } else {
+                                                                                                        }
+                                                                                                    } else {
+                                                                                                        if (op == 11) {
+                                                                                                            return 0;
+                                                                                                        } else {
+                                                                                                            if (op == 14) {
+                                                                                                                let w10: i32 = ui_tt_maybe_width();
+                                                                                                                if (g_tt_nst == 4) {
+                                                                                                                    return -1;
+                                                                                                                } else {
+                                                                                                                }
+                                                                                                                g_tt_endchar = 1;
+                                                                                                                return 1;
+                                                                                                            } else if (op == 15) {
+                                                                                                                // vsindex: pop the variation store index for the current
+                                                                                                                // glyph (CFF2 only). The default instance needs no blend,
+                                                                                                                // but the index must be tracked so blend reads the right
+                                                                                                                // VarData region count.
+                                                                                                                if (g_tt_nst < 1) {
+                                                                                                                    return -1;
+                                                                                                                } else {
+                                                                                                                }
+                                                                                                                let vi: i32 = ui_tt_pop();
+                                                                                                                if (vi < 0) {
+                                                                                                                    return -1;
+                                                                                                                } else {
+                                                                                                                }
+                                                                                                                g_tt_cff_vsindex = vi;
+                                                                                                            } else if (op == 16) {
+                                                                                                                // blend: the stack is [n defaults][n*m deltas][n]. The
+                                                                                                                // default instance keeps the n defaults and drops the
+                                                                                                                // n*m deltas (m = region count of the current VarData).
+                                                                                                                // nb is popped first, so it is not part of the drop.
+                                                                                                                if (g_tt_nst < 1) {
+                                                                                                                    return -1;
+                                                                                                                } else {
+                                                                                                                }
+                                                                                                                let nb: i32 = ui_tt_pop();
+                                                                                                                if (nb < 0) {
+                                                                                                                    return -1;
+                                                                                                                } else {
+                                                                                                                }
+                                                                                                                if (nb > 64) {
+                                                                                                                    return -1;
+                                                                                                                } else {
+                                                                                                                }
+                                                                                                                let mreg: i32 = ui_tt_cff_num_regions();
+                                                                                                                if (mreg < 0) {
+                                                                                                                    return -1;
+                                                                                                                } else {
+                                                                                                                }
+                                                                                                                let drop: i32 = nb * mreg;
+                                                                                                                if (drop + nb > g_tt_nst) {
+                                                                                                                    return -1;
+                                                                                                                } else {
+                                                                                                                }
+                                                                                                                g_tt_nst = g_tt_nst - drop;
+                                                                                                            } else {
+                                                                                                                if (op == 1200) {
+                                                                                                                    g_tt_nst = 0;
+                                                                                                                } else {
+                                                                                                                    if (op == 1206) {
+                                                                                                                        return -1;
+                                                                                                                    } else {
+                                                                                                                        if (op == 1207) {
+                                                                                                                            g_tt_nst = 0;
+                                                                                                                        } else {
+                                                                                                                            if (op == 1212) {
+                                                                                                                                let dv: i32 = ui_tt_pop();
+                                                                                                                                let nv2: i32 = ui_tt_pop();
+                                                                                                                                if (dv == 0) {
+                                                                                                                                    return -1;
+                                                                                                                                } else {
+                                                                                                                                }
+                                                                                                                                let pq: i32 = ui_tt_push(nv2 / dv);
+                                                                                                                            } else {
+                                                                                                                                if (op == 1216) {
+                                                                                                                                    return -1;
+                                                                                                                                } else {
+                                                                                                                                    if (op == 1217) {
+                                                                                                                                        let pz: i32 = ui_tt_push(0);
+                                                                                                                                    } else {
+                                                                                                                                        if (op == 1233) {
+                                                                                                                                            let cyv: i32 = g_tt_st[1];
+                                                                                                                                            let cxv: i32 = g_tt_st[0];
+                                                                                                                                            g_tt_cx = cxv;
+                                                                                                                                            g_tt_cy = cyv;
+                                                                                                                                            g_tt_nst = 0;
+                                                                                                                                        } else {
+                                                                                                                                            if (op == 1234) {
+                                                                                                                                                let fdx1: i32 = g_tt_st[0];
+                                                                                                                                                let fdx2: i32 = g_tt_st[1];
+                                                                                                                                                let fdy2: i32 = g_tt_st[2];
+                                                                                                                                                let fdx3: i32 = g_tt_st[3];
+                                                                                                                                                let fdx4: i32 = g_tt_st[4];
+                                                                                                                                                let fdx5: i32 = g_tt_st[5];
+                                                                                                                                                let fdx6: i32 = g_tt_st[6];
+                                                                                                                                                let neg: i32 = 0 - fdy2;
+                                                                                                                                                let fx0: i32 = g_tt_cx;
+                                                                                                                                                let fy0: i32 = g_tt_cy;
+                                                                                                                                                let fa: i32 = ui_tt_cubic_to(fx0 + fdx1, fy0, fx0 + fdx1 + fdx2, fy0 + fdy2, fx0 + fdx1 + fdx2 + fdx3, fy0 + fdy2);
+                                                                                                                                                let fb: i32 = ui_tt_cubic_to(fx0 + fdx1 + fdx2 + fdx3 + fdx4, fy0 + fdy2, fx0 + fdx1 + fdx2 + fdx3 + fdx4 + fdx5, fy0, fx0 + fdx1 + fdx2 + fdx3 + fdx4 + fdx5 + fdx6, fy0);
+                                                                                                                                                g_tt_nst = 0;
+                                                                                                                                            } else {
+                                                                                                                                                if (op == 1235) {
+                                                                                                                                                    let s4: i32 = ui_tt_cff_rrseg(g_tt_st[0], g_tt_st[1], g_tt_st[2], g_tt_st[3], g_tt_st[4], g_tt_st[5]);
+                                                                                                                                                    let s5: i32 = ui_tt_cff_rrseg(g_tt_st[6], g_tt_st[7], g_tt_st[8], g_tt_st[9], g_tt_st[10], g_tt_st[11]);
+                                                                                                                                                    g_tt_nst = 0;
+                                                                                                                                                } else {
+                                                                                                                                                    if (op == 1237) {
+                                                                                                                                                        let hdx1: i32 = g_tt_st[0];
+                                                                                                                                                        let hdy1: i32 = g_tt_st[1];
+                                                                                                                                                        let hdx2: i32 = g_tt_st[2];
+                                                                                                                                                        let hdy2: i32 = g_tt_st[3];
+                                                                                                                                                        let hdx3: i32 = g_tt_st[4];
+                                                                                                                                                        let hdx4: i32 = g_tt_st[5];
+                                                                                                                                                        let hdx5: i32 = g_tt_st[6];
+                                                                                                                                                        let hdy5: i32 = g_tt_st[7];
+                                                                                                                                                        let hdx6: i32 = g_tt_st[8];
+                                                                                                                                                        let hdy6: i32 = 0 - (hdy1 + hdy2 + hdy5);
+                                                                                                                                                        let hx0: i32 = g_tt_cx;
+                                                                                                                                                        let hy0: i32 = g_tt_cy;
+                                                                                                                                                        let ha2: i32 = ui_tt_cubic_to(hx0 + hdx1, hy0 + hdy1, hx0 + hdx1 + hdx2, hy0 + hdy1 + hdy2, hx0 + hdx1 + hdx2 + hdx3, hy0 + hdy1 + hdy2);
+                                                                                                                                                        let hb2: i32 = ui_tt_cubic_to(hx0 + hdx1 + hdx2 + hdx3 + hdx4, hy0 + hdy1 + hdy2, hx0 + hdx1 + hdx2 + hdx3 + hdx4 + hdx5, hy0 + hdy1 + hdy2 + hdy5, hx0 + hdx1 + hdx2 + hdx3 + hdx4 + hdx5 + hdx6, hy0 + hdy1 + hdy2 + hdy5 + hdy6);
+                                                                                                                                                        g_tt_nst = 0;
+                                                                                                                                                    } else {
+                                                                                                                                                        if (op == 1236) {
+                                                                                                                                                            let dsum_x: i32 = g_tt_st[0] + g_tt_st[2] + g_tt_st[4] + g_tt_st[6] + g_tt_st[8];
+                                                                                                                                                            let dsum_y: i32 = g_tt_st[1] + g_tt_st[3] + g_tt_st[5] + g_tt_st[7] + g_tt_st[9];
+                                                                                                                                                            let ax: i32 = dsum_x;
+                                                                                                                                                            if (ax < 0) {
+                                                                                                                                                                ax = 0 - ax;
+                                                                                                                                                            } else {
+                                                                                                                                                            }
+                                                                                                                                                            let ay: i32 = dsum_y;
+                                                                                                                                                            if (ay < 0) {
+                                                                                                                                                                ay = 0 - ay;
+                                                                                                                                                            } else {
+                                                                                                                                                            }
+                                                                                                                                                            let d6x: i32 = 0;
+                                                                                                                                                            let d6y: i32 = 0;
+                                                                                                                                                            if (ax > ay) {
+                                                                                                                                                                d6x = g_tt_st[10];
+                                                                                                                                                                d6y = 0 - dsum_y;
+                                                                                                                                                            } else {
+                                                                                                                                                                d6x = 0 - dsum_x;
+                                                                                                                                                                d6y = g_tt_st[10];
+                                                                                                                                                            }
+                                                                                                                                                            let sa: i32 = ui_tt_cff_rrseg(g_tt_st[0], g_tt_st[1], g_tt_st[2], g_tt_st[3], g_tt_st[4], g_tt_st[5]);
+                                                                                                                                                            let sb: i32 = ui_tt_cff_rrseg(g_tt_st[6], g_tt_st[7], g_tt_st[8], g_tt_st[9], d6x, d6y);
+                                                                                                                                                            g_tt_nst = 0;
+                                                                                                                                                        } else {
+                                                                                                                                                            return -1;
+                                                                                                                                                        }
+                                                                                                                                                    }
+                                                                                                                                                }
+                                                                                                                                            }
+                                                                                                                                        }
+                                                                                                                                    }
+                                                                                                                                }
+                                                                                                                            }
+                                                                                                                        }
+                                                                                                                    }
+                                                                                                                }
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (g_tt_abort == 1) {
+        return -1;
+    } else {
+    }
+    if (g_tt_endchar == 1) {
+        return 1;
+    } else {
+    }
+    return 0;
+}
+
+// Decode one CFF glyph into the outline buffer. Answers 0, or -1.
+fn ui_tt_cff_glyph(gid: i32) -> i32 {
+    if (gid < 0) {
+        return -1;
+    } else {
+    }
+    if (gid >= g_tt_num_glyphs) {
+        return -1;
+    } else {
+    }
+    if (g_tt_cff_cs_off < 0) {
+        return -1;
+    } else {
+    }
+    let fd: i32 = ui_tt_cff_fd(gid);
+    let ld: i32 = ui_tt_cff_load_lsub(fd);
+    let sv_count: i32 = g_tt_idx_count;
+    let sv_osize: i32 = g_tt_idx_osize;
+    let sv_data: i32 = g_tt_idx_data;
+    g_tt_idx_count = g_tt_cff_cs_count;
+    g_tt_idx_osize = g_tt_cff_cs_osize;
+    g_tt_idx_data = g_tt_cff_cs_data;
+    let it: i32 = ui_tt_cff_index_item(gid);
+    g_tt_idx_count = sv_count;
+    g_tt_idx_osize = sv_osize;
+    g_tt_idx_data = sv_data;
+    if (it == 0) {
+        return -1;
+    } else {
+    }
+    let cs: i32 = g_tt_it_start;
+    let ce2: i32 = g_tt_it_end;
+    g_tt_nst = 0;
+    g_tt_stems = 0;
+    g_tt_width_done = 0;
+    g_tt_endchar = 0;
+    g_tt_cx = 0;
+    g_tt_cy = 0;
+    g_tt_cff_vsindex = g_tt_cff_priv_vsindex;
+    let rr: i32 = ui_tt_cff_run(cs, ce2, fd, 0);
+    if (rr < 0) {
+        return -1;
+    } else {
+    }
+    if (g_tt_abort == 1) {
+        return -1;
+    } else {
+    }
+    return 0;
+}
+
+// ---- Outline entry + scanline rasterizer + cache -----------------------
+
+// Decode the outline of code point cp into the point buffers.
+// Answers the point count (0 for an empty glyph such as space),
+// or -1 on failure (unmapped, bad glyph, unsupported construct).
+fn ui_tt_outline(cp: i32) -> i32 {
+    let r0: i32 = ui_tt_outline_reset();
+    let gid: i32 = ui_tt_cmap(cp);
+    if (gid <= 0) {
+        return -1;
+    } else {
+    }
+    if (gid >= g_tt_num_glyphs) {
+        return -1;
+    } else {
+    }
+    if (g_tt_has_cff == 1) {
+        if (g_tt_cff_parsed == 0) {
+            let pr: i32 = ui_tt_cff_parse();
+            if (pr == 0) {
+                g_tt_has_cff = 0;
+            } else {
+            }
+        } else {
+        }
+        if (g_tt_has_cff == 1) {
+            let cr: i32 = ui_tt_cff_glyph(gid);
+            if (cr == 0) {
+                let e0: i32 = ui_tt_outline_end();
+                if (g_tt_abort == 1) {
+                    return -1;
+                } else {
+                }
+                return g_tt_npts;
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    if (g_tt_has_glyf == 1) {
+        let gr: i32 = ui_tt_glyf_glyph(gid, 0);
+        if (gr != 0) {
+            return -1;
+        } else {
+        }
+        let e1: i32 = ui_tt_outline_end();
+        if (g_tt_abort == 1) {
+            return -1;
+        } else {
+        }
+        return g_tt_npts;
+    } else {
+    }
+    return -1;
+}
+
+// Test/debug getter: outline point count for cp, or -1.
+fn ui_tt_outline_points(cp: i32) -> i32 {
+    return ui_tt_outline(cp);
+}
+
+// Lowest outline point (font units, y up) of the decoded outline,
+// or 0 when the outline is empty. The fill never goes below the
+// control polygon, so this bounds the ink from below: a bitmap
+// tall enough to hold this point holds the whole glyph.
+fn ui_tt_outline_min_y() -> i32 {
+    if (g_tt_npts <= 0) {
+        return 0;
+    } else {
+    }
+    let m: i32 = g_tt_py[0];
+    let i: i32 = 1;
+    while (i < g_tt_npts) {
+        if (g_tt_py[i] < m) {
+            m = g_tt_py[i];
+        } else {
+        }
+        i = i + 1;
+    }
+    return m;
+}
+
+// Rows the bitmap needs to hold the whole outline at the
+// requested cell height ch: the lowest outline point maps to row
+// ceil((asc - miny) * ch / span), exact integer ceiling (a
+// truncating division would clip the bottom row whenever the
+// outline minimum lands just past a row boundary -- exactly the
+// descender case). The outline minimum IS the true minimum: the
+// decoder flattens curves onto the outline, so the lowest vertex
+// is the lowest ink (verified: g -250, p -229, y -234, j -242,
+// q -229, zhong -79, all equal to the fontTools curve bbox). Never
+// smaller than the requested height; the caller clamps it to the
+// 64-row slot.
+fn ui_tt_outline_rows(ch: i32) -> i32 {
+    let span: i32 = g_tt_map_asc - g_tt_map_desc;
+    if (span <= 0) {
+        span = g_tt_upm;
+    } else {
+    }
+    let miny: i32 = ui_tt_outline_min_y();
+    let need: i32 = ((g_tt_map_asc - miny) * ch + span - 1) / span;
+    if (need > ch) {
+        return need;
+    } else {
+    }
+    return ch;
+}
+
+// Scale the decoded outline to supersampled pixel coords (4x) for
+// a bw x bh bitmap. The em box (typo ascender..descender) maps
+// onto the cell: bw px per upm on x, bh px per span on y. bh here
+// is ALWAYS the requested cell height -- never the grown bitmap
+// height (see the vertical-mapping note above): the scale is
+// defined by the requested cell, the grown height only extends
+// the clip. Passing the grown height would stretch the glyph.
+fn ui_tt_scale(bw: i32, bh: i32) -> i32 {
+    let span: i32 = g_tt_map_asc - g_tt_map_desc;
+    if (span <= 0) {
+        span = g_tt_upm;
+    } else {
+    }
+    let i: i32 = 0;
+    while (i < g_tt_npts) {
+        let sx: i32 = g_tt_px[i] * bw * 4 / g_tt_upm;
+        let sy: i32 = (g_tt_map_asc - g_tt_py[i]) * bh * 4 / span;
+        g_tt_sx[i] = sx;
+        g_tt_sy[i] = sy;
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Sort the collected crossings by x (insertion sort; n is small).
+fn ui_tt_sort_row() -> i32 {
+    let i: i32 = 1;
+    while (i < g_tt_row_n) {
+        let kx: i32 = g_tt_row_x[i];
+        let kd: i32 = g_tt_row_d[i];
+        let j: i32 = i - 1;
+        while (j >= 0) {
+            if (g_tt_row_x[j] > kx) {
+                g_tt_row_x[j + 1] = g_tt_row_x[j];
+                g_tt_row_d[j + 1] = g_tt_row_d[j];
+                j = j - 1;
+            } else {
+                break;
+            }
+        }
+        g_tt_row_x[j + 1] = kx;
+        g_tt_row_d[j + 1] = kd;
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Scanline-fill the scaled outline into the 1bpp supersampled
+// scratch, then box-average 4x4 into the 8bpp bitmap out_bm
+// (bw x bh bytes). Answers 0.
+fn ui_tt_scan(bw: i32, bh: i32, out_bm: ptr) -> i32 {
+    let ss_w: i32 = bw * 4;
+    let ss_h: i32 = bh * 4;
+    let total: i32 = ss_w * ss_h;
+    let z: i32 = memset(g_tt_ss, 0, total);
+    let r: i32 = 0;
+    while (r < ss_h) {
+        let c2: i32 = r * 2 + 1;
+        g_tt_row_n = 0;
+        let ci: i32 = 0;
+        while (ci < g_tt_ncon) {
+            let cs: i32 = 0;
+            if (ci == 0) {
+                cs = 0;
+            } else {
+                cs = g_tt_ce[ci - 1] + 1;
+            }
+            let ce3: i32 = g_tt_ce[ci];
+            let j: i32 = cs;
+            while (j <= ce3) {
+                let p0: i32 = j;
+                let p1: i32 = j + 1;
+                if (j == ce3) {
+                    p1 = cs;
+                } else {
+                }
+                let y0: i32 = g_tt_sy[p0] * 2;
+                let y1: i32 = g_tt_sy[p1] * 2;
+                let above0: i32 = 0;
+                if (y0 > c2) {
+                    above0 = 1;
+                } else {
+                }
+                let above1: i32 = 0;
+                if (y1 > c2) {
+                    above1 = 1;
+                } else {
+                }
+                if (above0 != above1) {
+                    let dir: i32 = 1;
+                    let xa: i32 = g_tt_sx[p0];
+                    let ya: i32 = y0;
+                    let xb: i32 = g_tt_sx[p1];
+                    let yb: i32 = y1;
+                    if (y1 < y0) {
+                        dir = -1;
+                        xa = g_tt_sx[p1];
+                        ya = y1;
+                        xb = g_tt_sx[p0];
+                        yb = y0;
+                    } else {
+                    }
+                    let tn: i32 = c2 - ya;
+                    let td: i32 = yb - ya;
+                    let xnum: i32 = tn * (xb - xa) * 256;
+                    let xf: i32 = xa * 256 + xnum / td;
+                    if (g_tt_row_n < 128) {
+                        g_tt_row_x[g_tt_row_n] = xf;
+                        g_tt_row_d[g_tt_row_n] = dir;
+                        g_tt_row_n = g_tt_row_n + 1;
+                    } else {
+                        g_tt_scan_overflow = g_tt_scan_overflow + 1;
+                    }
+                } else {
+                }
+                j = j + 1;
+            }
+            ci = ci + 1;
+        }
+        let srt: i32 = ui_tt_sort_row();
+        let wind: i32 = 0;
+        let k: i32 = 0;
+        while (k + 1 < g_tt_row_n) {
+            wind = wind + g_tt_row_d[k];
+            if (wind != 0) {
+                let x0: i32 = ui_tt_floor256(g_tt_row_x[k]);
+                let x1: i32 = ui_tt_ceil256(g_tt_row_x[k + 1]);
+                if (x0 < 0) {
+                    x0 = 0;
+                } else {
+                }
+                if (x1 > ss_w) {
+                    x1 = ss_w;
+                } else {
+                }
+                let x: i32 = x0;
+                while (x < x1) {
+                    let w: i32 = store_u8(g_tt_ss + r * ss_w + x, 1);
+                    x = x + 1;
+                }
+            } else {
+            }
+            k = k + 1;
+        }
+        r = r + 1;
+    }
+    let dy: i32 = 0;
+    while (dy < bh) {
+        let dx: i32 = 0;
+        while (dx < bw) {
+            let sum: i32 = 0;
+            let ky: i32 = 0;
+            while (ky < 4) {
+                let kx: i32 = 0;
+                while (kx < 4) {
+                    let v: i32 = load_u8(g_tt_ss + (dy * 4 + ky) * ss_w + dx * 4 + kx);
+                    sum = sum + v;
+                    kx = kx + 1;
+                }
+                ky = ky + 1;
+            }
+            let alpha: i32 = sum * 255 / 16;
+            let w2: i32 = store_u8(out_bm + dy * bw + dx, alpha);
+            dx = dx + 1;
+        }
+        dy = dy + 1;
+    }
+    return 0;
+}
+
+// Rasterize cp into the cache at cell size cw x ch (bitmap at most
+// 64x64; larger cells remap from it at draw time). Answers the
+// cache slot, or -1 when the code point has no glyph in this font
+// (the caller falls back to the atlas / placeholder path).
+fn ui_tt_rasterize(cp: i32, cw: i32, ch: i32) -> i32 {
+    if (ui_tt_active() == 0) {
+        return -1;
+    } else {
+    }
+    if (cw < 1) {
+        return -1;
+    } else {
+    }
+    if (ch < 1) {
+        return -1;
+    } else {
+    }
+    let i: i32 = 0;
+    while (i < 512) {
+        if (g_tt_cache_valid[i] == 1) {
+            if (g_tt_cache_cp[i] == cp) {
+                if (g_tt_cache_cw[i] == cw) {
+                    if (g_tt_cache_ch[i] == ch) {
+                        g_tt_cache_hits = g_tt_cache_hits + 1;
+                        g_tt_last_bm = tt_cache_bm(i);
+                        g_tt_last_bw = g_tt_cache_bw[i];
+                        g_tt_last_bh = g_tt_cache_bh[i];
+                        return i;
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    g_tt_cache_misses = g_tt_cache_misses + 1;
+    let t0: i64 = ui_tt_now_ms();
+    let gid: i32 = ui_tt_cmap(cp);
+    if (gid == 0) {
+        return -1;
+    } else {
+    }
+    let npts: i32 = ui_tt_outline(cp);
+    if (npts < 0) {
+        g_tt_decode_fail = g_tt_decode_fail + 1;
+        return -1;
+    } else {
+    }
+    let bw: i32 = cw;
+    if (bw > 64) {
+        bw = 64;
+    } else {
+    }
+    // Per-glyph cell growth (v2.3): the bitmap must hold the whole
+    // outline, not just the typo em box -- Latin descenders reach
+    // -250 while the typo descender is -120. The height never
+    // shrinks below the requested cell (so non-descender glyphs
+    // keep their exact 48-row bitmaps and hashes) and never
+    // exceeds the 64-row cache slot. The scale below still uses
+    // the REQUESTED height (sch), not the grown one.
+    let sch: i32 = ch;
+    if (sch > 64) {
+        sch = 64;
+    } else {
+    }
+    let bh: i32 = ui_tt_outline_rows(sch);
+    if (bh > 64) {
+        bh = 64;
+    } else {
+    }
+    let slot: i32 = g_tt_cache_next;
+    if (g_tt_cache_valid[slot] == 1) {
+        g_tt_cache_evictions = g_tt_cache_evictions + 1;
+    } else {
+        g_tt_cache_live = g_tt_cache_live + 1;
+    }
+    let bm: ptr = tt_cache_bm(slot);
+    let sc: i32 = ui_tt_scale(bw, sch);
+    let sn: i32 = ui_tt_scan(bw, bh, bm);
+    g_tt_cache_cp[slot] = cp;
+    g_tt_cache_cw[slot] = cw;
+    g_tt_cache_ch[slot] = ch;
+    g_tt_cache_bw[slot] = bw;
+    g_tt_cache_bh[slot] = bh;
+    g_tt_cache_valid[slot] = 1;
+    g_tt_cache_next = g_tt_cache_next + 1;
+    if (g_tt_cache_next >= 512) {
+        g_tt_cache_next = 0;
+    } else {
+    }
+    g_tt_last_bm = bm;
+    g_tt_last_bw = bw;
+    g_tt_last_bh = bh;
+    let t1: i64 = ui_tt_now_ms();
+    if (t0 >= 0) {
+        if (t1 >= 0) {
+            g_tt_raster_ms = g_tt_raster_ms + (t1 - t0);
+            g_tt_raster_n = g_tt_raster_n + 1;
+        } else {
+        }
+    } else {
+    }
+    return slot;
+}
+
+// Benchmark hook (test-only): decode + rasterize cp at cw x ch
+// into the caller's 4096-byte bitmap WITHOUT touching the cache.
+// Answers 0, or -1 when the code point has no glyph. Lets the test
+// time cold rasterization in a loop (cache hits would hide it).
+fn ui_tt_rasterize_raw(cp: i32, cw: i32, ch: i32, out_bm: ptr) -> i32 {
+    if (ui_tt_active() == 0) {
+        return -1;
+    } else {
+    }
+    if (out_bm == 0) {
+        return -1;
+    } else {
+    }
+    if (cw < 1) {
+        return -1;
+    } else {
+    }
+    if (ch < 1) {
+        return -1;
+    } else {
+    }
+    let npts: i32 = ui_tt_outline(cp);
+    if (npts < 0) {
+        return -1;
+    } else {
+    }
+    let bw: i32 = cw;
+    if (bw > 64) {
+        bw = 64;
+    } else {
+    }
+    // Same per-glyph growth as the cached path (the caller's buffer
+    // is 4096 bytes by contract, so bw * bh <= 64 * 64 always fits);
+    // the scale still uses the requested height.
+    let sch: i32 = ch;
+    if (sch > 64) {
+        sch = 64;
+    } else {
+    }
+    let bh: i32 = ui_tt_outline_rows(sch);
+    if (bh > 64) {
+        bh = 64;
+    } else {
+    }
+    let sc: i32 = ui_tt_scale(bw, sch);
+    let sn: i32 = ui_tt_scan(bw, bh, out_bm);
+    return 0;
+}

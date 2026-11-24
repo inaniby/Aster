@@ -1,0 +1,11 @@
+// aster:language=en
+struct Large {
+bytes: i64[33]
+}
+fn main(): i32 {
+let large: Large;
+let callback = fn [large] (): i32 {
+return 0;
+};
+return 0;
+}

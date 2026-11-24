@@ -1,0 +1,4 @@
+@导入("demo.restricted_global").别名("restricted")
+方法 启动方法(): 整数
+返回 restricted.read()
+结束 方法

@@ -1,0 +1,144 @@
+struct App {
+    count: i32,
+    tab: i32,
+    lang: i32,
+    notify: i32,
+    promo: i32,
+    slider: i32,
+    sel_open: i32
+}
+let g_app: App = App { 0, 0, 0, 1, 0, 500, 0 };
+let keylog: i32[32];
+let logn: i32 = 0;
+let endn: i32 = 0;
+let padn: i32 = 0;
+let gapn: i32 = 0;
+let statev: i32 = 0;
+let savedDec: fn(ptr) -> i32 = null;
+let savedInc: fn(ptr) -> i32 = null;
+let savedReset: fn(ptr) -> i32 = null;
+let savedUser: ptr = null;
+fn logKey(key: i32) -> i32 {
+    keylog[logn] = key;
+    logn = logn + 1;
+    return 0;
+}
+fn aui_column(key: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_row(key: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_label(key: i32, text: ptr) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_text_i32(key: i32, value: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+    logKey(key);
+    if (key == 1786076415) {
+        savedDec = cb;
+    } else if (key == 183326715) {
+        savedInc = cb;
+    } else if (key == -1039401196) {
+        savedReset = cb;
+    }
+    savedUser = user;
+    return 0;
+}
+fn aui_pad(dp: i32) -> i32 {
+    padn = padn + 1;
+    return 0;
+}
+fn aui_gap(dp: i32) -> i32 {
+    gapn = gapn + 1;
+    return 0;
+}
+fn aui_state_set(key: i32, value: i32) -> i32 {
+    if (key == 1) {
+        statev = value;
+    }
+    return 0;
+}
+fn aui_invalidate() -> i32 {
+    return 0;
+}
+fn aui_end() -> i32 {
+    endn = endn + 1;
+    return 0;
+}
+fn main() -> i32 {
+    let p: ptr<App> = &g_app;
+    let r: i32 = page_counter(p, p);
+    if (r != 0) {
+        return 11;
+    }
+    if (logn != 9) {
+        return 12;
+    }
+    if (keylog[0] != 324013166) {
+        return 13;
+    }
+    if (keylog[1] != 1056240053) {
+        return 13;
+    }
+    if (keylog[2] != 1599418147) {
+        return 13;
+    }
+    if (keylog[3] != 1786076415) {
+        return 13;
+    }
+    if (keylog[4] != 1227156576) {
+        return 13;
+    }
+    if (keylog[5] != 183326715) {
+        return 13;
+    }
+    if (keylog[6] != -1039401196) {
+        return 13;
+    }
+    if (keylog[7] != 840075724) {
+        return 13;
+    }
+    if (keylog[8] != -1552151513) {
+        return 13;
+    }
+    if (endn != 2) {
+        return 14;
+    }
+    if (padn != 1) {
+        return 15;
+    }
+    if (gapn != 2) {
+        return 16;
+    }
+    let up: ptr = p;
+    if (savedUser != up) {
+        return 17;
+    }
+    let c0: i32 = savedDec(savedUser);
+    if (g_app.count != -1) {
+        return 21;
+    }
+    if (statev != -1) {
+        return 22;
+    }
+    let c1: i32 = savedInc(savedUser);
+    if (g_app.count != 0) {
+        return 23;
+    }
+    g_app.count = 5;
+    let c2: i32 = savedReset(savedUser);
+    if (g_app.count != 0) {
+        return 24;
+    }
+    if (statev != 0) {
+        return 25;
+    }
+    return 0;
+}

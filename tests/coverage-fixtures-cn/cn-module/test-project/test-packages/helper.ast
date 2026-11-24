@@ -1,0 +1,5 @@
+// aster:language=en
+package demo.test_helper;
+fn add_one(value: i32): i32 {
+return value + 1;
+}

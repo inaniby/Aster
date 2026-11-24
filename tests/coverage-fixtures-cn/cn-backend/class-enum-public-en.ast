@@ -1,0 +1,15 @@
+// aster:language=en
+class PublicFields {
+let visible: i32;
+@private
+let hidden: i32;
+}
+fn main(): i32 {
+let object: PublicFields = PublicFields();
+let seen: i32 = 0;
+enumloop field in object {
+if (field.name == "visible") { seen = seen + 1; }
+if (field.name == "hidden") { return 2; }
+}
+return seen;
+}

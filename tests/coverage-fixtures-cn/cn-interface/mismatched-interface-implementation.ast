@@ -1,0 +1,12 @@
+// aster:language=zh
+接口类 Required
+方法 run(): 整数
+结束 接口类
+类 Broken : Required
+方法 run(): 逻辑型
+返回 假
+结束 方法
+结束 类
+方法 启动方法(): 整数
+返回 0
+结束 方法

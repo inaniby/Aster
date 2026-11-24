@@ -1,0 +1,8 @@
+// aster:language=zh
+方法 启动方法(): 整数
+变量 total: 整数 = 0
+计次循环 (i = 1, 3)
+total = total + i
+结束 计次循环
+返回 total
+结束 方法

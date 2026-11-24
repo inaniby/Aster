@@ -1,0 +1,12 @@
+// aster:language=en
+@import("standard.text").alias("text")
+fn main(): i32 {
+    let total: i32 = i32(text.length(text.concat("A", "ster")));
+    if (text.equals("Aster", "Aster")) {
+        total = total + 10;
+    }
+    if (text.less("a", "b")) {
+        total = total + 27;
+    }
+    return total;
+}

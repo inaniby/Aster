@@ -1,0 +1,18 @@
+// aster:language=zh
+结构 Point
+x: 整数
+y: 整数
+label: 字符串
+结束 结构
+方法 启动方法(): 整数
+变量 points: Point[2] = [Point { 1, 2, "first" }, Point { 3, 4, "second" }]
+变量 defaults: Point[1]
+如果 defaults[0].label == 空
+返回 1
+结束 如果
+如果 defaults[0].x != 0
+返回 2
+结束 如果
+points[1].y = 44
+返回 points[1].y
+结束 方法

@@ -1,0 +1,14 @@
+// aster:language=en
+class StaticText {
+@static
+let labels: string[2] = ["first", "second"];
+@static
+let empty: string[2];
+}
+fn main(): i32 {
+StaticText.labels[1] = "changed";
+if (StaticText.labels[0] == "first") {
+if (StaticText.labels[1] == "changed" && StaticText.empty[0] == "") { return 3; }
+}
+return 0;
+}

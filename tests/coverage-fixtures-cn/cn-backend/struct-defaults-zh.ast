@@ -1,0 +1,40 @@
+// aster:language=zh
+结构 Inner
+value: 整数
+label: 字符串
+结束 结构
+结构 Record
+nested: Inner
+ready: 逻辑型
+single: 单精度
+precise: 小数
+tail: 字符串
+pointer: 指针
+结束 结构
+方法 启动方法(): 整数
+变量 item: Record
+如果 item.nested.label == 空
+返回 1
+结束 如果
+如果 item.tail == 空
+返回 2
+结束 如果
+如果 item.nested.value != 0
+返回 3
+结束 如果
+如果 item.ready
+返回 4
+结束 如果
+如果 item.single != 单精度(0.0)
+返回 5
+结束 如果
+如果 item.precise != 0.0
+返回 6
+结束 如果
+如果 item.pointer != 空
+返回 7
+结束 如果
+item.nested.value = 27
+item.tail = "ready"
+返回 item.nested.value
+结束 方法

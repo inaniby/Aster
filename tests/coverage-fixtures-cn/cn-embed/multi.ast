@@ -1,0 +1,16 @@
+// aster:language=en
+const g_a_len: i32 = @embed_len("multi-a.bin");
+const g_b_len: i32 = @embed_len("multi-b.bin");
+const g_c_len: i32 = @embed_len("multi-c.bin");
+fn a_ptr() -> ptr {
+    return @embed("multi-a.bin");
+}
+fn b_ptr() -> ptr {
+    return @embed("multi-b.bin");
+}
+fn c_ptr() -> ptr {
+    return @embed("multi-c.bin");
+}
+fn main() -> i32 {
+    return load_u8(a_ptr()) + g_a_len + load_u8(b_ptr()) + g_b_len + load_u8(c_ptr()) + g_c_len;
+}

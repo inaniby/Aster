@@ -1,0 +1,115 @@
+// aster:language=zh
+结构 Values
+byte: 字节
+short: 短整数
+bytes: 字节[2]
+shorts: 短整数[2]
+结束 结构
+结构 Metadata
+byte: 字节
+short: 短整数
+结束 结构
+方法 identity8(value: 字节): 字节
+返回 value
+结束 方法
+方法 identity16(value: 短整数): 短整数
+返回 value
+结束 方法
+方法 widen8(value: 字节): 长整数
+返回 value
+结束 方法
+方法 widen16(value: 短整数): 长整数
+返回 value
+结束 方法
+方法 reinterpret8(value: u字节): 字节
+返回 字节(value)
+结束 方法
+方法 reinterpret16(value: u短整数): 短整数
+返回 短整数(value)
+结束 方法
+方法 stackCheck(a: 整数, b: 整数, c: 整数, d: 整数, e: 整数, f: 整数, g: 整数, h: 整数, value8: 字节, value16: 短整数): 整数
+返回 widen8(value8) + widen16(value16) + 312
+结束 方法
+方法 启动方法(): 整数
+变量 zero8: 字节
+变量 zero16: 短整数
+如果 zero8 != 0
+返回 1
+结束 如果
+如果 zero16 != 0
+返回 2
+结束 如果
+变量 byteValue: 字节 = 字节(255)
+变量 shortValue: 短整数 = 短整数(65534)
+如果 byteValue != -1
+返回 3
+结束 如果
+如果 shortValue != -2
+返回 4
+结束 如果
+如果 reinterpret8(u字节(255)) != -1
+返回 4
+结束 如果
+如果 reinterpret16(u短整数(65534)) != -2
+返回 4
+结束 如果
+如果 byteValue >= 0
+返回 3
+结束 如果
+变量 matched: 整数 = 0
+假如 byteValue
+是 -1
+matched = matched + 1
+否则
+返回 4
+结束 假如
+如果 matched != 1
+返回 4
+结束 如果
+如果 widen8(identity8(byteValue)) != -1
+返回 5
+结束 如果
+如果 widen16(identity16(shortValue)) != -2
+返回 6
+结束 如果
+变量 bytes: 字节[2] = [字节(128), 字节(127)]
+变量 shorts: 短整数[2] = [短整数(32768), 短整数(32767)]
+如果 bytes[0] != -128
+返回 7
+结束 如果
+如果 shorts[0] != -32768
+返回 8
+结束 如果
+变量 values: Values
+如果 values.byte != 0 || values.short != 0 || values.bytes[1] != 0 || values.shorts[0] != 0
+返回 9
+结束 如果
+values.byte = -120
+values.short = -1234
+values.bytes[1] = -128
+values.shorts[0] = -32768
+如果 values.byte != -120 || values.short != -1234 || values.bytes[1] != -128 || values.shorts[0] != -32768
+返回 10
+结束 如果
+变量 metadata: Metadata
+变量 kinds: 整数 = 0
+枚举循环 (field -> metadata)
+如果 field.类型 == 15
+如果 field.值 == &metadata.byte
+kinds = kinds + 1
+结束 如果
+结束 如果
+如果 field.类型 == 16
+如果 field.值 == &metadata.short
+kinds = kinds + 2
+结束 如果
+结束 如果
+结束 枚举循环
+如果 kinds != 3
+返回 11
+结束 如果
+如果 stackCheck(0, 0, 0, 0, 0, 0, 0, 0, -12, -300) != 0
+返回 12
+结束 如果
+返回 0
+结束 方法

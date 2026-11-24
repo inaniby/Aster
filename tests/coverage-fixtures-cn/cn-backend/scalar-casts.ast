@@ -1,0 +1,16 @@
+// aster:language=zh
+方法 启动方法(): 整数
+变量 single: 单精度 = 单精度(1.0)
+变量 precise: 小数 = 小数(1)
+变量 truncated: 整数 = 整数(1.75)
+如果 single != 单精度(1.0)
+返回 1
+结束 如果
+如果 precise != 1.0
+返回 2
+结束 如果
+如果 truncated != 1
+返回 3
+结束 如果
+返回 0
+结束 方法

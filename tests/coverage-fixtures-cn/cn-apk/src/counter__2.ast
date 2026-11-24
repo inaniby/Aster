@@ -1,0 +1,5 @@
+let count: i32 = 41;
+fn increment(step: i32) -> i32 {
+    count = count + step;
+    return count;
+}

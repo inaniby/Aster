@@ -1,0 +1,5 @@
+name external
+[language]
+default = "zh"
+allowed = ["zh", "en"]
+src/main.ast

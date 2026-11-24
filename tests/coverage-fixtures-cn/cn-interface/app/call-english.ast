@@ -1,0 +1,6 @@
+// aster:language=zh
+@导入("test.english").别名("en")
+方法 启动方法(): 整数
+变量 reader: en.Reader = en.Item()
+返回 reader.read()
+结束 方法

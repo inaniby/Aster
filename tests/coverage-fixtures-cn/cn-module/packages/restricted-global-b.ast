@@ -1,0 +1,4 @@
+包名 demo.restricted_global
+方法 read(): 整数
+返回 localState
+结束 方法

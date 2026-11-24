@@ -1,0 +1,4 @@
+// aster:language=zh
+fn bad(): i32 {
+return 1;
+}

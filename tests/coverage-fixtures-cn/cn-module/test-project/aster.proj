@@ -1,0 +1,6 @@
+name bilingual_tests
+[language]
+default = "zh"
+allowed = ["zh", "en"]
+src/lib.ast
+test tests/basic.ast

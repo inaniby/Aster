@@ -1,0 +1,3 @@
+包名 demo.restricted_global
+@受限
+变量 localState: 整数 = 1

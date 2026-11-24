@@ -1,0 +1,65 @@
+包名 demo.oop
+枚举 Color
+Red = 4
+Blue = Red + 3
+结束 枚举
+接口类 HasValue
+方法 value(): 整数
+结束 接口类
+方法 加二(值: 整数): 整数
+返回 值 + 2
+结束 方法
+类 Item : HasValue
+变量 回调: 方法(整数): 整数 = 加二
+@静态
+变量 count: 整数 = 3
+@静态
+变量 values: 整数[2] = [2, 3]
+@静态
+方法 increment(): 整数
+Item.count = Item.count + 1
+返回 Item.count
+结束 方法
+@静态
+方法 incrementFirst(): 整数
+Item.values[0] = Item.values[0] + 1
+返回 Item.values[0]
+结束 方法
+方法 value(): 整数
+返回 Blue
+结束 方法
+@静态
+方法 double(value: Color): 整数
+返回 value * 2
+结束 方法
+结束 类
+类 ChildItem : Item
+@静态
+方法 readCount(): 整数
+返回 ChildItem.count
+结束 方法
+@静态
+方法 readSecond(): 整数
+返回 ChildItem.values[1]
+结束 方法
+结束 类
+类 Base
+变量 baseValue: 整数
+@受限
+方法 inherited(): 整数
+返回 本对象.baseValue
+结束 方法
+结束 类
+类 Derived : Base
+方法 from_base(): 整数
+本对象.baseValue = 3
+返回 父对象.inherited() + 1
+结束 方法
+结束 类
+类 Ledger
+@受限
+变量 internalValue: 整数
+@受限
+@静态
+变量 internalStaticValue: 整数 = 9
+结束 类

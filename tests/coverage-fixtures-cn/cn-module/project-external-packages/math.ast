@@ -1,0 +1,5 @@
+// aster:language=en
+package external.math;
+fn add(value: i32): i32 {
+return value + 1;
+}

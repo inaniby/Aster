@@ -1,0 +1,4 @@
+包名 标准库.数学 = standard.math
+方法 平方(value: 整数): 整数
+返回 value * value
+结束 方法

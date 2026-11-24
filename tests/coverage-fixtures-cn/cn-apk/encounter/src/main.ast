@@ -1,0 +1,4 @@
+extern fn increment(step: i32) -> i32;
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+    return increment(1);
+}

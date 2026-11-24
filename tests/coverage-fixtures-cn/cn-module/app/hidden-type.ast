@@ -1,0 +1,5 @@
+@导入("demo.hidden_type").别名("secret")
+方法 启动方法(): 整数
+变量 item: secret.Hidden
+返回 0
+结束 方法

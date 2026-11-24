@@ -1,0 +1,15 @@
+// aster:language=en
+struct CallbackBox {
+    callbacks: fn(i32): i32[2]
+}
+fn addTwo(value: i32): i32 { return value + 2; }
+fn addThree(value: i32): i32 { return value + 3; }
+class InstanceCallback {
+let callbacks: fn(i32): i32[2] = [addTwo, addThree];
+}
+fn main(): i32 {
+let object: InstanceCallback = InstanceCallback();
+let box: CallbackBox;
+box.callbacks[1] = addTwo;
+return object.callbacks[0](40) + box.callbacks[1](40);
+}

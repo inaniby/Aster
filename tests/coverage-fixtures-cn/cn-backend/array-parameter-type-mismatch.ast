@@ -1,0 +1,6 @@
+// aster:language=en
+fn readValues(values: i32[2]): i32 { return values[0]; }
+fn main(): i32 {
+let values: u8[2] = [1, 2];
+return readValues(values);
+}

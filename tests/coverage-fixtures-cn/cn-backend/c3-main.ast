@@ -1,0 +1,14 @@
+extern fn aui_cb_register_default() -> i32;
+extern fn aui_cb_invoke(user: ptr) -> i32;
+extern fn aui_cb_release() -> i32;
+fn main() -> i32 {
+if (aui_cb_register_default() != 1) { return 11; }
+if (aui_cb_invoke(ptr(0)) != 8) { return 12; }
+if (aui_cb_release() != 1) { return 13; }
+if (aui_cb_invoke(ptr(0)) != -1) { return 14; }
+if (aui_cb_release() != 0) { return 15; }
+if (aui_cb_register_default() != 1) { return 16; }
+if (aui_cb_invoke(ptr(0)) != 8) { return 17; }
+if (aui_cb_release() != 1) { return 18; }
+return 0;
+}

@@ -1,0 +1,17 @@
+// aster:language=zh
+结构 Table
+items: 整数[2]
+labels: 字符串[2]
+结束 结构
+方法 启动方法(): 整数
+变量 table: Table
+如果 table.labels[0] == 空
+返回 1
+结束 如果
+如果 table.labels[1] == 空
+返回 2
+结束 如果
+table.items[0] = 19
+table.items[1] = 23
+返回 table.items[0] + table.items[1]
+结束 方法

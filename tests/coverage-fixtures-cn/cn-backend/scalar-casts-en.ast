@@ -1,0 +1,10 @@
+// aster:language=en
+fn main(): i32 {
+let single: f32 = f32(1.0);
+let precise: f64 = f64(1);
+let truncated: i32 = i32(1.75);
+if (single != f32(1.0)) { return 1; }
+if (precise != 1.0) { return 2; }
+if (truncated != 1) { return 3; }
+return 0;
+}

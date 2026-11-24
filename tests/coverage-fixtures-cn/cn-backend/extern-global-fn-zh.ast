@@ -1,0 +1,5 @@
+// aster:language=zh
+外部("native_callback") 变量 回调: 方法(整数): 整数
+方法 启动方法(): 整数
+返回 回调(41)
+结束 方法

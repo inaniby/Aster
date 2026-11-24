@@ -1,0 +1,7 @@
+方法 启动方法(): 整数
+变量 count: 整数 = 0
+循环 (count < 3)
+count = count + 1
+结束 循环
+返回 count
+结束 方法

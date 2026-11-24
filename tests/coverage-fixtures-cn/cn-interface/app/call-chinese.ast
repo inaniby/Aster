@@ -1,0 +1,6 @@
+// aster:language=en
+@import("test.chinese").alias("cn")
+fn main(): i32 {
+let reader: cn.可读 = cn.项目();
+return reader.读取();
+}

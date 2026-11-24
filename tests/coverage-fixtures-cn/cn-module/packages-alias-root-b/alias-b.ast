@@ -1,0 +1,4 @@
+包名 demo.root_b = shared.root
+方法 value(): 整数
+返回 2
+结束 方法

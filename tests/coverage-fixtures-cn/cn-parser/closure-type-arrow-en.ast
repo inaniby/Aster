@@ -1,0 +1,5 @@
+// aster:language=en
+fn main(): i32 {
+let callback: closure(i32) -> i32;
+return 0;
+}

@@ -1,0 +1,30 @@
+# aster.proj — AsterUI Gallery 模板（中文）。
+# 复制整个目录，改 package/label，然后 ./build.sh。
+kind apk
+package com.example.asterui.gallery
+label AsterUI 示例集
+version-code 1
+version-name 0.1-cn
+target-sdk 35
+page-size 16384
+[language]
+default = "zh"
+# B-P1: the framework sources are English legacy files (no directive in
+# the files themselves, so the v2.20.4 base is untouched); each keeps its
+# own language here while the app sources below stay zh.
+"../../../src/aui_impl.ast" = "en"
+"../../../src/font_runtime.ast" = "en"
+"../../../src/render/truetype.ast" = "en"
+"../../../src/render/text.ast" = "en"
+"../../../assets/embeds.ast" = "en"
+"../../../src/aster_std.ast" = "en"
+../../../src/aui_impl.ast
+../../../src/font_runtime.ast
+../../../src/render/truetype.ast
+../../../src/render/text.ast
+../../../assets/embeds.ast
+../../../src/aster_std.ast
+src/app.ast
+src/page_counter.ast
+src/page_input.ast
+src/page_nav.ast

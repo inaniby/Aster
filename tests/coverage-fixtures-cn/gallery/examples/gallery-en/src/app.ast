@@ -1,0 +1,99 @@
+// app.ast — AsterUI Gallery APP (English): 3 tabs + entry + headless.
+// Page bodies live in page_counter / page_input / page_nav.ast.
+// Copy this directory, change package/label in aster.proj, then ./build.sh.
+//
+// NOTE: text parameters are declared `ptr`, matching the framework
+// definitions exactly, and literals are passed as ptr("..."). A `string`
+// declaration would duplicate-declare against the framework's `ptr`
+// definition in the merged build, while a bare literal cannot go to a
+// `ptr` parameter — the ptr("...") cast is the working bridge (B2).
+// Method bodies are written expanded, one statement per line (B6:
+// the Chinese rule applies to both languages, so the two stay aligned).
+extern fn aui_android_attach(activity: ptr, saved: ptr, saved_size: i64,
+                             build: fn(ptr): i32, user: ptr,
+                             init: fn(ptr): i32, flags: i32) -> i32;
+extern fn aui_headless_init(build: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_set_app_version(name: ptr, code: i32) -> i32;
+extern fn aui_set_font(font: ptr, scale: i32) -> i32;
+extern fn aui_set_fallback_font(font: ptr, scale: i32) -> i32;
+extern fn aui_root() -> i32;
+extern fn aui_column(key: i32) -> i32;
+extern fn aui_end() -> i32;
+extern fn aui_top_bar(key: i32, title: ptr, leading_icon: i32,
+                      cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_tabs(key: i32, selected: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_tab(key: i32, text: ptr) -> i32;
+extern fn aui_tabs_value(key: i32) -> i32;
+extern fn aui_invalidate() -> i32;
+extern fn aui_nav_pop() -> i32;
+extern let AUI_ICON_ARROW_LEFT: i32;
+extern fn on_add(user: ptr) -> i32;
+extern fn page_counter(s: ptr<App>, user: ptr) -> i32;
+extern fn page_input(s: ptr<App>, user: ptr) -> i32;
+extern fn page_nav(s: ptr<App>, user: ptr) -> i32;
+struct App {
+    count: i32,
+    tab: i32,
+    lang: i32,
+    notify: i32,
+    promo: i32,
+    slider: i32,
+    sel_open: i32
+}
+let g_app: App = App { 0, 0, 0, 1, 0, 500, 0 };
+fn on_tab(user: ptr) -> i32 {
+    let a: ptr<App> = user;
+    a.tab = aui_tabs_value(10);
+    aui_invalidate();
+    return 0;
+}
+fn on_top_back(user: ptr) -> i32 {
+    return aui_nav_pop();
+}
+fn build(user: ptr) -> i32 {
+    aui_set_app_version(ptr("0.1-cn"), 1);
+    let s: ptr<App> = user;
+    aui_root();
+    aui_column(1);
+    aui_top_bar(5, ptr("AsterUI Gallery"), AUI_ICON_ARROW_LEFT, on_top_back, user);
+    aui_end();
+    aui_tabs(10, s.tab, on_tab, user);
+    aui_tab(11, ptr("Counter"));
+    aui_tab(12, ptr("Input"));
+    aui_tab(13, ptr("Nav"));
+    aui_end();
+    if (s.tab == 0) {
+        page_counter(s, user);
+    } else if (s.tab == 1) {
+        page_input(s, user);
+    } else {
+        page_nav(s, user);
+    }
+    aui_end();
+    return 0;
+}
+fn app_init(user: ptr) -> i32 {
+    aui_set_font(0, 1);
+    aui_set_fallback_font(0, 1);
+    return 0;
+}
+fn ANativeActivity_onCreate(activity: ptr, saved: ptr, savedSize: i64) -> i32 {
+    return aui_android_attach(activity, saved, savedSize,
+                              build, &g_app, app_init, 0);
+}
+fn gallery_headless_init() -> i32 {
+    return aui_headless_init(build, &g_app);
+}
+fn gallery_set_tab(t: i32) -> i32 {
+    g_app.tab = t;
+    return aui_invalidate();
+}
+fn gallery_tab() -> i32 {
+    return g_app.tab;
+}
+fn gallery_count() -> i32 {
+    return g_app.count;
+}
+fn gallery_add_one() -> i32 {
+    return on_add(&g_app);
+}

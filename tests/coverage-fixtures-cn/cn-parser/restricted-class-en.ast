@@ -1,0 +1,12 @@
+// aster:language=en
+class Base {
+@protected
+fn inherited(): i32 {
+return 1;
+}
+@private
+let secret: i32;
+}
+fn main(): i32 {
+return 0;
+}

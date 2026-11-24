@@ -1,0 +1,8 @@
+// aster:language=en
+struct Inner { value: i32, label: string }
+struct Record { nested: Inner, ready: bool, single: f32, precise: f64 }
+fn main(): i32 {
+let item: Record;
+item.nested.value = 27;
+return item.nested.value;
+}

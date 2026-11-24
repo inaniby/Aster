@@ -1,0 +1,4 @@
+@导入("demo.hidden_global").别名("hidden")
+方法 启动方法(): 整数
+返回 hidden.secret
+结束 方法

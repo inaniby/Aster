@@ -1,0 +1,471 @@
+// headless.ast — Gallery APP headless check (English).
+//
+// Renders every tab with aui_headless_render and asserts the counter
+// survives a tab switch. Exit 0 = pass; 1 = no draw commands;
+// 2 = Counter tab did not render; 3 = count wrong / lost across tabs;
+// 4 = Nav tab did not render; 5 = Input tab did not render;
+// 6 = real tap on the + button (105) did not increment the count;
+// 7 = nav root is not Route 1 / Depth 1, or push (button 403) did not
+//     reach Route 2 / Depth 2; 8 = pop (button 420) did not return to
+//     Route 1 / Depth 1; 9 = Input tab content blank (RECT 1000
+//     height <= 0 or content-area non-background pixels == 0);
+//     90 = font load failed.
+//
+// The driver also prints the snapshot sections that snapshot_diff.py
+// consumes, on stdout (PASS / failure lines go nowhere — the exit code
+// is the verdict; stdout is snapshot-only, like font_runtime_test):
+//   SNAPSHOT counter0 / counter1 — Counter tab before / after a real
+//     tap on button 105 (fake_post_motion DOWN/UP + aui_on_input).
+//   SNAPSHOT input — Input tab (scroll 1000 + weight): chrome + 22 RECT
+//     + 13 TEXT + PIXELHASH input + 9 PXCOUNT lines (see emit_input).
+//   SNAPSHOT nav_root / nav_push / nav_pop — Nav tab at Route 1/1,
+//     after a real tap on 403 (Route 2/2), after a real tap on 420
+//     (back to Route 1/1). Route/Depth are read live from
+//     aui_route() / aui_nav_depth(), not from the page source.
+//   PIXELHASH <section> — FNV-1a 64 over the 480x880 RGBA frame
+//     (same constants as font_runtime_test). The viewport is 480x880,
+//     not 320x240: at 320x240 the Counter page is 824 px tall, so the
+//     + button (centre y=282) sits outside the viewport and a real
+//     tap cannot land on it — gallery_smoke_test renders 960x1024
+//     for the same reason.
+// Snapshot conventions (this driver defines them; the baseline is the
+// first real run of this driver, captured by tests/cn/cn-ui-checks.sh):
+//   RECT <key> <x> <y> <w> <h> <color> — geometry from aui_debug_rect;
+//     <color> is the rendered centre pixel of the node rect, as a
+//     decimal 0xRRGGBB (aui_debug_rect exposes no colour, so the frame
+//     itself is the source). A key with no rect is omitted, never
+//     invented. TEXT <key> <x> <y> <len> <text> — x/y are the node rect
+//     origin, <len> is the UTF-8 byte length, <text> is the literal
+//     the page passed to the framework (the count / route / depth
+//     values are formatted live from gallery_count() / aui_route() /
+//     aui_nav_depth()).
+//
+// This file is NOT listed in aster.proj (an apk project cannot run
+// `aster test`); build.sh compiles + links it by hand against the
+// framework objects. It uses only the bilingual frontend.
+extern fn aui_rt_set_font_path(path: ptr) -> i32;
+extern fn aui_set_font(font: ptr, scale: i32) -> i32;
+extern fn aui_headless_render(w: i32, h: i32, out: ptr) -> i32;
+extern fn aui_debug_rect(key: i32, out: ptr) -> i32;
+extern fn aui_on_input(ident: i32, events: i32, data: ptr) -> i32;
+extern fn aui_route() -> i32;
+extern fn aui_nav_depth() -> i32;
+extern fn aui_text_value(key: i32) -> ptr;
+extern fn fake_post_motion(action: i32, x: i32, y: i32) -> i32;
+extern fn gallery_headless_init() -> i32;
+extern fn gallery_set_tab(t: i32) -> i32;
+extern fn gallery_tab() -> i32;
+extern fn gallery_count() -> i32;
+extern fn gallery_add_one() -> i32;
+extern fn write_all(fd: i32, buf: ptr, n: i32) -> i32;
+extern fn fmt_i32(buf: ptr, v: i32) -> i32;
+extern fn fmt_i64(buf: ptr, v: i64) -> i32;
+extern fn strlen(s: ptr) -> i32;
+let W: i32 = 480;
+let H: i32 = 880;
+let g_buf: i32[422400] = 0;
+let g_font: ptr = 0;
+let g_rect: i32[4] = 0;
+let g_num: u8[32] = 0;
+let g_val: u8[32] = 0;
+fn out_str(s: ptr) -> i32 {
+    return write_all(1, s, strlen(s));
+}
+fn out_i32(v: i32) -> i32 {
+    let n: i32 = fmt_i32(g_num, v);
+    return write_all(1, g_num, n);
+}
+fn out_i64(v: i64) -> i32 {
+    let n: i32 = fmt_i64(g_num, v);
+    return write_all(1, g_num, n);
+}
+fn out_sp() -> i32 {
+    return write_all(1, ptr(" "), 1);
+}
+fn out_nl() -> i32 {
+    return write_all(1, ptr("\n"), 1);
+}
+// Centre pixel of the node rect, as decimal 0xRRGGBB; 0 if degenerate.
+fn rect_color() -> i32 {
+    let x: i32 = g_rect[0];
+    let y: i32 = g_rect[1];
+    let w: i32 = g_rect[2];
+    let h: i32 = g_rect[3];
+    if (w <= 0 || h <= 0) {
+        return 0;
+    }
+    let cx: i32 = x + w / 2;
+    let cy: i32 = y + h / 2;
+    if (cx < 0) { cx = 0; }
+    if (cy < 0) { cy = 0; }
+    if (cx >= W) { cx = W - 1; }
+    if (cy >= H) { cy = H - 1; }
+    let off: i32 = (cy * W + cx) * 4;
+    let r: i32 = load_u8(g_buf + off);
+    let g: i32 = load_u8(g_buf + off + 1);
+    let b: i32 = load_u8(g_buf + off + 2);
+    return (r * 65536) + (g * 256) + b;
+}
+fn emit_rect(key: i32) -> i32 {
+    if (aui_debug_rect(key, g_rect) != 0) {
+        return 1;
+    }
+    let s1: i32 = out_str(ptr("RECT "));
+    let s2: i32 = out_i32(key);
+    let s3: i32 = out_sp();
+    let s4: i32 = out_i32(g_rect[0]);
+    let s5: i32 = out_sp();
+    let s6: i32 = out_i32(g_rect[1]);
+    let s7: i32 = out_sp();
+    let s8: i32 = out_i32(g_rect[2]);
+    let s9: i32 = out_sp();
+    let sa: i32 = out_i32(g_rect[3]);
+    let sb: i32 = out_sp();
+    let sc: i32 = out_i32(rect_color());
+    let sd: i32 = out_nl();
+    return 0;
+}
+fn emit_text(key: i32, text: ptr) -> i32 {
+    if (aui_debug_rect(key, g_rect) != 0) {
+        return 1;
+    }
+    let s1: i32 = out_str(ptr("TEXT "));
+    let s2: i32 = out_i32(key);
+    let s3: i32 = out_sp();
+    let s4: i32 = out_i32(g_rect[0]);
+    let s5: i32 = out_sp();
+    let s6: i32 = out_i32(g_rect[1]);
+    let s7: i32 = out_sp();
+    let s8: i32 = out_i32(strlen(text));
+    let s9: i32 = out_sp();
+    let sa: i32 = out_str(text);
+    let sb: i32 = out_nl();
+    return 0;
+}
+fn emit_text_i32(key: i32, v: i32) -> i32 {
+    if (aui_debug_rect(key, g_rect) != 0) {
+        return 1;
+    }
+    // NOTE: the formatted value lives in g_val, not g_num — out_i32
+    // below formats into g_num and would overwrite it (B-rail probe:
+    // the first run printed the length digit instead of the count).
+    let n: i32 = fmt_i32(g_val, v);
+    let s1: i32 = out_str(ptr("TEXT "));
+    let s2: i32 = out_i32(key);
+    let s3: i32 = out_sp();
+    let s4: i32 = out_i32(g_rect[0]);
+    let s5: i32 = out_sp();
+    let s6: i32 = out_i32(g_rect[1]);
+    let s7: i32 = out_sp();
+    let s8: i32 = out_i32(n);
+    let s9: i32 = out_sp();
+    let sa: i32 = write_all(1, g_val, n);
+    let sb: i32 = out_nl();
+    return 0;
+}
+fn emit_pixelhash(name: ptr) -> i32 {
+    let h: i64 = -3750763034362895579;
+    let i: i32 = 0;
+    while (i < W * H * 4) {
+        let b: i32 = load_u8(g_buf + i);
+        h = (h ^ b) * 1099511628211;
+        i = i + 1;
+    }
+    let s1: i32 = out_str(ptr("PIXELHASH "));
+    let s2: i32 = out_str(name);
+    let s3: i32 = out_sp();
+    let s4: i32 = out_i64(h);
+    let s5: i32 = out_nl();
+    return 0;
+}
+// Real tap on a button key: DOWN + aui_on_input, UP + aui_on_input,
+// at the rect centre read at runtime (headless_test.ast pattern).
+// Returns 0 on dispatch, -1 when the key has no rect.
+fn tap_key(key: i32) -> i32 {
+    if (aui_debug_rect(key, g_rect) != 0) {
+        return -1;
+    }
+    let cx: i32 = g_rect[0] + g_rect[2] / 2;
+    let cy: i32 = g_rect[1] + g_rect[3] / 2;
+    fake_post_motion(0, cx, cy);
+    aui_on_input(1, 0, 0);
+    fake_post_motion(1, cx, cy);
+    aui_on_input(1, 0, 0);
+    return 0;
+}
+fn emit_chrome_rects() -> i32 {
+    let a: i32 = emit_rect(1);
+    let b: i32 = emit_rect(5);
+    let c: i32 = emit_rect(10);
+    let d: i32 = emit_rect(11);
+    let e: i32 = emit_rect(12);
+    let f: i32 = emit_rect(13);
+    return 0;
+}
+fn emit_chrome_texts(title: ptr, tab0: ptr, tab1: ptr, tab2: ptr) -> i32 {
+    let a: i32 = emit_text(5, title);
+    let b: i32 = emit_text(11, tab0);
+    let c: i32 = emit_text(12, tab1);
+    let d: i32 = emit_text(13, tab2);
+    return 0;
+}
+// Counter tab snapshot. name is "counter0" / "counter1".
+fn emit_counter(name: ptr, count: i32) -> i32 {
+    let h1: i32 = out_str(ptr("SNAPSHOT "));
+    let h2: i32 = out_str(name);
+    let h3: i32 = out_nl();
+    let a: i32 = emit_chrome_rects();
+    let b: i32 = emit_rect(100);
+    let c: i32 = emit_rect(101);
+    let d: i32 = emit_rect(102);
+    let e: i32 = emit_rect(103);
+    let f: i32 = emit_rect(104);
+    let g: i32 = emit_rect(105);
+    let h: i32 = emit_rect(106);
+    let i: i32 = emit_rect(107);
+    let j: i32 = emit_rect(108);
+    let k: i32 = emit_chrome_texts(ptr("AsterUI Gallery"), ptr("Counter"), ptr("Input"), ptr("Nav"));
+    let l: i32 = emit_text(101, ptr("Counter"));
+    let m: i32 = emit_text(103, ptr("-"));
+    let n: i32 = emit_text_i32(104, count);
+    let o: i32 = emit_text(105, ptr("+"));
+    let p: i32 = emit_text(106, ptr("Reset"));
+    let q: i32 = emit_text(107, ptr("Tap + to count up, - to count down."));
+    if (count == 0) {
+        let r: i32 = emit_text(108, ptr("Count is zero."));
+    } else {
+        let r: i32 = emit_text(108, ptr("Count is non-zero."));
+    }
+    let z: i32 = emit_pixelhash(name);
+    return 0;
+}
+// Nav tab snapshot. name is "nav_root" / "nav_push" / "nav_pop";
+// page2 selects the Page 2 keys (410-420) over the root keys (401-403).
+fn emit_nav(name: ptr, page2: i32) -> i32 {
+    let h1: i32 = out_str(ptr("SNAPSHOT "));
+    let h2: i32 = out_str(name);
+    let h3: i32 = out_nl();
+    let a: i32 = emit_chrome_rects();
+    let b: i32 = emit_rect(1001);
+    if (page2 == 1) {
+        let c: i32 = emit_rect(410);
+        let d: i32 = emit_rect(411);
+        let e: i32 = emit_rect(412);
+        let f: i32 = emit_rect(420);
+    } else {
+        let c: i32 = emit_rect(401);
+        let d: i32 = emit_rect(402);
+        let e: i32 = emit_rect(403);
+    }
+    let g: i32 = emit_rect(430);
+    let h: i32 = emit_rect(431);
+    let i: i32 = emit_rect(433);
+    let j: i32 = emit_rect(434);
+    let k: i32 = emit_rect(435);
+    let l: i32 = emit_rect(437);
+    let m: i32 = emit_chrome_texts(ptr("AsterUI Gallery"), ptr("Counter"), ptr("Input"), ptr("Nav"));
+    if (page2 == 1) {
+        let n: i32 = emit_text(411, ptr("Page 2"));
+        let o: i32 = emit_text(412, ptr("Back goes to the tabs. The hardware Back key pops it too."));
+    } else {
+        let n: i32 = emit_text(401, ptr("Navigation stack"));
+        let o: i32 = emit_text(402, ptr("Push a page, then pop it with the button or BACK."));
+    }
+    let p: i32 = emit_text(431, ptr("Route"));
+    let q: i32 = emit_text_i32(433, aui_route());
+    let r: i32 = emit_text(435, ptr("Depth"));
+    let s: i32 = emit_text_i32(437, aui_nav_depth());
+    let z: i32 = emit_pixelhash(name);
+    return 0;
+}
+// B23 probe: pixel census. bg = (246,246,248) = 0xF6F6F8 (the
+// framework background seen in every RECT centre); zero = untouched
+// buffer (RGBA 0,0,0,0); other = anything else (real drawn content).
+// kind: 0 = bg, 1 = zero, 2 = other.
+fn count_kind(x0: i32, y0: i32, w: i32, h: i32, kind: i32) -> i32 {
+    let x1: i32 = x0 + w;
+    let y1: i32 = y0 + h;
+    if (x0 < 0) { x0 = 0; }
+    if (y0 < 0) { y0 = 0; }
+    if (x1 > W) { x1 = W; }
+    if (y1 > H) { y1 = H; }
+    let n: i32 = 0;
+    let y: i32 = y0;
+    while (y < y1) {
+        let x: i32 = x0;
+        while (x < x1) {
+            let off: i32 = (y * W + x) * 4;
+            let r: i32 = load_u8(g_buf + off);
+            let g: i32 = load_u8(g_buf + off + 1);
+            let b: i32 = load_u8(g_buf + off + 2);
+            let a: i32 = load_u8(g_buf + off + 3);
+            if (kind == 0) {
+                if (r == 246 && g == 246 && b == 248) { n = n + 1; }
+            } else if (kind == 1) {
+                if (r == 0 && g == 0 && b == 0 && a == 0) { n = n + 1; }
+            } else {
+                if (!((r == 246 && g == 246 && b == 248) || (r == 0 && g == 0 && b == 0 && a == 0))) { n = n + 1; }
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return n;
+}
+fn emit_pxcounts_rect(label: ptr, x0: i32, y0: i32, w: i32, h: i32) -> i32 {
+    let p1: i32 = out_str(ptr("PXCOUNT "));
+    let p2: i32 = out_str(label);
+    let p3: i32 = out_sp();
+    let p4: i32 = out_i32(count_kind(x0, y0, w, h, 0));
+    let p5: i32 = out_sp();
+    let p6: i32 = out_i32(count_kind(x0, y0, w, h, 1));
+    let p7: i32 = out_sp();
+    let p8: i32 = out_i32(count_kind(x0, y0, w, h, 2));
+    let p9: i32 = out_nl();
+    return 0;
+}
+fn emit_pxcounts(key: i32) -> i32 {
+    if (aui_debug_rect(key, g_rect) != 0) {
+        return 1;
+    }
+    return emit_pxcounts_rect(ptr("key"), g_rect[0], g_rect[1], g_rect[2], g_rect[3]);
+}
+// Input tab snapshot (B23 probe). Keys from page_input.ast:
+// scroll 1000, column 1001, label 101, text_field 110, label 111,
+// row 112, live label 113, row 114, buttons 115/116, label 120,
+// select 130, options 131-133, row 140, label 141, switch 143,
+// checkbox 150, label 155, slider 160, progress 170.
+fn emit_input(name: ptr) -> i32 {
+    let h1: i32 = out_str(ptr("SNAPSHOT "));
+    let h2: i32 = out_str(name);
+    let h3: i32 = out_nl();
+    let a: i32 = emit_chrome_rects();
+    let b: i32 = emit_rect(1000);
+    let c: i32 = emit_rect(1001);
+    let d: i32 = emit_rect(101);
+    let e: i32 = emit_rect(110);
+    let f: i32 = emit_rect(111);
+    let g: i32 = emit_rect(112);
+    let h: i32 = emit_rect(113);
+    let i: i32 = emit_rect(114);
+    let j: i32 = emit_rect(115);
+    let k: i32 = emit_rect(116);
+    let l: i32 = emit_rect(120);
+    let m: i32 = emit_rect(130);
+    let n: i32 = emit_rect(131);
+    let o: i32 = emit_rect(132);
+    let p: i32 = emit_rect(133);
+    let q: i32 = emit_rect(140);
+    let r: i32 = emit_rect(141);
+    let s: i32 = emit_rect(143);
+    let t: i32 = emit_rect(150);
+    let u: i32 = emit_rect(155);
+    let v: i32 = emit_rect(160);
+    let w: i32 = emit_rect(170);
+    let x: i32 = emit_chrome_texts(ptr("AsterUI Gallery"), ptr("Counter"), ptr("Input"), ptr("Nav"));
+    let y1: i32 = emit_text(101, ptr("Text field + select"));
+    let y2: i32 = emit_text(110, ptr("Tap to type..."));
+    let y3: i32 = emit_text(111, ptr("Live value"));
+    let y4: i32 = emit_text(113, aui_text_value(110));
+    let y5: i32 = emit_text(115, ptr("Clear"));
+    let y6: i32 = emit_text(116, ptr("Focus"));
+    let y7: i32 = emit_text(120, ptr("Language"));
+    let y8: i32 = emit_text(131, ptr("English"));
+    let y9: i32 = emit_text(132, ptr("German"));
+    let ya: i32 = emit_text(133, ptr("Chinese"));
+    let yb: i32 = emit_text(141, ptr("Notify"));
+    let yc: i32 = emit_text(150, ptr("Promotions"));
+    let yd: i32 = emit_text(155, ptr("Volume"));
+    let z: i32 = emit_pixelhash(name);
+    let q01: i32 = emit_pxcounts_rect(ptr("whole"), 0, 0, W, H);
+    let q02: i32 = emit_pxcounts_rect(ptr("chrome"), 0, 24, W, 124);
+    let q03: i32 = emit_pxcounts_rect(ptr("content"), 0, 148, W, H - 148);
+    let q04: i32 = emit_pxcounts(101);
+    let q05: i32 = emit_pxcounts(110);
+    let q06: i32 = emit_pxcounts(115);
+    let q07: i32 = emit_pxcounts(143);
+    let q08: i32 = emit_pxcounts(160);
+    let q09: i32 = emit_pxcounts(170);
+    return 0;
+}
+fn main() -> i32 {
+    let font_ok: i32 = aui_rt_set_font_path(ptr("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"));
+    if (font_ok != 1) {
+        return 90;
+    }
+    aui_set_font(g_font, 1);
+    gallery_headless_init();
+    let n0: i32 = aui_headless_render(W, H, g_buf);
+    if (n0 <= 0) {
+        return 1;
+    }
+    if (gallery_count() != 0) {
+        return 3;
+    }
+    let e0: i32 = emit_counter(ptr("counter0"), 0);
+    // [5/7]: real tap on the + button (105) — never gallery_add_one().
+    if (tap_key(105) != 0) {
+        return 6;
+    }
+    if (gallery_count() != 1) {
+        return 6;
+    }
+    let n1: i32 = aui_headless_render(W, H, g_buf);
+    if (n1 <= 0) {
+        return 2;
+    }
+    let e1: i32 = emit_counter(ptr("counter1"), 1);
+    gallery_set_tab(1);
+    let n2: i32 = aui_headless_render(W, H, g_buf);
+    if (n2 <= 0) {
+        return 5;
+    }
+    let e1b: i32 = emit_input(ptr("input"));
+    if (aui_debug_rect(1000, g_rect) != 0 || g_rect[3] <= 0) {
+        return 9;
+    }
+    if (count_kind(0, 148, W, H - 148, 2) <= 0) {
+        return 9;
+    }
+    gallery_set_tab(2);
+    let n3: i32 = aui_headless_render(W, H, g_buf);
+    if (n3 <= 0) {
+        return 4;
+    }
+    // B12 (i) / B15: root must be Route 1 / Depth 1.
+    if (aui_route() != 1 || aui_nav_depth() != 1) {
+        return 7;
+    }
+    let e2: i32 = emit_nav(ptr("nav_root"), 0);
+    if (tap_key(403) != 0) {
+        return 7;
+    }
+    let n4: i32 = aui_headless_render(W, H, g_buf);
+    if (n4 <= 0) {
+        return 4;
+    }
+    if (aui_route() != 2 || aui_nav_depth() != 2) {
+        return 7;
+    }
+    let e3: i32 = emit_nav(ptr("nav_push"), 1);
+    if (tap_key(420) != 0) {
+        return 8;
+    }
+    let n5: i32 = aui_headless_render(W, H, g_buf);
+    if (n5 <= 0) {
+        return 4;
+    }
+    if (aui_route() != 1 || aui_nav_depth() != 1) {
+        return 8;
+    }
+    let e4: i32 = emit_nav(ptr("nav_pop"), 0);
+    gallery_set_tab(0);
+    let n6: i32 = aui_headless_render(W, H, g_buf);
+    if (n6 <= 0) {
+        return 2;
+    }
+    if (gallery_count() != 1) {
+        return 3;
+    }
+    return 0;
+}

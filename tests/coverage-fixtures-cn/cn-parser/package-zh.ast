@@ -1,0 +1,7 @@
+// package metadata ignores comments and blank lines
+
+包名 标准库.数学 = standard.math
+@导入("标准库.字符串").别名("text")
+方法 启动方法(): 整数
+返回 0
+结束 方法

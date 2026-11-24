@@ -1,0 +1,1728 @@
+// aster_std.ast — the standard library written in Aster itself: the first
+// slice (mem/str/num/hash, v0.23.42-dev), the second (v0.23.77-dev: memmove,
+// the C string searches, atoi, the fixed-arity formatters, an integer sort and
+// a bump allocator over mmap), the printing slice (fmt_f64/fmt_f32) and the
+// basic library (files, a growable arena, a byte buffer, two vectors and a
+// panic), and its second slice (64-bit formatting, the integer and double
+// parsers, the string helpers) and the third slice (a map with string keys and
+// pointer values, and a sort by element width — 87 routines in all,
+// declarations shared by `include`).
+// The original introduction:
+//
+// the first slice of a standard library written in Aster
+// itself: the routines a self-hosting compiler reaches for before it has a
+// compiler to build them with (SELFHOSTING-PLAN M2). No libc, no allocator,
+// no compiler change — pure Aster over the v0.23.40/41-dev syscall and byte
+// intrinsics, delivered as one relocatable object the bootstrap links:
+//
+//   aster build-obj stdlib/aster_std.ast -o std.o
+//   aster build-obj yourapp.ast -o app.o
+//   aster link-obj app.o std.o -o app
+//
+// (include only shares declarations, never bodies — v0.23.13-dev — so a
+// library ships as an object, and the consumer declares `extern fn`/`extern
+// let`. examples/stdlib_demo.ast is that consumer; tests/stdlib-checks.sh
+// diffs every routine against tests/aster-std-twin.c.)
+//
+// Two idioms carry the whole file:
+//
+//   * Every byte-buffer parameter is `ptr<u8>`, never bare `ptr`: that
+//     spelling is the one that takes BOTH a string literal (whose type is
+//     already a ptr to NUL-terminated rodata) and `&arr` of a `u8[N]` (a
+//     strided ptr<u8> since v0.23.30-dev). A bare `ptr` parameter refuses
+//     `&arr`, and a `ptr[N]` element refuses `&arr` — measured, not assumed.
+//   * There are no casts, so a narrowing arrives as an ordinary assignment
+//     (`let d: i32 = v % 10;` truncates an i64); only constant initializers
+//     are range-checked. Mixed-width arithmetic widens to the wider side, so
+//     the FNV loop below stays in i64 without any ceremony.
+//
+// Everything returns an i32 or an i64 the exit status / a buffer can show —
+// there is no void — and every negative answer is a documented sentinel
+// (-1), never a trap.
+
+// ===========================================================================
+// mem — byte primitives over load_u8/store_u8.
+// ===========================================================================
+
+// Copy n bytes, src and dst overlapping is the caller's problem (forward copy
+// only, exactly like C's memcpy). Returns n, so a wrong count is observable.
+// v2.7.2: renamed from `memcpy` — the name now belongs to libc's memcpy,
+// which the UI framework calls directly (extern) for its 13 MB frame copies;
+// the byte loop stays available under this name for small copies.
+fn mem_copy_bytes(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(dst + i, load_u8(src + i));
+        i = i + 1;
+    }
+    return n;
+}
+
+// Fill n bytes with c's low 8 bits (store_u8 truncates, as C's unsigned char
+// conversion does). Returns n.
+fn memset(dst: ptr<u8>, c: i32, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(dst + i, c);
+        i = i + 1;
+    }
+    return n;
+}
+
+// Byte-wise unsigned comparison of the first n bytes: the first differing
+// pair's difference, 0 when equal. The unsigned reading matters — a signed
+// compare would order 0x80 below 0x7F and flip the answer for high bytes.
+fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x != y) { return x - y; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ===========================================================================
+// str — NUL-terminated text: the identifier and keyword matcher's toolkit.
+// ===========================================================================
+
+fn strlen(s: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (load_u8(s + i) != 0) { i = i + 1; }
+    return i;
+}
+
+// C's strcmp: first differing byte pair's difference, 0 when equal. Compares
+// as unsigned bytes (load_u8 zero-extends), and stops at the NUL both share.
+// The loop bound is a guard, not the terminator: every string shorter than a
+// million bytes returns from inside, and the tail return only satisfies the
+// compiler's fall-through check (while(true) returns are not seen as
+// terminating).
+fn strcmp(a: ptr<u8>, b: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (i < 1000000) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x != y) { return x - y; }
+        if (x == 0) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// C's strncpy: copy at most n bytes, NUL-pad when src is shorter, no
+// terminator when src runs to n or beyond. Returns min(strlen(src), n) — the
+// number of source characters actually copied — so a truncation shows up in
+// the return value rather than only in the buffer. (The pad loop runs after
+// the count is taken: returning its own index would answer n for every
+// short source.)
+fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let c: i32 = load_u8(src + i);
+        store_u8(dst + i, c);
+        if (c == 0) { break; }
+        i = i + 1;
+    }
+    let copied: i32 = i;
+    while (i < n) {
+        store_u8(dst + i, 0);
+        i = i + 1;
+    }
+    return copied;
+}
+
+// ===========================================================================
+// num — integers to text: ELF fields and diagnostics.
+// ===========================================================================
+
+// Reverse the i digits written at buf[0..i) in place, then NUL-terminate.
+// Shared by utoa/utohex — the digits come out least-significant first.
+fn reverse_digits(buf: ptr<u8>, i: i32) -> i32 {
+    let j: i32 = 0;
+    let k: i32 = i - 1;
+    while (j < k) {
+        let t: i32 = load_u8(buf + j);
+        store_u8(buf + j, load_u8(buf + k));
+        store_u8(buf + k, t);
+        j = j + 1;
+        k = k - 1;
+    }
+    store_u8(buf + i, 0);
+    return i;
+}
+
+// Unsigned decimal (v is read as its value; the caller keeps it >= 0 — the
+// signed case is itoa's job). Returns the digit count.
+fn utoa(v: i64, buf: ptr<u8>) -> i32 {
+    if (v == 0) {
+        store_u8(buf, 48);
+        store_u8(buf + 1, 0);
+        return 1;
+    }
+    let i: i32 = 0;
+    while (v > 0) {
+        let d: i32 = v % 10;              // narrowing: i64 -> i32, in range
+        store_u8(buf + i, 48 + d);        // '0' + digit
+        v = v / 10;
+        i = i + 1;
+    }
+    return reverse_digits(buf, i);
+}
+
+// Signed decimal: '-' then the magnitude. The magnitude of i64's most
+// negative value is not representable, so that one input is out of contract
+// (the twin asserts the same). Returns the character count, sign included.
+fn itoa(v: i64, buf: ptr<u8>) -> i32 {
+    if (v < 0) {
+        store_u8(buf, 45);                // '-'
+        return 1 + utoa(-v, buf + 1);
+    }
+    return utoa(v, buf);
+}
+
+// Lowercase hexadecimal, no prefix, no leading zeros ("0" for zero). The
+// width an ELF dump wants is the caller's business (pad in the buffer).
+// Returns the digit count.
+fn utohex(v: i64, buf: ptr<u8>) -> i32 {
+    if (v == 0) {
+        store_u8(buf, 48);
+        store_u8(buf + 1, 0);
+        return 1;
+    }
+    let i: i32 = 0;
+    while (v > 0) {
+        let d: i32 = v % 16;
+        let ch: i32 = 48 + d;             // '0'..'9'
+        if (d > 9) { ch = 87 + d; }       // 'a'..'f' (97 - 10)
+        store_u8(buf + i, ch);
+        v = v / 16;
+        i = i + 1;
+    }
+    return reverse_digits(buf, i);
+}
+
+// ===========================================================================
+// hash — open addressing over two global arrays: the symbol table / label
+// table a bootstrap compiler needs. 1024 slots (a power of two, so the mask
+// is an AND), linear probing, an empty slot is key 0, and a key that is
+// already present updates its value instead of duplicating.
+// ===========================================================================
+
+let hkeys: ptr<u8>[1024] = 0;   // key strings; 0 means empty
+let hvals: i64[1024] = 0;   // values, parallel to hkeys
+
+// FNV-1a over the bytes, 64-bit. The offset basis 0xcbf29ce484222325 does
+// not fit an i64 literal, so it enters as its two's-complement value
+// -3750763034362895579 — the same 64 bits (14695981039346656037 - 2^64).
+// Multiplication wraps (two's complement), which is what the hash wants
+// anyway.
+fn hash_str(s: ptr<u8>) -> i64 {
+    let h: i64 = -3750763034362895579;
+    let i: i32 = 0;
+    while (i < 1000000) {
+        let b: i32 = load_u8(s + i);
+        if (b == 0) { return h; }
+        h = (h ^ b) * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+// Insert or update: returns the slot index, or -1 when all 1024 slots are
+// occupied (a table that full is a bootstrap-scale bug, not a condition to
+// grow into — the caller's input was not that large).
+fn hash_put(key: ptr<u8>, val: i64) -> i32 {
+    let i: i32 = hash_str(key) & 1023;
+    let probes: i32 = 0;
+    while (probes < 1024) {
+        let k: ptr<u8> = hkeys[i];
+        if (k == 0) {
+            hkeys[i] = key;
+            hvals[i] = val;
+            return i;
+        }
+        if (strcmp(k, key) == 0) {
+            hvals[i] = val;
+            return i;
+        }
+        i = i + 1;
+        if (i == 1024) { i = 0; }
+        probes = probes + 1;
+    }
+    return -1;
+}
+
+// Look up: the value, or -1 when absent. Values are therefore non-negative
+// by contract — true for the table indices and counts a compiler stores.
+fn hash_get(key: ptr<u8>) -> i64 {
+    let i: i32 = hash_str(key) & 1023;
+    let probes: i32 = 0;
+    while (probes < 1024) {
+        let k: ptr<u8> = hkeys[i];
+        if (k == 0) { return -1; }        // empty slot ends the probe chain
+        if (strcmp(k, key) == 0) { return hvals[i]; }
+        i = i + 1;
+        if (i == 1024) { i = 0; }
+        probes = probes + 1;
+    }
+    return -1;
+}
+
+// ===========================================================================
+// v0.23.77-dev: the second slice — the routines a command-line tool needs
+// before it can be pleasant to write: overlap-safe copy, the string searches
+// C programs reach for, an integer parser, fixed-arity formatting (there is no
+// variadic call, so formatting is a family of typed writers rather than one
+// printf), an in-place integer sort, and a bump allocator over mmap.
+//
+// Casts are available since v0.23.48-dev (`i32(x)`, `i64(x)`), so where the
+// first slice narrowed with `%` the new code spells the width it means.
+// Everything still returns a non-void value: a count, a sentinel, or the
+// input pointer, because a wrong answer has to be observable.
+// ===========================================================================
+
+// mem_move_bytes(dst, src, n): copy n bytes, correct when the ranges
+// overlap. A forward copy is used unless dst starts above src, where it
+// would overwrite bytes it has not read yet; that case copies backwards.
+// Returns n. v2.7.2: renamed from `memmove` (see mem_copy_bytes).
+fn mem_move_bytes(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+    if (dst == src || n <= 0) { return n; }
+    if (i64(dst) < i64(src)) {
+        let i: i32 = 0;
+        while (i < n) {
+            store_u8(dst + i, load_u8(src + i));
+            i = i + 1;
+        }
+    } else {
+        let i: i32 = n;
+        while (i > 0) {
+            i = i - 1;
+            store_u8(dst + i, load_u8(src + i));
+        }
+    }
+    return n;
+}
+
+// strncmp(a, b, n): the first differing pair's difference over at most n
+// bytes, 0 when equal — unsigned bytes, the same reading memcmp uses.
+fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
+    let i: i32 = 0;
+    while (i < n) {
+        let x: i32 = load_u8(a + i);
+        let y: i32 = load_u8(b + i);
+        if (x != y) { return x - y; }
+        if (x == 0) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// strchr(s, c): an offset of the first c in s, or -1. c is compared at its
+// low 8 bits, so strchr(s, 'a') and strchr(s, 97) are the same question.
+fn strchr(s: ptr<u8>, c: i32) -> i32 {
+    let i: i32 = 0;
+    let want: i32 = c & 255;
+    while (1) {
+        let ch: i32 = load_u8(s + i);
+        if (ch == want) { return i; }
+        if (ch == 0) { return -1; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// strstr(h, n): an offset of the first occurrence of n in h, or -1. The empty
+// needle answers 0, as C's does.
+fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32 {
+    let nl: i32 = strlen(n);
+    if (nl == 0) { return 0; }
+    let i: i32 = 0;
+    while (1) {
+        if (load_u8(h + i) == 0) { return -1; }
+        if (strncmp(h + i, n, nl) == 0) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// strcat(d, s): append s to d, NUL included; d must have room. Returns the
+// resulting length (not d's address), because the length is what a caller
+// advancing a cursor needs.
+fn strcat(d: ptr<u8>, s: ptr<u8>) -> i32 {
+    let dl: i32 = strlen(d);
+    let sl: i32 = strlen(s);
+    let i: i32 = 0;
+    while (i <= sl) {
+        store_u8(d + dl + i, load_u8(s + i));
+        i = i + 1;
+    }
+    return dl + sl;
+}
+
+// atoi(s): leading spaces, an optional sign, then decimal digits until the
+// first non-digit. Anything else is 0, and a lone sign is 0 too. The value
+// wraps like ordinary 32-bit arithmetic past the range, which is what an
+// unchecked C atoi does with 32 bits.
+fn atoi(s: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    while (load_u8(s + i) == 32) { i = i + 1; }
+    let neg: i32 = 0;
+    let ch: i32 = load_u8(s + i);
+    if (ch == 45) { neg = 1; i = i + 1; }
+    else if (ch == 43) { i = i + 1; }
+    let v: i32 = 0;
+    while (1) {
+        let d: i32 = load_u8(s + i);
+        if (d < 48 || d > 57) { break; }
+        v = v * 10 + (d - 48);
+        i = i + 1;
+    }
+    if (neg) { return 0 - v; }
+    return v;
+}
+
+// is_digit / is_space / is_alpha: 1 or 0, ASCII only (the same test set a
+// lexer needs, which is what this library is written for).
+fn is_digit(c: i32) -> i32 {
+    if (c >= 48 && c <= 57) { return 1; }
+    return 0;
+}
+fn is_space(c: i32) -> i32 {
+    if (c == 32 || (c >= 9 && c <= 13)) { return 1; }
+    return 0;
+}
+// v0.23.77-dev: C's isalpha exactly — A-Z and a-z, and *not* '_'. The bootstrap
+// scanner treats an underscore as an identifier character where it needs one
+// (`is_alpha(c) || c == 95`), so keeping the underscore out of here is what let
+// the library's version replace the stage's own without changing the lexer.
+fn is_alpha(c: i32) -> i32 {
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { return 1; }
+    return 0;
+}
+
+// fmt_i32(buf, v): v in decimal, no padding, NUL-terminated. Returns the
+// digit count (-1 aside). INT32_MIN is handled by working on the magnitude in
+// i64, where its absolute value fits.
+fn fmt_i32(buf: ptr<u8>, v: i32) -> i32 {
+    let at: i32 = 0;
+    let w: i64 = v;
+    if (w < 0) {
+        store_u8(buf, 45);
+        at = 1;
+        w = 0 - w;
+    }
+    let tmp: u8[16] = 0;
+    let i: i32 = 0;
+    if (w == 0) {
+        store_u8(tmp, 48);
+        i = 1;
+    }
+    while (w > 0) {
+        store_u8(tmp + i, 48 + i32(w % 10));
+        w = w / 10;
+        i = i + 1;
+    }
+    let j: i32 = i;
+    while (j > 0) {
+        j = j - 1;
+        store_u8(buf + at, load_u8(tmp + j));
+        at = at + 1;
+    }
+    store_u8(buf + at, 0);
+    return at;
+}
+
+// fmt_hex(buf, v, digits): exactly `digits` lowercase hex characters, zero
+// padded, NUL-terminated; digits is clamped to 1..8. Returns the count.
+// fmt_i32_w(buf, v, width): v in decimal, right-aligned in a field of `width`
+// columns, space padded, NUL terminated; answers the bytes written. A value
+// wider than the field is written in full (the field is a minimum, not a
+// truncation) - the same rule C's "%*d" with a positive width follows.
+fn fmt_i32_w(buf: ptr<u8>, v: i32, width: i32) -> i32 {
+    let tmp: u8[24] = 0;
+    let n: i32 = fmt_i32(tmp, v);
+    let pad: i32 = width - n;
+    let at: i32 = 0;
+    while (at < pad) {
+        store_u8(buf + at, 32);
+        at = at + 1;
+    }
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(buf + at + i, load_u8(tmp + i));
+        i = i + 1;
+    }
+    store_u8(buf + at + n, 0);
+    return at + n;
+}
+
+// fmt_hex_w(buf, v, width): lowercase hex, right-aligned in a field of `width`
+// columns, SPACE padded - the companion of fmt_hex (which zero pads). A value
+// wider than the field is written in full, the same rule fmt_i32_w follows.
+fn fmt_hex_w(buf: ptr<u8>, v: i32, width: i32) -> i32 {
+    // fmt_hex prints exactly the digits it is asked for, so ask for the full
+    // width and drop the leading zeros here - that is the natural length.
+    let tmp: u8[16] = 0;
+    let full: i32 = fmt_hex(tmp, v, 8);
+    let start: i32 = 0;
+    while (start < full - 1) {
+        if (load_u8(tmp + start) != 48) { break; }
+        start = start + 1;
+    }
+    let n: i32 = full - start;
+    let pad: i32 = width - n;
+    let at: i32 = 0;
+    while (at < pad) {
+        store_u8(buf + at, 32);
+        at = at + 1;
+    }
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(buf + at + i, load_u8(tmp + start + i));
+        i = i + 1;
+    }
+    store_u8(buf + at + n, 0);
+    return at + n;
+}
+
+fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) -> i32 {
+    let d: i32 = digits;
+    if (d < 1) { d = 1; }
+    if (d > 8) { d = 8; }
+    let i: i32 = 0;
+    while (i < d) {
+        let shift: i32 = (d - 1 - i) * 4;
+        let nib: i32 = (v >> shift) & 15;
+        let ch: i32 = 48 + nib;
+        if (nib > 9) { ch = 87 + nib; }
+        store_u8(buf + i, ch);
+        i = i + 1;
+    }
+    store_u8(buf + d, 0);
+    return d;
+}
+
+// sort_i32(a, n): the i32 array at `a` in ascending order. The general form
+// below (`sort_bytes`) is what does the work; this is the typed wrapper a
+// caller reaches for, kept as the same name and contract the library has had
+// since v0.23.77-dev's second slice.
+fn sort_i32(a: ptr, n: i32) -> i32 { return sort_bytes(a, n, 4, ptr(cmp_i32_asc)); }
+// A bump allocator over one 64 KiB anonymous mapping: the shape a compiler's
+// arena wants (no free list, no metadata, 8-byte aligned). malloc answers 0
+// when the mapping is exhausted; free is the documented no-op, so a program
+// that frees is still correct and simply does not reclaim.
+let heap_base: ptr = 0;
+let heap_used: i32 = 0;
+let heap_size: i32 = 0;
+
+fn malloc(n: i32) -> ptr {
+    if (heap_base == 0) {
+        heap_base = mmap(ptr(0), 65536, 3, 34, 0 - 1, 0);
+        heap_size = 65536;
+        heap_used = 0;
+    }
+    if (n <= 0) { return 0; }
+    let need: i32 = (n + 7) & (0 - 8);
+    if (heap_used + need > heap_size) { return 0; }
+    let p: ptr = heap_base + heap_used;
+    heap_used = heap_used + need;
+    return p;
+}
+
+fn free(p: ptr) -> i32 {
+    return 0;
+}
+
+// ===========================================================================
+// v0.23.77-dev: printing a double.
+//
+// There is no variadic call and no printf, so the shape is the same one the
+// integer formatters already use: a writer that emits into a caller's buffer
+// and answers how many bytes it wrote. The number is printed in fixed point
+// (d digits after the point, d clamped to 0..9): an exponent form needs a
+// second rounding decision and a cursor that can shift, which a compiler's
+// diagnostic output does not need.
+//
+// Rounding is half-up on the *binary* value, so 3.14159 with two digits is
+// 3.14 and -2.718 with one digit is -2.7. A value that is exactly halfway
+// between two representable decimals goes up, which is the rule a person
+// reading a diagnostic expects, and is deliberately not C's round-half-even.
+// ===========================================================================
+
+// fmt_f64(buf, v, decimals): v in fixed point with `decimals` digits after
+// the point (clamped to 0..9), NUL-terminated. Returns the byte count, sign
+// included. `nan` and `inf` are spelled the way a C printf spells them, so a
+// program's output stays comparable with one.
+fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) -> i32 {
+    let at: i32 = 0;
+    let x: f64 = v;
+    // A NaN is neither negative nor orderable, so it is answered first.
+    if (x != x) {
+        store_u8(buf, 110);                // 'n'
+        store_u8(buf + 1, 97);             // 'a'
+        store_u8(buf + 2, 110);            // 'n'
+        store_u8(buf + 3, 0);
+        return 3;
+    }
+    if (x < 0.0) {
+        store_u8(buf, 45);                 // '-'
+        at = 1;
+        x = 0.0 - x;
+    }
+    // An infinity times zero is a NaN; a finite value times zero is a plain
+    // zero. That is the whole test, and it needs no constant beyond 0.0.
+    let probe: f64 = x * 0.0;
+    if (probe != probe) {
+        store_u8(buf + at, 105);           // 'i'
+        store_u8(buf + at + 1, 110);       // 'n'
+        store_u8(buf + at + 2, 102);       // 'f'
+        store_u8(buf + at + 3, 0);
+        return at + 3;
+    }
+    let d: i32 = decimals;
+    if (d < 0) { d = 0; }
+    if (d > 9) { d = 9; }
+    // The same power of ten twice: once as a double, for the rounding, and
+    // once as an integer, for splitting the rounded value into halves.
+    let scale: f64 = 1.0;
+    let iscale: i64 = 1;
+    let i: i32 = 0;
+    while (i < d) {
+        scale = scale * 10.0;
+        iscale = iscale * 10;
+        i = i + 1;
+    }
+    let total: i64 = i64(x * scale + 0.5);
+    at = at + utoa(total / iscale, buf + at);
+    if (d > 0) {
+        store_u8(buf + at, 46);            // '.'
+        at = at + 1;
+        let frac: i64 = total % iscale;
+        let div: i64 = iscale / 10;
+        let k: i32 = 1;
+        while (k < d) {
+            store_u8(buf + at, 48 + i32((frac / div) % 10));
+            at = at + 1;
+            div = div / 10;
+            k = k + 1;
+        }
+        store_u8(buf + at, 48 + i32(frac % 10));
+        at = at + 1;
+    }
+    store_u8(buf + at, 0);
+    return at;
+}
+
+// fmt_f32(buf, v, decimals): the single-precision sibling. The value widens to
+// a double first — one exact conversion, so the digits printed are the digits
+// the single actually holds, not a second rounding's worth of noise past them.
+fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) -> i32 {
+    return fmt_f64(buf, f64(v), decimals);
+}
+
+// ===========================================================================
+// v0.23.77-dev: the basic library — files, a growable arena, and buffers.
+//
+// The syscalls have been reachable from Aster since v0.23.40-dev, but only as
+// raw intrinsics: every program wrote `openat(-100, path, 0, 0)` itself and
+// every program that needed a string built up in memory used a fixed-size
+// global array with a capacity check. This section is the missing layer.
+//
+// Two allocators, deliberately:
+//   * `malloc`/`free` (the v0.23.42-dev pair) stay exactly as they are — one
+//     64 KiB mapping, 8-byte aligned, 0 when exhausted. That exhaustion
+//     sentinel is a documented, tested contract, and the bootstrap relies on
+//     the small footprint.
+//   * `alloc`/`ralloc` are the growable pair the buffers below use: when the
+//     current mapping has no room, `alloc` maps another one and keeps using
+//     it. Nothing is ever returned to the kernel, so a pointer stays valid for
+//     the life of the program — which is the arena rule the language already
+//     documents (`free` answers 0 and reclaims nothing).
+// ===========================================================================
+
+// --- files ---------------------------------------------------------------
+
+// Linux's AT_FDCWD, the only directory handle a program needs here.
+const kAtFdcwd: i32 = 0 - 100;
+
+// fd_open(path, flags, mode): openat(AT_FDCWD, …) with the caller's flags
+// (`O_RDONLY` = 0, `O_WRONLY|O_CREAT|O_TRUNC` = 577). Answers the fd, or -1.
+fn fd_open(path: ptr<u8>, flags: i32, mode: i32) -> i32 {
+    return openat(kAtFdcwd, path, flags, mode);
+}
+fn fd_read(fd: i32, buf: ptr<u8>, n: i32) -> i32 { return read(fd, buf, n); }
+fn fd_write(fd: i32, buf: ptr<u8>, n: i32) -> i32 { return write(fd, buf, n); }
+fn fd_close(fd: i32) -> i32 { return close(fd); }
+
+// write_all(fd, buf, n): a short write is legal (a pipe, a tty), so a loop
+// writes the rest. Answers the bytes written, or -1 when the kernel refuses.
+fn write_all(fd: i32, buf: ptr<u8>, n: i32) -> i32 {
+    let done: i32 = 0;
+    while (done < n) {
+        let w: i32 = write(fd, buf + done, n - done);
+        if (w <= 0) { return 0 - 1; }
+        done = done + w;
+    }
+    return done;
+}
+
+// file_size(path): st_size out of an fstat, or -1. The AArch64 `struct stat`
+// puts st_size at byte 48, so the buffer is read at that offset rather than
+// as a typed array — the layout is the kernel's, not ours.
+fn file_size(path: ptr<u8>) -> i64 {
+    let fd: i32 = fd_open(path, 0, 0);
+    if (fd < 0) { return 0 - 1; }
+    let st: u8[128] = 0;
+    let r: i32 = fstat(fd, &st);
+    fd_close(fd);
+    if (r != 0) { return 0 - 1; }
+    return load_i64(&st + 48);
+}
+
+// slurp_bytes(path, out_len): the whole file in a fresh `alloc` buffer, NUL
+// terminated, with the length written through `out_len` (may be 0). Answers 0
+// when the file cannot be opened or read. A length of 0 from the descriptor is
+// not trusted alone — a directory or a pipe answers 0 — so the buffer is read
+// until the kernel says there is nothing left.
+fn slurp_bytes(path: ptr<u8>, out_len: ptr<u8>) -> ptr {
+    let fd: i32 = fd_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    let size: i64 = file_size(path);
+    let cap: i32 = (size > 0) ? i32(size) + 1 : 4096;
+    let buf: ptr = alloc(cap);
+    if (buf == 0) { fd_close(fd); return 0; }
+    let count: i32 = 0;
+    let space: i32 = cap - 1;
+    while (1) {
+        if (space <= 0) {
+            // The file grew under us (or the size was a lie): double and go on.
+            let bigger: ptr = ralloc(buf, cap, cap * 2);
+            if (bigger == 0) { fd_close(fd); return 0; }
+            buf = bigger;
+            cap = cap * 2;
+            space = cap - 1 - count;
+        }
+        let n: i32 = read(fd, buf + count, space);
+        if (n < 0) { fd_close(fd); return 0; }
+        if (n == 0) { break; }
+        count = count + n;
+        space = space - n;
+    }
+    fd_close(fd);
+    store_u8(buf + count, 0);
+    if (out_len != 0) { store_i64(out_len, i64(count)); }
+    return buf;
+}
+
+// slurp(path): the same, for text, answering only the pointer (0 on failure).
+fn slurp(path: ptr<u8>) -> ptr {
+    let n: u8[8] = 0;                 // the out-parameter is a byte buffer, so
+    return slurp_bytes(path, &n);     // the length has a place to land
+}
+
+// --- the growable arena --------------------------------------------------
+// One chunk at a time: when the current mapping is full, a new one is mapped
+// and becomes current. Nothing is freed, so every earlier pointer stays valid.
+
+let arena_base: ptr = 0;
+let arena_used: i32 = 0;
+let arena_size: i32 = 0;
+// A single request larger than this is refused rather than mapped: a typo in
+// a size must not ask the kernel for a gigabyte.
+const kArenaMaxChunk: i32 = 67108864;   // 64 MiB
+
+fn arena_new_chunk(n: i32) -> ptr {
+    let want: i32 = n < 65536 ? 65536 : n;
+    let p: ptr = mmap(ptr(0), want, 3, 34, 0 - 1, 0);
+    if (p == 0) { return 0; }
+    arena_base = p;
+    arena_used = 0;
+    arena_size = want;
+    return p;
+}
+
+// alloc(n): n bytes, 8-byte aligned, from the growable arena; 0 when n <= 0 or
+// the request is beyond kArenaMaxChunk.
+fn alloc(n: i32) -> ptr {
+    if (n <= 0) { return 0; }
+    if (n > kArenaMaxChunk) { return 0; }
+    let need: i32 = (n + 7) & (0 - 8);
+    if (arena_base == 0) {
+        if (arena_new_chunk(need) == 0) { return 0; }
+    }
+    if (arena_used + need > arena_size) {
+        if (arena_new_chunk(need) == 0) { return 0; }
+    }
+    let p: ptr = arena_base + arena_used;
+    arena_used = arena_used + need;
+    return p;
+}
+
+// ralloc(p, old_n, new_n): a copy into a fresh block, which is all a grow-only
+// arena can promise. Answers the new pointer (0 on failure); the old one keeps
+// its bytes at its old address.
+fn ralloc(p: ptr, old_n: i32, new_n: i32) -> ptr {
+    if (new_n <= 0) { return 0; }
+    if (p != 0 && new_n <= old_n) { return p; }
+    let q: ptr = alloc(new_n);
+    if (q == 0) { return 0; }
+    if (p != 0) {
+        let copy: i32 = old_n < new_n ? old_n : new_n;
+        let i: i32 = 0;
+        while (i < copy) {
+            store_u8(q + i, load_u8(p + i));
+            i = i + 1;
+        }
+    }
+    return q;
+}
+
+// --- a byte buffer -------------------------------------------------------
+// `Buf` is a pointer/length/capacity triple. It lives in the caller's storage
+// (or in the arena), so a program decides where its buffers are; passing
+// `ptr<Buf>` keeps the ABI to one register.
+
+struct Buf { data: ptr, count: i32, cap: i32 }
+
+fn buf_init(b: ptr<Buf>, cap: i32) -> i32 {
+    let want: i32 = cap < 16 ? 16 : cap;
+    b.data = alloc(want);
+    if (b.data == 0) { return 0 - 1; }
+    b.count = 0;
+    b.cap = want;
+    store_u8(b.data, 0);
+    return 0;
+}
+
+fn buf_free(b: ptr<Buf>) -> i32 {
+    b.data = 0;
+    b.count = 0;
+    b.cap = 0;
+    return 0;
+}
+
+fn buf_reserve(b: ptr<Buf>, extra: i32) -> i32 {
+    let need: i32 = b.count + extra + 1;
+    if (need <= b.cap) { return 0; }
+    let want: i32 = b.cap * 2;
+    let cap: i32 = want < need ? need : want;
+    let bigger: ptr = ralloc(b.data, b.cap, cap);
+    if (bigger == 0) { return 0 - 1; }
+    b.data = bigger;
+    b.cap = cap;
+    return 0;
+}
+
+fn buf_append(b: ptr<Buf>, s: ptr<u8>, n: i32) -> i32 {
+    if (n <= 0) { return b.count; }
+    if (buf_reserve(b, n) != 0) { return 0 - 1; }
+    let i: i32 = 0;
+    while (i < n) {
+        store_u8(b.data + b.count + i, load_u8(s + i));
+        i = i + 1;
+    }
+    b.count = b.count + n;
+    store_u8(b.data + b.count, 0);
+    return b.count;
+}
+
+fn buf_appends(b: ptr<Buf>, s: ptr<u8>) -> i32 { return buf_append(b, s, strlen(s)); }
+
+fn buf_putc(b: ptr<Buf>, c: i32) -> i32 {
+    if (buf_reserve(b, 1) != 0) { return 0 - 1; }
+    store_u8(b.data + b.count, c & 255);
+    b.count = b.count + 1;
+    store_u8(b.data + b.count, 0);
+    return b.count;
+}
+
+fn buf_reset(b: ptr<Buf>) -> i32 {
+    b.count = 0;
+    if (b.data != 0) { store_u8(b.data, 0); }
+    return 0;
+}
+
+// buf_cstr(b): NUL terminate in place and hand back the bytes, so a buffer can
+// be passed to any `ptr<u8>` consumer.
+fn buf_cstr(b: ptr<Buf>) -> ptr<u8> {
+    if (b.data == 0) { return 0; }
+    store_u8(b.data + b.count, 0);
+    return b.data;
+}
+
+// --- integer and pointer vectors -----------------------------------------
+// No generics, so the two element kinds the compiler needs are concrete types
+// built the same way: a length, a capacity, and a block of elements.
+
+struct Vec32 { data: ptr, count: i32, cap: i32 }
+struct VecPtr { data: ptr, count: i32, cap: i32 }
+
+fn vec32_init(v: ptr<Vec32>, cap: i32) -> i32 {
+    let want: i32 = cap < 8 ? 8 : cap;
+    v.data = alloc(want * 4);
+    if (v.data == 0) { return 0 - 1; }
+    v.count = 0;
+    v.cap = want;
+    return 0;
+}
+fn vec32_free(v: ptr<Vec32>) -> i32 { v.data = 0; v.count = 0; v.cap = 0; return 0; }
+fn vec32_push(v: ptr<Vec32>, x: i32) -> i32 {
+    if (v.count >= v.cap) {
+        let bigger: ptr = ralloc(v.data, v.cap * 4, v.cap * 8);
+        if (bigger == 0) { return 0 - 1; }
+        v.data = bigger;
+        v.cap = v.cap * 2;
+    }
+    store_i64(v.data + v.count * 4, i64(x));
+    v.count = v.count + 1;
+    return v.count;
+}
+fn vec32_get(v: ptr<Vec32>, i: i32) -> i32 {
+    if (i < 0 || i >= v.count) { return 0; }
+    return i32(load_i64(v.data + i * 4));
+}
+fn vec32_set(v: ptr<Vec32>, i: i32, x: i32) -> i32 {
+    if (i < 0 || i >= v.count) { return 0 - 1; }
+    store_i64(v.data + i * 4, i64(x));
+    return x;
+}
+
+fn vecptr_init(v: ptr<VecPtr>, cap: i32) -> i32 {
+    let want: i32 = cap < 8 ? 8 : cap;
+    v.data = alloc(want * 8);
+    if (v.data == 0) { return 0 - 1; }
+    v.count = 0;
+    v.cap = want;
+    return 0;
+}
+fn vecptr_free(v: ptr<VecPtr>) -> i32 { v.data = 0; v.count = 0; v.cap = 0; return 0; }
+fn vecptr_push(v: ptr<VecPtr>, x: ptr) -> i32 {
+    if (v.count >= v.cap) {
+        let bigger: ptr = ralloc(v.data, v.cap * 8, v.cap * 16);
+        if (bigger == 0) { return 0 - 1; }
+        v.data = bigger;
+        v.cap = v.cap * 2;
+    }
+    store_i64(v.data + v.count * 8, i64(x));
+    v.count = v.count + 1;
+    return v.count;
+}
+fn vecptr_get(v: ptr<VecPtr>, i: i32) -> ptr {
+    if (i < 0 || i >= v.count) { return 0; }
+    return ptr(load_i64(v.data + i * 8));
+}
+fn vecptr_set(v: ptr<VecPtr>, i: i32, x: ptr) -> i32 {
+    if (i < 0 || i >= v.count) { return 0 - 1; }
+    store_i64(v.data + i * 8, i64(x));
+    return 0;
+}
+
+// --- diagnostics ---------------------------------------------------------
+// There is no `exit` intrinsic: a program leaves through `main`'s return. So
+// `panic` reports on stderr and answers the code the caller should return.
+fn eputs(s: ptr<u8>) -> i32 { return write_all(2, s, strlen(s)); }
+
+// No string literal here on purpose: a literal becomes an object symbol with a
+// per-file counter (`__aster_string_0`), so a library carrying one would collide
+// at link time with every consumer that carries its own. The prefix and the
+// newline are assembled in bytes instead — see the note in
+// docs/language-reference.md and audit A-25.
+fn panic(msg: ptr<u8>) -> i32 {
+    let prefix: u8[8] = 0;
+    store_u8(prefix, 97);      // 'a'
+    store_u8(prefix + 1, 115); // 's'
+    store_u8(prefix + 2, 116); // 't'
+    store_u8(prefix + 3, 101); // 'e'
+    store_u8(prefix + 4, 114); // 'r'
+    store_u8(prefix + 5, 58);  // ':'
+    store_u8(prefix + 6, 32);  // ' '
+    store_u8(prefix + 7, 0);
+    let nl: u8[2] = 0;
+    store_u8(nl, 10);
+    write_all(2, prefix, 7);
+    write_all(2, msg, strlen(msg));
+    write_all(2, nl, 1);
+    return 1;
+}
+
+// ===========================================================================
+// v0.23.77-dev: the basic library, second slice — the conversions and the
+// string helpers a front end actually needs, and that the first slice left
+// as 32-bit-only or absent.
+//
+// The conventions are the library's own: a byte buffer is `ptr<u8>`, a value
+// that does not fit a return register is written through an out-parameter,
+// and a failure is a sentinel (-1 for "consumed nothing", 0 for "null
+// pointer") rather than a status enum the caller has to decode.
+// ===========================================================================
+
+// fmt_i64(buf, v): decimal i64, NUL terminated. `utoa` takes an i64 but a
+// magnitude is unsigned: INT64_MIN's absolute value is 2^63, which no i64
+// holds, so the digits are produced in u64 arithmetic.
+fn fmt_i64(buf: ptr<u8>, v: i64) -> i32 {
+    let at: i32 = 0;
+    let mag: u64 = 0;
+    if (v < 0) {
+        store_u8(buf, 45);                 // '-'
+        at = 1;
+        mag = u64(0) - u64(v);
+    } else {
+        mag = u64(v);
+    }
+    let tmp: u8[24] = 0;
+    let i: i32 = 0;
+    if (mag == 0) {
+        store_u8(tmp, 48);
+        i = 1;
+    }
+    while (mag > 0) {
+        store_u8(tmp + i, 48 + i32(mag % 10));
+        mag = mag / 10;
+        i = i + 1;
+    }
+    let j: i32 = i;
+    while (j > 0) {
+        j = j - 1;
+        store_u8(buf + at, load_u8(tmp + j));
+        at = at + 1;
+    }
+    store_u8(buf + at, 0);
+    return at;
+}
+
+// fmt_hex64(buf, v): exactly sixteen lowercase hex digits, NUL terminated.
+// The two halves go through `fmt_hex`, which already clamps to eight.
+fn fmt_hex64(buf: ptr<u8>, v: i64) -> i32 {
+    let hi: i32 = i32(i64(u64(v) >> u64(32)));
+    let lo: i32 = i32(v);
+    fmt_hex(buf, hi, 8);
+    fmt_hex(buf + 8, lo, 8);
+    return 16;
+}
+
+// digit_value(c): 0..35 for 0-9 / a-z / A-Z, -1 for anything else.
+fn digit_value(c: i32) -> i32 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    if (c >= 97 && c <= 122) { return c - 87; }
+    if (c >= 65 && c <= 90) { return c - 55; }
+    return 0 - 1;
+}
+
+// strtoi(s, base, out): the integer in s read in `base` (2..36, or 0 for
+// "auto": 0x/0X hex, 0b/0B binary, otherwise decimal), with leading spaces and
+// an optional sign. The value is written through `out` as an i64; the answer is
+// the number of bytes consumed, or -1 when there was no digit at all. Reading
+// stops at the first character that is not a digit of the base, exactly as
+// strtol does.
+fn strtoi(s: ptr<u8>, base: i32, out: ptr<u8>) -> i32 {
+    let i: i32 = 0;
+    let b: i32 = base;
+    if (b != 0 && (b < 2 || b > 36)) { return 0 - 1; }
+    while (load_u8(s + i) == 32) { i = i + 1; }
+    let neg: i32 = 0;
+    let ch: i32 = load_u8(s + i);
+    if (ch == 45) { neg = 1; i = i + 1; }
+    else if (ch == 43) { i = i + 1; }
+    if (b == 0) {
+        if (load_u8(s + i) == 48 && (load_u8(s + i + 1) == 120 || load_u8(s + i + 1) == 88)) { b = 16; i = i + 2; }
+        else if (load_u8(s + i) == 48 && (load_u8(s + i + 1) == 98 || load_u8(s + i + 1) == 66)) { b = 2; i = i + 2; }
+        else { b = 10; }
+    } else if (b == 16) {
+        if (load_u8(s + i) == 48 && (load_u8(s + i + 1) == 120 || load_u8(s + i + 1) == 88)) { i = i + 2; }
+    }
+    let v: i64 = 0;
+    let digits: i32 = 0;
+    while (1) {
+        let c: i32 = load_u8(s + i);
+        if (c == 0) { break; }
+        let d: i32 = digit_value(c);
+        if (d < 0 || d >= b) { break; }
+        v = v * i64(b) + i64(d);
+        digits = digits + 1;
+        i = i + 1;
+    }
+    if (digits == 0) { return 0 - 1; }
+    if (neg) { v = 0 - v; }
+    store_i64(out, v);
+    return i;
+}
+
+// atof(s, out): the double in s — digits, an optional fraction, an optional
+// exponent — written through `out` (a `ptr<f64>`, because a double cannot be
+// stored through a byte pointer without reinterpreting its bits, which the
+// language does not do). Answers the bytes consumed, or -1 with no digits.
+fn atof(s: ptr<u8>, out: ptr<f64>) -> i32 {
+    let i: i32 = 0;
+    while (load_u8(s + i) == 32) { i = i + 1; }
+    let neg: i32 = 0;
+    let ch: i32 = load_u8(s + i);
+    if (ch == 45) { neg = 1; i = i + 1; }
+    else if (ch == 43) { i = i + 1; }
+    let v: f64 = 0.0;
+    let seen: i32 = 0;
+    while (1) {
+        let c: i32 = load_u8(s + i);
+        if (c < 48 || c > 57) { break; }
+        v = v * 10.0 + f64(c - 48);
+        seen = seen + 1;
+        i = i + 1;
+    }
+    if (load_u8(s + i) == 46) {
+        i = i + 1;
+        let scale: f64 = 0.1;
+        while (1) {
+            let c: i32 = load_u8(s + i);
+            if (c < 48 || c > 57) { break; }
+            v = v + f64(c - 48) * scale;
+            scale = scale * 0.1;
+            seen = seen + 1;
+            i = i + 1;
+        }
+    }
+    if (seen == 0) { return 0 - 1; }
+    let e: i32 = load_u8(s + i);
+    if (e == 101 || e == 69) {
+        let j: i32 = i + 1;
+        let eneg: i32 = 0;
+        let sc: i32 = load_u8(s + j);
+        if (sc == 45) { eneg = 1; j = j + 1; }
+        else if (sc == 43) { j = j + 1; }
+        let exp: i32 = 0;
+        let ed: i32 = 0;
+        while (1) {
+            let c: i32 = load_u8(s + j);
+            if (c < 48 || c > 57) { break; }
+            exp = exp * 10 + (c - 48);
+            ed = ed + 1;
+            j = j + 1;
+        }
+        if (ed > 0) {
+            let mult: f64 = 1.0;
+            let k: i32 = 0;
+            while (k < exp) { mult = mult * 10.0; k = k + 1; }
+            if (eneg) { v = v / mult; } else { v = v * mult; }
+            i = j;
+        }
+    }
+    if (neg) { v = 0.0 - v; }
+    *(out) = v;
+    return i;
+}
+
+// --- strings -------------------------------------------------------------
+
+// streq(a, b): 1 when the two NUL-terminated strings are equal.
+fn streq(a: ptr<u8>, b: ptr<u8>) -> i32 { return strcmp(a, b) == 0 ? 1 : 0; }
+
+fn starts_with(s: ptr<u8>, p: ptr<u8>) -> i32 {
+    let n: i32 = strlen(p);
+    if (n > strlen(s)) { return 0; }
+    return strncmp(s, p, n) == 0 ? 1 : 0;
+}
+
+fn ends_with(s: ptr<u8>, suf: ptr<u8>) -> i32 {
+    let n: i32 = strlen(suf);
+    let m: i32 = strlen(s);
+    if (n > m) { return 0; }
+    return strcmp(s + (m - n), suf) == 0 ? 1 : 0;
+}
+
+// trim(s): strip leading and trailing spaces *in place* (the string must be
+// writable — not a literal) and answer the first non-space byte. Tabs are left
+// alone: a tab inside a line is data, and this helper is for configuration-
+// and source-shaped text.
+fn trim(s: ptr<u8>) -> ptr<u8> {
+    let i: i32 = 0;
+    while (load_u8(s + i) == 32) { i = i + 1; }
+    let n: i32 = strlen(s + i);
+    while (n > 0) {
+        if (load_u8(s + i + n - 1) != 32) { break; }
+        n = n - 1;
+    }
+    store_u8(s + i + n, 0);
+    return s + i;
+}
+
+// next_line(line): the line after this one, or 0 at the end of the text. The
+// newline is replaced by a NUL and a preceding carriage return is stripped, so
+// a CRLF file iterates like an LF one:
+//
+//     let ln: ptr = text;
+//     while (ln != 0) { use(ln); ln = next_line(ln); }
+fn next_line(line: ptr<u8>) -> ptr<u8> {
+    let i: i32 = 0;
+    while (1) {
+        let c: i32 = load_u8(line + i);
+        if (c == 0) {
+            if (i > 0 && load_u8(line + i - 1) == 13) { store_u8(line + i - 1, 0); }
+            return 0;
+        }
+        if (c == 10) {
+            if (i > 0 && load_u8(line + i - 1) == 13) { store_u8(line + i - 1, 0); }
+            else { store_u8(line + i, 0); }
+            return line + i + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// str_dup(s): a copy of s in the growable arena (0 when the arena refuses).
+// to_upper(s): ASCII letters to uppercase *in place* (the buffer must be
+// writable), answering s.
+fn to_upper(s: ptr<u8>) -> ptr<u8> {
+    let i: i32 = 0;
+    while (1 == 1) {
+        let ch: i32 = load_u8(s + i);
+        if (ch == 0) { return s; }
+        if (ch >= 97 && ch <= 122) { store_u8(s + i, ch - 32); }
+        i = i + 1;
+    }
+    return s;
+}
+
+// to_lower(s): ASCII letters to lowercase in place, answering s.
+fn to_lower(s: ptr<u8>) -> ptr<u8> {
+    let i: i32 = 0;
+    while (1 == 1) {
+        let ch: i32 = load_u8(s + i);
+        if (ch == 0) { return s; }
+        if (ch >= 65 && ch <= 90) { store_u8(s + i, ch + 32); }
+        i = i + 1;
+    }
+    return s;
+}
+
+// strrchr(s, c): the index of the LAST c in s, or -1. `strchr`'s companion; the
+// terminator is not searched, matching C.
+fn strrchr(s: ptr<u8>, c: i32) -> i32 {
+    let want: i32 = c & 255;
+    let i: i32 = 0;
+    let last: i32 = 0 - 1;
+    while (1 == 1) {
+        let ch: i32 = load_u8(s + i);
+        if (ch == 0) { return last; }
+        if (ch == want) { last = i; }
+        i = i + 1;
+    }
+    return last;
+}
+
+// f64_from_dec(digits, exp10): the IEEE-754 bit pattern of digits * 10^exp10,
+// for a non-negative value - the step a decimal literal like 3.14 needs. Like
+// f64_bits it is integer-only, because the bootstrap stage has no float type.
+//
+// The mantissa is kept in a u64 and renormalized after every power of ten, with
+// the bits that fall off OR-ed into `sticky`. Ten steps of headroom keep the
+// shift from overflowing: 10^2 < 2^7, so 2^54 * 10^2 still fits.
+//
+// Rounding is one decision at the end - round-half-to-even over
+// (kept, dropped, sticky) - rather than a rounding at every step, which is what
+// makes the result the nearest double instead of an accumulation of ties.
+fn f64_from_dec(digits: u64, exp10: i32) -> i64 {
+    if (digits == 0) { return 0; }
+    // A 128-bit window, not 64. The reason is measurable: with 53 bits kept and
+    // a 64-bit window a division leaves only four bits of headroom, so a chain
+    // of them drifts - 1e-22 came out one ulp low. A 128-bit window puts the
+    // per-step truncation at 2^-124, and 300 steps still cannot reach the
+    // rounding cutoff.
+    let hi: u64 = 0;
+    let lo: u64 = digits;
+    let k: i32 = 0;
+    let sticky: i32 = 0;
+    // normalize until hi's top bit is set: the window is full
+    while (hi < 9223372036854775808) {
+        hi = (hi << 1) | (lo >> 63);
+        lo = lo << 1;
+        k = k - 1;
+    }
+    let p: i32 = exp10;
+    let step: i32 = 0;
+    while (step < p) {
+        // room for *10, dropping the top bits of the window into `sticky`
+        while (hi >= 1152921504606846976) {
+            // order matters: lo takes hi's last bit, so hi must not move first
+            if ((lo & 1) == 1) { sticky = 1; }
+            lo = (lo >> 1) | ((hi & 1) << 63);
+            hi = hi >> 1;
+            k = k + 1;
+        }
+        // (hi:lo) * 10, split so nothing overflows: lo*8 + lo*2 with carries
+        let c3: u64 = lo >> 61;
+        let c1: u64 = lo >> 63;
+        let a: u64 = lo << 3;
+        let b: u64 = lo << 1;
+        let sl: u64 = a + b;
+        let ov: u64 = 0;
+        if (sl < a) { ov = 1; }
+        lo = sl;
+        // floor(lo*10 / 2^64) is (lo>>61) + (lo>>63) + the add's carry -
+        // each already counts whole 2^64 blocks, so neither is scaled again
+        hi = hi * 10 + c3 + c1 + ov;
+        step = step + 1;
+    }
+    while (step > p) {
+        // (hi:lo) / 10 - long division, sixty-four bits at a time. The remainder
+        // never exceeds nine, so `rem * 2 + 1` always fits.
+        let qhi: u64 = hi / 10;
+        let rem: u64 = hi - qhi * 10;
+        let qlo: u64 = 0;
+        let bit: i32 = 63;
+        while (bit >= 0) {
+            rem = rem * 2 + ((lo >> bit) & 1);
+            qlo = qlo << 1;
+            if (rem >= 10) {
+                rem = rem - 10;
+                qlo = qlo | 1;
+            }
+            bit = bit - 1;
+        }
+        if (rem != 0) { sticky = 1; }
+        hi = qhi;
+        lo = qlo;
+        // refill the window: a division leaves its top bits empty
+        while (hi < 9223372036854775808) {
+            hi = (hi << 1) | (lo >> 63);
+            lo = lo << 1;
+            k = k - 1;
+        }
+        step = step - 1;
+    }
+    // refill the window one last time: the multiplication loop leaves hi
+    // anywhere below 2^64, and the 53 bits are taken from its top
+    while (hi < 9223372036854775808) {
+        hi = (hi << 1) | (lo >> 63);
+        lo = lo << 1;
+        k = k - 1;
+    }
+    // one rounding decision: keep 53 bits, look at the next one, and take
+    // `sticky` (plus everything below) as the tie-breaker
+    let kept: u64 = hi >> 11;
+    let roundbit: u64 = (hi >> 10) & 1;
+    let rest: i32 = sticky;
+    if ((hi & 1023) != 0) { rest = 1; }
+    if (lo != 0) { rest = 1; }
+    if (roundbit == 1 && (rest == 1 || (kept & 1) == 1)) { kept = kept + 1; }
+    let e: i32 = 52 + k + 75 + 1023;
+    if (kept > 9007199254740991) { kept = kept >> 1; e = e + 1; }
+    if (e >= 2047) { return 9218868437227405312; }
+    // Below the normal range the exponent field would go negative; the subnormal
+    // forms are not built here, so those literals answer zero rather than a
+    // pattern that is quietly wrong.
+    if (e <= 0) { return 0; }
+    let eu: u64 = e;
+    let bits: u64 = (eu << 52) | (kept - 4503599627370496);
+    let out: i64 = bits;
+    return out;
+}
+// f64_bits(m, k): the IEEE-754 binary64 bit pattern of the exact value
+// m * 2^k, as an i64 - the piece a decimal-literal converter will end on, and
+// useful on its own for hand-built floats. Only integer arithmetic is used,
+// which is the whole point: the bootstrap stage has no float type.
+//
+// Rounding is round-half-to-even, as IEEE-754 requires. Zero answers +0.0, and
+// a value this routine cannot represent exactly enough (a magnitude that would
+// overflow to infinity, or one that underflows past the subnormal range)
+// answers the pattern infinity / zero respectively - the same answers the
+// hardware gives.
+fn f64_bits(m: i64, k: i32) -> i64 {
+    if (m == 0) { return 0; }
+    let neg: i32 = 0;
+    // No casts here: the subset has none. Assigning an i64 to a u64 keeps its
+    // bits, which is exactly the reinterpretation wanted.
+    let a: u64 = m;
+    if (m < 0) {
+        neg = 1;
+        a = 0 - m;
+    }
+    // The highest set bit: a value's binary exponent before normalization.
+    let top: i32 = 0;
+    let probe: u64 = a;
+    while (probe > 1) {
+        probe = probe >> 1;
+        top = top + 1;
+    }
+    // A value of 1..2 times 2^(top+k). The biased exponent is that plus 1023,
+    // and the fraction field wants 52 bits below the leading one.
+    let e: i32 = top + k + 1023;
+    let mant: u64 = 0;
+    if (top <= 52) {
+        // exact: shift the bits up into the 53-bit form, drop the leading one
+        mant = (a << (52 - top)) & 4503599627370495;
+        if (e <= 0) {
+            // subnormal: the leading one is implicit only above the bias, so
+            // shift the whole value right by (1 - e) and round there.
+            mant = a >> (1 - top - k);
+            e = 0;
+        }
+    } else {
+        let drop: i32 = top - 52;
+        mant = a >> drop;
+        // the bits that fall off decide the rounding
+        let rest: u64 = a - (mant << drop);
+        let one: u64 = 1;
+        let half: u64 = one << (drop - 1);
+        if (rest > half) {
+            mant = mant + 1;
+        } else if (rest == half) {
+            if ((mant & 1) == 1) { mant = mant + 1; }
+        }
+        if (mant > 4503599627370495) {
+            mant = mant >> 1;
+            e = e + 1;
+        }
+    }
+    if (e >= 2047) {
+        // overflow: infinity, which is what the hardware would answer
+        if (neg == 1) { return 0 - 9218868437227405312; }
+        return 9218868437227405312;
+    }
+    let eu: u64 = e;
+    let bits: u64 = (eu << 52) | mant;
+    let out: i64 = bits;
+    if (neg == 1) { return 0 - out; }
+    return out;
+}
+
+// utf8_encode(cp, buf): write the UTF-8 form of code point cp into buf and
+// answer the bytes written (1..4). Answers 0 - writing nothing - for a value
+// that is not a code point (negative, above U+10FFFF, or a surrogate).
+fn utf8_encode(cp: i32, buf: ptr<u8>) -> i32 {
+    if (cp < 0) { return 0; }
+    if (cp > 1114111) { return 0; }
+    if (cp >= 55296 && cp <= 57343) { return 0; }
+    if (cp < 128) {
+        store_u8(buf, cp);
+        return 1;
+    }
+    if (cp < 2048) {
+        store_u8(buf, 192 + cp / 64);
+        store_u8(buf + 1, 128 + cp % 64);
+        return 2;
+    }
+    if (cp < 65536) {
+        store_u8(buf, 224 + cp / 4096);
+        store_u8(buf + 1, 128 + cp / 64 % 64);
+        store_u8(buf + 2, 128 + cp % 64);
+        return 3;
+    }
+    store_u8(buf, 240 + cp / 262144);
+    store_u8(buf + 1, 128 + cp / 4096 % 64);
+    store_u8(buf + 2, 128 + cp / 64 % 64);
+    store_u8(buf + 3, 128 + cp % 64);
+    return 4;
+}
+
+// utf8_decode(s, at): the code point whose first byte is s[at], or -1 when the
+// bytes there are not a valid sequence (an unexpected continuation byte, a
+// truncated sequence, an overlong form, or a surrogate).
+fn utf8_decode(s: ptr<u8>, at: i32) -> i32 {
+    let b0: i32 = load_u8(s + at);
+    if (b0 < 128) {
+        if (b0 == 0) { return 0 - 1; }
+        return b0;
+    }
+    if (b0 < 194) { return 0 - 1; }
+    if (b0 < 224) {
+        let b1: i32 = load_u8(s + at + 1);
+        if (b1 / 64 != 2) { return 0 - 1; }
+        return (b0 - 192) * 64 + (b1 - 128);
+    }
+    if (b0 < 240) {
+        let c1: i32 = load_u8(s + at + 1);
+        let c2: i32 = load_u8(s + at + 2);
+        if (c1 / 64 != 2) { return 0 - 1; }
+        if (c2 / 64 != 2) { return 0 - 1; }
+        let cp3: i32 = (b0 - 224) * 4096 + (c1 - 128) * 64 + (c2 - 128);
+        if (cp3 < 2048) { return 0 - 1; }
+        if (cp3 >= 55296 && cp3 <= 57343) { return 0 - 1; }
+        return cp3;
+    }
+    if (b0 < 245) {
+        let d1: i32 = load_u8(s + at + 1);
+        let d2: i32 = load_u8(s + at + 2);
+        let d3: i32 = load_u8(s + at + 3);
+        if (d1 / 64 != 2) { return 0 - 1; }
+        if (d2 / 64 != 2) { return 0 - 1; }
+        if (d3 / 64 != 2) { return 0 - 1; }
+        let cp4: i32 = (b0 - 240) * 262144 + (d1 - 128) * 4096 + (d2 - 128) * 64 + (d3 - 128);
+        if (cp4 < 65536) { return 0 - 1; }
+        if (cp4 > 1114111) { return 0 - 1; }
+        return cp4;
+    }
+    return 0 - 1;
+}
+
+// utf8_len(s): the number of code points in s - every byte that is not a
+// continuation byte (top bits 10) starts one. Bytes are assumed well formed,
+// which utf8_decode is there to check.
+fn utf8_len(s: ptr<u8>) -> i32 {
+    let n: i32 = 0;
+    let i: i32 = 0;
+    while (1 == 1) {
+        let b: i32 = load_u8(s + i);
+        if (b == 0) { return n; }
+        if (b / 64 != 2) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// i32_abs(v): |v|, without the INT32_MIN trap a naive negate would have -
+// the single unrepresentable value answers INT32_MIN, as C's abs() does.
+fn i32_abs(v: i32) -> i32 {
+    if (v < 0) { return 0 - v; }
+    return v;
+}
+
+// memchr(buf, n, c): the index of the first byte equal to c in the first n
+// bytes of buf, or -1. Unlike strchr it needs no terminator and stops at n.
+fn memchr(buf: ptr<u8>, n: i32, c: i32) -> i32 {
+    let want: i32 = c & 255;
+    let i: i32 = 0;
+    while (i < n) {
+        if (load_u8(buf + i) == want) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// strncat(dst, src, room): append at most room bytes of src to dst and
+// terminate. The room counts bytes *after* dst's own end, so
+// `strncat(d, s, sizeof(d) - strlen(d) - 1)` never overruns.
+fn strncat(dst: ptr<u8>, src: ptr<u8>, room: i32) -> ptr<u8> {
+    let d: i32 = strlen(dst);
+    let i: i32 = 0;
+    while (i < room) {
+        let ch: i32 = load_u8(src + i);
+        if (ch == 0) { break; }
+        store_u8(dst + d + i, ch);
+        i = i + 1;
+    }
+    store_u8(dst + d + i, 0);
+    return dst;
+}
+
+fn str_dup(s: ptr<u8>) -> ptr<u8> {
+    let n: i32 = strlen(s);
+    let p: ptr = alloc(n + 1);
+    if (p == 0) { return 0; }
+    mem_copy_bytes(p, s, n);
+    store_u8(p + n, 0);
+    return p;
+}
+
+// ===========================================================================
+// v0.23.77-dev: the basic library, third slice — a map with string keys and
+// pointer values, and a sort that works on any element width.
+//
+// The first slice's hash table (v0.23.42-dev) is a fixed 1024-slot table of
+// `i64` values; this one is the shape a compiler's symbol table needs: the
+// table grows, the value is an address, and a key is whatever the caller
+// already owns (the map never copies it).
+// ===========================================================================
+
+// --- a map: string keys, pointer values ----------------------------------
+// Open addressing with linear probing over a power-of-two table of 16-byte
+// entries (key, value). A slot is empty when its key is 0. There is no
+// deletion: the arena cannot hand memory back, and a compiler's tables only
+// ever grow.
+
+struct Map { ents: ptr, count: i32, cap: i32 }
+
+// A deleted key's slot keeps this in place of the key: linear probing needs a
+// *occupied but free* marker, or a delete would break every probe run that
+// passed through the slot. `ptr(1)` is not an address any key can have.
+fn map_tomb() -> ptr { return ptr(1); }
+
+fn map_init(m: ptr<Map>, cap: i32) -> i32 {
+    let want: i32 = cap < 8 ? 8 : cap;
+    let p: i32 = 8;
+    while (p < want) { p = p * 2; }
+    m.ents = alloc(p * 16);
+    if (m.ents == 0) { return 0 - 1; }
+    m.count = 0;
+    m.cap = p;
+    return 0;
+}
+
+fn map_key_at(m: ptr<Map>, i: i32) -> ptr<u8> {
+    return ptr<u8>(ptr(load_i64(m.ents + i * 16)));
+}
+fn map_val_at(m: ptr<Map>, i: i32) -> ptr {
+    return ptr(load_i64(m.ents + i * 16 + 8));
+}
+
+// map_slot: the index holding `key`, or the first empty slot on its probe run.
+// map_slot: the index holding `key`, or the first slot a new key may occupy —
+// the first tombstone on the probe run when there is one, otherwise the first
+// empty slot. `map_find` is the read-only form: it stops at the first empty
+// slot and answers -1 for "absent".
+fn map_slot(m: ptr<Map>, key: ptr<u8>) -> i32 {
+    let mask: i32 = m.cap - 1;
+    let i: i32 = i32(hash_str(key) & i64(mask));
+    let tomb: i32 = 0 - 1;
+    while (1) {
+        let k: ptr<u8> = map_key_at(m, i);
+        if (k == 0) {
+            if (tomb >= 0) { return tomb; }
+            return i;
+        }
+        if (k == map_tomb()) {
+            if (tomb < 0) { tomb = i; }
+        } else if (streq(k, key) == 1) {
+            return i;
+        }
+        i = (i + 1) & mask;
+    }
+    return 0 - 1;
+}
+
+fn map_find(m: ptr<Map>, key: ptr<u8>) -> i32 {
+    let mask: i32 = m.cap - 1;
+    let i: i32 = i32(hash_str(key) & i64(mask));
+    while (1) {
+        let k: ptr<u8> = map_key_at(m, i);
+        if (k == 0) { return 0 - 1; }
+        if (k != map_tomb()) {
+            if (streq(k, key) == 1) { return i; }
+        }
+        i = (i + 1) & mask;
+    }
+    return 0 - 1;
+}
+
+fn map_grow(m: ptr<Map>) -> i32 {
+    let old: ptr = m.ents;
+    let oldcap: i32 = m.cap;
+    let newcap: i32 = oldcap * 2;
+    let n: ptr = alloc(newcap * 16);
+    if (n == 0) { return 0 - 1; }
+    m.ents = n;
+    m.cap = newcap;
+    m.count = 0;
+    let i: i32 = 0;
+    while (i < oldcap) {
+        let k: ptr<u8> = ptr<u8>(ptr(load_i64(old + i * 16)));
+        if (k != 0) {
+            let v: ptr = ptr(load_i64(old + i * 16 + 8));
+            let j: i32 = map_slot(m, k);
+            store_i64(m.ents + j * 16, i64(k));
+            store_i64(m.ents + j * 16 + 8, i64(v));
+            m.count = m.count + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// map_put(m, key, val): 1 when the key is new, 0 when it replaced a value, -1
+// when the arena refused. A smaller val of 0 is still a stored value; only an
+// absent key reads back as 0.
+fn map_put(m: ptr<Map>, key: ptr<u8>, val: ptr) -> i32 {
+    if (m.ents == 0) {
+        if (map_init(m, 8) != 0) { return 0 - 1; }
+    }
+    if ((m.count + 1) * 2 > m.cap) {
+        if (map_grow(m) != 0) { return 0 - 1; }
+    }
+    let i: i32 = map_slot(m, key);
+    let fresh: i32 = 1;
+    if (map_key_at(m, i) != 0 && map_key_at(m, i) != map_tomb()) { fresh = 0; }
+    store_i64(m.ents + i * 16, i64(key));
+    store_i64(m.ents + i * 16 + 8, i64(val));
+    if (fresh == 1) { m.count = m.count + 1; }
+    return fresh;
+}
+
+fn map_get(m: ptr<Map>, key: ptr<u8>) -> ptr {
+    if (m.ents == 0 || m.count == 0) { return 0; }
+    let i: i32 = map_find(m, key);
+    if (i < 0) { return 0; }
+    return map_val_at(m, i);
+}
+
+// map_del(m, key): 1 when the key was there and is gone, 0 when it was not.
+// The slot becomes a tombstone - not empty, because a probe run that reached
+// this slot has to keep going past it - and the count drops by one. A later
+// map_put reuses the tombstone (map_slot prefers the first one on its run).
+fn map_del(m: ptr<Map>, key: ptr<u8>) -> i32 {
+    if (m.ents == 0 || m.count == 0) { return 0; }
+    let i: i32 = map_find(m, key);
+    if (i < 0) { return 0; }
+    store_i64(m.ents + i * 16, i64(map_tomb()));
+    store_i64(m.ents + i * 16 + 8, 0);
+    m.count = m.count - 1;
+    return 1;
+}
+
+fn map_has(m: ptr<Map>, key: ptr<u8>) -> i32 {
+    if (map_get(m, key) != 0) { return 1; }
+    return 0;
+}
+
+// --- sorting by element width --------------------------------------------
+// `sort_bytes` is the general form: an insertion sort over `count` elements of
+// `width` bytes, ordering them with a comparator that takes two element
+// addresses and answers <0, 0 or >0 — C's qsort contract, with the comparator
+// as a plain function pointer. Insertion sort is the right choice here for the
+// reason the language makes it cheap: it is stable, it touches each element
+// once in the common (nearly sorted) case, and a compiler's tables are small.
+// The element cap is the 256-byte scratch buffer the swap needs.
+
+fn sort_bytes(base: ptr, count: i32, width: i32, cmp: ptr) -> i32 {
+    if (width <= 0 || width > 256) { return 0 - 1; }
+    if (count < 2) { return count; }
+    let tmp: u8[256] = 0;
+    let i: i32 = 1;
+    while (i < count) {
+        mem_copy_bytes(&tmp, base + i * width, width);
+        let j: i32 = i;
+        while (j > 0) {
+            let prev: ptr = base + (j - 1) * width;
+            if (cmp(prev, ptr(&tmp)) <= 0) { break; }
+            mem_move_bytes(base + j * width, prev, width);
+            j = j - 1;
+        }
+        mem_move_bytes(base + j * width, ptr(&tmp), width);
+        i = i + 1;
+    }
+    return count;
+}
+
+// The comparators the typed wrappers use. `*(a)` on a bare ptr reads an i32,
+// which is exactly an element of an i32 array.
+fn cmp_i32_asc(a: ptr, b: ptr) -> i32 {
+    let x: i32 = *(a);
+    let y: i32 = *(b);
+    if (x < y) { return 0 - 1; }
+    if (x > y) { return 1; }
+    return 0;
+}
+fn cmp_i64_asc(a: ptr, b: ptr) -> i32 {
+    let x: i64 = load_i64(a);
+    let y: i64 = load_i64(b);
+    if (x < y) { return 0 - 1; }
+    if (x > y) { return 1; }
+    return 0;
+}
+fn cmp_u8_asc(a: ptr, b: ptr) -> i32 {
+    let x: i32 = load_u8(a);
+    let y: i32 = load_u8(b);
+    if (x < y) { return 0 - 1; }
+    if (x > y) { return 1; }
+    return 0;
+}
+// An element of a `ptr[N]` is an address; the strings it points at are what a
+// caller wants ordered.
+fn cmp_str_asc(a: ptr, b: ptr) -> i32 {
+    let x: ptr<u8> = ptr<u8>(ptr(load_i64(a)));
+    let y: ptr<u8> = ptr<u8>(ptr(load_i64(b)));
+    return strcmp(x, y);
+}
+
+fn sort_i64(a: ptr, n: i32) -> i32 { return sort_bytes(a, n, 8, ptr(cmp_i64_asc)); }
+fn sort_u8(a: ptr, n: i32) -> i32 { return sort_bytes(a, n, 1, ptr(cmp_u8_asc)); }
+fn sort_str(a: ptr, n: i32) -> i32 { return sort_bytes(a, n, 8, ptr(cmp_str_asc)); }

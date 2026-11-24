@@ -1,0 +1,7 @@
+// aster:language=en
+fn main(): i32 {
+let callback = fn [this] (): i32 {
+return 0;
+};
+return 0;
+}

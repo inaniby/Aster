@@ -1,0 +1,8 @@
+// aster:language=zh
+接口类 Value
+方法 get(): 整数
+结束 接口类
+方法 启动方法(): 整数
+变量 value: Value
+返回 value == 空
+结束 方法

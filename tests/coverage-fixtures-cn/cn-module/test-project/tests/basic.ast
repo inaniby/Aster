@@ -1,0 +1,4 @@
+// aster:language=en
+fn main(): i32 {
+return 加一(41) - 42;
+}

@@ -1,0 +1,5 @@
+// aster:language=zh
+导入 "helper.ast"
+方法 启动方法(): 整数
+返回 加一(41)
+结束 方法

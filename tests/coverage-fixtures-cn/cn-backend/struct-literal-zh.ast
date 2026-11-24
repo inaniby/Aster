@@ -1,0 +1,16 @@
+// aster:language=zh
+结构 Pair
+left: 整数
+right: 整数
+结束 结构
+结构 Box
+pair: Pair
+label: 字符串
+结束 结构
+方法 启动方法(): 整数
+变量 item: Box = Box { Pair { 19, 23 }, "done" }
+如果 item.label == 空
+返回 1
+结束 如果
+返回 item.pair.left + item.pair.right
+结束 方法

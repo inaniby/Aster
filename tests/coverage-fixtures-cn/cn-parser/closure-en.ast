@@ -1,0 +1,21 @@
+// aster:language=en
+fn main(): i32 {
+let step: i32 = 2;
+let offset: i32 = 1;
+let increment = fn [step, offset] (value: i32): i32 {
+return value + step + offset;
+};
+let zero = fn (): i32 {
+return 0;
+};
+return increment(10) + zero();
+}
+class Holder {
+let value: i32;
+fn read(): i32 {
+let get_value = fn [this] (): i32 {
+return this.value;
+};
+return get_value();
+}
+}

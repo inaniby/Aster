@@ -1,0 +1,8 @@
+// aster:language=en
+package demo.interface_base;
+interface class RootContract {
+fn root(): i32;
+}
+interface class ReadableContract: RootContract {
+fn read(): i32;
+}

@@ -1,0 +1,16 @@
+// aster:language=en
+interface class Ping {
+fn ping();
+fn pingExplicit(): void;
+}
+let count: i32 = 0;
+class Impl: Ping {
+fn ping(): void { count = count + 1; }
+fn pingExplicit() { count = count + 1; }
+}
+fn main(): i32 {
+let value: Ping = Impl();
+value.ping();
+value.pingExplicit();
+return count;
+}

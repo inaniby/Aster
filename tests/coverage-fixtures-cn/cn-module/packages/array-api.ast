@@ -1,0 +1,12 @@
+// aster:language=en
+package demo.arrays;
+fn bump(values: i32[2]): i32 {
+values[0] = values[0] + 3;
+return values[0] + values[1];
+}
+class ArrayOps {
+fn bump(values: i32[2]): i32 {
+values[1] = values[1] + 4;
+return values[0] + values[1];
+}
+}

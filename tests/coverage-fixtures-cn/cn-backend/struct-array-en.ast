@@ -1,0 +1,10 @@
+// aster:language=en
+struct Table { items: i32[2], labels: string[2] }
+fn main(): i32 {
+let table: Table;
+if (table.labels[0] == null) { return 1; }
+if (table.labels[1] == null) { return 2; }
+table.items[0] = 19;
+table.items[1] = 23;
+return table.items[0] + table.items[1];
+}

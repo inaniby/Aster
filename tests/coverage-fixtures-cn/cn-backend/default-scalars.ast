@@ -1,0 +1,36 @@
+// aster:language=zh
+方法 acceptSingle(value: f32): 整数
+返回 0
+结束 方法
+方法 启动方法(): 整数
+变量 count: 整数
+变量 ready: 逻辑型
+变量 letter: 字符
+变量 pointer: 指针
+变量 precise: f64
+变量 single: f32
+变量 samples: f64[2]
+变量 texts: 字符串[2]
+如果 count != 0
+返回 1
+结束 如果
+如果 ready
+返回 2
+结束 如果
+如果 letter != 0
+返回 3
+结束 如果
+如果 pointer != 空
+返回 4
+结束 如果
+如果 precise != 0.0
+返回 5
+结束 如果
+如果 samples[0] != 0.0
+返回 6
+结束 如果
+如果 texts[0] != texts[1]
+返回 7
+结束 如果
+返回 acceptSingle(single)
+结束 方法

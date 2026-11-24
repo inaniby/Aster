@@ -1,0 +1,379 @@
+struct App {
+    count: i32,
+    tab: i32,
+    lang: i32,
+    notify: i32,
+    promo: i32,
+    slider: i32,
+    sel_open: i32
+}
+let g_app: App = App { 0, 0, 0, 1, 0, 500, 0 };
+let keylog: i32[64];
+let logn: i32 = 0;
+let endn: i32 = 0;
+let padn: i32 = 0;
+let gapn: i32 = 0;
+let weightn: i32 = 0;
+let kbn: i32 = 0;
+let clearn: i32 = 0;
+let focusn: i32 = 0;
+let openv: i32 = 0;
+let reasonn: i32 = 0;
+let savedClear: fn(ptr) -> i32 = null;
+let savedFocus: fn(ptr) -> i32 = null;
+let savedNotify: fn(ptr) -> i32 = null;
+let savedPromo: fn(ptr) -> i32 = null;
+let savedVolume: fn(ptr) -> i32 = null;
+let savedLanguage: fn(ptr) -> i32 = null;
+let savedUser: ptr = null;
+fn logKey(key: i32) -> i32 {
+    keylog[logn] = key;
+    logn = logn + 1;
+    return 0;
+}
+fn aui_scroll(key: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_weight(w: i32) -> i32 {
+    weightn = weightn + 1;
+    return 0;
+}
+fn aui_column(key: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_row(key: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_pad(dp: i32) -> i32 {
+    padn = padn + 1;
+    return 0;
+}
+fn aui_gap(dp: i32) -> i32 {
+    gapn = gapn + 1;
+    return 0;
+}
+fn aui_label(key: i32, text: ptr) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_text_field(key: i32, hint: ptr) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_text_value(key: i32) -> ptr {
+    return null;
+}
+fn aui_focus_get() -> i32 {
+    return 0;
+}
+fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+    logKey(key);
+    if (key == -1171597166) {
+        savedClear = cb;
+    } else if (key == -2143741853) {
+        savedFocus = cb;
+    }
+    savedUser = user;
+    return 0;
+}
+fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+    logKey(key);
+    openv = open;
+    savedLanguage = cb;
+    savedUser = user;
+    return 0;
+}
+fn aui_option(key: i32, text: ptr) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_select_value(key: i32) -> i32 {
+    return 2;
+}
+fn aui_select_reason() -> i32 {
+    reasonn = reasonn + 1;
+    if (reasonn == 1) {
+        return 0;
+    }
+    return 1;
+}
+fn aui_switch(key: i32, on: i32, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+    logKey(key);
+    savedNotify = cb;
+    savedUser = user;
+    return 0;
+}
+fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+    logKey(key);
+    savedPromo = cb;
+    savedUser = user;
+    return 0;
+}
+fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+    logKey(key);
+    savedVolume = cb;
+    savedUser = user;
+    return 0;
+}
+fn aui_slider_value(key: i32) -> i32 {
+    return 42;
+}
+fn aui_progress(key: i32, value: i32) -> i32 {
+    logKey(key);
+    return 0;
+}
+fn aui_keyboard(target_key: i32) -> i32 {
+    kbn = kbn + 1;
+    return 0;
+}
+fn aui_text_clear(key: i32) -> i32 {
+    clearn = clearn + 1;
+    return 0;
+}
+fn aui_focus(key: i32) -> i32 {
+    focusn = focusn + 1;
+    return 0;
+}
+fn aui_invalidate() -> i32 {
+    return 0;
+}
+fn aui_end() -> i32 {
+    endn = endn + 1;
+    return 0;
+}
+fn main() -> i32 {
+    let p: ptr<App> = &g_app;
+    g_app.sel_open = -1104391733;
+    let r: i32 = page_input(p, p);
+    if (r != 0) {
+        return 11;
+    }
+    if (logn != 22) {
+        return 12;
+    }
+    if (keylog[0] != 464528793) {
+        return 13;
+    }
+    if (keylog[1] != -137450478) {
+        return 13;
+    }
+    if (keylog[2] != -15933671) {
+        return 13;
+    }
+    if (keylog[3] != -236665557) {
+        return 13;
+    }
+    if (keylog[4] != 298383220) {
+        return 13;
+    }
+    if (keylog[5] != 1168151760) {
+        return 13;
+    }
+    if (keylog[6] != -1153224307) {
+        return 13;
+    }
+    if (keylog[7] != 1464126559) {
+        return 13;
+    }
+    if (keylog[8] != -1171597166) {
+        return 13;
+    }
+    if (keylog[9] != -2143741853) {
+        return 13;
+    }
+    if (keylog[10] != -134503575) {
+        return 13;
+    }
+    if (keylog[11] != -1104391733) {
+        return 13;
+    }
+    if (keylog[12] != 1956836555) {
+        return 13;
+    }
+    if (keylog[13] != 1943312675) {
+        return 13;
+    }
+    if (keylog[14] != 666349752) {
+        return 13;
+    }
+    if (keylog[15] != 2080632968) {
+        return 13;
+    }
+    if (keylog[16] != -2094042644) {
+        return 13;
+    }
+    if (keylog[17] != -1270126600) {
+        return 13;
+    }
+    if (keylog[18] != 1366121808) {
+        return 13;
+    }
+    if (keylog[19] != 707760919) {
+        return 13;
+    }
+    if (keylog[20] != -1989447041) {
+        return 13;
+    }
+    if (keylog[21] != 2006538838) {
+        return 13;
+    }
+    if (endn != 6) {
+        return 14;
+    }
+    if (padn != 2) {
+        return 15;
+    }
+    if (gapn != 3) {
+        return 16;
+    }
+    if (weightn != 3) {
+        return 17;
+    }
+    if (kbn != 0) {
+        return 18;
+    }
+    if (openv != 1) {
+        return 19;
+    }
+    let up: ptr = p;
+    if (savedUser != up) {
+        return 20;
+    }
+    let c0: i32 = savedClear(savedUser);
+    if (clearn != 1) {
+        return 31;
+    }
+    let c1: i32 = savedFocus(savedUser);
+    if (focusn != 1) {
+        return 32;
+    }
+    let c2: i32 = savedNotify(savedUser);
+    if (g_app.notify != 0) {
+        return 33;
+    }
+    let c3: i32 = savedPromo(savedUser);
+    if (g_app.promo != 1) {
+        return 34;
+    }
+    let c4: i32 = savedVolume(savedUser);
+    if (g_app.slider != 42) {
+        return 35;
+    }
+    let c5: i32 = savedLanguage(savedUser);
+    if (g_app.sel_open != -1104391733) {
+        return 36;
+    }
+    let c6: i32 = savedLanguage(savedUser);
+    if (g_app.lang != 2) {
+        return 37;
+    }
+    if (g_app.sel_open != 0) {
+        return 38;
+    }
+    return 0;
+}
+// tab-input-en.ast — D-2a syntax draft, NOT compilable (needs the compiler work order to land).
+// Source: new-line Gallery Input tab (116 lines); work-order target 99 lines, measured in the D2A report.
+// The 130 sentinel now goes through key(Language); event kinds follow the skeleton event set (change).
+extern fn aui_scroll(key: i32) -> i32;
+extern fn aui_weight(w: i32) -> i32;
+extern fn aui_column(key: i32) -> i32;
+extern fn aui_row(key: i32) -> i32;
+extern fn aui_pad(dp: i32) -> i32;
+extern fn aui_gap(dp: i32) -> i32;
+extern fn aui_label(key: i32, text: ptr) -> i32;
+extern fn aui_text_field(key: i32, hint: ptr) -> i32;
+extern fn aui_text_value(key: i32) -> ptr;
+extern fn aui_focus_get() -> i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_option(key: i32, text: ptr) -> i32;
+extern fn aui_select_value(key: i32) -> i32;
+extern fn aui_select_reason() -> i32;
+extern fn aui_switch(key: i32, on: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_slider_value(key: i32) -> i32;
+extern fn aui_progress(key: i32, value: i32) -> i32;
+extern fn aui_keyboard(target_key: i32) -> i32;
+extern fn aui_text_clear(key: i32) -> i32;
+extern fn aui_focus(key: i32) -> i32;
+extern fn aui_invalidate() -> i32;
+extern fn aui_end() -> i32;
+event Clear:tap() {
+    aui_text_clear(key(Input));
+    aui_invalidate();
+}
+event Focus:tap() {
+    aui_focus(key(Input));
+    aui_invalidate();
+}
+event NotifySwitch:change() {
+    g_app.notify = 1 - g_app.notify;
+    aui_invalidate();
+}
+event Promo:change() {
+    g_app.promo = 1 - g_app.promo;
+    aui_invalidate();
+}
+event Volume:change() {
+    g_app.slider = aui_slider_value(key(Volume));
+    aui_invalidate();
+}
+event Language:change() {
+    let why: i32 = aui_select_reason();
+    if (why == 0) {
+        g_app.sel_open = key(Language);
+    } else if (why == 1) {
+        let v: i32 = aui_select_value(key(Language));
+        if (v >= 0) {
+            g_app.lang = v;
+        }
+        g_app.sel_open = 0;
+    } else {
+        g_app.sel_open = 0;
+    }
+    aui_invalidate();
+}
+layout page_input(s: ptr<App>, user: ptr) -> View {
+    Scroll MainScroll, Weight(1) {
+        Column MainCol, Padding(20), Gap(12) {
+            Label Title, ptr("Text field + select")
+            TextField Input, ptr("Tap to type...")
+            if (aui_focus_get() == 0) {
+                Label Echo, ptr("Live value")
+                Row EchoRow, Padding(12) {
+                    Label EchoValue, aui_text_value(key(Input)), Weight(1)
+                }
+            }
+            Row ButtonRow, Gap(8) {
+                Button Clear, ptr("Clear")
+                Button Focus, ptr("Focus")
+            }
+            Label LangTitle, ptr("Language")
+            let open: i32 = 0;
+            if (s.sel_open == key(Language)) {
+                open = 1;
+            }
+            Select Language, s.lang, open, ptr("Choose a language") {
+                Option English, ptr("English")
+                Option German, ptr("German")
+                Option Chinese, ptr("Chinese")
+            }
+            Row NotifyRow, Gap(8) {
+                Label Notify, ptr("Notify"), Weight(1)
+                Switch NotifySwitch, s.notify
+            }
+            Checkbox Promo, ptr("Promotions"), s.promo
+            Label VolumeTitle, ptr("Volume")
+            Slider Volume, s.slider, 10
+            Progress Progress, s.slider
+        }
+    }
+    if (aui_focus_get() != 0) {
+        aui_keyboard(key(Input));
+    }
+}

@@ -1,0 +1,9 @@
+// aster:language=en
+class HiddenState {
+@private
+let secret: i32;
+}
+class HiddenAccessError {
+let value: i32 = HiddenState().secret;
+}
+fn main(): i32 { return 0; }

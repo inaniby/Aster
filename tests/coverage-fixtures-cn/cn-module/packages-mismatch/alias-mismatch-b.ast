@@ -1,0 +1,4 @@
+包名 demo.alias_mismatch = second.alias
+方法 two(): 整数
+返回 2
+结束 方法

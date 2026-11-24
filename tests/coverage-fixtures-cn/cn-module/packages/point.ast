@@ -1,0 +1,4 @@
+包名 model.types
+类 Point
+变量 x: 整数
+结束 类

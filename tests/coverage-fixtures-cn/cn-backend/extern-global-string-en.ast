@@ -1,0 +1,9 @@
+// aster:language=en
+extern let native_text: string;
+fn main(): i32 {
+if (native_text == null) {
+return 1;
+} else {
+return 0;
+}
+}

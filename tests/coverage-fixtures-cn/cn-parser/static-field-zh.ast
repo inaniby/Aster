@@ -1,0 +1,7 @@
+类 Counter
+@静态
+变量 count: 整数 = 1
+结束 类
+方法 启动方法(): 整数
+返回 Counter.count
+结束 方法

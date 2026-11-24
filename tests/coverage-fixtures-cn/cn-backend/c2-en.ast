@@ -1,0 +1,44 @@
+// aster:language=en
+extern let arena_used: i32;
+extern fn aster_cn_adapter_free(p: ptr): i32;
+let saved_cb: fn(ptr): i32 = null;
+let saved_user: ptr = null;
+let active: i32 = 0;
+fn register(callback: fn(ptr): i32, user: ptr): i32 {
+    saved_cb = callback;
+    saved_user = user;
+    active = 1;
+    return 1;
+}
+fn invoke(): i32 {
+    if (active == 0) { return -1; }
+    return saved_cb(saved_user);
+}
+fn unregister(): i32 {
+    if (active == 0) { return 0; }
+    active = 0;
+    return aster_cn_adapter_free(saved_user);
+}
+fn main(): i32 {
+    let base: i32 = 41;
+    let cb = fn [base] (user: ptr): i32 {
+        return base + 1;
+    };
+    register(cb, null);
+    if (invoke() != 42) { return 11; }
+    if (unregister() != 1) { return 12; }
+    let warm: i32 = arena_used;
+    let i: i32 = 0;
+    while (i < 10000) {
+        register(cb, null);
+        if (invoke() != 42) { return 13; }
+        if (unregister() != 1) { return 14; }
+        i = i + 1;
+    }
+    if (arena_used != warm) { return 15; }
+    if (unregister() != 0) { return 21; }
+    if (aster_cn_adapter_free(null) != 0) { return 22; }
+    if (aster_cn_adapter_free(&base) != 0) { return 23; }
+    if (base != 41) { return 24; }
+    return 0;
+}

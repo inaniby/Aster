@@ -1,0 +1,8 @@
+// aster:language=en
+fn plain(user: ptr): i32 { return 42; }
+fn register(callback: fn(ptr): i32, user: ptr): i32 {
+    return callback(user);
+}
+fn main(): i32 {
+    return register(plain, null);
+}

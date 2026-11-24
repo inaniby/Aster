@@ -1,0 +1,8 @@
+// aster:language=en
+struct Pair { left: i32, right: i32 }
+struct Box { pair: Pair, label: string }
+fn main(): i32 {
+let item: Box = Box { Pair { 19, 23 }, "done" };
+if (item.label == null) { return 1; }
+return item.pair.left + item.pair.right;
+}

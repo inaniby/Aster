@@ -1,0 +1,6 @@
+// aster:language=zh
+// comments before the package declaration are ignored
+包名 demo.calc
+方法 乘二(数: 整数): 整数
+返回 数 * 2
+结束 方法

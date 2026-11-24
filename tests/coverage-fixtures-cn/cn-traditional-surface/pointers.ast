@@ -1,0 +1,11 @@
+// aster:language=en
+fn bump(p: ptr<i32>) -> i32 { p[0] = p[0] + 1; return p[0]; }
+fn main(): i32 {
+let a: i32[2] = [40, 0];
+let p: ptr<i32> = a;
+let v: i32 = bump(p);
+let q: ptr<u8> = ptr<u8>(p);
+*(p + 4) = load_u8(q) + 1;
+store_u8(q, load_u8(q) + 1);
+return v + a[1] + load_u8(q) - 42;
+}

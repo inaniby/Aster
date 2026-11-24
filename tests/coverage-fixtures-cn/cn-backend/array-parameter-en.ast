@@ -1,0 +1,15 @@
+// aster:language=en
+let shared: i32[3] = [1, 2, 3];
+fn update(values: i32[3]): i32 {
+values[1] = values[1] + 5;
+return values[0] + values[1] + values[2];
+}
+fn main(): i32 {
+let values: i32[3] = [10, 20, 30];
+let total: i32 = update(values);
+if (total != 65) { return 1; }
+if (values[1] != 25) { return 2; }
+if (update(shared) != 11) { return 3; }
+if (shared[1] != 7) { return 4; }
+return 0;
+}

@@ -1,0 +1,38 @@
+// aster:language=zh
+枚举 Color
+Green = 4
+Blue = Green + 3
+Red = -2
+结束 枚举
+结构 Box
+color: Color
+colors: Color[2]
+结束 结构
+方法 启动方法(): 整数
+变量 total: 整数 = 0
+变量 color: Color
+变量 box: Box
+变量 selected: Color = Blue
+变量 colors: Color[2]
+假如 color
+是 Green
+total = total + 1
+结束 假如
+假如 colors[1]
+是 Green
+total = total + 1
+结束 假如
+假如 box.color
+是 Green
+total = total + 1
+结束 假如
+假如 box.colors[1]
+是 Green
+total = total + 1
+结束 假如
+假如 selected
+是 Blue
+total = total + 1
+结束 假如
+返回 total
+结束 方法

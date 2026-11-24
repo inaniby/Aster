@@ -1,0 +1,8 @@
+// aster:language=en
+fn take(text: string): i32 {
+return 40;
+}
+fn main(): i32 {
+let greeting: string = "你好";
+return take(greeting) + take("世界");
+}

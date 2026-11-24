@@ -1,0 +1,22 @@
+// aster:language=en
+struct Data { fixed: i32, changed: i32, escaped: i32 }
+fn inspect(value: ptr): void { return; }
+fn main(): i32 {
+let stable: i32;
+let changed: i32;
+changed = 2;
+let escaped: i32;
+let escapedPointer: ptr = ptr(&escaped);
+let data: Data;
+data.changed = 5;
+let fieldPointer: ptr = ptr(&data.escaped);
+let values: i32[2];
+values[0] = 1;
+let passed: i32[2];
+inspect(passed);
+let conditional: i32;
+if (true) { conditional = 9; }
+let explicit: i32 = 7;
+const constant: i32 = 3;
+return stable + data.fixed + values[1] + conditional + explicit + constant + changed + escaped + data.changed;
+}

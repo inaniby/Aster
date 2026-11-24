@@ -1,0 +1,5 @@
+// aster:language=en
+class FieldTypeError {
+let value: i32 = "wrong";
+}
+fn main(): i32 { return 0; }

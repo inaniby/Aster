@@ -1,0 +1,5 @@
+name bp1-neg
+[language]
+default = "zh"
+"bad.ast" = "en"
+main.ast

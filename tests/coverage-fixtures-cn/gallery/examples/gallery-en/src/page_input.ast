@@ -1,0 +1,116 @@
+// page_input.ast — Gallery Input tab (APP): text/select/switch/check/slider.
+// Select open state lives in App.sel_open (130 = open); see select_event.
+// Text goes through ptr("..."); see app.ast for why (B2).
+extern fn aui_scroll(key: i32) -> i32;
+extern fn aui_weight(w: i32) -> i32;
+extern fn aui_column(key: i32) -> i32;
+extern fn aui_row(key: i32) -> i32;
+extern fn aui_pad(dp: i32) -> i32;
+extern fn aui_gap(dp: i32) -> i32;
+extern fn aui_label(key: i32, text: ptr) -> i32;
+extern fn aui_text_field(key: i32, hint: ptr) -> i32;
+extern fn aui_text_value(key: i32) -> ptr;
+extern fn aui_focus_get() -> i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_option(key: i32, text: ptr) -> i32;
+extern fn aui_select_value(key: i32) -> i32;
+extern fn aui_select_reason() -> i32;
+extern fn aui_switch(key: i32, on: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr): i32, user: ptr) -> i32;
+extern fn aui_slider_value(key: i32) -> i32;
+extern fn aui_progress(key: i32, value: i32) -> i32;
+extern fn aui_keyboard(target_key: i32) -> i32;
+extern fn aui_text_clear(key: i32) -> i32;
+extern fn aui_focus(key: i32) -> i32;
+extern fn aui_invalidate() -> i32;
+extern fn aui_end() -> i32;
+fn on_clear(user: ptr) -> i32 {
+    aui_text_clear(110);
+    return aui_invalidate();
+}
+fn on_focus(user: ptr) -> i32 {
+    aui_focus(110);
+    return aui_invalidate();
+}
+fn on_notify(user: ptr) -> i32 {
+    let s: ptr<App> = user;
+    s.notify = 1 - s.notify;
+    return aui_invalidate();
+}
+fn on_promo(user: ptr) -> i32 {
+    let s: ptr<App> = user;
+    s.promo = 1 - s.promo;
+    return aui_invalidate();
+}
+fn on_slider(user: ptr) -> i32 {
+    let s: ptr<App> = user;
+    s.slider = aui_slider_value(160);
+    return aui_invalidate();
+}
+fn select_event(user: ptr) -> i32 {
+    let s: ptr<App> = user;
+    let why: i32 = aui_select_reason();
+    if (why == 0) {
+        s.sel_open = 130;
+    } else if (why == 1) {
+        let v: i32 = aui_select_value(130);
+        if (v >= 0) {
+            s.lang = v;
+        }
+        s.sel_open = 0;
+    } else {
+        s.sel_open = 0;
+    }
+    aui_invalidate();
+    return 0;
+}
+fn page_input(s: ptr<App>, user: ptr) -> i32 {
+    aui_scroll(1000);
+    aui_weight(1);
+    aui_column(1001);
+    aui_pad(20);
+    aui_gap(12);
+    aui_label(101, ptr("Text field + select"));
+    aui_text_field(110, ptr("Tap to type..."));
+    if (aui_focus_get() == 0) {
+        aui_label(111, ptr("Live value"));
+        aui_row(112);
+        aui_pad(12);
+        aui_label(113, aui_text_value(110));
+        aui_weight(1);
+        aui_end();
+    }
+    aui_row(114);
+    aui_gap(8);
+    aui_button(115, ptr("Clear"), on_clear, user);
+    aui_button(116, ptr("Focus"), on_focus, user);
+    aui_end();
+    aui_label(120, ptr("Language"));
+    let open: i32 = 0;
+    if (s.sel_open == 130) {
+        open = 1;
+    }
+    aui_select(130, s.lang, open, ptr("Choose a language"), select_event, user);
+    aui_option(131, ptr("English"));
+    aui_option(132, ptr("German"));
+    aui_option(133, ptr("Chinese"));
+    aui_end();
+    aui_row(140);
+    aui_gap(8);
+    aui_label(141, ptr("Notify"));
+    aui_weight(1);
+    aui_switch(143, s.notify, on_notify, user);
+    aui_end();
+    aui_checkbox(150, ptr("Promotions"), s.promo, on_promo, user);
+    aui_label(155, ptr("Volume"));
+    aui_slider(160, s.slider, 10, on_slider, user);
+    aui_progress(170, s.slider);
+    aui_end();
+    aui_end();
+    if (aui_focus_get() != 0) {
+        aui_keyboard(110);
+    }
+    return 0;
+}

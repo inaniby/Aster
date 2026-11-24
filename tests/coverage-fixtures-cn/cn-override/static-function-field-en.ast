@@ -1,0 +1,10 @@
+// aster:language=en
+fn addTwo(value: i32): i32 { return value + 2; }
+class StaticCallback {
+@static
+let callback: fn(i32): i32 = addTwo;
+@static
+fn run(value: i32): i32 { return StaticCallback.callback(value); }
+}
+class DerivedStaticCallback: StaticCallback {}
+fn main(): i32 { return DerivedStaticCallback.run(40); }

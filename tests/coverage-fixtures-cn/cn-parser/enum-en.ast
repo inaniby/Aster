@@ -1,0 +1,10 @@
+// aster:language=en
+enum Color {
+Red,
+Green = 4,
+Blue = Green + 3
+}
+fn main(): i32 {
+let selected: Color = Blue;
+return selected;
+}

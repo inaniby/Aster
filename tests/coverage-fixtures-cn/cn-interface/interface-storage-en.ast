@@ -1,0 +1,26 @@
+// aster:language=en
+interface class Value {
+fn get(): i32;
+}
+class Item: Value {
+fn get(): i32 { return 21; }
+}
+struct StructHolder {
+value: Value
+values: Value[2]
+}
+class ClassHolder {
+let value: Value;
+let values: Value[2];
+}
+fn main(): i32 {
+let structHolder: StructHolder;
+structHolder.value = Item();
+structHolder.values[0] = Item();
+structHolder.values[1] = Item();
+let classHolder: ClassHolder = ClassHolder();
+classHolder.value = Item();
+classHolder.values[0] = Item();
+classHolder.values[1] = Item();
+return structHolder.value.get() + structHolder.values[0].get() + structHolder.values[1].get() + classHolder.value.get() + classHolder.values[0].get() + classHolder.values[1].get() - 126;
+}

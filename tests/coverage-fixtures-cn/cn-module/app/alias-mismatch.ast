@@ -1,0 +1,4 @@
+@导入("demo.alias_mismatch").别名("mismatch")
+方法 启动方法(): 整数
+返回 mismatch.one()
+结束 方法

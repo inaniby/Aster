@@ -1,0 +1,7 @@
+包名 demo.state
+变量 count: 整数 = 5
+常量 step: 整数 = 2
+方法 增加(): 整数
+count = count + step
+返回 count
+结束 方法

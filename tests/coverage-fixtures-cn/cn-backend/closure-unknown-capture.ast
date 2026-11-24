@@ -1,0 +1,8 @@
+// aster:language=en
+fn main(): i32 {
+let value: i32 = 2;
+let callback = fn [missing] (): i32 {
+return 0;
+};
+return 0;
+}

@@ -1,0 +1,55 @@
+// aster:language=en
+struct Values { byte: i8, short: i16, bytes: i8[2], shorts: i16[2] }
+struct Metadata { byte: i8, short: i16 }
+fn identity8(value: i8): i8 { return value; }
+fn identity16(value: i16): i16 { return value; }
+fn widen8(value: i8): i64 { return value; }
+fn widen16(value: i16): i64 { return value; }
+fn reinterpret8(value: u8): i8 { return i8(value); }
+fn reinterpret16(value: u16): i16 { return i16(value); }
+fn stackCheck(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, value8: i8, value16: i16): i32 {
+return widen8(value8) + widen16(value16) + 312;
+}
+fn main(): i32 {
+let zero8: i8;
+let zero16: i16;
+if (zero8 != 0) { return 1; }
+if (zero16 != 0) { return 2; }
+let byteValue: i8 = i8(255);
+let shortValue: i16 = i16(65534);
+if (byteValue != -1) { return 3; }
+if (shortValue != -2) { return 4; }
+if (reinterpret8(u8(255)) != -1) { return 4; }
+if (reinterpret16(u16(65534)) != -2) { return 4; }
+if (byteValue >= 0) { return 3; }
+let matched: i32 = 0;
+switch (byteValue) {
+case -1
+matched = matched + 1;
+else
+return 4;
+}
+if (matched != 1) { return 4; }
+if (widen8(identity8(byteValue)) != -1) { return 5; }
+if (widen16(identity16(shortValue)) != -2) { return 6; }
+let bytes: i8[2] = [i8(128), i8(127)];
+let shorts: i16[2] = [i16(32768), i16(32767)];
+if (bytes[0] != -128) { return 7; }
+if (shorts[0] != -32768) { return 8; }
+let values: Values;
+if (values.byte != 0 || values.short != 0 || values.bytes[1] != 0 || values.shorts[0] != 0) { return 9; }
+values.byte = -120;
+values.short = -1234;
+values.bytes[1] = -128;
+values.shorts[0] = -32768;
+if (values.byte != -120 || values.short != -1234 || values.bytes[1] != -128 || values.shorts[0] != -32768) { return 10; }
+let metadata: Metadata;
+let kinds: i32 = 0;
+enumloop field in metadata {
+if (field.type == 15) { if (field.value == &metadata.byte) { kinds = kinds + 1; } }
+if (field.type == 16) { if (field.value == &metadata.short) { kinds = kinds + 2; } }
+}
+if (kinds != 3) { return 11; }
+if (stackCheck(0, 0, 0, 0, 0, 0, 0, 0, -12, -300) != 0) { return 12; }
+return 0;
+}

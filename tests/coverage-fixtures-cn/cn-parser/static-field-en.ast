@@ -1,0 +1,6 @@
+// aster:language=en
+class Counter {
+@static
+let count: i32 = 1;
+}
+fn main(): i32 { return Counter.count; }

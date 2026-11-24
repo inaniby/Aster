@@ -1,0 +1,13 @@
+// aster:language=en
+struct Result { value: i32 }
+fn register(callback: fn(ptr): Result, user: ptr): Result {
+    return callback(user);
+}
+fn main(): i32 {
+    let callback = fn [] (user: ptr): Result {
+        let result: Result;
+        return result;
+    };
+    register(callback, null);
+    return 0;
+}

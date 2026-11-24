@@ -1,0 +1,7 @@
+// aster:language=en
+class Box { let values: i32[1]; }
+fn main(): i32 {
+let box: Box;
+box.values[0] = 1;
+return 0;
+}

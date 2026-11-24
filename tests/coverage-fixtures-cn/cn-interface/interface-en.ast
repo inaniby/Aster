@@ -1,0 +1,30 @@
+interface class Value {
+fn get(): i32;
+}
+struct Box { value: Value }
+class One: Value {
+fn get(): i32 { return 11; }
+}
+class Base: Value {
+fn get(): i32 { return 30; }
+}
+class Child: Base {
+}
+class Two: Value {
+fn get(): i32 { return 22; }
+}
+fn read(value: Value): i32 { return value.get(); }
+fn make(): Value { return One(); }
+let madeCount: i32 = 0;
+fn makeOnce(): Value { madeCount = madeCount + 1; return One(); }
+fn consume(value: i32): i32 { return value; }
+let globalBox: Box = Box { One() };
+fn main(): i32 {
+let one: Value = One();
+let two: Value = Two();
+let inherited: Value = Child();
+let values: Value[2] = [One(), Two()];
+let onceValue: i32 = makeOnce().get();
+let nestedValue: i32 = consume(makeOnce().get());
+return read(one) + two.get() + inherited.get() + make().get() + onceValue + globalBox.value.get() + values[0].get() + nestedValue + madeCount;
+}

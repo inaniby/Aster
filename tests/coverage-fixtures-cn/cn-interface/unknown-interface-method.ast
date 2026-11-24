@@ -1,0 +1,8 @@
+// aster:language=zh
+接口类 Required
+方法 run(): 整数
+结束 接口类
+方法 启动方法(): 整数
+变量 value: Required
+返回 value.missing()
+结束 方法

@@ -1,0 +1,18 @@
+// aster:language=en
+package demo.oop;
+struct Point { x: i32, y: i32 }
+class StaticPoint {
+@static
+let origin: Point = Point { 2, 3 };
+@static
+let zero: Point;
+@static
+let points: Point[2] = [Point { 1, 2 }, Point { 3, 4 }];
+@static
+let zeroPoints: Point[2];
+@static
+fn adjust(): i32 {
+StaticPoint.origin.x = StaticPoint.origin.x + 1;
+return StaticPoint.origin.x + StaticPoint.origin.y;
+}
+}

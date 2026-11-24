@@ -1,0 +1,5 @@
+// aster:language=en
+package external.counter;
+extern let native_counter: i32;
+extern let native_values: i32[2];
+extern let native_callback: fn(i32): i32;

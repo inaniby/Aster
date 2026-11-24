@@ -1,0 +1,76 @@
+// aster:language=en
+package demo.oop;
+interface class RootValue {
+fn root(): i32;
+}
+interface class ReadableValue: RootValue {
+fn read(): i32;
+}
+interface class AdvancedValue: ReadableValue {
+fn extra(): i32;
+fn asAdvanced(): AdvancedValue;
+fn childView(): AdvancedValue;
+}
+class AdvancedObject: AdvancedValue {
+fn root(): i32 { return 38; }
+fn read(): i32 { return 40; }
+fn asAdvanced(): AdvancedValue { return this; }
+fn childView(): AdvancedValue { return this; }
+fn extra(): i32 { return 2; }
+}
+fn addTwo(value: i32): i32 {
+return value + 2;
+}
+@private
+fn hiddenAdd(value: i32): i32 {
+return value + 99;
+}
+struct CallbackStruct {
+callbacks: fn(i32): i32[2]
+}
+class CallbackBox {
+let instanceCallback: fn(i32): i32 = addTwo;
+let instanceCallbacks: fn(i32): i32[2] = [addTwo, addTwo];
+@static
+let callback: fn(i32): i32 = addTwo;
+@static
+let callbacks: fn(i32): i32[2] = [addTwo, addTwo];
+@private
+@static
+let hiddenCallback: fn(i32): i32 = addTwo;
+@protected
+@static
+let restrictedCallback: fn(i32): i32 = addTwo;
+@static
+fn run(value: i32): i32 {
+return CallbackBox.callback(value);
+}
+@static
+fn runArray(value: i32): i32 {
+return CallbackBox.callbacks[1](value);
+}
+}
+class CallbackChild: CallbackBox {
+@static
+fn readRestricted(value: i32): i32 {
+return CallbackChild.restrictedCallback(value);
+}
+}
+class InterfaceCallback: HasValue {
+let interfaceCallbacks: fn(i32): i32[1] = [addTwo];
+fn value(): i32 {
+return this.interfaceCallbacks[0](40);
+}
+}
+class CallbackBase {
+@protected
+let inheritedCallbacks: fn(i32): i32[1] = [addTwo];
+fn readInherited(value: i32): i32 {
+return this.inheritedCallbacks[0](value);
+}
+}
+class CallbackDerived: CallbackBase {
+fn readInheritedFromChild(value: i32): i32 {
+return this.inheritedCallbacks[0](value);
+}
+}

@@ -1,0 +1,20 @@
+方法 启动方法(): 整数
+变量 step: 整数 = 2
+变量 offset: 整数 = 1
+变量 increment = 方法 [step, offset] (value: 整数): 整数
+返回 value + step + offset
+结束 方法
+变量 zero = 方法 (): 整数
+返回 0
+结束 方法
+返回 increment(10) + zero()
+结束 方法
+类 Holder
+变量 value: 整数
+方法 read(): 整数
+变量 get_value = 方法 [本对象] (): 整数
+返回 本对象.value
+结束 方法
+返回 get_value()
+结束 方法
+结束 类

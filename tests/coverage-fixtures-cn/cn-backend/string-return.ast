@@ -1,0 +1,10 @@
+// aster:language=zh
+方法 produce(): 字符串
+返回 "返回值"
+结束 方法
+方法 consume(text: 字符串): 整数
+返回 29
+结束 方法
+方法 启动方法(): 整数
+返回 consume(produce())
+结束 方法

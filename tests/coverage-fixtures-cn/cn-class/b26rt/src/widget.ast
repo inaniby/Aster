@@ -1,0 +1,11 @@
+// aster:language=en
+class Widget {
+let value: i32 = 0;
+fn get(): i32 {
+return this.value;
+}
+fn bump(x: i32): i32 {
+this.value = this.value + x;
+return this.value;
+}
+}
