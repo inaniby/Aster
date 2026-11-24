@@ -730,6 +730,46 @@ struct FuncSig { std::vector<Ty> params; Ty ret=Ty::I32; };
 // is a real signature whose parameter list is empty, and "no signature
 // declared" has to stay distinguishable from it.
 struct ParamSig { bool isFunc=false; FuncSig sig; };
+// B2: a first-class CN string (`string`/`字符串`, Ty::string()) and a bare
+// traditional pointer (`ptr`/`指针`, Ty::Ptr) are the same value at runtime:
+// an eight-byte pointer at UTF-8 text (A-7 verified byte-identical under
+// qemu). Two declarations that spell a text slot one way and the other still
+// declare the SAME slot — an `extern` declaration may spell the parameter
+// `string` while the definition spells it `ptr` — so declaration matching
+// uses this predicate. It is NOT an implicit conversion rule: the design
+// (§1.2, §5.1 S4, A-22) forbids `字符串` and `指针` interchanging implicitly
+// in a value flow — assignment, parameter passing, return, comparison —
+// and a string value reaches a `ptr` slot only through an explicit
+// `ptr(...)`/`指针(...)` conversion (a literal also decays per D-3 (i)).
+// The test spells out the fields: `Ty::Ptr` is only the Kind, so a bare
+// Kind comparison would also match a `ptr<S>`, a strided `ptr<T>` and a
+// string target — none of which is a bare text pointer — and
+// `Ty::operator==` does not compare the strided-pointer fields
+// (ew/ekind/esid), so exact equality is spelled out here too. A string
+// still does not match a typed pointer, and a typed pointer still does
+// not match a string.
+[[maybe_unused]] static bool tyTextPtrEquivalent(Ty a, Ty b) {
+    if (a.k == b.k && a.sid == b.sid && a.isString == b.isString &&
+        a.ew == b.ew && a.ekind == b.ekind && a.esid == b.esid) return true;
+    const auto isStringPointer = [](Ty t) {
+        return t.k == Ty::Ptr && t.sid < 0 && t.ew < 0 && t.isString;
+    };
+    const auto isBarePointer = [](Ty t) {
+        return t.k == Ty::Ptr && t.sid < 0 && t.ew < 0 && !t.isString;
+    };
+    return (isStringPointer(a) && isBarePointer(b)) ||
+           (isBarePointer(a) && isStringPointer(b));
+}
+// B2: a function type compares by its signature under the same string/ptr
+// equivalence (the bare backend type `ptr` does not carry it), mirroring
+// cnGlobalDeclarationsMatch.
+[[maybe_unused]] static bool tyFuncSigEquivalent(const FuncSig& a, const FuncSig& b) {
+    if (a.params.size() != b.params.size()) return false;
+    if (!tyTextPtrEquivalent(a.ret, b.ret)) return false;
+    for (size_t index = 0; index < a.params.size(); ++index)
+        if (!tyTextPtrEquivalent(a.params[index], b.params[index])) return false;
+    return true;
+}
 // ---------------------------------------------------------------------------
 // Struct types (v0.23.5-dev, P3.3)
 //
@@ -18448,8 +18488,16 @@ static E cnClosureExpressionToAster(const aster_cn::Expression& source,
 // user fields, and invokes the closure.  This keeps each registration
 // independent, including delayed callbacks and repeated execution of one call
 // site, while still presenting an ordinary function pointer to the backend.
-// Contexts use the standard library's grow-only arena: the compiler cannot
-// know when a registration is removed, so it never emits an automatic free.
+// Contexts come from the standard library's adapter reuse pool
+// (aster_cn_adapter_alloc), not from the grow-only arena: each context is
+// exactly {code, env, user} (24 bytes), and the pool recycles slots. The
+// compiler still cannot know when a registration is removed, so it never
+// emits an automatic free; instead the context pointer is delivered as the
+// `user` argument, and the callee that owns the registration releases it
+// with aster_cn_adapter_free when the registration is removed (see the
+// ownership contract above the pool in stdlib/aster_std.ast). A context
+// layout other than 24 bytes falls back to alloc, which keeps the adapter
+// correct but unreclaimable for that shape.
 static bool cnTryLowerClosureCallbackAdapter(
     const aster_cn::Expression& source, CnStringPool* strings,
     CnLoweringContext& context, std::vector<Stmt>& prefix, E& lowered) {
@@ -18595,11 +18643,18 @@ static bool cnTryLowerClosureCallbackAdapter(
         contextAllocation.ty = Ty::ptrTo(adaptation.contextSid);
         contextAllocation.isPtr = true;
         contextAllocation.expr.reset(new Expr(Expr::Call));
-        contextAllocation.expr->name = "alloc";
         contextAllocation.expr->line = argument.line;
         contextAllocation.expr->col = argument.column;
-        contextAllocation.expr->args.push_back(
-            E(new Expr(Expr::Num, structOf(adaptation.contextSid).size)));
+        if (structOf(adaptation.contextSid).size == 24) {
+            // C-2: adapter contexts are exactly {code, env, user}; allocate
+            // from the standard library's reuse pool instead of the
+            // grow-only arena. The pool allocator takes no size argument.
+            contextAllocation.expr->name = "aster_cn_adapter_alloc";
+        } else {
+            contextAllocation.expr->name = "alloc";
+            contextAllocation.expr->args.push_back(
+                E(new Expr(Expr::Num, structOf(adaptation.contextSid).size)));
+        }
         prefix.push_back(std::move(contextAllocation));
         if (context.scopes.empty()) context.scopes.emplace_back();
         context.scopes.back()[adaptation.contextName] =
@@ -23607,9 +23662,80 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
             functions.push_back(std::move(function));
         }
     }
+    // C-1 (P9): an `extern fn` declaration of a function defined in
+    // another project source is the same symbol, not a duplicate. The
+    // merged program carries both the declaration (from the importing TU)
+    // and the definition (from the owning TU); per-source lowering emits
+    // the declaration as an external reference in its own TU and the body
+    // in the owning TU. Two definitions are still a duplicate, two
+    // declarations of different signatures are a conflict, and a
+    // declaration whose signature disagrees with the definition is one
+    // too. The signature compares the declared return/parameter types by
+    // resolved backend type, not by source spelling (B2, mirroring
+    // cnGlobalDeclarationsMatch); parameter names are not compared (cf. D-16
+    // derivative 2). The parser already canonicalises the two languages'
+    // spellings (`整数`/`i32` -> `i32`, `字符串`/`string` -> `string`,
+    // `指针`/`ptr` -> `ptr`), so the one spelling pair the old text
+    // comparison got wrong is `string` vs `ptr`: the same eight-byte UTF-8
+    // pointer at runtime (A-7), so an `extern` declaration spelling a text
+    // parameter `string` and a definition spelling it `ptr` declare the
+    // same function, not two overloads. A function-typed parameter still
+    // compares its full signature (the bare backend type `ptr` does not
+    // carry it), and an array parameter still compares its length.
+    std::map<std::string, const aster_cn::MethodDeclaration*> firstMethodByName;
+    auto methodSignaturesMatch = [](const aster_cn::MethodDeclaration& first,
+                                    const aster_cn::MethodDeclaration& second) {
+        FuncSig firstFunc;
+        FuncSig secondFunc;
+        const bool firstRetIsFunc = cnFunctionTypeSignature(
+            first.returnType, firstFunc, first.line, first.column);
+        const bool secondRetIsFunc = cnFunctionTypeSignature(
+            second.returnType, secondFunc, second.line, second.column);
+        if (firstRetIsFunc != secondRetIsFunc) return false;
+        if (firstRetIsFunc) {
+            if (!tyFuncSigEquivalent(firstFunc, secondFunc)) return false;
+        } else if (!tyTextPtrEquivalent(
+                       cnBackendType(first.returnType, first.line, first.column),
+                       cnBackendType(second.returnType, second.line, second.column))) {
+            return false;
+        }
+        if (first.parameters.size() != second.parameters.size()) return false;
+        for (size_t index = 0; index < first.parameters.size(); ++index) {
+            const aster_cn::Parameter& firstParam = first.parameters[index];
+            const aster_cn::Parameter& secondParam = second.parameters[index];
+            FuncSig firstParamFunc;
+            FuncSig secondParamFunc;
+            const bool firstIsFunc = cnFunctionTypeSignature(
+                firstParam.typeName, firstParamFunc, first.line, first.column);
+            const bool secondIsFunc = cnFunctionTypeSignature(
+                secondParam.typeName, secondParamFunc, second.line, second.column);
+            if (firstIsFunc != secondIsFunc) return false;
+            if (firstIsFunc) {
+                if (!tyFuncSigEquivalent(firstParamFunc, secondParamFunc)) return false;
+                continue;
+            }
+            std::vector<uint32_t> firstDims;
+            std::vector<uint32_t> secondDims;
+            const Ty firstType =
+                cnParameterType(firstParam, first.line, first.column, &firstDims);
+            const Ty secondType =
+                cnParameterType(secondParam, second.line, second.column, &secondDims);
+            if (!tyTextPtrEquivalent(firstType, secondType)) return false;
+            if (firstDims != secondDims) return false;
+        }
+        return true;
+    };
     for (const auto& method : program.methods) {
-        if (!methodNames.insert(method.name).second)
-            throw Error(loc(method.line, method.column, "duplicate method declaration: " + method.name));
+        const auto seen = firstMethodByName.find(method.name);
+        if (seen != firstMethodByName.end()) {
+            const aster_cn::MethodDeclaration& first = *seen->second;
+            const bool eitherExternal = first.isExternal || method.isExternal;
+            if (!eitherExternal || !methodSignaturesMatch(first, method))
+                throw Error(loc(method.line, method.column, "duplicate method declaration: " + method.name));
+        } else {
+            firstMethodByName[method.name] = &method;
+            methodNames.insert(method.name);
+        }
         names.insert(method.name);
         methodReturns[method.name] = cnBackendType(method.returnType, method.line, method.column);
     }
@@ -24114,6 +24240,24 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         functions.push_back(std::move(allocator));
         names.insert("alloc");
 
+        // C-2: a TU that lowers a callback adapter also needs the pool
+        // allocator from the standard library. It is declared exactly like
+        // alloc above: an external declaration, pushed only when this TU
+        // needs it, and rejected when the user already declared the name.
+        // usesClosureAdapter implies cnNeedsAlloc, so the push always fires
+        // for an adapter TU; the gate mirrors alloc for per-source mode.
+        if (stringPool.usesClosureAdapter) {
+            if (names.count("aster_cn_adapter_alloc"))
+                throw Error("callback adapters require the standard library adapter allocator; aster_cn_adapter_alloc is already declared");
+            Function adapterAllocator;
+            adapterAllocator.name = "aster_cn_adapter_alloc";
+            adapterAllocator.retType = Ty::Ptr;
+            adapterAllocator.returnPtr = true;
+            adapterAllocator.external = true;
+            functions.push_back(std::move(adapterAllocator));
+            names.insert("aster_cn_adapter_alloc");
+        }
+
         std::set<int> emittedClassInitializers;
         std::set<int> emittedClassFactories;
         while (true) {
@@ -24580,6 +24724,11 @@ struct CnPerSourceContext {
     std::string keySalt;    // "" for build; the test file path for test links
     std::string cacheDir;
     bool dbg = false, bc = false;
+    // C-1: an APK project links the per-source objects into a shared
+    // object, so they must be PIC (compileProgram sharedObject=true,
+    // writeObject pic=true, no main -> _start aliasing). Part of the
+    // cache flags, so an exe object is never reused for an APK build.
+    bool sharedObject = false;
     uint64_t page = 4096;
 };
 
@@ -25136,8 +25285,12 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
                                          int& compiled, int& reused, bool noCache) {
     const std::string src = readFile(sp);
     const std::string srcHash = sha256Hex(src);
+    // C-1: the shared-object flag is part of the cache flags (like the
+    // mainline project flags' "p"): an object compiled for an exe link
+    // (main aliased to _start, non-PIC) must never be reused for an APK
+    // link, and vice versa. Existing bilingual caches miss once.
     const std::string flags = std::string(ctx.dbg ? "g" : "-") + std::string(ctx.bc ? "b" : "-") +
-        "|" + std::to_string(ctx.page);
+        std::string(ctx.sharedObject ? "p" : "-") + "|" + std::to_string(ctx.page);
     const std::string key = sha256Hex(std::string(kVersion) + "|cn|" + flags + "|" + sp + "|" +
                                       ctx.langHash + "|" + ctx.constructedHash + "|" + ctx.keySalt +
                                       "|" + ctx.ownersHash);
@@ -25168,7 +25321,7 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
         cnForeignSourcesForTu(ctx, sp, ownParsed, referencedSymbols, referencedTypes);
     cnAddExternalStubs(functions, globals, *ctx.program, referencedSymbols);
     std::vector<CompiledFunction> compiledFns =
-        compileProgram(functions, globals, false, true, ctx.bc, ctx.dbg);
+        compileProgram(functions, globals, ctx.sharedObject, true, ctx.bc, ctx.dbg);
     bool emptyTu = compiledFns.empty();
     if (emptyTu) {
         // A TU with only constant-initialised globals still owns storage
@@ -25183,7 +25336,7 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
             keepalive.retType = Ty::Void;
             keepalive.body.emplace_back(Stmt::Return);
             functions.push_back(std::move(keepalive));
-        compileProgram(functions, globals, false, true, ctx.bc, ctx.dbg);
+            compiledFns = compileProgram(functions, globals, ctx.sharedObject, true, ctx.bc, ctx.dbg);
             emptyTu = compiledFns.empty();
         }
     }
@@ -25222,7 +25375,9 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
         ehFrame = encodeEhFrame(layout, compiledFns);
     }
     const std::string tmp = mkTempPath(ctx.cacheDir, ".aster-tmp");
-    writeObject(tmp, compiledFns, globals, false, debugLine, debugInfo, ehFrame);
+    // C-1: pic=true for an APK project (keeps source-level names, no main
+    // -> _start aliasing); linkSharedObjects refuses a _start definition.
+    writeObject(tmp, compiledFns, globals, ctx.sharedObject, debugLine, debugInfo, ehFrame);
     const std::string objBytes = readFile(tmp);
     if (std::rename(tmp.c_str(), objPath.c_str()) != 0) {
         const int e = errno;
@@ -25931,10 +26086,10 @@ int main(int argc,char**argv){
             if(fileExists("aster.proj")) testLanguage=aster_cn::readProjectLanguage("aster.proj");
             bool bilingualTestProject=true;
             if(bilingualTestProject) {
-                if(spec.kind=="apk") {
-                    std::cerr<<"aster test: bilingual APK projects are not supported yet\n";
-                    return 2;
-                }
+                // C-1: the bilingual-APK rejection that used to sit here
+                // is gone — it was unreachable anyway (an apk project is
+                // refused above, like the mainline test path: an apk
+                // project is a shared object and cannot run `aster test`).
                 const uint64_t testPage=cliPageSet?ps:(spec.pageSize?spec.pageSize:ps);
                 if(!makeDirs("build/.cache")){std::cerr<<"aster test: cannot create build/.cache\n";return 1;}
                 char testCwdBuffer[4096];
@@ -26424,8 +26579,24 @@ int main(int argc,char**argv){
                 bilingualLanguage=aster_cn::readProjectLanguage("aster.proj");
             }
             if(bilingualProject) {
-                if(spec.kind=="apk") {
-                    std::cerr<<"aster build: bilingual APK projects are not supported yet\n";
+                // C-1: a bilingual APK project now follows the same flow
+                // as the mainline project build below (per-source PIC
+                // objects -> one shared object -> buildApk) instead of
+                // being refused. The rejection was itself an uncommitted
+                // P0-10 addition, so this merges with that change rather
+                // than conflicting with it.
+                const bool bilingualIsApk = spec.kind=="apk";
+                char bilingualCwdBuffer[4096];
+                const std::string bilingualCwd=getcwd(bilingualCwdBuffer,sizeof bilingualCwdBuffer)
+                    ? bilingualCwdBuffer : std::string(".");
+                if(bilingualIsApk&&spec.package.empty()){
+                    std::cerr<<"aster "<<cmd<<": an apk project needs `package <android.package>` in aster.proj\n";
+                    return 2;
+                }
+                if(isRun&&bilingualIsApk){
+                    std::cerr<<"aster run: this is an apk project — `aster build` writes build/"
+                             <<(spec.name.empty()?baseNameOf(bilingualCwd):spec.name)
+                             <<".apk; `aster run` runs an executable project\n";
                     return 2;
                 }
                 const uint64_t bilingualPage = cliPageSet ? ps : (spec.pageSize ? spec.pageSize : ps);
@@ -26439,9 +26610,6 @@ int main(int argc,char**argv){
                         source,false,aster_cn::Language::Zh,bilingualLanguage);
                     parsedSources.push_back(aster_cn::parseProgram(source,language,sourcePath));
                 }
-                char bilingualCwdBuffer[4096];
-                const std::string bilingualCwd=getcwd(bilingualCwdBuffer,sizeof bilingualCwdBuffer)
-                    ? bilingualCwdBuffer : std::string(".");
                 std::vector<std::string> packageRoots{bilingualCwd};
                 packageRoots.insert(packageRoots.end(),bilingualModuleDirs.begin(),bilingualModuleDirs.end());
                 aster_cn::Program roots;
@@ -26461,7 +26629,18 @@ int main(int argc,char**argv){
                 std::string bilingualProjectName=spec.name.empty()?baseNameOf(bilingualCwd):spec.name;
                 if(bilingualProjectName.empty()||bilingualProjectName=="."||bilingualProjectName=="..")
                     bilingualProjectName="app";
-                const std::string target=out.empty()?"build/"+bilingualProjectName:out;
+                // C-1: an APK project's default output is build/<name>.apk,
+                // like the mainline project build; the .so name below is
+                // derived from the same name, so sanitise it the way the
+                // mainline build does (a cwd fallback may contain spaces).
+                if(bilingualIsApk){
+                    bilingualProjectName=sanitizeFileName(bilingualProjectName);
+                    if(bilingualProjectName.find_first_not_of('_')==std::string::npos)
+                        bilingualProjectName="app";
+                }
+                const std::string target=out.empty()
+                    ? "build/"+bilingualProjectName+(bilingualIsApk?".apk":"")
+                    : out;
                 const std::string targetDir=dirNameOf(target);
                 if(!targetDir.empty()&&!makeDirs(targetDir)){std::cerr<<"aster build: cannot create "<<targetDir<<"\n";return 1;}
                 const std::string cacheDir="build/.cache";
@@ -26474,7 +26653,7 @@ int main(int argc,char**argv){
                 // stays at merged level, as before — for exe projects only:
                 // an APK project has no main (its entry is
                 // ANativeActivity_onCreate / aster_main in the sources).
-                bool bilingualHasMain=false;
+                bool bilingualHasMain=bilingualIsApk;
                 for(const auto& method:program.methods) if(method.name=="main") bilingualHasMain=true;
                 if(!bilingualHasMain)
                     throw Error(program.language==aster_cn::Language::Zh
@@ -26521,6 +26700,7 @@ int main(int argc,char**argv){
                 bilingualCtx.dbg=dbg;
                 bilingualCtx.bc=bc2;
                 bilingualCtx.page=bilingualPage;
+                bilingualCtx.sharedObject=bilingualIsApk;
                 std::vector<std::string> bilingualObjs;
                 int bilingualCompiled=0, bilingualReused=0;
                 for(size_t i=0;i<spec.sources.size();++i) {
@@ -26530,6 +26710,45 @@ int main(int argc,char**argv){
                     if(!obj.empty()) bilingualObjs.push_back(obj);
                 }
                 if(bilingualObjs.empty()){std::cerr<<"aster "<<cmd<<": no objects to link\n";return 1;}
+                if(bilingualIsApk){
+                    // C-1: the same packaging as the mainline project build
+                    // below — one shared object, then buildApk (v1 + v2
+                    // dual-signed, self-verified). The per-source objects
+                    // are PIC (ctx.sharedObject), so linkSharedObjects
+                    // accepts them (it refuses a _start definition); the
+                    // __aster_init chain is rooted by the shared-object
+                    // linker, as in the mainline path.
+                    const std::string bilingualSoPath=cacheDir+"/"+bilingualProjectName+".so";
+                    linkSharedObjects(bilingualObjs,bilingualSoPath,"lib"+bilingualProjectName+".so",{},bilingualPage);
+                    std::string bilingualApkErr;
+                    if(!validateApkInputs(spec.package,spec.abi,bilingualProjectName,bilingualApkErr)){
+                        std::cerr<<"aster build: "<<bilingualApkErr<<"\n";return 2;
+                    }
+                    SigningKey bilingualKey;
+                    if(spec.signMode=="release"){
+                        if(spec.keystore.empty()||spec.cert.empty()){
+                            std::cerr<<"aster build: sign-mode release needs `keystore <path>` and `cert <path>` in aster.proj\n";
+                            return 2;
+                        }
+                        bilingualKey=releaseKey(spec.keystore,spec.cert);
+                    } else {
+                        if(!spec.keystore.empty()||!spec.cert.empty()){
+                            std::cerr<<"aster build: keystore/cert are release settings — add `sign-mode release` or remove them\n";
+                            return 2;
+                        }
+                        bilingualKey=debugKeyFor(projectKeyDir(""), spec.keyBits);
+                    }
+                    const std::string bilingualSoText=readFile(bilingualSoPath);
+                    std::vector<uint8_t> bilingualSo(bilingualSoText.begin(),bilingualSoText.end());
+                    const std::string bilingualLabel=spec.label.empty()?bilingualProjectName:spec.label;
+                    int bilingualApkResult=buildApk(target,spec.package,bilingualProjectName,spec.abi,bilingualSo,
+                        spec.minSdk,spec.targetSdk,bilingualLabel,
+                        spec.versionCode,spec.versionName,{},bilingualKey,true,false,false,bilingualPage);
+                    if(bilingualApkResult!=0)return bilingualApkResult;
+                    std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
+                             <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n";
+                    return 0;
+                }
                 // No GC here, like the mainline project build: GC prunes
                 // from _start, and a foreign TU's __aster_init is unreachable
                 // from main (only the entry TU's own init is called from its

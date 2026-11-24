@@ -836,6 +836,75 @@ fn ralloc(p: ptr, old_n: i32, new_n: i32) -> ptr {
     return q;
 }
 
+// --- closure callback adapter context pool (C-2) --------------------------
+// A closure passed to a `fn(ptr)` parameter is adapted by a 24-byte context
+// {code: ptr, env: ptr, user: ptr} that the thunk reads on every call. The
+// context used to come from `alloc`, i.e. the grow-only arena, so every
+// registration leaked 24 bytes forever. Contexts now come from a dedicated
+// reuse pool instead:
+//
+//   * the first registration takes one arena chunk of 256 slots (6144
+//     bytes, a one-time cost) and chains the slots into a free list;
+//   * `aster_cn_adapter_alloc` pops a free slot, or `alloc`s a fresh
+//     24-byte block once all 256 slots are live at once (correct, but that
+//     overflow block is outside the pool and cannot be reclaimed);
+//   * `aster_cn_adapter_free` returns a slot to the pool. It answers 1
+//     when a slot was recycled and 0 otherwise: a null pointer, a pointer
+//     outside the pool, and an already-freed slot are all no-ops, so a
+//     registry may call it unconditionally on the `user` pointer it stored
+//     without knowing whether that pointer came from an adapter.
+//
+// Ownership contract: the `user` pointer delivered alongside an adapter
+// thunk is an adapter context owned by the callee. Whoever stores the
+// (callback, user) pair must call `aster_cn_adapter_free` on the stored
+// `user` when the registration is removed. A callee that only invokes the
+// callback synchronously and does not retain the pair can call
+// `aster_cn_adapter_free(user)` before returning instead: the call is a
+// no-op for a genuine user pointer, so it is safe even when the caller
+// passed an ordinary function pointer. Only a callee that neither retains
+// nor frees the pair leaks, one pool slot per call until the pool overflows,
+// which is why registrations should go through a registry.
+const kAsterCnAdapterContextSize: i32 = 24;
+const kAsterCnAdapterPoolSlots: i32 = 256;
+let aster_cn_adapter_pool_base: ptr = 0;
+let aster_cn_adapter_free_head: ptr = 0;
+
+fn aster_cn_adapter_alloc() -> ptr {
+    if (aster_cn_adapter_pool_base == 0) {
+        let base: ptr = alloc(kAsterCnAdapterContextSize * kAsterCnAdapterPoolSlots);
+        if (base == 0) { return 0; }
+        aster_cn_adapter_pool_base = base;
+        let i: i32 = 0;
+        while (i < kAsterCnAdapterPoolSlots - 1) {
+            store_i64(base + i * kAsterCnAdapterContextSize, i64(base + (i + 1) * kAsterCnAdapterContextSize));
+            i = i + 1;
+        }
+        store_i64(base + (kAsterCnAdapterPoolSlots - 1) * kAsterCnAdapterContextSize, 0);
+        aster_cn_adapter_free_head = base;
+    }
+    if (aster_cn_adapter_free_head != 0) {
+        let p: ptr = aster_cn_adapter_free_head;
+        aster_cn_adapter_free_head = ptr(load_i64(p));
+        return p;
+    }
+    return alloc(kAsterCnAdapterContextSize);
+}
+
+fn aster_cn_adapter_free(p: ptr) -> i32 {
+    if (p == 0) { return 0; }
+    if (aster_cn_adapter_pool_base == 0) { return 0; }
+    let off: i64 = i64(p) - i64(aster_cn_adapter_pool_base);
+    if (off < 0 || off >= i64(kAsterCnAdapterContextSize) * i64(kAsterCnAdapterPoolSlots) || off % 24 != 0) { return 0; }
+    let cur: ptr = aster_cn_adapter_free_head;
+    while (cur != 0) {
+        if (cur == p) { return 0; }
+        cur = ptr(load_i64(cur));
+    }
+    store_i64(p, i64(aster_cn_adapter_free_head));
+    aster_cn_adapter_free_head = p;
+    return 1;
+}
+
 // --- a byte buffer -------------------------------------------------------
 // `Buf` is a pointer/length/capacity triple. It lives in the caller's storage
 // (or in the arena), so a program decides where its buffers are; passing

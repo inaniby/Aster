@@ -429,8 +429,16 @@ private:
             do { parameters.push_back(parseType()); } while (eat("Comma"));
         }
         expect("RParen", "expected ')' after function type parameters");
-        expect("Colon", "expected ':' after function type parameters");
-        const std::string result = parseType();
+        // C-1 (P9): English function types accept the mainline `->`
+        // (`fn(i32) -> i32`) as well as the colon form (`fn(i32): i32`).
+        std::string result;
+        if (eat("Colon")) {
+            result = parseType();
+        } else if (language_ == Language::En && eat("Arrow")) {
+            result = parseType();
+        } else {
+            fail("expected ':' after function type parameters");
+        }
         std::string type = "fn(";
         for (size_t i = 0; i < parameters.size(); ++i) {
             if (i != 0) type += ',';
@@ -528,6 +536,7 @@ private:
         }
         expect("RParen", "expected ')' after method parameters");
         if (eat("Colon")) method.returnType = parseType();
+        else if (language_ == Language::En && eat("Arrow")) method.returnType = parseType();
         else method.returnType = "void";
         if (external) {
             if (method.externalName.empty()) method.externalName = method.name;
@@ -607,6 +616,9 @@ private:
         }
         expect("RParen", "expected ')' after closure parameters");
         if (eat("Colon")) closure->returnType = parseType();
+        // C-1 (P9): English closures accept `->` for the return type, as
+        // English method declarations do (`fn[x](...) -> T`).
+        else if (language_ == Language::En && eat("Arrow")) closure->returnType = parseType();
         else closure->returnType = "void";
         closure->body = parseBlock("Method");
         Expression expression;
@@ -776,6 +788,7 @@ private:
         }
         expect("RParen", "expected ')' after method parameters");
         if (eat("Colon")) method.returnType = parseType();
+        else if (language_ == Language::En && eat("Arrow")) method.returnType = parseType();
         else method.returnType = "void";
         requireTerminator();
         return method;

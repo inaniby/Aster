@@ -3353,4 +3353,212 @@ if [ "$CAN_RUN" -eq 1 ]; then
     }
 fi
 
+# C-3: a Chinese file without an entry builds as a library object: no
+# _start is emitted, so it links beside an English main and the typed
+# closure registration API (闭包(指针): 整数) runs under qemu.
+if [ "$CAN_RUN" -eq 1 ]; then
+    cat > "$TMP/c3-lib.ast" <<'SRC'
+// aster:language=zh
+变量 已登记: 闭包(指针): 整数
+变量 登记有效: 整数 = 0
+方法 aui_cb_register(回调: 闭包(指针): 整数): 整数
+    已登记 = 回调
+    登记有效 = 1
+    返回 1
+结束 方法
+方法 aui_cb_register_default(): 整数
+    变量 基数: 整数 = 7
+    变量 加一: 闭包(指针): 整数 = 方法 [基数] (用户: 指针): 整数
+        返回 基数 + 1
+    结束 方法
+    返回 aui_cb_register(加一)
+结束 方法
+方法 aui_cb_invoke(用户: 指针): 整数
+    如果 登记有效 == 0
+        返回 -1
+    结束 如果
+    返回 已登记(用户)
+结束 方法
+方法 aui_cb_release(): 整数
+    如果 登记有效 == 0
+        返回 0
+    结束 如果
+    登记有效 = 0
+    返回 1
+结束 方法
+SRC
+    cat > "$TMP/c3-main.ast" <<'SRC'
+extern fn aui_cb_register_default() -> i32;
+extern fn aui_cb_invoke(user: ptr) -> i32;
+extern fn aui_cb_release() -> i32;
+fn main() -> i32 {
+if (aui_cb_register_default() != 1) { return 11; }
+if (aui_cb_invoke(ptr(0)) != 8) { return 12; }
+if (aui_cb_release() != 1) { return 13; }
+if (aui_cb_invoke(ptr(0)) != -1) { return 14; }
+if (aui_cb_release() != 0) { return 15; }
+if (aui_cb_register_default() != 1) { return 16; }
+if (aui_cb_invoke(ptr(0)) != 8) { return 17; }
+if (aui_cb_release() != 1) { return 18; }
+return 0;
+}
+SRC
+    "$ASTER_BIN" build-cn-obj "$TMP/c3-lib.ast" -o "$TMP/c3-lib.o"
+    if readelf -sW "$TMP/c3-lib.o" | grep -q ' _start'; then
+        echo 'FAIL: entry-less library object defines _start' >&2
+        exit 1
+    fi
+    "$ASTER_BIN" build-obj "$TMP/c3-main.ast" -o "$TMP/c3-main.o"
+    "$ASTER_BIN" build-obj "$ROOT/stdlib/aster_std.ast" -o "$TMP/c3-std.o"
+    "$ASTER_BIN" link-obj "$TMP/c3-lib.o" "$TMP/c3-main.o" "$TMP/c3-std.o" \
+        -o "$TMP/c3-probe"
+    if "$RUNNER" "$TMP/c3-probe"; then status=0; else status=$?; fi
+    [ "$status" -eq 0 ] || {
+        echo "FAIL: C-3 library register/invoke/release probe exited $status, expected 0" >&2
+        exit 1
+    }
+fi
+
+# C-2: adapter contexts come from the standard library's reuse pool, not
+# the grow-only arena. The same closure registered/unregistered 10,000 times
+# through the fn-parameter (adapter) path must leave arena_used exactly
+# where the warmup left it; a double release and a release of a non-adapter
+# pointer are no-ops. Both languages go through the same lowering.
+if [ "$CAN_RUN" -eq 1 ]; then
+    cat > "$TMP/c2-zh.ast" <<'SRC'
+// aster:language=zh
+外部("arena_used") 变量 竞技场已用: 整数
+外部("aster_cn_adapter_free") 方法 释放适配器(上下文: 指针): 整数
+变量 保存回调: 方法(指针): 整数 = 空
+变量 保存用户: 指针 = 空
+变量 登记有效: 整数 = 0
+方法 注册(回调: 方法(指针): 整数, 用户: 指针): 整数
+    保存回调 = 回调
+    保存用户 = 用户
+    登记有效 = 1
+    返回 1
+结束 方法
+方法 调用(): 整数
+    如果 登记有效 == 0
+        返回 -1
+    结束 如果
+    返回 保存回调(保存用户)
+结束 方法
+方法 注销(): 整数
+    如果 登记有效 == 0
+        返回 0
+    结束 如果
+    登记有效 = 0
+    返回 释放适配器(保存用户)
+结束 方法
+方法 启动方法(): 整数
+    变量 基数: 整数 = 41
+    变量 回调: 闭包(指针): 整数 = 方法 [基数] (用户: 指针): 整数
+        返回 基数 + 1
+    结束 方法
+    注册(回调, 空)
+    如果 调用() != 42
+        返回 11
+    结束 如果
+    如果 注销() != 1
+        返回 12
+    结束 如果
+    变量 暖机后: 整数 = 竞技场已用
+    变量 i: 整数 = 0
+    循环 (i < 10000)
+        注册(回调, 空)
+        如果 调用() != 42
+            返回 13
+        结束 如果
+        如果 注销() != 1
+            返回 14
+        结束 如果
+        i = i + 1
+    结束 循环
+    如果 竞技场已用 != 暖机后
+        返回 15
+    结束 如果
+    如果 注销() != 0
+        返回 21
+    结束 如果
+    如果 释放适配器(空) != 0
+        返回 22
+    结束 如果
+    如果 释放适配器(&基数) != 0
+        返回 23
+    结束 如果
+    如果 基数 != 41
+        返回 24
+    结束 如果
+    返回 0
+结束 方法
+SRC
+    cat > "$TMP/c2-en.ast" <<'SRC'
+// aster:language=en
+extern let arena_used: i32;
+extern fn aster_cn_adapter_free(p: ptr): i32;
+let saved_cb: fn(ptr): i32 = null;
+let saved_user: ptr = null;
+let active: i32 = 0;
+fn register(callback: fn(ptr): i32, user: ptr): i32 {
+    saved_cb = callback;
+    saved_user = user;
+    active = 1;
+    return 1;
+}
+fn invoke(): i32 {
+    if (active == 0) { return -1; }
+    return saved_cb(saved_user);
+}
+fn unregister(): i32 {
+    if (active == 0) { return 0; }
+    active = 0;
+    return aster_cn_adapter_free(saved_user);
+}
+fn main(): i32 {
+    let base: i32 = 41;
+    let cb = fn [base] (user: ptr): i32 {
+        return base + 1;
+    };
+    register(cb, null);
+    if (invoke() != 42) { return 11; }
+    if (unregister() != 1) { return 12; }
+    let warm: i32 = arena_used;
+    let i: i32 = 0;
+    while (i < 10000) {
+        register(cb, null);
+        if (invoke() != 42) { return 13; }
+        if (unregister() != 1) { return 14; }
+        i = i + 1;
+    }
+    if (arena_used != warm) { return 15; }
+    if (unregister() != 0) { return 21; }
+    if (aster_cn_adapter_free(null) != 0) { return 22; }
+    if (aster_cn_adapter_free(&base) != 0) { return 23; }
+    if (base != 41) { return 24; }
+    return 0;
+}
+SRC
+    "$ASTER_BIN" build-cn-obj "$TMP/c2-zh.ast" -o "$TMP/c2-zh.o"
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/c2-en.ast" -o "$TMP/c2-en.o"
+    readelf -Ws "$TMP/c2-zh.o" | grep -q 'aster_cn_adapter_alloc' || {
+        echo 'FAIL: C-2 Chinese probe does not reference the adapter pool allocator' >&2
+        exit 1
+    }
+    readelf -Ws "$TMP/c2-en.o" | grep -q 'aster_cn_adapter_alloc' || {
+        echo 'FAIL: C-2 English probe does not reference the adapter pool allocator' >&2
+        exit 1
+    }
+    "$ASTER_BIN" build-obj "$ROOT/stdlib/aster_std.ast" -o "$TMP/c2-std.o"
+    for c2_target in zh en; do
+        "$ASTER_BIN" link-obj "$TMP/c2-$c2_target.o" "$TMP/c2-std.o" \
+            -o "$TMP/c2-probe-$c2_target"
+        if "$RUNNER" "$TMP/c2-probe-$c2_target"; then status=0; else status=$?; fi
+        [ "$status" -eq 0 ] || {
+            echo "FAIL: C-2 adapter pool probe ($c2_target) exited $status, expected 0" >&2
+            exit 1
+        }
+    done
+fi
+
 echo 'PASS: Chinese backend integration checks'
