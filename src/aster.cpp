@@ -24015,8 +24015,39 @@ struct CnD2aContext {
     std::map<size_t, size_t> eventNode;
 };
 
-static std::string cnD2aNodeDesc(const CnD2aNodeInfo& node) {
-    return "布局 '" + node.layoutName + "' 的节点 '" + node.nodeName + "'";
+// D-2a: diagnostic wording follows the program language (ctx.isZh).
+// Interpolated names (layout/node/modifier spellings, numbers) are the
+// user's own spellings and are never translated.
+static const char* cnD2aText(const CnD2aContext& ctx, const char* zh, const char* en) {
+    return ctx.isZh ? zh : en;
+}
+
+// D-2a: translate a "/"-joined list of canonical (Chinese) event names
+// (as built by cnD2aEventAllowed) to the English event names.
+static std::string cnD2aAllowedEn(const std::string& allowedZh) {
+    static const std::map<std::string, const char*> table = {
+        {"被单击", "tap"}, {"变化", "change"}, {"开关", "toggle"},
+        {"切换", "select"}, {"拖动", "drag"}, {"点按", "tap"},
+    };
+    std::string out;
+    size_t start = 0;
+    while (true) {
+        const size_t slash = allowedZh.find('/', start);
+        const std::string part = allowedZh.substr(
+            start, slash == std::string::npos ? std::string::npos : slash - start);
+        const auto found = table.find(part);
+        if (!out.empty()) out += "/";
+        out += found == table.end() ? part : found->second;
+        if (slash == std::string::npos) break;
+        start = slash + 1;
+    }
+    return out;
+}
+
+static std::string cnD2aNodeDesc(const CnD2aNodeInfo& node, const CnD2aContext& ctx) {
+    if (ctx.isZh)
+        return "布局 '" + node.layoutName + "' 的节点 '" + node.nodeName + "'";
+    return "node '" + node.nodeName + "' of layout '" + node.layoutName + "'";
 }
 
 // D-2a: collect the local names a layout declares (`变量`/`常量`, at any
@@ -24056,17 +24087,21 @@ static void cnD2aCollectNodes(const std::vector<aster_cn::Statement>& statements
                 cnSetDiagnosticFile(row.sourceFile.empty() ? layout.sourceFile
                                                            : row.sourceFile);
                 throw Error(loc(row.line, row.column,
-                                "布局 '" + layout.name +
-                                    "' 的节点 '" + row.nodeName +
-                                    "'：未知的节点种 '" +
+                                cnD2aText(ctx, "布局 '", "layout '") + layout.name +
+                                    cnD2aText(ctx, "' 的节点 '", "' node '") + row.nodeName +
+                                    cnD2aText(ctx, "'：未知的节点种 '", "': unknown node kind '") +
                                     row.value + "'"));
             }
             if (!namesInLayout.insert(row.nodeName).second) {
                 cnSetDiagnosticFile(row.sourceFile.empty() ? layout.sourceFile
                                                            : row.sourceFile);
                 throw Error(loc(row.line, row.column,
-                                "布局 '" + layout.name + "' 里节点名 '" + row.nodeName +
-                                          "' 重复（同一布局内节点名必须唯一）"));
+                                ctx.isZh
+                                    ? "布局 '" + layout.name + "' 里节点名 '" + row.nodeName +
+                                          "' 重复（同一布局内节点名必须唯一）"
+                                    : "duplicate node name '" + row.nodeName + "' in layout '" +
+                                          layout.name +
+                                          "' (node names must be unique within one layout)"));
             }
             uint32_t key = 0;
             bool hasOverride = false;
@@ -24076,9 +24111,13 @@ static void cnD2aCollectNodes(const std::vector<aster_cn::Statement>& statements
                     cnSetDiagnosticFile(row.sourceFile.empty() ? layout.sourceFile
                                                                : row.sourceFile);
                     throw Error(loc(row.line, row.column,
-                                    "节点 '" + row.nodeName + "' 的 键 = " +
+                                    ctx.isZh
+                                        ? "节点 '" + row.nodeName + "' 的 键 = " +
                                               std::to_string(row.keyOverride) +
-                                              " 超出范围（须在 0..4294967295 内）"));
+                                              " 超出范围（须在 0..4294967295 内）"
+                                        : "key = " + std::to_string(row.keyOverride) +
+                                              " of node '" + row.nodeName +
+                                              "' is out of range (allowed range is 0..4294967295)"));
                 }
                 key = static_cast<uint32_t>(row.keyOverride);
             } else {
@@ -24090,10 +24129,16 @@ static void cnD2aCollectNodes(const std::vector<aster_cn::Statement>& statements
                 cnSetDiagnosticFile(row.sourceFile.empty() ? layout.sourceFile
                                                            : row.sourceFile);
                 throw Error(loc(row.line, row.column,
-                                "节点 key 碰撞：" + cnD2aNodeDesc(other) + " 与布局 '" +
+                                ctx.isZh
+                                    ? "节点 key 碰撞：" + cnD2aNodeDesc(other, ctx) + " 与布局 '" +
                                           layout.name + "' 的节点 '" + row.nodeName +
                                           "' 的 key 都是 " + std::to_string(key) +
-                                          "；给其中一个写 键 = N 显式覆盖"));
+                                          "；给其中一个写 键 = N 显式覆盖"
+                                    : "node key collision: " + cnD2aNodeDesc(other, ctx) +
+                                          " and node '" + row.nodeName + "' of layout '" +
+                                          layout.name + "' both have key " +
+                                          std::to_string(key) +
+                                          "; give one of them an explicit key = N override"));
             }
             CnD2aNodeInfo info;
             info.layoutName = layout.name;
@@ -24136,18 +24181,22 @@ static uint32_t cnD2aResolveKeyRef(const std::string& name,
     if (found == ctx.nodesByName.end() || found->second.empty()) {
         cnSetDiagnosticFile(sourceFile);
         throw Error(loc(line, column,
-                        "键('" + name + "') 引用的节点不存在"));
+                        ctx.isZh ? "键('" + name + "') 引用的节点不存在"
+                                 : "node referenced by key('" + name + "') does not exist"));
     }
     if (found->second.size() > 1) {
         std::string layouts;
         for (const size_t index : found->second) {
-            if (!layouts.empty()) layouts += "、";
+            if (!layouts.empty()) layouts += cnD2aText(ctx, "、", ", ");
             layouts += ctx.nodes[index].layoutName;
         }
         cnSetDiagnosticFile(sourceFile);
         throw Error(loc(line, column,
-                        "键('" + name + "') 有歧义：多个布局（" + layouts +
-                                       "）含同名节点，请改名"));
+                        ctx.isZh ? "键('" + name + "') 有歧义：多个布局（" + layouts +
+                                       "）含同名节点，请改名"
+                                 : "key('" + name +
+                                       "') is ambiguous: multiple layouts (" + layouts +
+                                       ") contain a node of that name; rename one"));
     }
     return ctx.nodes[found->second.front()].key;
 }
@@ -24291,18 +24340,23 @@ static void cnD2aCheckEventExpression(
         if (forbidden.count(source.value) && !cnD2aShadowed(scopes, source.value)) {
             cnSetDiagnosticFile(sourceFile);
             throw Error(loc(source.line, source.column,
-                            "事件块 '" + eventDesc +
-                                "' 引用了布局局部量 '" +
+                            cnD2aText(ctx, "事件块 '", "event block '") + eventDesc +
+                                cnD2aText(ctx, "' 引用了布局局部量 '",
+                                          "' references layout-local '") +
                                 source.value +
-                                "'：事件块只能用全局量与 getter，不能捕获布局参数或布局内变量"));
+                                cnD2aText(ctx,
+                                          "'：事件块只能用全局量与 getter，不能捕获布局参数或布局内变量",
+                                          "': event blocks may only use globals and getters, and "
+                                          "cannot capture layout parameters or layout-local "
+                                          "variables")));
         }
         return;
     }
     if (source.kind == "NodeRow") {
         cnSetDiagnosticFile(sourceFile);
         throw Error(loc(source.line, source.column,
-                        "事件块 '" + eventDesc +
-                            "' 里不能写节点行"));
+                        cnD2aText(ctx, "事件块 '", "event block '") + eventDesc +
+                            cnD2aText(ctx, "' 里不能写节点行", "' cannot contain a node row")));
     }
     if (source.kind == "Member") {
         if (!source.children.empty())
@@ -24333,10 +24387,12 @@ static void cnD2aCheckEventExpression(
                 !cnD2aShadowed(closureScopes, capture)) {
                 cnSetDiagnosticFile(sourceFile);
                 throw Error(loc(source.line, source.column,
-                                "事件块 '" + eventDesc +
-                                    "' 捕获了布局局部量 '" +
+                                cnD2aText(ctx, "事件块 '", "event block '") + eventDesc +
+                                    cnD2aText(ctx, "' 捕获了布局局部量 '",
+                                              "' captures layout-local '") +
                                     capture +
-                                    "'：事件块只能用全局量与 getter"));
+                                    cnD2aText(ctx, "'：事件块只能用全局量与 getter",
+                                              "': event blocks may only use globals and getters")));
             }
         }
         for (const auto& parameter : source.closure->parameters)
@@ -24402,13 +24458,15 @@ static void cnD2aDesugarNodeRow(
             const std::string& target = item.children[0].value;
             if (cnD2aModifierTable().count(target) || cnD2aIsGrow(target))
                 throw Error(loc(item.line, item.column,
-                                "修饰符 '" + target +
-                                    "' 须写成调用形态 '" +
+                                cnD2aText(ctx, "修饰符 '", "modifier '") + target +
+                                    cnD2aText(ctx, "' 须写成调用形态 '",
+                                              "' takes the call form '") +
                                     target +
-                                    "(值)'，不接受 '" +
+                                    cnD2aText(ctx, "(值)'，不接受 '", "(value)'; the '") +
                                     target +
-                                    " = ...' 赋值形态（节点 '" +
-                                    row.nodeName + "'）"));
+                                    cnD2aText(ctx, " = ...' 赋值形态（节点 '",
+                                              " = ...' assignment form is not accepted (node '") +
+                                    row.nodeName + cnD2aText(ctx, "'）", "')")));
             positionArgs.push_back(item);
             continue;
         }
@@ -24417,9 +24475,11 @@ static void cnD2aDesugarNodeRow(
             const std::string& callee = item.children[0].value;
             if (cnD2aIsGrow(callee))
                 throw Error(loc(item.line, item.column,
-                                "修饰符 '" + callee +
-                                    "' 没有框架落点：框架未提供 aui_grow（节点 '" +
-                                    row.nodeName + "'）"));
+                                cnD2aText(ctx, "修饰符 '", "modifier '") + callee +
+                                    cnD2aText(ctx, "' 没有框架落点：框架未提供 aui_grow（节点 '",
+                                              "' has no framework target: the framework does not "
+                                              "provide aui_grow (node '") +
+                                    row.nodeName + cnD2aText(ctx, "'）", "')")));
             if (cnD2aModifierTable().count(callee)) {
                 modifiers.push_back(ModifierUse{callee, &item});
                 continue;
@@ -24429,13 +24489,14 @@ static void cnD2aDesugarNodeRow(
     }
     if (positionArgs.size() < static_cast<size_t>(kind.positional))
         throw Error(loc(row.line, row.column,
-                        "节点 '" + row.nodeName +
-                            "'（种 '" + row.value +
-                            "'）缺少位置参数：需要 " +
+                        cnD2aText(ctx, "节点 '", "node '") + row.nodeName +
+                            cnD2aText(ctx, "'（种 '", "' (kind '") + row.value +
+                            cnD2aText(ctx, "'）缺少位置参数：需要 ",
+                                      "') is missing positional arguments: needs ") +
                             std::to_string(kind.positional) +
-                            " 个，实际 " +
+                            cnD2aText(ctx, " 个，实际 ", ", got ") +
                             std::to_string(positionArgs.size()) +
-                            " 个"));
+                            cnD2aText(ctx, " 个", "")));
     if (positionArgs.size() > static_cast<size_t>(kind.positional)) {
         std::string extra = "?";
         const aster_cn::Expression& extraItem =
@@ -24444,14 +24505,15 @@ static void cnD2aDesugarNodeRow(
             extraItem.children[0].kind == "Identifier")
             extra = extraItem.children[0].value;
         throw Error(loc(row.line, row.column,
-                        "节点 '" + row.nodeName +
-                            "'（种 '" + row.value +
-                            "'）的位置参数过多：需要 " +
+                        cnD2aText(ctx, "节点 '", "node '") + row.nodeName +
+                            cnD2aText(ctx, "'（种 '", "' (kind '") + row.value +
+                            cnD2aText(ctx, "'）的位置参数过多：需要 ",
+                                      "') has too many positional arguments: needs ") +
                             std::to_string(kind.positional) +
-                            " 个，实际 " +
+                            cnD2aText(ctx, " 个，实际 ", ", got ") +
                             std::to_string(positionArgs.size()) +
-                            " 个；'" + extra +
-                            "' 不是已知修饰符"));
+                            cnD2aText(ctx, " 个；'", "; '") + extra +
+                            cnD2aText(ctx, "' 不是已知修饰符", "' is not a known modifier")));
     }
     // Modifier checks (W-3/W-5/W-9): duplicates, arity, string/float
     // dimensions. Types the lowering cannot know statically (an
@@ -24467,18 +24529,20 @@ static void cnD2aDesugarNodeRow(
         const CnD2aModifierInfo& info = cnD2aModifierTable().at(use.name);
         if (!seenModifiers.insert(info.call).second)
             throw Error(loc(use.call->line, use.call->column,
-                            "节点 '" + row.nodeName + "' 的修饰符 '" + use.name +
-                                           "' 重复"));
+                            ctx.isZh ? "节点 '" + row.nodeName + "' 的修饰符 '" + use.name +
+                                           "' 重复"
+                                     : "duplicate modifier '" + use.name + "' of node '" +
+                                           row.nodeName + "'"));
         const size_t actual = use.call->children.size() - 1;
         if (static_cast<int>(actual) != info.args)
             throw Error(loc(use.call->line, use.call->column,
-                            "修饰符 '" + use.name +
-                                "' 需要 " +
+                            cnD2aText(ctx, "修饰符 '", "modifier '") + use.name +
+                                cnD2aText(ctx, "' 需要 ", "' takes ") +
                                 std::to_string(info.args) +
-                                " 个参数，实际 " +
+                                cnD2aText(ctx, " 个参数，实际 ", " arguments, got ") +
                                 std::to_string(actual) +
-                                " 个（节点 '" + row.nodeName +
-                                "'）"));
+                                cnD2aText(ctx, " 个（节点 '", " (node '") + row.nodeName +
+                                cnD2aText(ctx, "'）", "')")));
         ModifierCall built;
         built.callName = info.call;
         built.order = info.order;
@@ -24486,21 +24550,32 @@ static void cnD2aDesugarNodeRow(
             const aster_cn::Expression& arg = use.call->children[index];
             if (arg.kind == "StringLiteral")
                 throw Error(loc(arg.line, arg.column,
-                                "修饰符 '" + use.name +
-                                    "' 的参数须是整数，不接受字符串维度（节点 '" +
-                                    row.nodeName + "'）"));
+                                cnD2aText(ctx, "修饰符 '", "modifier '") + use.name +
+                                    cnD2aText(ctx,
+                                              "' 的参数须是整数，不接受字符串维度（节点 '",
+                                              "' arguments take integers only; string dimensions "
+                                              "are not accepted (node '") +
+                                    row.nodeName + cnD2aText(ctx, "'）", "')")));
             if (arg.kind == "FloatLiteral")
                 throw Error(loc(arg.line, arg.column,
-                                "修饰符 '" + use.name +
-                                    "' 的参数须是整数，不接受浮点数（节点 '" +
-                                    row.nodeName + "'）"));
+                                cnD2aText(ctx, "修饰符 '", "modifier '") + use.name +
+                                    cnD2aText(ctx,
+                                              "' 的参数须是整数，不接受浮点数（节点 '",
+                                              "' arguments take integers only; floating-point "
+                                              "numbers are not accepted (node '") +
+                                    row.nodeName + cnD2aText(ctx, "'）", "')")));
             if (info.call == std::string("aui_size")) {
                 if (arg.kind == "Identifier" &&
                     (arg.value == "填满" || arg.value == "Fill"))
                     throw Error(loc(arg.line, arg.column,
-                                    "尺寸 的 '填满' 没有框架编码：填满走 权重(1)（aui_size "
+                                    ctx.isZh
+                                        ? "尺寸 的 '填满' 没有框架编码：填满走 权重(1)（aui_size "
                                           "无填满哨兵，每维 -1 = 未指定/包内容；节点 '" +
-                                              row.nodeName + "'）"));
+                                              row.nodeName + "'）"
+                                        : "Size 'Fill' has no framework encoding: use Weight(1) "
+                                          "instead (aui_size has no fill sentinel; -1 per "
+                                          "dimension means unspecified / wrap content; node '" +
+                                              row.nodeName + "')"));
                 if (arg.kind == "Identifier" &&
                     (arg.value == "包内容" || arg.value == "Wrap")) {
                     built.args.push_back(cnD2aNegOne(arg.line, arg.column));
@@ -24525,11 +24600,13 @@ static void cnD2aDesugarNodeRow(
     auto requireFrameworkCall = [&](const std::string& callName) {
         if (!ctx.declaredCallables.count(callName))
             throw Error(loc(row.line, row.column,
-                            "节点 '" + row.nodeName +
-                                "'（种 '" + row.value +
-                                "'）需要框架函数 '" +
+                            cnD2aText(ctx, "节点 '", "node '") + row.nodeName +
+                                cnD2aText(ctx, "'（种 '", "' (kind '") + row.value +
+                                cnD2aText(ctx, "'）需要框架函数 '",
+                                          "') needs framework function '") +
                                 callName +
-                                "'，程序未声明它"));
+                                cnD2aText(ctx, "'，程序未声明它",
+                                          "', which the program does not declare")));
     };
     requireFrameworkCall(kind.ctor);
     for (const auto& modifierCall : modifierCalls)
@@ -24537,11 +24614,14 @@ static void cnD2aDesugarNodeRow(
     if (kind.container) requireFrameworkCall("aui_end");
     if (!row.childStatements.empty() && !kind.container)
         throw Error(loc(row.line, row.column,
-                        "节点种 '" + row.value +
-                            "' 不能有子节点行（只有容器种 " +
-                            "列/行/堆叠/滚动/下拉选择" +
-                            " 可以有子块；节点 '" +
-                            row.nodeName + "'）"));
+                        cnD2aText(ctx, "节点种 '", "node kind '") + row.value +
+                            cnD2aText(ctx, "' 不能有子节点行（只有容器种 ",
+                                      "' cannot have child node rows (only container kinds ") +
+                            cnD2aText(ctx, "列/行/堆叠/滚动/下拉选择",
+                                      "Column/Row/Stack/Scroll/Dropdown") +
+                            cnD2aText(ctx, " 可以有子块；节点 '",
+                                      " may have a child block; node '") +
+                            row.nodeName + cnD2aText(ctx, "'）", "')")));
     // Constructor call: key, position arguments, then (cb, user).
     std::vector<aster_cn::Expression> ctorArgs;
     ctorArgs.push_back(cnD2aKeyLiteral(node.key, row.line, row.column));
@@ -24598,18 +24678,22 @@ static void cnD2aSynthesize(aster_cn::Program& program) {
         cnSetDiagnosticFile(layout.sourceFile);
         if (layout.name == "main")
             throw Error(loc(layout.line, layout.column,
-                            "布局不能命名为 'main'（启动方法）"));
+                            cnD2aText(ctx, "布局不能命名为 'main'（启动方法）",
+                                      "a layout cannot be named 'main' (entry method)")));
         if (!layoutNames.insert(layout.name).second)
             throw Error(loc(layout.line, layout.column,
-                            "布局 '" + layout.name + "' 重复声明"));
+                            ctx.isZh ? "布局 '" + layout.name + "' 重复声明"
+                                     : "duplicate layout declaration '" + layout.name + "'"));
         if (ctx.methodNames.count(layout.name))
             throw Error(loc(layout.line, layout.column,
-                            "布局名 '" + layout.name +
-                                "' 与已有方法同名"));
+                            cnD2aText(ctx, "布局名 '", "layout name '") + layout.name +
+                                cnD2aText(ctx, "' 与已有方法同名",
+                                          "' matches an existing method name")));
         if (layout.returnType != "视图" && layout.returnType != "View")
             throw Error(loc(layout.line, layout.column,
-                            "布局 '" + layout.name +
-                                "' 须返回 视图，实际返回 '" +
+                            cnD2aText(ctx, "布局 '", "layout '") + layout.name +
+                                cnD2aText(ctx, "' 须返回 视图，实际返回 '",
+                                          "' must return View, but returns '") +
                                 layout.returnType + "'"));
         std::set<std::string> forbidden;
         for (const auto& parameter : layout.parameters) {
@@ -24625,8 +24709,10 @@ static void cnD2aSynthesize(aster_cn::Program& program) {
         cnD2aCollectNodes(layout.body, layout, ctx, namesInLayout, hasNodeRow);
         if (!hasNodeRow)
             throw Error(loc(layout.line, layout.column,
-                            "布局 '" + layout.name +
-                                "' 没有节点行（布局体须含至少一个节点行）"));
+                            cnD2aText(ctx, "布局 '", "layout '") + layout.name +
+                                cnD2aText(ctx, "' 没有节点行（布局体须含至少一个节点行）",
+                                          "' has no node rows (a layout body must contain at "
+                                          "least one node row)")));
     }
     // `键()` folds over the whole program (methods, globals, classes,
     // layouts, events): a stray `键()` with no layouts is refused here,
@@ -24664,16 +24750,23 @@ static void cnD2aSynthesize(aster_cn::Program& program) {
         const auto byName = ctx.nodesByName.find(event.nodeName);
         if (byName == ctx.nodesByName.end() || byName->second.empty())
             throw Error(loc(event.line, event.column,
-                            "事件块引用的节点 '" + event.nodeName + "' 不存在"));
+                            ctx.isZh ? "事件块引用的节点 '" + event.nodeName + "' 不存在"
+                                     : "node '" + event.nodeName +
+                                           "' referenced by an event block does not exist"));
         if (byName->second.size() > 1) {
             std::string layouts;
             for (const size_t index : byName->second) {
-                if (!layouts.empty()) layouts += "、";
+                if (!layouts.empty()) layouts += cnD2aText(ctx, "、", ", ");
                 layouts += ctx.nodes[index].layoutName;
             }
             throw Error(loc(event.line, event.column,
-                            "事件块引用的节点 '" + event.nodeName +
-                                           "' 有歧义：多个布局（" + layouts + "）含同名节点，请改名"));
+                            ctx.isZh ? "事件块引用的节点 '" + event.nodeName +
+                                           "' 有歧义：多个布局（" + layouts + "）含同名节点，请改名"
+                                     : "node '" + event.nodeName +
+                                           "' referenced by an event block is ambiguous: "
+                                           "multiple layouts (" +
+                                           layouts +
+                                           ") contain a node of that name; rename one"));
         }
         const size_t nodeIndex = byName->second.front();
         const CnD2aNodeInfo& node = ctx.nodes[nodeIndex];
@@ -24681,15 +24774,20 @@ static void cnD2aSynthesize(aster_cn::Program& program) {
         const int eventClass = cnD2aCanonicalEvent(event.eventKind, canonicalEvent);
         if (eventClass == 2)
             throw Error(loc(event.line, event.column,
-                            "事件种 '" + event.eventKind +
-                                "' 不进事件模型：长按/捏合是全局手势登记（aui_long_press/aui_pinch），不能写事件块（节点 '" +
-                                event.nodeName + "'）"));
+                            cnD2aText(ctx, "事件种 '", "event kind '") + event.eventKind +
+                                cnD2aText(ctx,
+                                          "' 不进事件模型：长按/捏合是全局手势登记（aui_long_press/aui_pinch），不能写事件块（节点 '",
+                                          "' is not part of the event model: long press / pinch "
+                                          "are global gesture registrations "
+                                          "(aui_long_press/aui_pinch) and cannot be written as "
+                                          "event blocks (node '") +
+                                event.nodeName + cnD2aText(ctx, "'）", "')")));
         if (eventClass == 0)
             throw Error(loc(event.line, event.column,
-                            "未知的事件种 '" +
+                            cnD2aText(ctx, "未知的事件种 '", "unknown event kind '") +
                                 event.eventKind +
-                                "'（节点 '" + event.nodeName +
-                                "'）"));
+                                cnD2aText(ctx, "'（节点 '", "' (node '") + event.nodeName +
+                                cnD2aText(ctx, "'）", "')")));
         const std::string canonicalKind =
             cnD2aKindCanonical().count(node.kind)
                 ? cnD2aKindCanonical().at(node.kind)
@@ -24697,28 +24795,35 @@ static void cnD2aSynthesize(aster_cn::Program& program) {
         std::string allowed;
         if (!cnD2aEventAllowed(canonicalKind, canonicalEvent, allowed))
             throw Error(loc(event.line, event.column,
-                            "事件种 '" + event.eventKind +
-                                "' 不能用于节点 '" +
+                            cnD2aText(ctx, "事件种 '", "event kind '") + event.eventKind +
+                                cnD2aText(ctx, "' 不能用于节点 '",
+                                          "' cannot be used on node '") +
                                 event.nodeName +
-                                "'（种 '" + node.kind + "'" +
+                                cnD2aText(ctx, "'（种 '", "' (kind '") + node.kind + "'" +
                                 (allowed.empty()
-                                     ? "，该种不接受任何事件"
-                                     : "，该种只接受 " +
-                                           (allowed)) +
-                                "）"));
+                                     ? cnD2aText(ctx, "，该种不接受任何事件",
+                                                 ", this kind accepts no events")
+                                     : cnD2aText(ctx, "，该种只接受 ",
+                                                 ", this kind only accepts ") +
+                                           (ctx.isZh ? allowed : cnD2aAllowedEn(allowed))) +
+                                cnD2aText(ctx, "）", ")")));
         const CnD2aKindInfo& kind = cnD2aKindTable().at(node.kind);
         if (!kind.callback)
             throw Error(loc(event.line, event.column,
-                            "节点种 '" +
+                            cnD2aText(ctx, "节点种 '", "the constructor of node kind '") +
                                 node.kind +
-                                "' 的构造器不接受回调，节点 '" +
+                                cnD2aText(ctx, "' 的构造器不接受回调，节点 '",
+                                          "' does not accept a callback, so node '") +
                                 event.nodeName +
-                                "' 不能写事件块"));
+                                cnD2aText(ctx, "' 不能写事件块", "' cannot have an event block")));
         const std::pair<uint32_t, std::string> identity{node.key, canonicalEvent};
         if (ctx.eventsByKeyAndKind.count(identity))
             throw Error(loc(event.line, event.column,
-                            "事件块重复：节点 '" + event.nodeName + "' 的事件 '" +
-                                           event.eventKind + "' 已声明过"));
+                            ctx.isZh ? "事件块重复：节点 '" + event.nodeName + "' 的事件 '" +
+                                           event.eventKind + "' 已声明过"
+                                     : "duplicate event block: event '" + event.eventKind +
+                                           "' of node '" + event.nodeName +
+                                           "' is already declared"));
         ctx.eventsByKeyAndKind[identity] = eventIndex;
         ctx.eventNode[eventIndex] = nodeIndex;
         // The callback name is stable and readable; non-ASCII parts go
@@ -24733,9 +24838,9 @@ static void cnD2aSynthesize(aster_cn::Program& program) {
         if (ctx.methodNames.count(functionName) ||
             ctx.declaredCallables.count(functionName))
             throw Error(loc(event.line, event.column,
-                            "事件函数名冲突：'" +
+                            cnD2aText(ctx, "事件函数名冲突：'", "event function name conflict: '") +
                                 functionName +
-                                "' 已存在"));
+                                cnD2aText(ctx, "' 已存在", "' already exists")));
         ctx.eventFunctionName[eventIndex] = functionName;
         ctx.methodNames.insert(functionName);
         const std::string eventDesc = event.nodeName + ":" + event.eventKind;

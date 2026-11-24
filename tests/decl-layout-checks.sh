@@ -1731,3 +1731,265 @@ cat > "$TMP/w3wrap.ast" <<'SRC'
 SRC
 "$ASTER_BIN" build-cn-obj "$TMP/w3wrap.ast" -o "$TMP/w3wrap.o"
 "$ASTER_BIN" link-obj "$TMP/w3wrap.o" -o "$TMP/w3wrap"
+run_status "$TMP/w3wrap" 0
+printf '  %-40s %s\n' 'W-3 size wrap content maps to -1' 'ok'
+
+# ---------------------------------------------------------------------------
+printf '%s\n' '[8/7] D-2a diagnostics follow the program language (English mirrors)'
+cat > "$TMP/app-en.ast" <<'SRC'
+struct App {
+    count: i32,
+    tab: i32,
+    lang: i32,
+    notify: i32,
+    promo: i32,
+    slider: i32,
+    sel_open: i32
+}
+let g_app: App = App { 0, 0, 0, 1, 0, 500, 0 };
+extern fn aui_column(key: i32) -> i32;
+extern fn aui_row(key: i32) -> i32;
+extern fn aui_label(key: i32, text: ptr) -> i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32;
+extern fn aui_text_i32(key: i32, value: i32) -> i32;
+extern fn aui_pad(dp: i32) -> i32;
+extern fn aui_gap(dp: i32) -> i32;
+extern fn aui_weight(w: i32) -> i32;
+extern fn aui_size(w: i32, h: i32) -> i32;
+extern fn aui_end() -> i32;
+extern fn aui_invalidate() -> i32;
+fn main() -> i32 {
+    return 0;
+}
+SRC
+
+probe_file_en() { # reads the probe body on stdin after the shared en fixture
+    cat "$TMP/app-en.ast" > "$TMP/probe-en.ast"
+    cat >> "$TMP/probe-en.ast"
+}
+
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        NoSuchKind Title, ptr("x")
+    }
+}
+SRC
+expect_fail 'en unknown node kind' "layout 'PageOne' node 'Title': unknown node kind 'NoSuchKind'" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Label Title, ptr("x")
+        Label Title, ptr("y")
+    }
+}
+SRC
+expect_fail 'en duplicate node name' "duplicate node name 'Title' in layout 'PageOne'" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol, key = 5 {
+        Label Title, key = 5, ptr("x")
+    }
+}
+SRC
+expect_fail 'en explicit key collision' "node key collision: node 'MainCol' of layout 'PageOne'" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Number Count, key(Add)
+    }
+}
+SRC
+expect_fail 'en key() to a nonexistent node' "node referenced by key('Add') does not exist" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageA(s: ptr<App>, user: ptr) -> View {
+    Column A {
+        Label Same, ptr("x")
+    }
+}
+layout PageB(s: ptr<App>, user: ptr) -> View {
+    Column A {
+        Label Same, ptr("x")
+    }
+}
+fn getKey() -> i32 {
+    return key(Same);
+}
+SRC
+expect_fail 'en key() is ambiguous' "key('Same') is ambiguous: multiple layouts (PageA, PageB)" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+event Inc:tap() {
+    let x: i32 = s.count;
+    aui_invalidate();
+}
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Button Inc, ptr("Inc")
+    }
+}
+SRC
+expect_fail 'en event refs a layout param' "event block 'Inc:tap' references layout-local 's'" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+event Inc:tap() {
+    let cb = fn [open] (value: i32): i32 {
+        return value + open;
+    };
+    aui_invalidate();
+}
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        let open: i32 = 0;
+        Button Inc, ptr("Inc")
+    }
+}
+SRC
+expect_fail 'en event captures a layout-local' "event block 'Inc:tap' captures layout-local 'open'" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol, Grow(1) {
+        Label Title, ptr("x")
+    }
+}
+SRC
+expect_fail 'en grow has no framework call' "modifier 'Grow' has no framework target" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol, Padding(24), Padding(16) {
+        Label Title, ptr("x")
+    }
+}
+SRC
+expect_fail 'en duplicate modifier' "duplicate modifier 'Padding' of node 'MainCol'" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol, Padding("16dp") {
+        Label Title, ptr("x")
+    }
+}
+SRC
+expect_fail 'en string dimension' "modifier 'Padding' arguments take integers only; string dimensions are not accepted" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol, Size(Fill, 100) {
+        Label Title, ptr("x")
+    }
+}
+SRC
+expect_fail 'en size fill has no encoding' "Size 'Fill' has no framework encoding: use Weight(1) instead" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout main(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Label Title, ptr("x")
+    }
+}
+SRC
+expect_fail 'en layout named main' "a layout cannot be named 'main' (entry method)" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Label Title, ptr("x")
+    }
+}
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Label Title, ptr("x")
+    }
+}
+SRC
+expect_fail 'en duplicate layout declaration' "duplicate layout declaration 'PageOne'" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+}
+SRC
+expect_fail 'en empty layout body' "layout 'PageOne' has no node rows" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+event NoSuch:tap() {
+    aui_invalidate();
+}
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Label Title, ptr("x")
+    }
+}
+SRC
+expect_fail 'en event on a nonexistent node' "node 'NoSuch' referenced by an event block does not exist" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+event Inc:longpress() {
+    aui_invalidate();
+}
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Button Inc, ptr("Inc")
+    }
+}
+SRC
+expect_fail 'en long press is a global gesture' "event kind 'longpress' is not part of the event model: long press / pinch are global gesture registrations" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+event Inc:NoSuchEvent() {
+    aui_invalidate();
+}
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Button Inc, ptr("Inc")
+    }
+}
+SRC
+expect_fail 'en unknown event kind' "unknown event kind 'NoSuchEvent' (node 'Inc')" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+event Inc:change() {
+    aui_invalidate();
+}
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Button Inc, ptr("Inc")
+    }
+}
+SRC
+expect_fail 'en button with change' "event kind 'change' cannot be used on node 'Inc' (kind 'Button', this kind only accepts tap)" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+event Title:tap() {
+    aui_invalidate();
+}
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Label Title, ptr("x")
+    }
+}
+SRC
+expect_fail 'en label with tap (no events)' "this kind accepts no events" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+probe_file_en <<'SRC' > /dev/null
+event Inc:tap() {
+    aui_invalidate();
+}
+event Inc:tap() {
+    aui_invalidate();
+}
+layout PageOne(s: ptr<App>, user: ptr) -> View {
+    Column MainCol {
+        Button Inc, ptr("Inc")
+    }
+}
+SRC
+expect_fail 'en duplicate (key, event)' "duplicate event block: event 'tap' of node 'Inc' is already declared" \
+    "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
+
+echo 'PASS: bilingual declarative layout checks'
