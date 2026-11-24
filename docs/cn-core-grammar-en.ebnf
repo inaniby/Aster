@@ -47,7 +47,8 @@ binary_operator = "||" | "&&" | "|" | "^" | "&" | "==" | "!=" | "<" | "<=" | ">"
                  expressions. Binary-operator precedence follows §2.4 of the
                  design and is not expanded in this file. *)
 primary       = identifier | closure | integer | floating | string | character | boolean | "null" | "(", expression, ")"
-              | "[", [ expression_list ], "]" ;
+              | "[", [ expression_list ], "]"
+              | "@embed", "(", string, [ ",", integer ], ")", "@embed_len", "(", string, ")" ;
 struct_literal = identifier, "{", [ expression_list ], "}" ;
 postfix       = primary, { "(", [ expression_list ], ")" | "[", expression, "]" | ".", identifier } ;
 while         = "while", "(", expression, ")", block ;

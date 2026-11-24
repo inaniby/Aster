@@ -290,22 +290,264 @@ grep -q 'external symbol name must not be empty' "$TMP/extern-empty-map.err" || 
     cat "$TMP/extern-empty-map.err" >&2
     exit 1
 }
+# C-IMP-4 (§3.6): a non-ASCII external name is an Aster source name, not a
+# C symbol — the lowering mangles it to its ASCII ABI symbol
+# (`__aster_cn_<hex>`), so `外部("输出")` is accepted and the object
+# references the mangled symbol as undefined. (Before C-IMP-4 this was
+# refused with "external symbol names must use ASCII for the C ABI".)
 cat > "$TMP/extern-nonascii-map.ast" <<'SRC'
 // aster:language=zh
 外部("输出") 方法 输出(值: 指针): 整数
 方法 启动方法(): 整数
-返回 0
+返回 输出(空)
 结束 方法
 SRC
-if "$ASTER_BIN" build-cn-obj "$TMP/extern-nonascii-map.ast" -o "$TMP/extern-nonascii-map.o" \
-    2> "$TMP/extern-nonascii-map.err"; then
-    echo 'FAIL: non-ASCII external symbol mapping was accepted' >&2; exit 1
-fi
-grep -q 'external symbol names must use ASCII' "$TMP/extern-nonascii-map.err" || {
-    echo 'FAIL: non-ASCII external symbol diagnostic was not specific' >&2
+"$ASTER_BIN" build-cn-obj "$TMP/extern-nonascii-map.ast" -o "$TMP/extern-nonascii-map.o" \
+    2> "$TMP/extern-nonascii-map.err" || {
+    echo 'FAIL: non-ASCII external symbol mapping was refused:' >&2
     cat "$TMP/extern-nonascii-map.err" >&2
     exit 1
 }
+# 输出 = U+8F93 U+53E3 -> UTF-8 e8 be 93 e5 8f a3.
+readelf -sW "$TMP/extern-nonascii-map.o" | grep -q ' UND __aster_cn_e8be93e587ba$' || {
+    echo 'FAIL: non-ASCII external symbol was not mangled to __aster_cn_e8be93e587ba' >&2
+    readelf -sW "$TMP/extern-nonascii-map.o" >&2
+    exit 1
+}
+if readelf -sW "$TMP/extern-nonascii-map.o" | grep -q '输出'; then
+    echo 'FAIL: a raw UTF-8 symbol leaked into the object' >&2
+    readelf -sW "$TMP/extern-nonascii-map.o" >&2
+    exit 1
+fi
+
+# C-IMP-4 (§3.6): Chinese-named methods and globals are defined under their
+# mangled ABI symbols and called across objects through them — via
+# `外部("中文名")` declarations, via direct calls in one TU, and via a
+# bilingual project build. The ASCII-definition + Chinese-alias workaround
+# keeps working: ASCII names are not mangled.
+cat > "$TMP/cimp4-helper-cn.ast" <<'SRC'
+// aster:language=zh
+变量 泵进单步纳秒: 长整数 = 16000000
+
+方法 泵进一帧(时间: 长整数): 整数
+    变量 步数: 整数 = 0
+    变量 剩余: 长整数 = 时间
+    循环 剩余 >= 泵进单步纳秒
+        剩余 = 剩余 - 泵进单步纳秒
+        步数 = 步数 + 1
+    结束 循环
+    返回 步数
+结束 方法
+
+方法 泵进推进(起点: 长整数, 终点: 长整数): 整数
+    变量 时间: 长整数 = 起点
+    变量 结果: 整数 = 0
+    循环 时间 < 终点
+        时间 = 时间 + 泵进单步纳秒
+        如果 时间 > 终点
+            时间 = 终点
+        结束 如果
+        结果 = 泵进一帧(时间)
+    结束 循环
+    返回 结果
+结束 方法
+
+方法 泵进直至收敛(当前时间: 长整数, 最大帧数: 整数, 最多推进纳秒: 长整数): 整数
+    变量 时间: 长整数 = 当前时间
+    变量 终点: 长整数 = 当前时间 + 最多推进纳秒
+    变量 帧数: 整数 = 0
+    循环 帧数 < 最大帧数
+        如果 时间 >= 终点
+            返回 帧数
+        结束 如果
+        时间 = 时间 + 泵进单步纳秒
+        如果 时间 > 终点
+            时间 = 终点
+        结束 如果
+        泵进一帧(时间)
+        帧数 = 帧数 + 1
+    结束 循环
+    如果 时间 >= 终点
+        返回 帧数
+    结束 如果
+    返回 -1
+结束 方法
+SRC
+"$ASTER_BIN" build-cn-obj "$TMP/cimp4-helper-cn.ast" -o "$TMP/cimp4-helper-cn.o" \
+    2> "$TMP/cimp4-helper-cn.err" || {
+    echo 'FAIL: Chinese-named helper did not build:' >&2
+    cat "$TMP/cimp4-helper-cn.err" >&2
+    exit 1
+}
+# 泵进一帧 e6b3b5e8bf9be4b880e5b8a7, 泵进推进 e6b3b5e8bf9be68ea8e8bf9b,
+# 泵进直至收敛 e6b3b5e8bf9be79bb4e887b3e694b6e6959b,
+# 泵进单步纳秒 e6b3b5e8bf9be58d95e6ada5e7bab3e7a792.
+for symbol in __aster_cn_e6b3b5e8bf9be4b880e5b8a7 __aster_cn_e6b3b5e8bf9be68ea8e8bf9b \
+    __aster_cn_e6b3b5e8bf9be79bb4e887b3e694b6e6959b __aster_cn_e6b3b5e8bf9be58d95e6ada5e7bab3e7a792; do
+    readelf -sW "$TMP/cimp4-helper-cn.o" | grep -q " $symbol\$" || {
+        echo "FAIL: definition did not emit $symbol" >&2
+        readelf -sW "$TMP/cimp4-helper-cn.o" >&2
+        exit 1
+    }
+done
+if readelf -sW "$TMP/cimp4-helper-cn.o" | grep -q '泵进'; then
+    echo 'FAIL: a raw UTF-8 definition symbol leaked into the helper object' >&2
+    readelf -sW "$TMP/cimp4-helper-cn.o" >&2
+    exit 1
+fi
+cat > "$TMP/cimp4-driver-cn.ast" <<'SRC'
+// aster:language=zh
+外部("泵进一帧") 方法 泵进一帧(时间: 长整数): 整数
+外部("泵进推进") 方法 泵进推进(起点: 长整数, 终点: 长整数): 整数
+外部("泵进直至收敛") 方法 泵进直至收敛(当前时间: 长整数, 最大帧数: 整数, 最多推进纳秒: 长整数): 整数
+外部("泵进单步纳秒") 变量 泵进单步纳秒: 长整数
+
+方法 启动方法(): 整数
+    如果 泵进一帧(32000000) != 2
+        返回 11
+    结束 如果
+    如果 泵进推进(0, 32000000) != 2
+        返回 12
+    结束 如果
+    如果 泵进直至收敛(0, 10, 0) != 0
+        返回 13
+    结束 如果
+    如果 泵进直至收敛(0, 1, 160000000) != -1
+        返回 14
+    结束 如果
+    如果 泵进直至收敛(0, 10, 48000000) != 3
+        返回 15
+    结束 如果
+    如果 泵进单步纳秒 != 16000000
+        返回 16
+    结束 如果
+    返回 0
+结束 方法
+SRC
+"$ASTER_BIN" build-cn-obj "$TMP/cimp4-driver-cn.ast" -o "$TMP/cimp4-driver-cn.o" \
+    2> "$TMP/cimp4-driver-cn.err" || {
+    echo 'FAIL: Chinese external driver did not build:' >&2
+    cat "$TMP/cimp4-driver-cn.err" >&2
+    exit 1
+}
+"$ASTER_BIN" link-obj "$TMP/cimp4-driver-cn.o" "$TMP/cimp4-helper-cn.o" \
+    -o "$TMP/cimp4-probe" 2> "$TMP/cimp4-link.err" || {
+    echo 'FAIL: Chinese external driver did not link:' >&2
+    cat "$TMP/cimp4-link.err" >&2
+    exit 1
+}
+if [ "$CAN_RUN" -eq 1 ]; then
+    "$RUNNER" "$TMP/cimp4-probe" || {
+        echo 'FAIL: Chinese cross-object probe returned non-zero' >&2
+        exit 1
+    }
+fi
+# Same-TU direct calls (no external declarations) stay consistent: the
+# definitions and the calls both name the mangled symbols.
+cat "$TMP/cimp4-helper-cn.ast" > "$TMP/cimp4-direct-cn.ast"
+cat >> "$TMP/cimp4-direct-cn.ast" <<'SRC'
+
+方法 启动方法(): 整数
+    如果 泵进一帧(32000000) != 2
+        返回 21
+    结束 如果
+    如果 泵进推进(0, 32000000) != 2
+        返回 22
+    结束 如果
+    如果 泵进直至收敛(0, 10, 0) != 0
+        返回 23
+    结束 如果
+    如果 泵进直至收敛(0, 1, 160000000) != -1
+        返回 24
+    结束 如果
+    如果 泵进直至收敛(0, 10, 48000000) != 3
+        返回 25
+    结束 如果
+    返回 0
+结束 方法
+SRC
+"$ASTER_BIN" build-cn-obj "$TMP/cimp4-direct-cn.ast" -o "$TMP/cimp4-direct-cn.o" \
+    2> "$TMP/cimp4-direct-cn.err" || {
+    echo 'FAIL: same-TU direct-call probe did not build:' >&2
+    cat "$TMP/cimp4-direct-cn.err" >&2
+    exit 1
+}
+"$ASTER_BIN" link-obj "$TMP/cimp4-direct-cn.o" -o "$TMP/cimp4-direct" \
+    2> "$TMP/cimp4-direct-link.err" || {
+    echo 'FAIL: same-TU direct-call probe did not link:' >&2
+    cat "$TMP/cimp4-direct-link.err" >&2
+    exit 1
+}
+if [ "$CAN_RUN" -eq 1 ]; then
+    "$RUNNER" "$TMP/cimp4-direct" || {
+        echo 'FAIL: same-TU direct-call probe returned non-zero' >&2
+        exit 1
+    }
+fi
+# The ASCII-definition + Chinese-alias workaround keeps working: ASCII
+# definition names are not mangled, and the alias declarations still map.
+sed -e 's/方法 泵进一帧(/方法 pump_step_cn(/' \
+    -e 's/方法 泵进推进(/方法 pump_advance_cn(/' \
+    -e 's/方法 泵进直至收敛(/方法 pump_settle_cn(/' \
+    -e 's/结果 = 泵进一帧(时间)/结果 = pump_step_cn(时间)/' \
+    -e 's/        泵进一帧(时间)/        pump_step_cn(时间)/' \
+    "$TMP/cimp4-helper-cn.ast" > "$TMP/cimp4-helper-ascii.ast"
+"$ASTER_BIN" build-cn-obj "$TMP/cimp4-helper-ascii.ast" -o "$TMP/cimp4-helper-ascii.o" \
+    2> "$TMP/cimp4-helper-ascii.err" || {
+    echo 'FAIL: ASCII helper did not build:' >&2
+    cat "$TMP/cimp4-helper-ascii.err" >&2
+    exit 1
+}
+for symbol in pump_step_cn pump_advance_cn pump_settle_cn; do
+    readelf -sW "$TMP/cimp4-helper-ascii.o" | grep -q " $symbol\$" || {
+        echo "FAIL: ASCII definition $symbol was mangled" >&2
+        readelf -sW "$TMP/cimp4-helper-ascii.o" >&2
+        exit 1
+    }
+done
+cat > "$TMP/cimp4-driver-alias.ast" <<'SRC'
+// aster:language=zh
+外部("pump_step_cn") 方法 泵进一帧(时间: 长整数): 整数
+外部("pump_advance_cn") 方法 泵进推进(起点: 长整数, 终点: 长整数): 整数
+外部("pump_settle_cn") 方法 泵进直至收敛(当前时间: 长整数, 最大帧数: 整数, 最多推进纳秒: 长整数): 整数
+
+方法 启动方法(): 整数
+    如果 泵进一帧(32000000) != 2
+        返回 31
+    结束 如果
+    如果 泵进推进(0, 32000000) != 2
+        返回 32
+    结束 如果
+    如果 泵进直至收敛(0, 10, 0) != 0
+        返回 33
+    结束 如果
+    如果 泵进直至收敛(0, 1, 160000000) != -1
+        返回 34
+    结束 如果
+    如果 泵进直至收敛(0, 10, 48000000) != 3
+        返回 35
+    结束 如果
+    返回 0
+结束 方法
+SRC
+"$ASTER_BIN" build-cn-obj "$TMP/cimp4-driver-alias.ast" -o "$TMP/cimp4-driver-alias.o" \
+    2> "$TMP/cimp4-driver-alias.err" || {
+    echo 'FAIL: alias driver did not build:' >&2
+    cat "$TMP/cimp4-driver-alias.err" >&2
+    exit 1
+}
+"$ASTER_BIN" link-obj "$TMP/cimp4-driver-alias.o" "$TMP/cimp4-helper-ascii.o" \
+    -o "$TMP/cimp4-alias" 2> "$TMP/cimp4-alias-link.err" || {
+    echo 'FAIL: alias driver did not link:' >&2
+    cat "$TMP/cimp4-alias-link.err" >&2
+    exit 1
+}
+if [ "$CAN_RUN" -eq 1 ]; then
+    "$RUNNER" "$TMP/cimp4-alias" || {
+        echo 'FAIL: alias workaround probe returned non-zero' >&2
+        exit 1
+    }
+fi
 
 cat > "$TMP/wide-match-zh.ast" <<'SRC'
 // aster:language=zh

@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
         const std::string source = readSource(inputPath.empty() ? "-" : inputPath);
         if (!projectPath.empty()) project = aster_cn::readProjectLanguage(projectPath);
         const aster_cn::Language language =
-            aster_cn::selectLanguage(source, hasOverride, overrideLanguage, project);
+            aster_cn::selectLanguage(source, hasOverride, overrideLanguage, project, inputPath);
         std::cout << aster_cn::dumpAst(aster_cn::parseProgram(source, language)) << '\n';
         return 0;
     } catch (const std::exception& error) {

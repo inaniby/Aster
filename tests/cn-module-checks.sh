@@ -1200,4 +1200,162 @@ grep -q 'package aliases do not match' "$TMP/alias-mismatch.err" || {
     exit 1
 }
 
+# B-P1: an include/导入 inherits the importer's language when the imported
+# file has neither its own directive nor a per-file [language] entry
+# (selectLanguage: directive > per-file entry > importer > project default
+# > zh). The lib below is English with no directive — under the old
+# behaviour it was parsed as zh and failed at `fn` / `ptr<u8>`, exactly
+# like aster_std.ast:52 in the Phase 1 report.
+mkdir -p "$TMP/bp1"
+cat > "$TMP/bp1/base.ast" <<'SRC'
+fn base_value(): i32 {
+return 0;
+}
+SRC
+cat > "$TMP/bp1/lib.ast" <<'SRC'
+include "base.ast";
+fn add_one(x: i32): i32 {
+return x + 1 + base_value();
+}
+fn count_bytes(p: ptr<u8>, n: i32): i32 {
+return n;
+}
+SRC
+cat > "$TMP/bp1/main_en.ast" <<'SRC'
+// aster:language=en
+include "lib.ast";
+fn main(): i32 {
+return add_one(41);
+}
+SRC
+echo '[B-P1] English importer inherits into directive-less (nested) imports'
+"$ASTER_BIN" build-cn-obj "$TMP/bp1/main_en.ast" -o "$TMP/bp1/main_en.o"
+"$ASTER_BIN" link-obj "$TMP/bp1/main_en.o" -o "$TMP/bp1/main_en"
+if "$RUNNER" "$TMP/bp1/main_en"; then status=0; else status=$?; fi
+[ "$status" -eq 42 ] || { echo "FAIL: B-P1 English import result was $status, expected 42" >&2; exit 1; }
+
+# B-P1: the importer wins over the project default — a Chinese importer
+# under an en-default project still brings its helper in as Chinese.
+mkdir -p "$TMP/bp1-zh/src"
+cat > "$TMP/bp1-zh/aster.proj" <<'SRC'
+name bp1-zh
+[language]
+default = "en"
+src/main.ast
+SRC
+cat > "$TMP/bp1-zh/src/main.ast" <<'SRC'
+// aster:language=zh
+导入 "helper.ast"
+方法 启动方法(): 整数
+返回 加一(41)
+结束 方法
+SRC
+cat > "$TMP/bp1-zh/src/helper.ast" <<'SRC'
+方法 加一(值: 整数): 整数
+返回 值 + 1
+结束 方法
+SRC
+echo '[B-P1] Chinese importer beats an en project default'
+(cd "$TMP/bp1-zh" && "$ASTER_BIN" build-cn-obj src/main.ast -o "$TMP/bp1-zh.o")
+"$ASTER_BIN" link-obj "$TMP/bp1-zh.o" -o "$TMP/bp1-zh-exe"
+if "$RUNNER" "$TMP/bp1-zh-exe"; then status=0; else status=$?; fi
+[ "$status" -eq 42 ] || { echo "FAIL: B-P1 Chinese import result was $status, expected 42" >&2; exit 1; }
+
+# B-P1: per-file [language] entries let listed sources mix languages in
+# one project — the English framework file keeps en while the Chinese app
+# sources stay zh, with no directive added to the framework file. The
+# Chinese app source imports a directive-less Chinese helper (nested
+# import): it must inherit zh from its own TU even though the first
+# listed TU is English.
+mkdir -p "$TMP/bp1-mixed/src"
+cat > "$TMP/bp1-mixed/aster.proj" <<'SRC'
+name bp1-mixed
+[language]
+default = "zh"
+"src/fw_en.ast" = "en"
+src/fw_en.ast
+src/app_zh.ast
+SRC
+cat > "$TMP/bp1-mixed/src/fw_en.ast" <<'SRC'
+fn fw_value(): i32 {
+return 40;
+}
+SRC
+cat > "$TMP/bp1-mixed/src/app_zh.ast" <<'SRC'
+导入 "helper_zh.ast"
+方法 启动方法(): 整数
+返回 fw_value() + 加一(0)
+结束 方法
+SRC
+cat > "$TMP/bp1-mixed/src/helper_zh.ast" <<'SRC'
+导入 "base_zh.ast"
+方法 加一(值: 整数): 整数
+返回 值 + 基础值()
+结束 方法
+SRC
+cat > "$TMP/bp1-mixed/src/base_zh.ast" <<'SRC'
+方法 基础值(): 整数
+返回 1
+结束 方法
+SRC
+echo '[B-P1] per-file [language] entries mix English and Chinese sources'
+(cd "$TMP/bp1-mixed" && "$ASTER_BIN" build > build.log 2>&1) || {
+    echo 'FAIL: B-P1 mixed-language project build failed' >&2
+    cat "$TMP/bp1-mixed/build.log" >&2; exit 1;
+}
+if "$RUNNER" "$TMP/bp1-mixed/build/bp1-mixed"; then status=0; else status=$?; fi
+[ "$status" -eq 41 ] || { echo "FAIL: B-P1 mixed-language result was $status, expected 41" >&2; exit 1; }
+(cd "$TMP/bp1-mixed" && "$ASTER_BIN" build > build-cache.log 2>&1)
+grep -q '0 compiled, 2 reused' "$TMP/bp1-mixed/build-cache.log" || {
+    echo 'FAIL: B-P1 mixed-language rebuild did not reuse its cache' >&2
+    cat "$TMP/bp1-mixed/build-cache.log" >&2; exit 1;
+}
+# Per-file entries are part of the cache key: flipping one must not reuse
+# an object compiled under the other language.
+sed -i 's#"src/fw_en.ast" = "en"#"src/fw_en.ast" = "zh"#' "$TMP/bp1-mixed/aster.proj"
+if (cd "$TMP/bp1-mixed" && "$ASTER_BIN" build > build-flip.log 2>&1); then
+    echo 'FAIL: B-P1 per-file flip to zh reused the English object' >&2; exit 1;
+fi
+sed -i 's#"src/fw_en.ast" = "zh"#"src/fw_en.ast" = "en"#' "$TMP/bp1-mixed/aster.proj"
+
+# B-P1 precedence negatives: a file directive beats a per-file entry, and
+# an unknown [language] key is still rejected (a typo must not silently
+# become a per-file entry).
+mkdir -p "$TMP/bp1-neg"
+cat > "$TMP/bp1-neg/aster.proj" <<'SRC'
+name bp1-neg
+[language]
+default = "zh"
+"bad.ast" = "en"
+main.ast
+SRC
+cat > "$TMP/bp1-neg/bad.ast" <<'SRC'
+// aster:language=zh
+fn bad(): i32 {
+return 1;
+}
+SRC
+cat > "$TMP/bp1-neg/main.ast" <<'SRC'
+方法 启动方法(): 整数
+返回 0
+结束 方法
+SRC
+echo '[B-P1] a file directive beats a per-file entry'
+if (cd "$TMP/bp1-neg" && "$ASTER_BIN" build-cn-obj bad.ast -o bad.o 2> bad.err); then
+    echo 'FAIL: B-P1 directive losing to a per-file entry was accepted' >&2; exit 1;
+fi
+cat > "$TMP/bp1-neg/aster.proj" <<'SRC'
+name bp1-neg
+[language]
+default = "zh"
+bogus = "en"
+main.ast
+SRC
+if (cd "$TMP/bp1-neg" && "$ASTER_BIN" build > build.err 2>&1); then
+    echo 'FAIL: B-P1 unknown language setting was accepted' >&2; exit 1;
+fi
+grep -q "unknown language setting 'bogus'" "$TMP/bp1-neg/build.err" || {
+    cat "$TMP/bp1-neg/build.err" >&2; exit 1;
+}
+
 echo 'PASS: Chinese module import checks'

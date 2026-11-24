@@ -4,9 +4,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -118,8 +120,16 @@ std::string unquote(std::string value) {
     return value;
 }
 
-Language parseLanguageName(const std::string& value, const char* context) {
-    const std::string name = unquote(value);
+// B-P1: a [language] key is a per-file entry when it names a source file:
+// a path (contains '/') or a bare `*.ast` name, optionally quoted. Any
+// other unknown key keeps the "unknown language setting" error.
+bool isFileLanguageKey(const std::string& rawKey) {
+    const std::string key = unquote(rawKey);
+    if (key.find('/') != std::string::npos) return true;
+    return key.size() >= 4 && key.substr(key.size() - 4) == ".ast";
+}
+
+Language parseLanguageName(const std::string& value, const char* context) {    const std::string name = unquote(value);
     if (name == "zh") return Language::Zh;
     if (name == "en") return Language::En;
     throw std::runtime_error(std::string(context) + " must be zh or en");
@@ -486,6 +496,14 @@ ProjectLanguageConfig readProjectLanguage(const std::string& path) {
     if (!input) throw std::runtime_error("cannot open project file: " + path);
     const std::string contents(std::istreambuf_iterator<char>(input), {});
     ProjectLanguageConfig config;
+    // B-P1: per-file entries are relative to the project file's directory,
+    // like the source paths in aster.proj.
+    std::string projectDir;
+    try {
+        projectDir = std::filesystem::path(path).parent_path().string();
+    } catch (const std::exception&) {
+        projectDir.clear();
+    }
     bool inLanguage = false;
     std::size_t line = 1;
     std::string current;
@@ -533,6 +551,18 @@ ProjectLanguageConfig readProjectLanguage(const std::string& path) {
             } catch (const std::exception& error) {
                 throw std::runtime_error(path + ": " + error.what());
             }
+        } else if (isFileLanguageKey(key)) {
+            // B-P1: per-file entry, `"path/to/file.ast" = "en"` (the key
+            // may be quoted). A key that is neither `default` nor
+            // `allowed` nor path-like still falls through to the unknown
+            // setting error below, so a typo cannot silently become a
+            // per-file entry.
+            const std::string keyPath = unquote(key);
+            const Language entryLanguage = parseLanguageName(value, "language entry");
+            const std::string joined =
+                projectDir.empty() ? keyPath : projectDir + "/" + keyPath;
+            if (!config.fileLanguages.emplace(absoluteLexicalPath(joined), entryLanguage).second)
+                throw std::runtime_error(path + ": duplicate language entry for file '" + keyPath + "'");
         } else {
             throw std::runtime_error(path + ": unknown language setting '" + key + "'");
         }
@@ -546,7 +576,9 @@ ProjectLanguageConfig readProjectLanguage(const std::string& path) {
 }
 
 Language selectLanguage(const std::string& source, bool hasOverride, Language overrideLanguage,
-                        const ProjectLanguageConfig& project) {
+                        const ProjectLanguageConfig& project,
+                        const std::string& sourcePath,
+                        bool hasImporterLanguage, Language importerLanguage) {
     const std::string directive = directiveLanguage(source);
     Language selected = project.hasDefault ? project.defaultLanguage : Language::Zh;
     if (hasOverride) {
@@ -556,6 +588,15 @@ Language selectLanguage(const std::string& source, bool hasOverride, Language ov
         selected = overrideLanguage;
     } else if (!directive.empty()) {
         selected = directive == "en" ? Language::En : Language::Zh;
+    } else if (!sourcePath.empty()) {
+        // B-P1: an explicit per-file entry wins over inheritance; an
+        // imported file with no entry inherits its importer's language,
+        // which itself beats the project default below.
+        const auto found = project.fileLanguages.find(absoluteLexicalPath(sourcePath));
+        if (found != project.fileLanguages.end()) selected = found->second;
+        else if (hasImporterLanguage) selected = importerLanguage;
+    } else if (hasImporterLanguage) {
+        selected = importerLanguage;
     }
     if (project.hasAllowed && ((selected == Language::Zh && !project.zhAllowed) ||
                               (selected == Language::En && !project.enAllowed)))
@@ -565,6 +606,25 @@ Language selectLanguage(const std::string& source, bool hasOverride, Language ov
 }
 
 const char* languageName(Language language) { return language == Language::Zh ? "zh" : "en"; }
+
+std::string absoluteLexicalPath(const std::string& path) {
+    try {
+        return std::filesystem::absolute(std::filesystem::path(path)).lexically_normal().string();
+    } catch (const std::exception&) {
+        return path;
+    }
+}
+
+std::string projectLanguageFileEntries(const ProjectLanguageConfig& project) {
+    std::string out;
+    for (const auto& entry : project.fileLanguages) {
+        out += ";file=";
+        out += entry.first;
+        out += '=';
+        out += languageName(entry.second);
+    }
+    return out;
+}
 
 std::vector<Token> lex(const std::string& source, Language language) {
     try {

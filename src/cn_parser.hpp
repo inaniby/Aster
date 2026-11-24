@@ -9,6 +9,7 @@
 namespace aster_cn {
 
 struct ClosureDeclaration;
+struct Statement;
 
 struct Expression {
     std::string kind;
@@ -17,6 +18,30 @@ struct Expression {
     std::shared_ptr<ClosureDeclaration> closure;
     unsigned line = 0;
     unsigned column = 0;
+    // B-P2: the file that wrote this expression, for `@embed` /
+    // `@embed_len` only: the embedded path resolves against its own
+    // directory (the mainline rule), so the lowering must not depend
+    // on which context happens to lower the expression. Other kinds
+    // leave it empty; the parser stamps it on embed expressions.
+    std::string sourceFile{};
+    // D-2a: node-row payload (only valid when kind == "NodeRow").
+    // The parser puts every comma-separated item (position arguments and
+    // modifier calls alike) into `children`; the lowering classifies them
+    // by the modifier table, so the parser needs no schema table.
+    // `modifiers` is kept for the lowering to fill in.
+    std::string nodeName{};
+    std::vector<Expression> modifiers{};
+    std::vector<Expression> childRows{};
+    // D-2a: the child block as an ordered statement list. The drafts put
+    // `如果`/`变量` inside child blocks (counter-zh:52, tab-input-zh:69),
+    // so a child block is a layout-body statement list, not rows only
+    // (design §1.1 anticipated relaxing this). childStatements is the
+    // authoritative order for lowering; childRows is the flat projection
+    // of its node rows, kept for simple consumers.
+    std::vector<Statement> childStatements{};
+    bool hasKeyOverride = false;
+    long long keyOverride = 0;
+    // D-2a: `键(名)` / `key(name)` (kind == "KeyRef"): value = node name.
 };
 
 struct Parameter {
@@ -93,6 +118,9 @@ struct StructDeclaration {
     std::string visibility = "public";
     unsigned line = 0;
     unsigned column = 0;
+    // B-P4: the file that declared the structure, so a lowering error
+    // about it names that file (like classes and methods already do).
+    std::string sourceFile;
 };
 
 struct ClassDeclaration {
@@ -169,6 +197,8 @@ struct EnumDeclaration {
     std::string visibility = "public";
     unsigned line = 0;
     unsigned column = 0;
+    // B-P4: as StructDeclaration — the file that declared the enum.
+    std::string sourceFile;
 };
 
 struct Program {

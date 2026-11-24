@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
 
         const std::string source = readSource(inputPath.empty() ? "-" : inputPath);
         if (!projectPath.empty()) project = aster_cn::readProjectLanguage(projectPath);
-        const aster_cn::Language language = aster_cn::selectLanguage(source, hasOverride, overrideLanguage, project);
+        const aster_cn::Language language = aster_cn::selectLanguage(source, hasOverride, overrideLanguage, project, inputPath);
         const auto tokens = aster_cn::lex(source, language);
         for (const auto& token : tokens) {
             std::cout << token.line << ':' << token.column << " byte=" << token.byteOffset

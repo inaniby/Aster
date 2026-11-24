@@ -271,6 +271,42 @@ static void reportError(const std::string& msg) {
         std::cerr << "aster: error: " << diagnostic << "\n";
     }
 }
+// B-P4: an error raised while parsing or lowering a file that is not the
+// driver's current source must still name the file it came from.
+// reportError() prints g_diagFile when it is set (audit A-15, which did
+// this for the mainline `include` parser), so the bilingual paths record
+// the file here instead of leaving the driver's file in place. Loading
+// the lines is best-effort: a file that cannot be read still gets its
+// name right, only the caret echo is lost.
+static void cnLoadDiagnosticLines(const std::string& path) {
+    g_diagFile = path;
+    g_diagLines.clear();
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return;
+    std::string cur;
+    char ch;
+    while (file.get(ch)) {
+        if (ch == '\n') { g_diagLines.push_back(std::move(cur)); cur.clear(); }
+        else if (ch != '\r') cur.push_back(ch);
+    }
+    g_diagLines.push_back(std::move(cur));
+}
+// Set-if-empty, for an error already propagating out of a nested parse:
+// the innermost file owns the diagnostic and an outer one must not
+// overwrite it (the A-15 rule).
+static void cnNoteDiagnosticFile(const std::string& path) {
+    if (path.empty() || !g_diagFile.empty()) return;
+    cnLoadDiagnosticLines(path);
+}
+// Overwrite-if-changed, for lowering: as the merged program is walked one
+// declaration at a time, the file of the declaration being lowered is the
+// file any error it raises belongs to — direct throws and nested helpers
+// alike, since the helpers only ever see line/column. Re-reading is
+// skipped while the file does not change.
+static void cnSetDiagnosticFile(const std::string& path) {
+    if (path.empty() || path == g_diagFile) return;
+    cnLoadDiagnosticLines(path);
+}
 uint64_t alignUp(uint64_t n,uint64_t a){return (n+a-1u)&~(a-1u);}
 
 enum class TK { End, Ident, Number, String,
@@ -1127,6 +1163,12 @@ struct Expr {
                 // language that will not print one.
                 Cast } k;
     uint64_t n=0; std::string name; std::unique_ptr<Expr> a,b; std::vector<std::unique_ptr<Expr>> args;
+    // C-IMP-4 (§3.6): the source spelling of a callee whose `name` is the
+    // mangled ABI symbol (`__aster_cn_<hex>`). Empty for mainline nodes and
+    // for ASCII callees, where `name` already is the source spelling.
+    // Diagnostics show the source spelling; every lookup keys on `name`.
+    std::string sourceName;
+    const std::string& displayName() const { return sourceName.empty() ? name : sourceName; }
     // v0.23.35-dev: sizeof / len. `ty` + `idims` carry the *type-form* argument
     // (e.g. sizeof(i32[4])); `a` carries the *expression-form* argument
     // (e.g. sizeof(x)). The folded i32 result lives in `n` (set at parse time
@@ -1360,7 +1402,11 @@ struct Stmt {
     Stmt(Stmt&&)=default; Stmt& operator=(Stmt&&)=default;
     Stmt(const Stmt&)=delete; Stmt& operator=(const Stmt&)=delete;
 };
-struct Global { std::string name; bool external=false; int32_t init=0; uint64_t wideInit=0; Ty ty=Ty::I32; bool isArray=false; uint32_t count=1; uint64_t align=4; bool runtimeInit=false; E initExpr; bool isString=false; bool isBool=false; FuncSig funcSig; bool isFunc=false;
+struct Global { std::string name;
+    // C-IMP-4 (§3.6): the source spelling of the name. `name` is the ABI
+    // symbol (mangled when the source name is non-ASCII); DWARF prints the
+    // source spelling, addresses use the ABI symbol.
+    std::string sourceName; bool external=false; int32_t init=0; uint64_t wideInit=0; Ty ty=Ty::I32; bool isArray=false; uint32_t count=1; uint64_t align=4; bool runtimeInit=false; E initExpr; bool isString=false; bool isBool=false; FuncSig funcSig; bool isFunc=false;
     std::vector<Stmt> runtimeInitStatements;
     // v0.23.51-dev: thread-local storage. A `tls let x : T = …` global lives in
     // a per-thread block addressed through TPIDR_EL0 (local-exec), so each
@@ -1389,7 +1435,9 @@ struct Global { std::string name; bool external=false; int32_t init=0; uint64_t 
     // v0.23.13-dev (P3.4): arrived through `include`, so a definition in the
     // including file supersedes it rather than colliding with it.
     bool fromInclude=false; };
-struct Function { std::string name; std::vector<std::string> params;
+struct Function { std::string name;
+    // C-IMP-4 (§3.6): the source spelling of the name; see Global::sourceName.
+    std::string sourceName; std::vector<std::string> params;
     // v0.23.77-dev: `static let n: T = e;` inside the body. The pair is the
     // source name and the mangled global symbol that holds its storage; Sema
     // resolves the first and renames every reference to the second.
@@ -5401,7 +5449,7 @@ struct Codegen {
                     // through a register (BLR) instead of a relocated BL.
                     if(!indirectCallee(e.name))
                         {
-                            std::string msg="call to undeclared function: "+e.name;
+                            std::string msg="call to undeclared function: "+e.displayName();
                             const std::string near=nearestDeclared(e.name,functionArities);
                             if(!near.empty())msg+=" (did you mean '"+near+"'?)";
                             throw Error(loc(e.line,e.col,msg));
@@ -5425,7 +5473,7 @@ struct Codegen {
                     if(tyIs64(want)&&tyNeedsSignExtend64(rt))emit(0x93407c00u|(uint32_t(d)<<5)|uint32_t(d));
                     return d;
                 }
-                if(sig->second!=e.args.size())throw Error(loc(e.line,e.col,"wrong argument count calling "+e.name+": expected "+std::to_string(sig->second)+", got "+std::to_string(e.args.size())));
+                if(sig->second!=e.args.size())throw Error(loc(e.line,e.col,"wrong argument count calling "+e.displayName()+": expected "+std::to_string(sig->second)+", got "+std::to_string(e.args.size())));
                 static const std::vector<Ty> noArgTypes;
                 const auto tm=argTypes.find(e.name);
                 const std::vector<Ty>& argT=tm==argTypes.end()?noArgTypes:tm->second;
@@ -5434,12 +5482,12 @@ struct Codegen {
                     const Ty expected=i<argT.size()?argT[i]:Ty::I32;
                     if(expected==Ty::Bool){
                         if(actual!=Ty::Bool&&!isBoolConstant(*e.args[i]))
-                            throw Error("argument type mismatch calling "+e.name+" at argument "+std::to_string(i+1)+": expected bool");
+                            throw Error("argument type mismatch calling "+e.displayName()+" at argument "+std::to_string(i+1)+": expected bool");
                     } else if(expected==Ty::Ptr){
                         // v0.23.26-dev: the null constant is a ptr here too.
-                        if(actual!=Ty::Ptr&&!isNullConstant(*e.args[i]))throw Error("argument type mismatch calling "+e.name+" at argument "+std::to_string(i+1)+": expected ptr");
+                        if(actual!=Ty::Ptr&&!isNullConstant(*e.args[i]))throw Error("argument type mismatch calling "+e.displayName()+" at argument "+std::to_string(i+1)+": expected ptr");
                     } else if(!tyAssignable(expected,actual,*e.args[i])){
-                        throw Error("argument type mismatch calling "+e.name+" at argument "+std::to_string(i+1)+": expected "+tyNameFull(expected)+", got "+tyNameFull(actual));
+                        throw Error("argument type mismatch calling "+e.displayName()+" at argument "+std::to_string(i+1)+": expected "+tyNameFull(expected)+", got "+tyNameFull(actual));
                     }
                 }
                 // A 32-bit return consumed at 64-bit width is sign-extended
@@ -9273,18 +9321,18 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             // value the ABI can carry, and the call answers i32.
             if(const Binding* b=find(e.name)){
                 if(b->len)
-                    throw Error(loc(e.line,e.col,"cannot call through '"+e.name+"': it is an array"));
+                    throw Error(loc(e.line,e.col,"cannot call through '"+e.displayName()+"': it is an array"));
                 if(b->ty!=Ty::Ptr)
-                    throw Error(loc(e.line,e.col,"cannot call through '"+e.name+"': expected a function pointer (ptr), got "+tyNameFull(b->ty)));
+                    throw Error(loc(e.line,e.col,"cannot call through '"+e.displayName()+"': expected a function pointer (ptr), got "+tyNameFull(b->ty)));
             } else if(globalNames.count(e.name)){
                 if(arrayGlobals.count(e.name))
-                    throw Error(loc(e.line,e.col,"cannot call through '"+e.name+"': it is an array"));
+                    throw Error(loc(e.line,e.col,"cannot call through '"+e.displayName()+"': it is an array"));
                 const Ty gt=globalTypes.count(e.name)?globalTypes.at(e.name):Ty::I32;
                 if(gt!=Ty::Ptr)
-                    throw Error(loc(e.line,e.col,"cannot call through '"+e.name+"': expected a function pointer (ptr), got "+tyNameFull(gt)));
+                    throw Error(loc(e.line,e.col,"cannot call through '"+e.displayName()+"': expected a function pointer (ptr), got "+tyNameFull(gt)));
             } else {
                 {
-                    std::string msg="call to undeclared function: "+e.name;
+                    std::string msg="call to undeclared function: "+e.displayName();
                     const std::string near=nearestDeclared(e.name,arities);
                     if(!near.empty())msg+=" (did you mean '"+near+"'?)";
                     throw Error(loc(e.line,e.col,msg));
@@ -9298,9 +9346,9 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             // marshal it. A bare ptr keeps the legacy behaviour below.
             if(const FuncSig* fs=funcSigOf(e.name)){
                 if(e.args.size()!=fs->params.size())
-                    throw Error(loc(e.line,e.col,"wrong argument count calling "+e.name+": expected "+std::to_string(fs->params.size())+", got "+std::to_string(e.args.size())));
+                    throw Error(loc(e.line,e.col,"wrong argument count calling "+e.displayName()+": expected "+std::to_string(fs->params.size())+", got "+std::to_string(e.args.size())));
                 for(size_t i=0;i<e.args.size();++i)
-                    checkArgument(e.name,i+1,fs->params[i],*e.args[i],typeOf(*e.args[i]));
+                    checkArgument(e.displayName(),i+1,fs->params[i],*e.args[i],typeOf(*e.args[i]));
                 return fs->ret;
             }
             // v0.23.80-dev (P1-9): the parser limits calls to 32 arguments;
@@ -9317,7 +9365,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             }
             return Ty::I32;
         }
-        if(sig->second!=e.args.size())throw Error(loc(e.line,e.col,"wrong argument count calling "+e.name+": expected "+std::to_string(sig->second)+", got "+std::to_string(e.args.size())));
+        if(sig->second!=e.args.size())throw Error(loc(e.line,e.col,"wrong argument count calling "+e.displayName()+": expected "+std::to_string(sig->second)+", got "+std::to_string(e.args.size())));
         static const std::vector<Ty> noTypes;
         const auto tp=paramTypes.find(e.name);
         const std::vector<Ty>& at=tp==paramTypes.end()?noTypes:tp->second;
@@ -9330,7 +9378,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
         for(size_t i=0;i<e.args.size();++i){
             const Ty actual=typeOf(*e.args[i]);
             const FuncSig* wantSig=(i<ps.size()&&ps[i].isFunc)?&ps[i].sig:nullptr;
-            checkArgument(e.name,i+1,i<at.size()?at[i]:Ty::I32,*e.args[i],actual,wantSig);
+            checkArgument(e.displayName(),i+1,i<at.size()?at[i]:Ty::I32,*e.args[i],actual,wantSig);
         }
         auto rt=returnTypes.find(e.name);
         return rt==returnTypes.end()?Ty::I32:rt->second;
@@ -10576,7 +10624,9 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         // the attribute stream (see the subroutine_type note above).
         const uint32_t globalRef=w.typeRef(g.ty,dims);
         dbgUleb(w.info,kAbbrGlobalVar);
-        w.name(g.name);
+        // C-IMP-4 (§3.6): DW_AT_name keeps the source spelling; the address
+        // below (w.addrOps) still names the ABI symbol.
+        w.name(g.sourceName.empty()?g.name:g.sourceName);
         dbgPut32(w.info,globalRef);
         // v0.23.51-dev: a thread-local global is laid out in .tdata under its
         // __aster_tls_<name> symbol (the bare name carries no definition), so the
@@ -10590,7 +10640,9 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
         const Function& src=*it->second;
         const uint64_t size=L.functions.count(f.name)?L.functions.at(f.name).second:0;
         dbgUleb(w.info,kAbbrSubprogram);
-        w.name(f.name);
+        // C-IMP-4 (§3.6): DW_AT_name keeps the source spelling; the low_pc
+        // patch below still names the ABI symbol.
+        w.name(src.sourceName.empty()?f.name:src.sourceName);
         dbgPut64(w.info,0);                                // DW_AT_low_pc: patched
         w.patches.push_back({(uint64_t)w.info.size()-8,f.name,0});
         dbgPut64(w.info,size);                             // DW_AT_high_pc: a length
@@ -16362,6 +16414,12 @@ static ProjectSpec parseProjectFile(const std::string& path){
             if(!seen)spec.tests.push_back(n);
             return;
         }
+        // B-P1: a per-file language line (`"path/to/file.ast" = "en"`)
+        // inside [language] is configuration, not a source: it carries
+        // '=', which a source path never does. It must be skipped before
+        // the source-path branch below, whose '/' test would otherwise
+        // swallow it as a source path.
+        if(inLanguage && l.find('=')!=std::string::npos)return;
         if(inLanguage && (l.find('/')!=std::string::npos ||
                           (l.size()>=4 && l.substr(l.size()-4)==".ast"))) {
             inLanguage=false;
@@ -16721,14 +16779,34 @@ static std::map<std::string, CnFunctionSignature> g_cnFunctionSignatures;
 static std::map<std::string, std::string> g_cnExternalMethodNames;
 static std::map<std::string, std::string> g_cnExternalGlobalNames;
 
+// C-IMP-4 (§3.6 NameMangler): a source identifier S (UTF-8 bytes) becomes
+// its ABI symbol. All-ASCII and not starting with `__aster_` => identity;
+// otherwise `__aster_cn_` + lowercase hex of the whole name's UTF-8 bytes
+// (no separators: the hex is injective, so the encoding is unambiguous and
+// stable across objects). The emitted symbol is always ASCII, so the C-ABI
+// boundary rule still holds; only the spelling changes. User identifiers
+// starting with `__aster_` are rejected by the parser (D-3 (i) carves out
+// `__aster_cn_`), so the mangler only ever sees source names here — never
+// its own output — and must not be applied to compiler-generated symbols.
+static std::string cnMangleSymbolPart(const std::string& value);
+static std::string cnMangleAbiSymbol(const std::string& name) {
+    bool allAscii = true;
+    for (unsigned char byte : name)
+        if (byte >= 0x80) { allAscii = false; break; }
+    if (allAscii && name.rfind("__aster_", 0) != 0) return name;
+    return "__aster_cn_" + cnMangleSymbolPart(name);
+}
+
 static std::string cnFunctionSymbolName(const std::string& sourceName) {
     const auto found = g_cnExternalMethodNames.find(sourceName);
-    return found == g_cnExternalMethodNames.end() ? sourceName : found->second;
+    if (found != g_cnExternalMethodNames.end()) return cnMangleAbiSymbol(found->second);
+    return cnMangleAbiSymbol(sourceName);
 }
 
 static std::string cnGlobalSymbolName(const std::string& sourceName) {
     const auto found = g_cnExternalGlobalNames.find(sourceName);
-    return found == g_cnExternalGlobalNames.end() ? sourceName : found->second;
+    if (found != g_cnExternalGlobalNames.end()) return cnMangleAbiSymbol(found->second);
+    return cnMangleAbiSymbol(sourceName);
 }
 
 static bool cnIsInterfaceType(Ty type) {
@@ -17102,8 +17180,8 @@ static uint8_t cnCharacterValue(const std::string& spelling, unsigned line, unsi
     throw Error(loc(line, column, "invalid character escape"));
 }
 
-static std::vector<uint8_t> cnStringValue(const std::string& spelling,
-                                          unsigned line, unsigned column) {
+static std::vector<uint8_t> cnDecodedStringBytes(const std::string& spelling,
+                                                 unsigned line, unsigned column) {
     if (spelling.size() < 2 || spelling.front() != '"' || spelling.back() != '"')
         throw Error(loc(line, column, "invalid string literal"));
     std::vector<uint8_t> bytes;
@@ -17140,10 +17218,27 @@ static std::vector<uint8_t> cnStringValue(const std::string& spelling,
             default: throw Error(loc(line, column, "unsupported string escape"));
         }
     }
+    return bytes;
+}
+
+static std::vector<uint8_t> cnStringValue(const std::string& spelling,
+                                          unsigned line, unsigned column) {
+    std::vector<uint8_t> bytes = cnDecodedStringBytes(spelling, line, column);
     if (std::find(bytes.begin(), bytes.end(), static_cast<uint8_t>(0)) != bytes.end())
         throw Error(loc(line, column, "string literals cannot contain NUL"));
     bytes.push_back(0);
     return bytes;
+}
+
+// B-P2: an `@embed` path is a string literal spelling decoded the same
+// way as a literal; unlike a literal it must not contain NUL (a NUL
+// cannot name a file). An empty path is left to the file open below,
+// which reports it exactly as the mainline does.
+static std::string cnEmbedPath(const std::string& spelling, unsigned line, unsigned column) {
+    const std::vector<uint8_t> bytes = cnDecodedStringBytes(spelling, line, column);
+    if (std::find(bytes.begin(), bytes.end(), static_cast<uint8_t>(0)) != bytes.end())
+        throw Error(loc(line, column, "embedded file path cannot contain NUL"));
+    return std::string(bytes.begin(), bytes.end());
 }
 
 static void cnValidateStringLiteralsStatement(const aster_cn::Statement& statement);
@@ -17184,22 +17279,40 @@ static void cnValidateStringLiteralsStatement(const aster_cn::Statement& stateme
 }
 
 static void cnValidateStringLiteralsProgram(const aster_cn::Program& program) {
-    for (const auto& global : program.globals)
+    for (const auto& global : program.globals) {
+        // B-P4: a bad literal belongs to the file that wrote it.
+        cnSetDiagnosticFile(global.sourceFile);
         if (global.hasExpression) cnValidateStringLiterals(global.expression);
-    for (const auto& enumeration : program.enums)
+    }
+    for (const auto& enumeration : program.enums) {
+        cnSetDiagnosticFile(enumeration.sourceFile);
         for (const auto& member : enumeration.members)
             if (member.hasExpression) cnValidateStringLiterals(member.expression);
+    }
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);
         for (const auto& field : declaration.fields)
             if (field.hasInitializer) cnValidateStringLiterals(field.initializer);
         for (const auto& method : declaration.methods)
             for (const auto& statement : method.body)
                 cnValidateStringLiteralsStatement(statement);
     }
-    for (const auto& method : program.methods)
+    for (const auto& method : program.methods) {
+        cnSetDiagnosticFile(method.sourceFile);
         for (const auto& statement : method.body)
             cnValidateStringLiteralsStatement(statement);
+    }
 }
+
+// B-P2: one `@embed` blob: the rodata symbol the lowering minted for a
+// resolved path, and how many bytes it holds (what `@embed_len` folds
+// to). Stored in the string pool so the dedup lives exactly as long as
+// one lowering run — one pool per cnProgramToAster call, like the
+// string-literal counter.
+struct CnEmbedEntry {
+    std::string symbol;
+    uint64_t size = 0;
+};
 
 struct CnStringPool {
     std::vector<Global>* globals = nullptr;
@@ -17207,6 +17320,16 @@ struct CnStringPool {
     uint64_t next = 0;
     uint64_t nextClosure = 0;
     uint64_t nextInterfaceUpcast = 0;
+    // B-P2: resolved embedded path -> blob (the same file embedded twice
+    // is one copy); owning source file -> symbol prefix (the mainline
+    // per-unit namespace, v0.23.81-dev H-4/C-2, so two TUs embedding
+    // different files never mint the same symbol). nextEmbed counts
+    // blobs minted from this pool; fallbackSourceFile is the merged
+    // program's own file, for lowering that carries no context.
+    std::map<std::string, CnEmbedEntry> embeds;
+    std::map<std::string, std::string> embedPrefixes;
+    uint64_t nextEmbed = 0;
+    std::string fallbackSourceFile;
     std::map<std::pair<int, int>, std::string> interfaceUpcasts;
     std::string emptyStringName;
     bool usesConcat = false;
@@ -17372,6 +17495,13 @@ static void cnRequireTopLevelMethodAccess(const std::string& name,
 static void cnRequireTopLevelGlobalAccess(const std::string& name,
                                           const CnLoweringContext* context,
                                           unsigned line, unsigned column);
+// C-IMP-4 (§3.6): defined after CnLoweringContext (they read its scopes).
+static bool cnIsUnshadowedTopLevelGlobal(const CnLoweringContext* context,
+                                         const std::string& name);
+static bool cnIsUnshadowedTopLevelMethod(const CnLoweringContext* context,
+                                         const std::string& name);
+static bool cnIsLocalFunctionValue(const CnLoweringContext* context,
+                                   const std::string& name);
 static void cnRequireMethodArity(const CnClassMethodInfo& method,
                                  const aster_cn::Expression& call,
                                  const std::string& methodName);
@@ -17495,6 +17625,116 @@ static uint64_t cnConstantScalarBits(Ty target, Ty actual, const Expr& value,
     return static_cast<uint64_t>(folded);
 }
 
+// B-P2: the `@embed` blob namespace for one owning source file — the
+// mainline rule (Parser ctor, v0.23.81-dev H-4/C-2): the file's basename
+// with every non-alphanumeric byte as '_', capped at 32 chars, plus a
+// hash of the path as recorded, so two same-basename files in different
+// directories still mint different symbols. An empty file name (an
+// ad-hoc parsed program with no path) falls back to a hash of the empty
+// spelling; the per-TU pool salt on the counter keeps those apart.
+static std::string cnEmbedPrefix(const std::string& sourceFile) {
+    if (sourceFile.empty()) return "h" + sha256Hex(sourceFile).substr(0, 12);
+    std::string base = sourceFile;
+    const std::string::size_type slash = base.find_last_of("/\\");
+    if (slash != std::string::npos) base = base.substr(slash + 1);
+    std::string san;
+    for (char c : base)
+        san += ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) ? c : '_';
+    if (san.empty()) san = "embed";
+    if (san.size() > 32) san.resize(32);
+    return san + "_h" + sha256Hex(sourceFile).substr(0, 12);
+}
+
+// B-P2: read one embedded file and mint (or reuse) its rodata global —
+// the bilingual half of the mainline Parser::embedFile, with the same
+// rules: a path is relative to the directory of the file that wrote it
+// (--embed-dir overrides), the same resolved path is one blob, a second
+// request may raise the blob's alignment to the maximum, and a missing /
+// directory / empty / oversize file is a diagnostic, not silence. The
+// blob is a fromEmbed string global, exactly as the mainline lays it
+// out, so the shared codegen and object writer handle it unchanged.
+// The file is also recorded in g_buildDeps, so the per-source cache
+// meta (and `aster deps`) sees the asset as a build input. Returns the
+// entry by value (a symbol plus a size): returning a reference into the
+// pool would trip -Wdangling-reference at the call sites, which pass a
+// temporary owner file.
+static CnEmbedEntry cnEmbedFile(CnStringPool& pool, const std::string& path,
+                                const std::string& sourceFile,
+                                unsigned line, unsigned column, uint64_t align) {
+    std::string full;
+    if (path.empty()) full = path;
+    else if (path[0] == '/') full = path;
+    else if (!g_srcPathOpts.embedDir.empty()) full = g_srcPathOpts.embedDir + "/" + path;
+    else if (!sourceFile.empty()) {
+        const std::string dir = dirNameOf(sourceFile);
+        full = dir.empty() ? path : dir + "/" + path;
+    } else full = path;
+    const auto seen = pool.embeds.find(full);
+    if (seen != pool.embeds.end()) {
+        // v0.23.71-dev: one path is one object. A second request may ask
+        // for a stricter alignment; satisfy both by raising the single
+        // blob's alignment to the maximum rather than creating a second
+        // copy or refusing.
+        if (pool.globals && align > 1)
+            for (auto& global : *pool.globals)
+                if (global.fromEmbed && global.name == seen->second.symbol) {
+                    if (align > global.align) global.align = align;
+                    break;
+                }
+        return seen->second;
+    }
+    struct stat st {};
+    if (::stat(full.c_str(), &st) != 0)
+        throw Error("cannot open embedded file \"" + path + "\" (looked for \"" + full + "\") at " +
+                    std::to_string(line) + ":" + std::to_string(column));
+    if (S_ISDIR(st.st_mode))
+        throw Error("embedded file is a directory: \"" + full + "\" at " +
+                    std::to_string(line) + ":" + std::to_string(column));
+    if (st.st_size == 0)
+        throw Error("embedded file is empty: \"" + full + "\" at " +
+                    std::to_string(line) + ":" + std::to_string(column) +
+                    " — a zero-byte resource is almost always the wrong path");
+    // 16 MiB. Past this the file is not an asset, it is a mistake: rodata is
+    // one segment and a build that quietly absorbs a hundreds-of-megabytes
+    // blob is a build whose author meant to pass a different path.
+    if (st.st_size > (1 << 24))
+        throw Error("embedded file is too large (" + std::to_string((long long)st.st_size) +
+                    " bytes, limit 16777216): \"" + path + "\"");
+    std::ifstream f(full, std::ios::binary);
+    if (!f) throw Error("cannot open embedded file \"" + full + "\" at " +
+                        std::to_string(line) + ":" + std::to_string(column));
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    if (bytes.size() != (size_t)st.st_size)
+        throw Error("short read of embedded file \"" + full + "\"");
+    g_buildDeps[full] = sha256Hex(bytes);   // v0.23.77-dev: a build dependency
+    const uint64_t size = bytes.size();
+    const auto prefixIt = pool.embedPrefixes.find(sourceFile);
+    const std::string prefix = prefixIt != pool.embedPrefixes.end()
+        ? prefixIt->second
+        : pool.embedPrefixes.emplace(sourceFile, cnEmbedPrefix(sourceFile)).first->second;
+    const std::string symName = "__aster_embed_" + prefix + "_" + std::to_string(pool.nextEmbed++);
+    Global global;
+    global.name = symName;
+    global.isString = true;                 // rodata, laid out as the bytes it holds
+    global.rawData = std::move(bytes);
+    global.align = align;
+    global.fromEmbed = true;                // not a declared global
+    pool.globals->push_back(std::move(global));
+    CnEmbedEntry entry;
+    entry.symbol = symName;
+    entry.size = size;
+    return pool.embeds.emplace(full, std::move(entry)).first->second;
+}
+
+// The file that wrote an `@embed` expression: the expression's own file
+// first (the parser stamps it, so an imported file resolves against its
+// own directory even when a merged lowering runs under another file's
+// context), then the lowering context, then the program's file.
+// Defined after CnLoweringContext (it reads context->sourceFile).
+static std::string cnEmbedOwnerFile(const aster_cn::Expression& source,
+                                    const CnLoweringContext* context,
+                                    CnStringPool* strings);
+
 static E cnExpressionToAster(const aster_cn::Expression& source,
                              CnStringPool* strings = nullptr,
                              const CnLoweringContext* context = nullptr) {
@@ -17522,8 +17762,17 @@ static E cnExpressionToAster(const aster_cn::Expression& source,
             if (!result) {
                 result.reset(new Expr(Expr::Var));
                 result->name = source.value;
-                if (g_cnExternalGlobalNames.count(source.value))
+                // C-IMP-4 (§3.6): a reference to a top-level global names
+                // its ABI symbol (mangled when the source name is non-ASCII).
+                // A local or parameter of the same name shadows the global
+                // and keeps the source spelling, so only rewrite names no
+                // local binding claims. The same rule holds for a bare
+                // top-level method name in value position: it is the
+                // function's address, named through its ABI symbol.
+                if (cnIsUnshadowedTopLevelGlobal(context, source.value))
                     result->name = cnGlobalSymbolName(source.value);
+                else if (cnIsUnshadowedTopLevelMethod(context, source.value))
+                    result->name = cnFunctionSymbolName(source.value);
             }
         }
     } else if (source.kind == "IntegerLiteral") {
@@ -17959,9 +18208,18 @@ static E cnExpressionToAster(const aster_cn::Expression& source,
         }
         // A function-pointer global is called through its object symbol, while
         // a top-level method is called through its function symbol. External
-        // globals use the same source-to-ASCII mapping as identifier loads.
-        result->name = g_cnExternalGlobalNames.count(sourceName)
-            ? cnGlobalSymbolName(sourceName) : cnFunctionSymbolName(sourceName);
+        // globals use the same source-to-ABI mapping as identifier loads.
+        // C-IMP-4 (§3.6): both mappings mangle a non-ASCII source name to its
+        // `__aster_cn_<hex>` ABI symbol — except when the callee is a local
+        // function value, which is called indirectly through its slot and
+        // keeps the source spelling.
+        result->name = cnIsLocalFunctionValue(context, sourceName)
+            ? sourceName
+            : (g_cnExternalGlobalNames.count(sourceName)
+                   ? cnGlobalSymbolName(sourceName) : cnFunctionSymbolName(sourceName));
+        // C-IMP-4 (§3.6): keep the source spelling alongside the ABI symbol
+        // so diagnostics name the function the user wrote.
+        result->sourceName = sourceName;
     } else if (source.kind == "Index") {
         if (source.children.size() != 2)
             throw Error(loc(line, column, "invalid array index expression"));
@@ -17982,7 +18240,10 @@ static E cnExpressionToAster(const aster_cn::Expression& source,
                 result->b = cnExpressionToAster(source.children[1], strings, context);
             } else {
                 result->name = source.children[0].value;
-                if (g_cnExternalGlobalNames.count(result->name))
+                // C-IMP-4 (§3.6): same rule as identifier loads — a top-level
+                // global array is indexed through its ABI symbol, a shadowing
+                // local array keeps the source spelling.
+                if (cnIsUnshadowedTopLevelGlobal(context, result->name))
                     result->name = cnGlobalSymbolName(result->name);
                 result->a = cnExpressionToAster(source.children[1], strings, context);
             }
@@ -18038,6 +18299,51 @@ static E cnExpressionToAster(const aster_cn::Expression& source,
         result.reset(new Expr(Expr::String));
         result->name = strings->globals->back().name;
         result->isStringValue = true;
+    } else if (source.kind == "Embed") {
+        // B-P2: `@embed("path"[, align])` — the address of the file's
+        // bytes. The blob global is minted by cnEmbedFile (deduped per
+        // resolved path, namespaced per owning file); the lowered node
+        // is the mainline Expr::Embed holding that symbol, so the shared
+        // codegen emits the rodata address exactly as for a literal.
+        if (!strings || !strings->globals)
+            throw Error(loc(line, column, "embed lowering has no global storage context"));
+        if (source.children.size() > 1)
+            throw Error(loc(line, column, "invalid embed expression"));
+        uint64_t align = 1;
+        if (!source.children.empty()) {
+            Expr::LitSuffix suffix = Expr::LSNone;
+            const aster_cn::Expression& alignment = source.children[0];
+            align = cnIntegerValue(alignment.value, suffix, alignment.line, alignment.column);
+            if (align == 0 || (align & (align - 1)) != 0)
+                throw Error(loc(alignment.line, alignment.column,
+                                "embedded alignment must be a power of two"));
+            if (align > 4096)
+                throw Error(loc(alignment.line, alignment.column,
+                                "embedded alignment must not exceed 4096 bytes"));
+        }
+        const std::string path = cnEmbedPath(source.value, line, column);
+        const CnEmbedEntry entry = cnEmbedFile(*strings, path,
+                                                cnEmbedOwnerFile(source, context, strings),
+                                                line, column, align);
+        result.reset(new Expr(Expr::Embed));
+        result->name = entry.symbol;
+    } else if (source.kind == "EmbedLen") {
+        // B-P2: `@embed_len("path")` folds to the byte count here, so it
+        // is a literal everywhere downstream: a global initializer, an
+        // array bound, a return value. The blob itself is still minted
+        // (as the mainline does), so the bytes are in the object if
+        // anything else embeds the same file.
+        if (!strings || !strings->globals)
+            throw Error(loc(line, column, "embed_len lowering has no global storage context"));
+        if (!source.children.empty())
+            throw Error(loc(line, column, "embed_len takes no alignment argument"));
+        const std::string path = cnEmbedPath(source.value, line, column);
+        const CnEmbedEntry entry = cnEmbedFile(*strings, path,
+                                                cnEmbedOwnerFile(source, context, strings),
+                                                line, column, 1);
+        if (entry.size > 0x7fffffffULL)
+            throw Error("embedded file is too large to measure: " + path);
+        result.reset(new Expr(Expr::Num, entry.size));
     } else if (source.kind == "Member") {
         if (source.children.size() != 2 || source.children[1].kind != "Identifier")
             throw Error(loc(line, column, "invalid member expression"));
@@ -18152,6 +18458,59 @@ struct CnLoweringContext {
         return false;
     }
 };
+
+// C-IMP-4 (§3.6): a lowered reference names a top-level global's ABI symbol
+// only when no local binding claims the name — a local or parameter shadows
+// the global and keeps the source spelling (a captured name is owned by the
+// closure machinery, never mangled here). With no lowering context there is
+// no scope to shadow, so the global tables alone decide.
+static bool cnIsUnshadowedTopLevelGlobal(const CnLoweringContext* context,
+                                         const std::string& name) {
+    if (context) {
+        CnBinding local;
+        if (context->findLocalBinding(name, local)) return false;
+        if (context->closureCaptureFields.count(name)) return false;
+    }
+    return g_cnExternalGlobalNames.count(name) != 0 || g_cnTopLevelGlobals.count(name) != 0;
+}
+
+// C-IMP-4 (§3.6): a bare top-level method name in value position is the
+// function's address, so it is named through its ABI symbol (mangled when
+// the source name is non-ASCII) — that is the spelling Sema's `arities`
+// knows. A local or parameter of the same name shadows the method and
+// keeps the source spelling.
+static bool cnIsUnshadowedTopLevelMethod(const CnLoweringContext* context,
+                                         const std::string& name) {
+    if (context) {
+        CnBinding local;
+        if (context->findLocalBinding(name, local)) return false;
+        if (context->closureCaptureFields.count(name)) return false;
+    }
+    return g_cnFunctionSignatures.count(name) != 0;
+}
+
+// C-IMP-4 (§3.6): a call whose callee is a local function value goes
+// indirectly through its slot, so the callee keeps the source spelling;
+// anything else is a top-level method or function-pointer global and is
+// named through its ABI symbol.
+static bool cnIsLocalFunctionValue(const CnLoweringContext* context,
+                                   const std::string& name) {
+    if (!context) return false;
+    if (context->closureCaptureFields.count(name)) return true;
+    CnBinding local;
+    return context->findLocalBinding(name, local) && local.isFunc;
+}
+
+// B-P2: the file that wrote an `@embed` expression (see the forward
+// declaration above cnExpressionToAster).
+static std::string cnEmbedOwnerFile(const aster_cn::Expression& source,
+                                    const CnLoweringContext* context,
+                                    CnStringPool* strings) {
+    if (!source.sourceFile.empty()) return source.sourceFile;
+    if (context && !context->sourceFile.empty()) return context->sourceFile;
+    if (strings && !strings->fallbackSourceFile.empty()) return strings->fallbackSourceFile;
+    return std::string();
+}
 
 static bool cnExpectedCallParameterType(const CnLoweringContext* context,
                                         const std::string& name, size_t index, Ty& type,
@@ -18931,7 +19290,12 @@ static bool cnTryLowerClosureCallbackAdapter(
         activeReceiver.kind == "SuperExpression";
     if (directMemberCall) {
         lowered.reset(new Expr(Expr::Call));
-        lowered->name = callName;
+        // C-IMP-4 (§3.6): a top-level callee is named through its ABI symbol
+        // (mangled when the source name is non-ASCII); a member callee
+        // already carries its mangled class-method name. The source spelling
+        // rides along so diagnostics name the function the user wrote.
+        lowered->name = memberCall ? callName : cnFunctionSymbolName(callName);
+        lowered->sourceName = callName;
     } else {
         E receiverForTable = cnExpressionToAster(activeReceiver, strings, &context);
         E vptr(new Expr(Expr::Field));
@@ -19884,6 +20248,11 @@ static Ty cnExpressionType(const aster_cn::Expression& source,
     if (source.kind == "BooleanLiteral") return Ty::Bool;
     if (source.kind == "NullLiteral") return Ty::Ptr;
     if (source.kind == "StringLiteral") return Ty::string();
+    // B-P2: `@embed` is the address of the file's bytes, `@embed_len`
+    // folds to its byte count — the mainline types (Expr::Embed is a
+    // ptr, the length is an i32).
+    if (source.kind == "Embed") return Ty::Ptr;
+    if (source.kind == "EmbedLen") return Ty::I32;
     if (source.kind == "CharacterLiteral") return Ty::I32;
     if (source.kind == "Unary" && source.children.size() == 1) {
         if (source.value == "!") return Ty::Bool;
@@ -20790,6 +21159,8 @@ static void cnRegisterEnums(const aster_cn::Program& program) {
     for (const auto& structure : program.structures) structureNames.insert(structure.name);
 
     for (const auto& source : program.enums) {
+        // B-P4: a duplicate/conflicting enum belongs to its own file.
+        cnSetDiagnosticFile(source.sourceFile);
         if (source.name == "字段信息" || g_enumIndex.count(source.name) ||
             g_structIndex.count(source.name) || structureNames.count(source.name))
             throw Error(loc(source.line, source.column,
@@ -20898,6 +21269,8 @@ static void cnRegisterStructures(const aster_cn::Program& program) {
     if (methodNames.count("string_view"))
         throw Error("method name conflicts with a built-in type: string_view");
     for (const auto& source : program.interfaceClasses) {
+        // B-P4: a duplicate/conflicting interface belongs to its own file.
+        cnSetDiagnosticFile(source.sourceFile);
         if (g_structIndex.count(source.name) || g_enumIndex.count(source.name) ||
             g_cnInterfaceIndex.count(source.name) || methodNames.count(source.name))
             throw Error(loc(source.line, source.column,
@@ -20920,6 +21293,8 @@ static void cnRegisterStructures(const aster_cn::Program& program) {
         g_cnInterfaceIndex[source.name] = sid;
     }
     for (const auto& source : program.classes) {
+        // B-P4: a duplicate/conflicting class belongs to its own file.
+        cnSetDiagnosticFile(source.sourceFile);
         if (g_structIndex.count(source.name) || g_enumIndex.count(source.name) ||
             g_cnClassIndex.count(source.name) ||
             std::any_of(program.interfaceClasses.begin(), program.interfaceClasses.end(),
@@ -20938,6 +21313,8 @@ static void cnRegisterStructures(const aster_cn::Program& program) {
         g_cnClassIndex[source.name] = sid;
     }
     for (const auto& source : program.structures) {
+        // B-P4: a duplicate/conflicting structure belongs to its own file.
+        cnSetDiagnosticFile(source.sourceFile);
         if (g_structIndex.count(source.name))
             throw Error(loc(source.line, source.column,
                             "duplicate structure declaration: " + source.name));
@@ -21841,6 +22218,10 @@ static Stmt cnForEachLoopToAster(const aster_cn::Statement& source,
     element.isConst = true;
     element.expr.reset(new Expr(Expr::Index));
     element.expr->name = source.expression.value;
+    // C-IMP-4 (§3.6): a global array is traversed through its ABI symbol;
+    // a shadowing local array keeps the source spelling.
+    if (cnIsUnshadowedTopLevelGlobal(&context, element.expr->name))
+        element.expr->name = cnGlobalSymbolName(element.expr->name);
     element.expr->a = cnNamedValue(indexName, source.line, source.column);
     element.expr->line = source.line;
     element.expr->col = source.column;
@@ -22242,7 +22623,10 @@ static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Stateme
                 converted.idx = std::move(capturedTargetValue);
             else if (target.kind == "Identifier") {
                 converted.name = target.value;
-                if (context.globals && context.globals->count(target.value))
+                // C-IMP-4 (§3.6): assigning a top-level global stores
+                // through its ABI symbol; a shadowing local keeps the source
+                // spelling (same rule as identifier loads).
+                if (cnIsUnshadowedTopLevelGlobal(&context, target.value))
                     converted.name = cnGlobalSymbolName(target.value);
             }
             else if (target.kind == "Index" && target.children.size() == 2 &&
@@ -22251,7 +22635,11 @@ static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Stateme
                     converted.idx = cnExpressionToAster(target, context.strings, &context);
                 } else {
                     converted.name = target.children[0].value;
-                    if (g_cnExternalGlobalNames.count(converted.name))
+                    // C-IMP-4 (§3.6): same rule as identifier loads — a
+                    // top-level global array element is stored through its
+                    // ABI symbol, a shadowing local array keeps the source
+                    // spelling.
+                    if (cnIsUnshadowedTopLevelGlobal(&context, converted.name))
                         converted.name = cnGlobalSymbolName(converted.name);
                     converted.idx = cnExpressionToAster(target.children[1], context.strings, &context);
                 }
@@ -22546,8 +22934,12 @@ static CnPackageIndex cnIndexPackages(const fs::path& directory, const fs::path&
         if (!file) continue;
         const std::string source(std::istreambuf_iterator<char>(file), {});
         try {
+            // B-P1: the probe resolves the candidate's language the same
+            // way the loader will (directive > per-file entry > project
+            // default), so a package file in a mixed-language project is
+            // indexed under its own language instead of being skipped.
             const auto language = aster_cn::selectLanguage(
-                source, false, aster_cn::Language::Zh, projectLanguage);
+                source, false, aster_cn::Language::Zh, projectLanguage, path.string());
             const std::vector<std::string> names = aster_cn::readPackageNames(source, language);
             if (names.empty()) continue;
             const std::string& canonical = names.front();
@@ -22992,7 +23384,8 @@ static aster_cn::Program cnLoadFileImport(
     const std::string& importer,
     const aster_cn::ProjectLanguageConfig& projectLanguage,
     const std::set<std::string>& knownSources,
-    std::set<std::string>& merged, std::set<std::string>& loading) {
+    std::set<std::string>& merged, std::set<std::string>& loading,
+    aster_cn::Language importerLanguage) {
     std::string canonical;
     try {
         canonical = fs::absolute(fs::path(path)).lexically_normal().string();
@@ -23010,12 +23403,22 @@ static aster_cn::Program cnLoadFileImport(
         throw std::runtime_error("cannot find imported file '" + path + "'");
     loading.insert(canonical);
     const std::string source = readFile(path);
+    // B-P1: an imported file inherits its importer's language when it has
+    // neither its own directive nor a per-file [language] entry (the
+    // selectLanguage priority: directive > per-file entry > importer >
+    // project default > zh). A nested import inherits the language this
+    // file was just parsed with, so inheritance is transitive.
     const aster_cn::Language language = aster_cn::selectLanguage(
-        source, false, aster_cn::Language::Zh, projectLanguage);
+        source, false, aster_cn::Language::Zh, projectLanguage, path,
+        true, importerLanguage);
+    // B-P4: a parse error in an imported file belongs to that file, not
+    // to the importer the driver's g_srcFile still names (the A-15 rule:
+    // the innermost file owns the diagnostic).
     aster_cn::Program parsed;
     try {
         parsed = aster_cn::parseProgram(source, language, path);
     } catch (...) {
+        cnNoteDiagnosticFile(path);
         throw;
     }
     const std::string base = dirNameOf(path);
@@ -23025,7 +23428,7 @@ static aster_cn::Program cnLoadFileImport(
         const std::string nestedPath = base.empty() ? import.path : base + "/" + import.path;
         cnMergeFileImportInto(
             parsed, cnLoadFileImport(nestedPath, canonical, projectLanguage,
-                                     knownSources, merged, loading));
+                                     knownSources, merged, loading, parsed.language));
     }
     loading.erase(canonical);
     merged.insert(canonical);
@@ -23035,7 +23438,8 @@ static aster_cn::Program cnLoadFileImport(
 static aster_cn::Program cnResolveFileImports(
     aster_cn::Program root,
     const aster_cn::ProjectLanguageConfig& projectLanguage,
-    const std::set<std::string>& knownSources) {
+    const std::set<std::string>& knownSources,
+    const std::map<std::string, aster_cn::Language>& sourceLanguages = {}) {
     if (root.fileImports.empty()) return root;
     std::set<std::string> merged;
     std::set<std::string> loading;
@@ -23051,9 +23455,17 @@ static aster_cn::Program cnResolveFileImports(
     for (const auto& import : imports) {
         const std::string base = dirNameOf(import.sourceFile);
         const std::string path = base.empty() ? import.path : base + "/" + import.path;
+        // B-P1: each import inherits the language of the TU that wrote it
+        // (sourceLanguages, built by the driver from its parsed sources),
+        // not the merged root's language — in a mixed-language project the
+        // merged root only carries the first TU's language. An importer the
+        // driver did not list falls back to the root language.
+        aster_cn::Language importerLanguage = root.language;
+        const auto known = sourceLanguages.find(cnCanonicalPath(import.sourceFile));
+        if (known != sourceLanguages.end()) importerLanguage = known->second;
         cnMergeFileImportInto(root, cnLoadFileImport(path, cnCanonicalPath(import.sourceFile),
                                                      projectLanguage, knownSources,
-                                                     merged, loading));
+                                                     merged, loading, importerLanguage));
     }
     return root;
 }
@@ -23062,7 +23474,8 @@ static aster_cn::Program cnResolvePackageImports(
     aster_cn::Program root,
     const aster_cn::ProjectLanguageConfig& projectLanguage,
     const std::vector<std::string>& searchRoots,
-    const std::set<std::string>& knownSources = {}) {
+    const std::set<std::string>& knownSources = {},
+    const std::map<std::string, aster_cn::Language>& sourceLanguages = {}) {
     g_cnPackageFilesLoaded.clear();
     g_cnPackageFilesByModule.clear();
     g_cnPackageCanonicalByName.clear();
@@ -23071,7 +23484,7 @@ static aster_cn::Program cnResolvePackageImports(
     // the merged program below is what package resolution and lowering see.
     // knownSources are the listed project sources (canonical paths): an
     // imported file that is itself listed is supplied by its own TU.
-    root = cnResolveFileImports(std::move(root), projectLanguage, knownSources);
+    root = cnResolveFileImports(std::move(root), projectLanguage, knownSources, sourceLanguages);
     if (root.imports.empty()) return root;
     CnPackageIndex packageIndex;
     const fs::path rootDirectory = fs::path(dirNameOf(root.sourceFile)).empty()
@@ -23127,9 +23540,22 @@ static aster_cn::Program cnResolvePackageImports(
         for (const std::string& sourcePath : packageFiles->second) {
             g_cnPackageFilesLoaded.insert(sourcePath);
             const std::string source = readFile(sourcePath);
+            // B-P1: a package file is its own translation unit inside the
+            // module — it does NOT inherit the importer's language (one
+            // module's files may be zh and en at once, each with its own
+            // directive or per-file entry). Only the per-file entry is
+            // consulted here, on top of the directive and project default.
             const aster_cn::Language language = aster_cn::selectLanguage(
-                source, false, aster_cn::Language::Zh, projectLanguage);
-            aster_cn::Program parsed = aster_cn::parseProgram(source, language, sourcePath);
+                source, false, aster_cn::Language::Zh, projectLanguage, sourcePath);
+            // B-P4: as in cnLoadFileImport — a parse error in a package
+            // file belongs to that file, not to the importing program.
+            aster_cn::Program parsed;
+            try {
+                parsed = aster_cn::parseProgram(source, language, sourcePath);
+            } catch (...) {
+                cnNoteDiagnosticFile(sourcePath);
+                throw;
+            }
             if (parsed.packageName != name)
                 throw std::runtime_error(sourcePath + ": package declaration does not match '" + name + "'");
             std::vector<std::string> sourcePackageNames{parsed.packageName};
@@ -23287,6 +23713,11 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                                               const std::map<std::string, std::string>* packageFileOwners = nullptr,
                                               const std::map<std::string, std::string>* fileImportOwners = nullptr) {
     std::vector<Function> functions;
+    // B-P4: a previous TU (per-source build) or test program (one process
+    // lowers several) may have left another file's name behind; lowering
+    // sets it per declaration below, so start clean.
+    g_diagFile.clear();
+    g_diagLines.clear();
     // A bilingual project test can lower several independent test programs in
     // one compiler process.  These legacy tables are the per-program backend
     // type registry; keeping entries from the previous test makes the built-in
@@ -23317,6 +23748,13 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     stringPool.nextClosure = poolSalt;
     stringPool.nextInterfaceUpcast = poolSalt;
     stringPool.nextEnumTable = poolSalt;
+    // B-P2: the per-TU counter offset also salts embed symbols, so two
+    // TUs that both embed without a recorded file name still mint
+    // different symbols; the fallback file covers lowering without a
+    // context (its own file is preferred whenever the expression or the
+    // context carries one).
+    stringPool.nextEmbed = poolSalt;
+    stringPool.fallbackSourceFile = program.sourceFile;
     const bool cnPerSource = !onlySource.empty();
     auto cnOwnsSource = [&](const std::string& sourceFile) {
         if (!cnPerSource) return true;
@@ -23385,20 +23823,87 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     // so an alias may also name an earlier alias. A duplicate alias name
     // is an error, like a duplicate structure.
     for (const auto& alias : program.aliases) {
+        // B-P4: a duplicate alias belongs to the file that declared it;
+        // the same per-declaration note follows in every loop below.
+        cnSetDiagnosticFile(alias.sourceFile);
         TypeAlias registered;
         registered.ty = cnBackendType(alias.typeName, alias.line, alias.column);
         if (!g_typeAlias.emplace(alias.name, std::move(registered)).second)
             throw Error(loc(alias.line, alias.column,
                             "duplicate type alias declaration: " + alias.name));
     }
+    // B-P3 (C-1/P9 for globals): an `extern let` declaration of a global
+    // defined in another project source is the same symbol, not a
+    // duplicate. The merged program carries both the declaration (from
+    // the importing TU) and the definition (from the owning TU);
+    // per-source lowering emits the declaration as an external reference
+    // in its own TU and the storage in the owning TU. Two definitions are
+    // still a duplicate, two declarations of different types are a
+    // conflict, and a declaration whose type disagrees with the
+    // definition is one too. Types compare by resolved backend type, so
+    // the two languages' spellings of one type (`整数` / `i32`) agree;
+    // array lengths compare by resolved value, and a function-typed
+    // global also compares its signature, which the bare backend type
+    // (`ptr`) does not carry.
+    auto cnGlobalDeclarationsMatch = [](const aster_cn::Statement& first,
+                                        const aster_cn::Statement& second) {
+        if (!first.isExternal && !second.isExternal) return false;
+        if (first.kind != second.kind) return false;
+        if (first.typeName.empty() || second.typeName.empty()) return false;
+        if (cnBackendType(first.typeName, first.line, first.column) !=
+            cnBackendType(second.typeName, second.line, second.column)) return false;
+        FuncSig firstFunc;
+        FuncSig secondFunc;
+        const bool firstIsFunc = cnFunctionTypeSignature(first.typeName, firstFunc,
+                                                         first.line, first.column);
+        const bool secondIsFunc = cnFunctionTypeSignature(second.typeName, secondFunc,
+                                                          second.line, second.column);
+        if (firstIsFunc != secondIsFunc) return false;
+        if (firstIsFunc) {
+            if (firstFunc.params.size() != secondFunc.params.size() ||
+                !(firstFunc.ret == secondFunc.ret)) return false;
+            for (size_t index = 0; index < firstFunc.params.size(); ++index)
+                if (!(firstFunc.params[index] == secondFunc.params[index])) return false;
+        }
+        if (first.arrayDimensions.size() != second.arrayDimensions.size()) return false;
+        for (size_t index = 0; index < first.arrayDimensions.size(); ++index) {
+            Expr::LitSuffix firstSuffix = Expr::LSNone;
+            Expr::LitSuffix secondSuffix = Expr::LSNone;
+            if (cnIntegerValue(first.arrayDimensions[index], firstSuffix,
+                               first.line, first.column) !=
+                cnIntegerValue(second.arrayDimensions[index], secondSuffix,
+                               second.line, second.column)) return false;
+        }
+        return true;
+    };
+    // First top-level global seen under each source name. Later
+    // declarations of the same name compare against this one.
+    std::map<std::string, const aster_cn::Statement*> firstGlobalByName;
     for (const auto& declaration : program.globals) {
-        const auto inserted = g_cnTopLevelGlobals.emplace(declaration.name,
-            CnTopLevelGlobalInfo{cnVisibilityCode(declaration.visibility,
-                                                   declaration.line, declaration.column),
-                                 declaration.sourceFile});
-        if (!inserted.second)
-            throw Error(loc(declaration.line, declaration.column,
-                            "duplicate top-level global declaration: " + declaration.name));
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
+        const auto seen = firstGlobalByName.find(declaration.name);
+        if (seen != firstGlobalByName.end()) {
+            if (!cnGlobalDeclarationsMatch(*seen->second, declaration))
+                throw Error(loc(declaration.line, declaration.column,
+                                "duplicate top-level global declaration: " + declaration.name));
+            // The definition owns the registry entry: symbol ownership and
+            // access checks attribute the global to its defining file, not
+            // to a TU that merely declares it extern.
+            if (!declaration.isExternal)
+                g_cnTopLevelGlobals[declaration.name] = CnTopLevelGlobalInfo{
+                    cnVisibilityCode(declaration.visibility,
+                                     declaration.line, declaration.column),
+                    declaration.sourceFile};
+        } else {
+            const auto inserted = g_cnTopLevelGlobals.emplace(declaration.name,
+                CnTopLevelGlobalInfo{cnVisibilityCode(declaration.visibility,
+                                                       declaration.line, declaration.column),
+                                     declaration.sourceFile});
+            if (!inserted.second)
+                throw Error(loc(declaration.line, declaration.column,
+                                "duplicate top-level global declaration: " + declaration.name));
+            firstGlobalByName.emplace(declaration.name, &declaration);
+        }
         if (declaration.isExternal) {
             if (declaration.externalName.empty())
                 throw Error(loc(declaration.line, declaration.column,
@@ -23408,6 +23913,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     }
     std::set<std::string> declaredMethodNames;
     for (const auto& method : program.methods) {
+        cnSetDiagnosticFile(method.sourceFile);  // B-P4
         declaredMethodNames.insert(method.name);
         if (method.isExternal) {
             if (method.externalName.empty())
@@ -23435,10 +23941,22 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
             signature.parameterFuncSigs.push_back(parameterSignature);
             signature.parameterIsFunc.push_back(isFunc);
         }
-        g_cnFunctionSignatures[method.name] = std::move(signature);
+        g_cnFunctionSignatures[method.name] = signature;
+        // C-IMP-4 (§3.6): a foreign TU's lowered call names the ABI symbol,
+        // so the stub lookup (by emitted name) needs the signature under the
+        // mangled name too — under the mangled source name, and, for an
+        // external declaration, under the mangled external name as well.
+        const std::string abiName = cnMangleAbiSymbol(method.name);
+        if (abiName != method.name) g_cnFunctionSignatures[abiName] = signature;
+        if (method.isExternal) {
+            const std::string externAbi = cnMangleAbiSymbol(method.externalName);
+            if (externAbi != method.name && externAbi != abiName)
+                g_cnFunctionSignatures[externAbi] = signature;
+        }
     }
     g_cnInterfaceBase.clear();
     for (const auto& declaration : program.interfaceClasses) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         if (g_enumIndex.count(declaration.name) || g_cnClassIndex.count(declaration.name) ||
             declaredMethodNames.count(declaration.name))
             throw Error(loc(declaration.line, declaration.column,
@@ -23486,6 +24004,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         }
     }
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
         auto& classMethods = g_cnClassMethods[sid];
         for (const auto& method : declaration.methods) {
@@ -23539,6 +24058,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         }
     }
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
         const auto implementedInterface = g_cnClassInterface.find(sid);
         if (implementedInterface == g_cnClassInterface.end()) continue;
@@ -23577,6 +24097,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         }
     }
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
         const CnClassMethodInfo* constructor = cnFindClassConstructor(sid);
         const auto base = g_cnClassBase.find(sid);
@@ -23609,6 +24130,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         }
     }
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
         const auto base = g_cnClassBase.find(sid);
         for (const auto& method : declaration.methods) {
@@ -23656,6 +24178,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     // and method can cast that pointer to the implementation owner and make the
     // ordinary typed method call.  This keeps the class method ABI unchanged.
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int classSid = g_cnClassIndex.at(declaration.name);
         std::vector<int> classChain;
         for (int current = classSid;;) {
@@ -23795,6 +24318,8 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     // ptr receiver; the generated thunk casts it to the implementation class
     // pointer before making the ordinary class-method call.
     for (const auto& declaration : program.interfaceClasses) {
+        // B-P4: the vtable token below carries this interface's position.
+        cnSetDiagnosticFile(declaration.sourceFile);
         const auto interfaceMethods = g_cnInterfaceMethods.find(declaration.name);
         if (interfaceMethods == g_cnInterfaceMethods.end()) continue;
         for (const auto& classDeclaration : program.classes) {
@@ -23945,6 +24470,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     // Class methods are lowered before global storage is emitted. Seed global
     // types now so method bodies can resolve top-level variables and arrays.
     for (const auto& declaration : program.globals) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         if (declaration.typeName.empty())
             throw Error(loc(declaration.line, declaration.column,
                             "a global declaration needs an explicit type"));
@@ -23978,6 +24504,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
             globalBindings[entry.second.globalName] = std::move(binding);
         }
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
         CnLoweringContext fieldContext;
         fieldContext.globals = &globalBindings;
@@ -24020,6 +24547,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         }
     }
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
         for (const auto& method : declaration.methods) {
             const CnClassMethodInfo& methodInfo = g_cnClassMethods.at(sid).at(method.name);
@@ -24186,6 +24714,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         return true;
     };
     for (const auto& method : program.methods) {
+        cnSetDiagnosticFile(method.sourceFile);  // B-P4
         const auto seen = firstMethodByName.find(method.name);
         if (seen != firstMethodByName.end()) {
             const aster_cn::MethodDeclaration& first = *seen->second;
@@ -24206,7 +24735,14 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                             methodEntry.second.functionName);
             names.insert(methodEntry.second.functionName);
         }
+    // B-P3: earlier top-level globals by source name and by emitted
+    // symbol name (an `extern` declaration's ASCII symbol). Only strictly
+    // earlier declarations are in here, so a declaration never matches
+    // itself — a first `extern let` still conflicts with a method of the
+    // same name.
+    std::map<std::string, const aster_cn::Statement*> priorGlobalBySymbol;
     for (const auto& declaration : program.globals) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const bool isConstant = declaration.kind == "ConstantDeclaration";
         const bool cnOwnGlobal = cnOwnsSource(declaration.sourceFile);
         if (!isConstant && declaration.kind != "VariableDeclaration")
@@ -24218,10 +24754,33 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         if (declaration.arrayDimensions.size() > 1)
             throw Error(loc(declaration.line, declaration.column,
                             "the current compiler backend supports one-dimensional global arrays"));
-        if (names.count(declaration.name) || g_enumConsts.count(declaration.name) ||
-            (declaration.isExternal && names.count(declaration.externalName)))
+        // B-P3: a clash with an earlier top-level global is excused when
+        // the two declarations are the same symbol (an `extern let`
+        // declaration plus its definition, cf. P9 for methods). A clash
+        // with anything else — a method, an enum constant, or a global of
+        // a different type — is still a conflict. The name arm covers a
+        // same-name pair; the symbol arm covers a cross-language pair,
+        // whose declaration carries the definition's ASCII symbol as its
+        // external name under a different source name.
+        const auto priorName = priorGlobalBySymbol.find(declaration.name);
+        const bool nameIsPairedGlobal =
+            priorName != priorGlobalBySymbol.end() &&
+            cnGlobalDeclarationsMatch(*priorName->second, declaration);
+        const auto priorSymbol = declaration.isExternal
+            ? priorGlobalBySymbol.find(declaration.externalName)
+            : priorGlobalBySymbol.end();
+        const bool symbolIsPairedGlobal =
+            priorSymbol != priorGlobalBySymbol.end() &&
+            cnGlobalDeclarationsMatch(*priorSymbol->second, declaration);
+        if ((!nameIsPairedGlobal && names.count(declaration.name)) ||
+            g_enumConsts.count(declaration.name) ||
+            (declaration.isExternal && !symbolIsPairedGlobal &&
+             names.count(declaration.externalName)))
             throw Error(loc(declaration.line, declaration.column,
                             "global declaration conflicts with another declaration: " + declaration.name));
+        priorGlobalBySymbol.emplace(declaration.name, &declaration);
+        if (declaration.isExternal && declaration.externalName != declaration.name)
+            priorGlobalBySymbol.emplace(declaration.externalName, &declaration);
         const Ty type = cnBackendType(declaration.typeName, declaration.line, declaration.column);
         if (type == Ty::Void || cnIsStringView(type))
             throw Error(loc(declaration.line, declaration.column,
@@ -24244,7 +24803,11 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                             "an uninitialized global struct cannot contain string fields: " +
                             declaration.name));
         Global global;
-        global.name = declaration.isExternal ? declaration.externalName : declaration.name;
+        // C-IMP-4 (§3.6): the emitted object symbol is the mangled ABI name;
+        // the source spelling stays in sourceName for DWARF.
+        global.name = declaration.isExternal ? cnMangleAbiSymbol(declaration.externalName)
+                                             : cnMangleAbiSymbol(declaration.name);
+        global.sourceName = declaration.name;
         global.external = declaration.isExternal;
         global.ty = type;
         global.align = tyAlign(type);
@@ -24258,7 +24821,15 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
             global.count = arrayLength;
             global.dims.push_back(arrayLength);
         }
-        globalIndices[declaration.name] = globals.size();
+        // B-P3: a definition owns the index. When a pair reaches this
+        // loop definition-first, the later `extern` declaration must not
+        // move the index onto the external reference, or the initializer
+        // pass below would write the initializer onto the reference
+        // (which codegen skips) and the definition would stay
+        // zero-initialized. An `extern`-only global still records its own
+        // index, so the initializer pass's lookup finds it.
+        if (cnOwnGlobal && (!declaration.isExternal || !globalIndices.count(declaration.name)))
+            globalIndices[declaration.name] = globals.size();
         CnBinding globalBinding{type, arrayLength != 0, arrayLength};
         FuncSig globalSignature;
         globalBinding.isFunc = cnFunctionTypeSignature(declaration.typeName, globalSignature,
@@ -24270,6 +24841,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         if (cnOwnGlobal) globals.push_back(std::move(global));
     }
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
         for (const auto& field : declaration.fields) {
             if (!field.isStatic) continue;
@@ -24342,6 +24914,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     globalContext.sourceFile = program.sourceFile;
     globalContext.scopes.emplace_back();
     for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
         for (const auto& field : declaration.fields) {
             if (!field.isStatic || !field.hasInitializer) continue;
@@ -24449,6 +25022,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     }
     for (const auto& declaration : program.globals) {
         if (cnPerSource && !cnOwnsSource(declaration.sourceFile)) continue;
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         if (cnPerSource) globalContext.sourceFile = declaration.sourceFile;
         const size_t index = globalIndices.at(declaration.name);
         if (declaration.isExternal) continue;
@@ -24488,7 +25062,10 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                             throw Error(loc(sourceElement.line, sourceElement.column,
                                             "global string array element initializer type mismatch"));
                         Stmt assignment(Stmt::IndexAssign);
-                        assignment.name = declaration.name;
+                        // C-IMP-4 (§3.6): the runtime init statement names
+                        // the global through its ABI symbol, as Sema's
+                        // `globalNames` does.
+                        assignment.name = globals[index].name;
                         assignment.line = sourceElement.line;
                         assignment.col = sourceElement.column;
                         assignment.idx.reset(new Expr(Expr::Num, element));
@@ -24557,7 +25134,8 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
             if (globals[index].isArray) {
                 for (uint32_t element = 0; element < globals[index].count; ++element) {
                     Stmt assignment(Stmt::IndexAssign);
-                    assignment.name = declaration.name;
+                    // C-IMP-4 (§3.6): see the string-array literal case above.
+                    assignment.name = globals[index].name;
                     assignment.line = declaration.line;
                     assignment.col = declaration.column;
                     assignment.idx.reset(new Expr(Expr::Num, element));
@@ -24599,8 +25177,13 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         // Per-source: a foreign method is lowered by its own TU; this TU
         // only needs its signature (already registered above).
         if (cnPerSource && !cnOwnsSource(method.sourceFile)) continue;
+        cnSetDiagnosticFile(method.sourceFile);  // B-P4
         Function function;
-        function.name = method.isExternal ? method.externalName : method.name;
+        // C-IMP-4 (§3.6): the emitted object symbol is the mangled ABI name;
+        // the source spelling stays in sourceName for DWARF.
+        function.name = method.isExternal ? cnMangleAbiSymbol(method.externalName)
+                                          : cnMangleAbiSymbol(method.name);
+        function.sourceName = method.name;
         function.line = method.line;
         function.col = method.column;
         function.external = method.isExternal;
@@ -24754,6 +25337,8 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                 });
             if (sourceClass == program.classes.end())
                 throw Error("internal error: missing class declaration for constructor " + className);
+            // B-P4: the initializer/factory errors below belong to this class's file.
+            cnSetDiagnosticFile(sourceClass->sourceFile);
 
             std::vector<int> classChain;
             for (int current = sid;;) {
@@ -24775,6 +25360,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                 // Per-source: a base-class initializer is emitted by the
                 // TU that defines that base class, not by this TU.
                 if (cnPerSource && !cnOwnsSource(ownerSource->sourceFile)) continue;
+                cnSetDiagnosticFile(ownerSource->sourceFile);  // B-P4
                 const CnClassMethodInfo* ownerConstructor = cnFindClassConstructor(ownerClassId);
                 const std::string initializerName = cnClassInitializerName(ownerClassId);
                 if (names.count(initializerName))
@@ -24980,6 +25566,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
             // Per-source: the factory is emitted by the TU that defines
             // the class; other TUs call it through an external stub.
             if (cnPerSource && !cnOwnsSource(sourceClass->sourceFile)) continue;
+            cnSetDiagnosticFile(sourceClass->sourceFile);  // B-P4
             const std::string constructorName = cnClassConstructorName(sid);
             if (names.count(constructorName))
                 throw Error(loc(sourceClass->line, sourceClass->column,
@@ -25138,6 +25725,11 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         stringFromView.external = true;
         functions.push_back(std::move(stringFromView));
     }
+    // B-P4: lowering succeeded, so nothing below (codegen, stubs) may
+    // inherit this run's last declaration file: a later error falls back
+    // to the driver's file, exactly as before this fix.
+    g_diagFile.clear();
+    g_diagLines.clear();
     return functions;
 }
 
@@ -25696,8 +26288,10 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
         bool handledGlobal = false;
         const auto globalDecl = std::find_if(program.globals.begin(), program.globals.end(),
             [&](const aster_cn::Statement& d) {
-                return d.name == name ||
-                    (d.isExternal && d.externalName == name);
+                // C-IMP-4 (§3.6): `name` is the emitted (mangled) symbol;
+                // compare against the mangled spellings (identity for ASCII).
+                return cnMangleAbiSymbol(d.name) == name ||
+                    (d.isExternal && cnMangleAbiSymbol(d.externalName) == name);
             });
         if (globalDecl != program.globals.end()) {
             Global stub;
@@ -26437,7 +27031,7 @@ int main(int argc,char**argv){
                     try{
                         const std::string src=readFile(path);
                         const aster_cn::Language language=aster_cn::selectLanguage(
-                            src,false,aster_cn::Language::Zh,depsLanguage);
+                            src,false,aster_cn::Language::Zh,depsLanguage,path);
                         aster_cn::Program parsed=aster_cn::parseProgram(src,language,path);
                         if(!parsed.imports.empty())depsHasImports=true;
                         depsPrograms.push_back(std::move(parsed));
@@ -26480,7 +27074,12 @@ int main(int argc,char**argv){
                         std::set<std::string> depsKnownSources;
                         for(const auto& parsed:depsPrograms)
                             depsKnownSources.insert(cnCanonicalPath(parsed.sourceFile));
-                        cnResolvePackageImports(depsRoots,depsLanguage,std::vector<std::string>{depsCwd},depsKnownSources);
+                        // B-P1: each scanned source's resolved language, so
+                        // its file imports inherit it (not the merged root's).
+                        std::map<std::string, aster_cn::Language> depsSourceLanguages;
+                        for(const auto& parsed:depsPrograms)
+                            depsSourceLanguages[cnCanonicalPath(parsed.sourceFile)] = parsed.language;
+                        cnResolvePackageImports(depsRoots,depsLanguage,std::vector<std::string>{depsCwd},depsKnownSources,depsSourceLanguages);
                     }catch(const std::exception&){/* package resolution failed; deps lists project sources only */}
                 }
             }
@@ -26501,7 +27100,7 @@ int main(int argc,char**argv){
                     const std::string src=readFile(sp);
                     setSourceCache(sp,src);
                     const aster_cn::Language language=aster_cn::selectLanguage(
-                        src,false,aster_cn::Language::Zh,depsLanguage);
+                        src,false,aster_cn::Language::Zh,depsLanguage,sp);
                     parsed=aster_cn::parseProgram(src,language,sp);
                     bilingual=true;
                 }catch(const std::exception&){bilingual=false;}
@@ -26637,7 +27236,7 @@ int main(int argc,char**argv){
                         if(!fileExists(path)){std::cerr<<"aster test: missing source "<<path<<"\n";return 1;}
                         const std::string source=readFile(path);
                         const aster_cn::Language language=aster_cn::selectLanguage(
-                            source,false,aster_cn::Language::Zh,testLanguage);
+                            source,false,aster_cn::Language::Zh,testLanguage,path);
                         aster_cn::Program program=aster_cn::parseProgram(source,language,path);
                         // The program's own entry source is not a library: a test defines
                         // its own main, so the file that supplies the app's is left out.
@@ -26651,7 +27250,7 @@ int main(int argc,char**argv){
                     }
                     const std::string testSource=readFile(testPath);
                     const aster_cn::Language testSourceLanguage=aster_cn::selectLanguage(
-                        testSource,false,aster_cn::Language::Zh,testLanguage);
+                        testSource,false,aster_cn::Language::Zh,testLanguage,testPath);
                     const aster_cn::Program testProgram=aster_cn::parseProgram(
                         testSource,testSourceLanguage,testPath);
                     aster_cn::Program roots;
@@ -26683,7 +27282,13 @@ int main(int argc,char**argv){
                     for(const auto& library:testLibraries)
                         testKnownSources.insert(cnCanonicalPath(library.first));
                     testKnownSources.insert(cnCanonicalPath(testPath));
-                    const aster_cn::Program resolved=cnResolvePackageImports(roots,testLanguage,packageRoots,testKnownSources);
+                    // B-P1: each library/test source's resolved language, so
+                    // its file imports inherit it (not the merged root's).
+                    std::map<std::string, aster_cn::Language> testSourceLanguages;
+                    for(const auto& library:testLibraries)
+                        testSourceLanguages[cnCanonicalPath(library.first)] = library.second.language;
+                    testSourceLanguages[cnCanonicalPath(testPath)] = testProgram.language;
+                    const aster_cn::Program resolved=cnResolvePackageImports(roots,testLanguage,packageRoots,testKnownSources,testSourceLanguages);
                     // The exactly-one-main check, at merged level: the test
                     // file supplies main; the libraries must not.
                     bool testHasMain=false;
@@ -26711,6 +27316,9 @@ int main(int argc,char**argv){
                             ? (testLanguage.defaultLanguage==aster_cn::Language::Zh?"zh":"en") : "-")+
                         ";zhAllowed="+(testLanguage.zhAllowed?"1":"0")+
                         ";enAllowed="+(testLanguage.enAllowed?"1":"0");
+                    // B-P1: per-file entries change how sources parse, so
+                    // they are part of the cache key.
+                    testLangText+=aster_cn::projectLanguageFileEntries(testLanguage);
                     for(const auto& moduleDir:bilingualModuleDirs)
                         testLangText+=";module-dir="+moduleDir;
                     const std::set<std::string> testPackageFiles=g_cnPackageFilesLoaded;
@@ -26969,7 +27577,7 @@ int main(int argc,char**argv){
                                     const std::string src=readFile(sp);
                                     aster_cn::ProjectLanguageConfig lang;
                                     if(fileExists("aster.proj"))lang=aster_cn::readProjectLanguage("aster.proj");
-                                    const aster_cn::Language language=aster_cn::selectLanguage(src,false,aster_cn::Language::Zh,lang);
+                                    const aster_cn::Language language=aster_cn::selectLanguage(src,false,aster_cn::Language::Zh,lang,sp);
                                     aster_cn::Program prog=aster_cn::parseProgram(src,language,sp);
                                     for(const auto& m:prog.methods)if(m.name=="main"||m.name=="\u542f\u52a8\u65b9\u6cd5")++mains;
                                 }catch(...){}
@@ -27138,7 +27746,7 @@ int main(int argc,char**argv){
                     const std::string source=readFile(sourcePath);
                     setSourceCache(sourcePath,source);
                     const aster_cn::Language language=aster_cn::selectLanguage(
-                        source,false,aster_cn::Language::Zh,bilingualLanguage);
+                        source,false,aster_cn::Language::Zh,bilingualLanguage,sourcePath);
                     parsedSources.push_back(aster_cn::parseProgram(source,language,sourcePath));
                 }
                 std::vector<std::string> packageRoots{bilingualCwd};
@@ -27170,7 +27778,7 @@ int main(int argc,char**argv){
                 for(size_t i=0;i<spec.sources.size();++i)
                     bilingualSourceLanguages[cnCanonicalPath(spec.sources[i])] = parsedSources[i].language;
                 const aster_cn::Program program=cnResolvePackageImports(
-                    roots,bilingualLanguage,packageRoots,bilingualKnownSources);
+                    roots,bilingualLanguage,packageRoots,bilingualKnownSources,bilingualSourceLanguages);
                 std::string bilingualProjectName=spec.name.empty()?baseNameOf(bilingualCwd):spec.name;
                 if(bilingualProjectName.empty()||bilingualProjectName=="."||bilingualProjectName=="..")
                     bilingualProjectName="app";
@@ -27220,6 +27828,9 @@ int main(int argc,char**argv){
                         ? (bilingualLanguage.defaultLanguage==aster_cn::Language::Zh?"zh":"en") : "-")+
                     ";zhAllowed="+(bilingualLanguage.zhAllowed?"1":"0")+
                     ";enAllowed="+(bilingualLanguage.enAllowed?"1":"0");
+                // B-P1: per-file entries change how sources parse, so they
+                // are part of the cache key.
+                bilingualLangText+=aster_cn::projectLanguageFileEntries(bilingualLanguage);
                 for(const auto& moduleDir:bilingualModuleDirs)
                     bilingualLangText+=";module-dir="+moduleDir;
                 const std::set<std::string> bilingualPackageFiles=g_cnPackageFilesLoaded;
@@ -27749,7 +28360,7 @@ int main(int argc,char**argv){
             aster_cn::ProjectLanguageConfig projectLanguage;
             if (!projectPath.empty()) projectLanguage = aster_cn::readProjectLanguage(projectPath);
             const aster_cn::Language language = aster_cn::selectLanguage(
-                source, hasLanguageOverride, languageOverride, projectLanguage);
+                source, hasLanguageOverride, languageOverride, projectLanguage, input);
             g_cnDiagnosticLanguage = language;
             std::vector<Global> globals;
             const aster_cn::Program parsed = aster_cn::parseProgram(source, language, input);

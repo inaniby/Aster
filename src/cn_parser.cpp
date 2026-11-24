@@ -600,9 +600,9 @@ private:
             externalName = symbol.text.substr(1, symbol.text.size() - 2);
             if (externalName.empty())
                 fail("external symbol name must not be empty");
-            for (unsigned char byte : externalName)
-                if (byte >= 0x80)
-                    fail("external symbol names must use ASCII for the C ABI");
+            // C-IMP-4 (§3.6): a non-ASCII name here is an Aster source name,
+            // not a C symbol — the lowering mangles it to its ASCII ABI
+            // symbol (`__aster_cn_<hex>`), so it is not rejected.
             expect("RParen", "expected ')' after the external symbol name");
         }
         expect("Method", "expected a method declaration");
@@ -700,8 +700,8 @@ private:
                 fail("external symbol name must be a plain string literal without escapes");
             externalName = symbol.text.substr(1, symbol.text.size() - 2);
             if (externalName.empty()) fail("external symbol name must not be empty");
-            for (unsigned char byte : externalName)
-                if (byte >= 0x80) fail("external symbol names must use ASCII for the C ABI");
+            // C-IMP-4 (§3.6): same as methods — a non-ASCII name is an Aster
+            // source name, mangled by the lowering to its ASCII ABI symbol.
             expect("RParen", "expected ')' after the external symbol name");
         }
         Statement global = parseVariable(false);
@@ -709,8 +709,6 @@ private:
         global.column = start.column;
         global.isExternal = true;
         global.externalName = externalName.empty() ? global.name : externalName;
-        for (unsigned char byte : global.externalName)
-            if (byte >= 0x80) fail("external symbol names must use ASCII for the C ABI");
         if (global.hasExpression)
             throw std::runtime_error("external global declarations cannot have an initializer at " +
                 std::to_string(global.line) + ":" + std::to_string(global.column));
@@ -792,6 +790,7 @@ private:
         StructDeclaration structure;
         structure.line = start.line;
         structure.column = start.column;
+        structure.sourceFile = sourceFile_;
         structure.name = parseName();
         if (!declaredStructureNames_.insert(structure.name).second)
             throw std::runtime_error("duplicate structure declaration: " + structure.name + " at " +
@@ -1015,6 +1014,7 @@ private:
         EnumDeclaration enumeration;
         enumeration.line = start.line;
         enumeration.column = start.column;
+        enumeration.sourceFile = sourceFile_;
         enumeration.name = parseName();
         auto parseMember = [&]() {
             const Token memberStart = current();
@@ -1619,6 +1619,53 @@ private:
         if (eat("Empty") || eat("NullLit")) return make("NullLiteral", "null");
         if (eat("ThisKw")) return make("ThisExpression", "this");
         if (eat("SuperKw")) return make("SuperExpression", "super");
+        if (at("At")) {
+            // B-P2: `@embed("path")` / `@embed_len("path")`, the mainline
+            // embedded-blob forms (design draft attribute table): the
+            // same ASCII spellings in both languages. `@embed` is the
+            // address of the file's bytes, `@embed_len` folds to how many
+            // there are, and `@embed` takes an optional literal alignment
+            // (`@embed("path", 16)`, a power of two, at most 4096). The
+            // lowering reads the file and mints the `__aster_embed_*`
+            // global, so the parser only records the path (raw string
+            // spelling, as for StringLiteral), the alignment literal if
+            // any, and the file that wrote it (the path resolves against
+            // that file's directory, the mainline rule). An `@`-name that
+            // is neither is an annotation error (A-021), as for unknown
+            // top-level annotations; a malformed embed argument is a
+            // syntax error (A-011), so those messages carry no '@'.
+            const Token atToken = current();
+            ++position_;
+            if (!at("Identifier") || (current().text != "embed" && current().text != "embed_len"))
+                fail("expected 'embed' or 'embed_len' after '@'");
+            const bool isLen = current().text == "embed_len";
+            const std::string name = isLen ? "embed_len" : "embed";
+            ++position_;
+            const std::string afterName = "expected '(' after '" + name + "'";
+            expect("LParen", afterName.c_str());
+            const Token pathToken = expect("String", ("expected a file path after '" + name + "('").c_str());
+            Expression expression;
+            expression.kind = isLen ? "EmbedLen" : "Embed";
+            expression.value = pathToken.text;
+            expression.line = atToken.line;
+            expression.column = atToken.column;
+            expression.sourceFile = sourceFile_;
+            if (eat("Comma")) {
+                if (isLen)
+                    fail("embed_len takes no alignment argument");
+                const Token alignToken = current();
+                if (!eat("Number"))
+                    fail("expected a power-of-two alignment after 'embed(\"path\",'");
+                Expression alignment;
+                alignment.kind = "IntegerLiteral";
+                alignment.value = alignToken.text;
+                alignment.line = alignToken.line;
+                alignment.column = alignToken.column;
+                expression.children.push_back(std::move(alignment));
+            }
+            expect("RParen", "expected ')' after the file path");
+            return expression;
+        }
         if (eat("LParen")) {
             skipNewlines();
             Expression expression = parseExpression();
