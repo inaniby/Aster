@@ -16268,13 +16268,27 @@ static ProjectSpec parseProjectFile(const std::string& path){
         // appears before them.  Keep reading language keys after a test line;
         // the first plain source path still closes the section as before.
         if(inLanguage && k=="test"){
-            spec.tests.push_back(v);
+            // Same normalise-and-dedupe as the main `test` branch below:
+            // a `test` line after a trailing `[language]` section reaches
+            // this branch, and a raw push here lets the same test run once
+            // per spelling (identical and `./`-spelled duplicates alike).
+            const std::string n=normalizeProjPath(v);
+            bool seen=false;
+            for(const auto& t:spec.tests)if(t==n){seen=true;break;}
+            if(!seen)spec.tests.push_back(n);
             return;
         }
         if(inLanguage && (l.find('/')!=std::string::npos ||
                           (l.size()>=4 && l.substr(l.size()-4)==".ast"))) {
             inLanguage=false;
-            spec.sources.push_back(l);
+            // Same normalise-and-dedupe as the main source branch below:
+            // a source line after a trailing `[language]` section reaches
+            // this branch, and a raw push here would compile and link the
+            // same TU twice.
+            const std::string n=normalizeProjPath(l);
+            bool seen=false;
+            for(const auto& s:spec.sources)if(s==n){seen=true;break;}
+            if(!seen)spec.sources.push_back(n);
             return;
         }
         if(inLanguage&&(k=="default"||k=="allowed"))return;
@@ -16350,6 +16364,62 @@ static ProjectSpec parseProjectFile(const std::string& path){
     handle(cur);
     return spec;
 }
+// Shared project-cache meta handling: the meta format and its fail-closed
+// validation are identical for the mainline cache and the bilingual
+// per-source cache (version/flags/src/obj lines, one dep line per input
+// with a content hash). Both readers require sawSrc && sawObj: a tampered
+// object, a missing src/obj line, or a stale dep recompiles instead of
+// being trusted.
+static bool readProjectCacheMetaForReuse(const std::string& metaPath, const std::string& objPath,
+                                         const std::string& flags, const std::string& sp,
+                                         const std::string& srcHash) {
+    const std::string meta = readFile(metaPath);
+    // v0.23.81-dev (CLI-P2-1): the cached object itself is hashed, so a
+    // planted or damaged .o is never trusted on the meta alone. An
+    // unreadable object fails closed (recompile) instead of aborting.
+    std::string objHash;
+    try { objHash = sha256Hex(readFile(objPath)); } catch (const std::exception&) { objHash.clear(); }
+    bool ok = true, sawSrc = false, sawObj = false;
+    std::string cur; std::vector<std::string> lines;
+    for (char ch : meta) { if (ch == '\n') { lines.push_back(cur); cur.clear(); } else cur.push_back(ch); }
+    if (!cur.empty()) lines.push_back(cur);
+    for (const auto& ln : lines) {
+        const std::string l = trimWs(ln);
+        if (l.rfind("version ", 0) == 0) { if (l.substr(8) != kVersion) ok = false; }
+        else if (l.rfind("flags ", 0) == 0) { if (trimWs(l.substr(6)) != flags) ok = false; }
+        else if (l.rfind("src ", 0) == 0) {
+            // v0.23.81-dev (CLI-P2-4/D-07): split at the LAST space, not
+            // the first: the hash is a fixed 64-hex suffix, while the
+            // path may contain spaces. The writer format is unchanged,
+            // so .meta files written by older versions still read.
+            const std::string rest = l.substr(4);
+            const size_t cut = rest.rfind(' ');
+            if (cut == std::string::npos) { ok = false; continue; }
+            const std::string q = rest.substr(0, cut), h = rest.substr(cut + 1);
+            if (h.size() != 64 || q != sp || h != srcHash) ok = false; else sawSrc = true;
+        } else if (l.rfind("obj ", 0) == 0) {
+            const std::string h = trimWs(l.substr(4));
+            if (objHash.empty() || h != objHash) ok = false; else sawObj = true;
+        } else if (l.rfind("dep ", 0) == 0) {
+            const std::string rest = l.substr(4);
+            const size_t cut = rest.find(' ');
+            if (cut == std::string::npos) { ok = false; continue; }
+            const std::string h = rest.substr(0, cut), q = rest.substr(cut + 1);
+            if (!fileExists(q) || sha256Hex(readFile(q)) != h) ok = false;
+        }
+    }
+    return ok && sawSrc && sawObj;
+}
+
+static std::string projectCacheMetaText(const std::string& flags, const std::string& sp,
+                                        const std::string& srcHash, const std::string& objHash,
+                                        const std::map<std::string, std::string>& deps) {
+    std::string meta = "version " + std::string(kVersion) + "\nflags " + flags + "\nsrc " + sp + " " +
+        srcHash + "\nobj " + objHash + "\n";
+    for (const auto& kv : deps) meta += "dep " + kv.second + " " + kv.first + "\n";
+    return meta;
+}
+
 // v0.23.77-dev: one source through the project object cache. The key hashes
 // the compiler version, the flags (including whether the object is PIC) and the
 // source path; the meta records the source's content hash and one line per
@@ -16364,44 +16434,7 @@ static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,b
     const std::string metaPath=cacheDir+"/"+key+".meta";
     bool reuse=false;
     if(!noCache&&fileExists(objPath)&&fileExists(metaPath)){
-        const std::string meta=readFile(metaPath);
-        // v0.23.81-dev (CLI-P2-1): the cached object itself is hashed, so a
-        // planted or damaged .o is never trusted on the meta alone. An
-        // unreadable object fails closed (recompile) instead of aborting.
-        std::string objHash;
-        try{objHash=sha256Hex(readFile(objPath));}catch(const std::exception&){objHash.clear();}
-        bool ok=true,sawSrc=false,sawObj=false;
-        std::string cur; std::vector<std::string> lines;
-        for(char ch:meta){if(ch=='\n'){lines.push_back(cur);cur.clear();}else cur.push_back(ch);}
-        if(!cur.empty())lines.push_back(cur);
-        for(const auto& ln:lines){
-            const std::string l=trimWs(ln);
-            if(l.rfind("version ",0)==0){if(l.substr(8)!=kVersion)ok=false;}
-            else if(l.rfind("flags ",0)==0){if(trimWs(l.substr(6))!=flags)ok=false;}
-            else if(l.rfind("src ",0)==0){
-                // v0.23.81-dev (CLI-P2-4/D-07): split at the LAST space, not
-                // the first: the hash is a fixed 64-hex suffix, while the
-                // path may contain spaces. The writer format is unchanged,
-                // so .meta files written by older versions still read.
-                const std::string rest=l.substr(4);
-                const size_t cut=rest.rfind(' ');
-                if(cut==std::string::npos){ok=false;continue;}
-                const std::string q=rest.substr(0,cut),h=rest.substr(cut+1);
-                if(h.size()!=64||q!=sp||h!=srcHash)ok=false; else sawSrc=true;
-            }
-            else if(l.rfind("obj ",0)==0){
-                const std::string h=trimWs(l.substr(4));
-                if(objHash.empty()||h!=objHash)ok=false; else sawObj=true;
-            }
-            else if(l.rfind("dep ",0)==0){
-                const std::string rest=l.substr(4);
-                const size_t cut=rest.find(' ');
-                if(cut==std::string::npos){ok=false;continue;}
-                const std::string h=rest.substr(0,cut),q=rest.substr(cut+1);
-                if(!fileExists(q)||sha256Hex(readFile(q))!=h)ok=false;
-            }
-        }
-        if(ok&&sawSrc&&sawObj)reuse=true;
+        reuse=readProjectCacheMetaForReuse(metaPath,objPath,flags,sp,srcHash);
     }
     if(!reuse){
         g_buildDeps.clear();
@@ -16433,9 +16466,7 @@ static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,b
         // trusted (see the reuse check above): it recompiles instead.
         const std::string objBytes=readFile(tmp);
         if(std::rename(tmp.c_str(),objPath.c_str())!=0){const int e=errno;std::remove(tmp.c_str());throw Error("cannot move "+tmp+" into place: "+std::strerror(e));}
-        std::string meta="version "+std::string(kVersion)+"\nflags "+flags+"\nsrc "+sp+" "+srcHash+"\nobj "+sha256Hex(objBytes)+"\n";
-        for(const auto& kv:g_buildDeps)meta+="dep "+kv.second+" "+kv.first+"\n";
-        writeFileAtomic(metaPath,meta);
+        writeFileAtomic(metaPath,projectCacheMetaText(flags,sp,srcHash,sha256Hex(objBytes),g_buildDeps));
         g_buildDeps.clear();
         ++compiled;
     } else ++reused;
@@ -22530,10 +22561,24 @@ static void cnRewriteImportedProgram(aster_cn::Program& program,
     program.imports.clear();
 }
 
+// Per-source bilingual builds: the package source files the last
+// cnResolvePackageImports call loaded, and the module -> files map, so a
+// TU can record exactly which package files it depends on and `aster deps`
+// can list them. Cleared on every call (including the no-imports early
+// return) so a previous test link's packages never leak into the next.
+// g_cnPackageCanonicalByName maps every package name/alias the index saw
+// to its canonical module name, so an `@import` spelled with an alias
+// still resolves to the same files as the canonical spelling.
+static std::set<std::string> g_cnPackageFilesLoaded;
+static std::map<std::string, std::vector<std::string>> g_cnPackageFilesByModule;
+static std::map<std::string, std::string> g_cnPackageCanonicalByName;
 static aster_cn::Program cnResolvePackageImports(
     aster_cn::Program root,
     const aster_cn::ProjectLanguageConfig& projectLanguage,
     const std::vector<std::string>& searchRoots) {
+    g_cnPackageFilesLoaded.clear();
+    g_cnPackageFilesByModule.clear();
+    g_cnPackageCanonicalByName.clear();
     if (root.imports.empty()) return root;
     CnPackageIndex packageIndex;
     const fs::path rootDirectory = fs::path(dirNameOf(root.sourceFile)).empty()
@@ -22564,6 +22609,8 @@ static aster_cn::Program cnResolvePackageImports(
     for (const std::string& searchRoot : searchRoots) {
         indexFirstFound(fs::path(searchRoot).empty() ? fs::current_path() : fs::path(searchRoot));
     }
+    for (const auto& entry : packageIndex.canonicalByName)
+        g_cnPackageCanonicalByName.emplace(entry.first, entry.second);
     std::map<std::string, CnImportedModule> modules;
     std::set<std::string> loading;
     std::vector<std::string> loadOrder;
@@ -22585,6 +22632,7 @@ static aster_cn::Program cnResolvePackageImports(
             throw std::runtime_error("cannot find package source declared as '" + name + "'");
         const std::vector<std::string>& packageNames = packageIndex.namesByCanonical.at(name);
         for (const std::string& sourcePath : packageFiles->second) {
+            g_cnPackageFilesLoaded.insert(sourcePath);
             const std::string source = readFile(sourcePath);
             const aster_cn::Language language = aster_cn::selectLanguage(
                 source, false, aster_cn::Language::Zh, projectLanguage);
@@ -22651,6 +22699,7 @@ static aster_cn::Program cnResolvePackageImports(
             }
             module.sources.push_back(std::move(parsed));
         }
+        g_cnPackageFilesByModule[name] = packageFiles->second;
         for (const auto& source : module.sources) {
             for (const auto& declaration : source.classes) {
                 std::string baseName = declaration.baseName;
@@ -22706,8 +22755,43 @@ static aster_cn::Program cnResolvePackageImports(
 }  // namespace
 
 static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
+// Per-source lowering (bilingual build/test, design (b)): when `onlySource`
+// is non-empty, only declarations owned by that source file are emitted
+// as definitions; every other declaration still registers (so diagnostics
+// and merged type resolution are unchanged) and foreign symbols a TU
+// references are added as external stubs by the caller
+// (cachedCnProjectObject). `packageFileOwners` maps each loaded package
+// file to the link set's TU that emits its declarations (the first TU
+// importing the file's module; see cnPackageFileOwners), so the package
+// definitions are emitted exactly once. `forceConstructedClasses` names the classes constructed
+// anywhere in the merged program (computed by the driver from the AST), so
+// factories/initializers are emitted by the defining TU even when the
+// constructing TU is a different file. `poolSalt` offsets the per-run
+// generated-name counters that are already per-input namespaced (enum
+// tables, string pool); `helperSalt` (below) offsets the closure /
+// interface-upcast helpers, which have no other namespacing.
+// `requireMain=false` skips the exactly-one-main check (the driver
+// checks it once over the merged program; build-cn-obj also passes false,
+// so a file without an entry builds as a library object, like build-obj).
+// `poolSalt` offsets the per-run generated-name counters that are already
+// per-input namespaced (string pool and enum tables, which the linker
+// remaps per input, and embed blobs, which carry their source file's
+// hash). `helperSalt`, when non-zero, offsets only the counters whose
+// symbols have no other namespacing — closure factories/adapters and
+// interface upcasts — so two separately built objects can never define
+// the same helper; when zero it falls back to `poolSalt` (the project
+// build's behaviour). build-cn-obj passes poolSalt=0 with a per-input
+// helperSalt, so two spellings of one file still produce byte-identical
+// objects (the bilingual zh/en identity checks) while two different TUs
+// still mint different helpers.
+// ===========================================================================
                                               std::vector<Global>& globals,
-                                              bool countCheck) {
+                                              bool countCheck,
+                                              const std::string& onlySource = "",
+                                              bool requireMain = true,
+                                              const std::set<std::string>* forceConstructedClasses = nullptr,
+                                              uint64_t poolSalt = 0,
+                                              const std::map<std::string, std::string>* packageFileOwners = nullptr) {
     std::vector<Function> functions;
     // A bilingual project test can lower several independent test programs in
     // one compiler process.  These legacy tables are the per-program backend
@@ -22731,6 +22815,27 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     CnStringPool stringPool;
     stringPool.globals = &globals;
     stringPool.functions = &functions;
+    // Per-source runs restart the generated-name counters from a TU-specific
+    // offset (merged runs keep 0, i.e. today's numbering). Names minted
+    // here are only ever referenced by the TU that minted them, except the
+    // string pool, which the linker remaps per input anyway.
+    stringPool.next = poolSalt;
+    stringPool.nextClosure = poolSalt;
+    stringPool.nextInterfaceUpcast = poolSalt;
+    stringPool.nextEnumTable = poolSalt;
+    const bool cnPerSource = !onlySource.empty();
+    auto cnOwnsSource = [&](const std::string& sourceFile) {
+        if (!cnPerSource) return true;
+        if (sourceFile == onlySource) return true;
+        if (packageFileOwners) {
+            const auto owned = packageFileOwners->find(sourceFile);
+            if (owned != packageFileOwners->end()) return owned->second == onlySource;
+        }
+        // A declaration without provenance cannot be attributed to another
+        // TU; emitting it everywhere it is needed is the fail-loud choice
+        // (a duplicate is a link error, a missing definition is too).
+        return sourceFile.empty();
+    };
     bool hasMain = false;
     functions.reserve(program.methods.size() + 8);
     g_cnClosureTypes.clear();
@@ -23159,14 +23264,16 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                 returned.expr = std::move(call);
                 thunk.body.push_back(std::move(returned));
             }
-            functions.push_back(std::move(thunk));
+            if (cnOwnsSource(declaration.sourceFile))
+                functions.push_back(std::move(thunk));
             names.insert(thunkName);
             E thunkValue(new Expr(Expr::Var));
             thunkValue->name = thunkName;
             tableGlobal.initExpr->args.push_back(std::move(thunkValue));
         }
         globalBindings[tableGlobalName] = CnBinding{Ty::ofStruct(tableSid), false, 0};
-        globals.push_back(std::move(tableGlobal));
+        if (cnOwnsSource(declaration.sourceFile))
+            globals.push_back(std::move(tableGlobal));
     }
     // Lower interface references as a two-word value and create one function
     // table per directly implementing class.  Table entries use a generic
@@ -23309,13 +23416,15 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                     returned.expr = std::move(call);
                     thunk.body.push_back(std::move(returned));
                 }
-                functions.push_back(std::move(thunk));
+                if (cnOwnsSource(classDeclaration.sourceFile))
+                    functions.push_back(std::move(thunk));
                 E thunkValue(new Expr(Expr::Var));
                 thunkValue->name = thunkName;
                 tableGlobal.initExpr->args.push_back(std::move(thunkValue));
             }
             globalBindings[tableGlobalName] = CnBinding{Ty::ofStruct(tableSid), false, 0};
-            globals.push_back(std::move(tableGlobal));
+            if (cnOwnsSource(classDeclaration.sourceFile))
+                globals.push_back(std::move(tableGlobal));
         }
     }
     // Class methods are lowered before global storage is emitted. Seed global
@@ -23399,6 +23508,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         const int sid = g_cnClassIndex.at(declaration.name);
         for (const auto& method : declaration.methods) {
             const CnClassMethodInfo& methodInfo = g_cnClassMethods.at(sid).at(method.name);
+            // Per-source: a foreign class method is lowered by its own TU;
+            // this TU only needs its signature (already registered above).
+            if (cnPerSource && !cnOwnsSource(method.sourceFile)) continue;
             Function function;
             function.name = methodInfo.functionName;
             function.line = method.line;
@@ -23510,6 +23622,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         }
     for (const auto& declaration : program.globals) {
         const bool isConstant = declaration.kind == "ConstantDeclaration";
+        const bool cnOwnGlobal = cnOwnsSource(declaration.sourceFile);
         if (!isConstant && declaration.kind != "VariableDeclaration")
             throw Error(loc(declaration.line, declaration.column,
                             "unsupported top-level declaration: " + declaration.kind));
@@ -23568,7 +23681,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         globalBindings[declaration.name] = globalBinding;
         names.insert(declaration.name);
         if (declaration.isExternal) names.insert(global.name);
-        globals.push_back(std::move(global));
+        if (cnOwnGlobal) globals.push_back(std::move(global));
     }
     for (const auto& declaration : program.classes) {
         const int sid = g_cnClassIndex.at(declaration.name);
@@ -23576,6 +23689,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
             if (!field.isStatic) continue;
             const CnStaticClassFieldInfo& info =
                 g_cnClassStaticFields.at(sid).at(field.name);
+            // Per-source: a foreign static field's storage is emitted by
+            // its own TU; this TU gets an external stub if it uses it.
+            if (cnPerSource && !cnOwnsSource(declaration.sourceFile)) continue;
             if (!names.insert(info.globalName).second)
                 throw Error(loc(field.line, field.column,
                                 "static field storage name conflicts with another declaration"));
@@ -23645,6 +23761,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
             if (!field.isStatic || !field.hasInitializer) continue;
             const CnStaticClassFieldInfo& info =
                 g_cnClassStaticFields.at(sid).at(field.name);
+            if (cnPerSource && !cnOwnsSource(declaration.sourceFile)) continue;
             CnLoweringContext initializerContext = globalContext;
             initializerContext.currentClassId = sid;
             initializerContext.sourceFile = field.sourceFile;
@@ -23745,6 +23862,8 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         }
     }
     for (const auto& declaration : program.globals) {
+        if (cnPerSource && !cnOwnsSource(declaration.sourceFile)) continue;
+        if (cnPerSource) globalContext.sourceFile = declaration.sourceFile;
         const size_t index = globalIndices.at(declaration.name);
         if (declaration.isExternal) continue;
         if (declaration.hasExpression) {
@@ -23891,6 +24010,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         }
     }
     for (const auto& method : program.methods) {
+        // Per-source: a foreign method is lowered by its own TU; this TU
+        // only needs its signature (already registered above).
+        if (cnPerSource && !cnOwnsSource(method.sourceFile)) continue;
         Function function;
         function.name = method.isExternal ? method.externalName : method.name;
         function.line = method.line;
@@ -23959,9 +24081,21 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         }
         functions.push_back(std::move(function));
     }
-    if (!hasMain) throw Error(program.language == aster_cn::Language::Zh
+    if (requireMain && !hasMain) throw Error(program.language == aster_cn::Language::Zh
         ? "程序必须定义 启动方法" : "program must define main");
-    if (!stringPool.classConstructors.empty() || stringPool.usesClosureEnv ||
+    // Per-source: factories/initializers are driven by the classes
+    // constructed anywhere in the merged program, not just the ones this TU
+    // constructs — the defining TU emits them, other TUs get stubs.
+    std::set<int> cnEffectiveConstructors;
+    if (cnPerSource && forceConstructedClasses) {
+        for (const auto& className : *forceConstructedClasses) {
+            const auto found = g_cnClassIndex.find(className);
+            if (found != g_cnClassIndex.end()) cnEffectiveConstructors.insert(found->second);
+        }
+    } else {
+        cnEffectiveConstructors = stringPool.classConstructors;
+    }
+    if (!cnEffectiveConstructors.empty() || stringPool.usesClosureEnv ||
         stringPool.usesClosureAdapter) {
         if (names.count("alloc"))
             throw Error("class construction, capturing closures, or callback adapters require the standard library alloc function; alloc is already declared");
@@ -23984,11 +24118,28 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         std::set<int> emittedClassFactories;
         while (true) {
             int sid = -1;
-            for (const int candidate : stringPool.classConstructors) {
+            for (const int candidate : cnEffectiveConstructors) {
                 if (!emittedClassFactories.count(candidate)) {
                     sid = candidate;
                     break;
                 }
+            }
+            if (sid < 0) {
+                // The original loop read stringPool.classConstructors
+                // live: lowering an initializer can construct a new class
+                // (a parent-constructor argument is lowered here), and its
+                // factory must be emitted in a later iteration. A snapshot
+                // alone loses it ("call to undeclared function" for the
+                // factory). Per-source mode unioned the same way: the
+                // driver's AST scan covers the same expressions, so this
+                // only ever fires for a construction the scan could not see.
+                for (const int candidate : stringPool.classConstructors) {
+                    if (!emittedClassFactories.count(candidate)) {
+                        sid = candidate;
+                        break;
+                    }
+                }
+                if (sid >= 0) cnEffectiveConstructors.insert(sid);
             }
             if (sid < 0) break;
             emittedClassFactories.insert(sid);
@@ -24017,6 +24168,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                     });
                 if (ownerSource == program.classes.end())
                     throw Error("internal error: missing class declaration for initializer " + ownerName);
+                // Per-source: a base-class initializer is emitted by the
+                // TU that defines that base class, not by this TU.
+                if (cnPerSource && !cnOwnsSource(ownerSource->sourceFile)) continue;
                 const CnClassMethodInfo* ownerConstructor = cnFindClassConstructor(ownerClassId);
                 const std::string initializerName = cnClassInitializerName(ownerClassId);
                 if (names.count(initializerName))
@@ -24219,6 +24373,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
                 names.insert(initializerName);
             }
 
+            // Per-source: the factory is emitted by the TU that defines
+            // the class; other TUs call it through an external stub.
+            if (cnPerSource && !cnOwnsSource(sourceClass->sourceFile)) continue;
             const std::string constructorName = cnClassConstructorName(sid);
             if (names.count(constructorName))
                 throw Error(loc(sourceClass->line, sourceClass->column,
@@ -24378,6 +24535,703 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         functions.push_back(std::move(stringFromView));
     }
     return functions;
+}
+
+// ---- Bilingual per-source object cache (design (b)) ----
+// One cached object per project source, built from the merged program by
+// lowering only that source's declarations (cnProgramToAster, onlySource)
+// and adding external stubs for the foreign symbols it references, so the
+// objects link exactly like the merged build's single object. The cache
+// key/meta format mirrors the mainline project cache (§3 of the design);
+// the meta's dep lines are the foreign sources this TU's lowering actually
+// consulted, so a body-only edit to a used file recompiles its users.
+
+struct CnPerSourceContext {
+    const aster_cn::Program* program = nullptr;  // merged + package-resolved
+    // Package file -> owning TU (first TU in link order importing the
+    // file's module; see cnPackageFileOwners). The owner emits the
+    // file's declarations and is the only TU that records it as a dep.
+    std::map<std::string, std::string> packageFileOwners;
+    // P1-3: file-import ownership, canonical imported file -> owning TU
+    // (first importer in link order, transitive), mirroring
+    // packageFileOwners; the owning TU emits the imported file's
+    // declarations and records it as a dep.
+    std::map<std::string, std::string> fileImportOwners;
+    std::string ownersHash;  // sha256 of the serialised packageFileOwners
+    // plus fileImportOwners: which TU owns a package/imported file is a
+    // merged-level lowering input (the owning TU emits the definitions), so
+    // a TU must recompile when the assignment changes even if its own
+    // source did not — without this, a TU cached while another TU owned a
+    // package is reused after ownership moves, and the link loses the
+    // definitions.
+    const std::set<std::string>* packageFiles = nullptr;
+    std::set<std::string> forceConstructedClasses;  // class names constructed anywhere
+    std::string constructedHash;  // sha256 of the sorted forceConstructedClasses:
+    // which classes are constructed is a merged-level lowering input (the
+    // defining TU emits the factory only for constructed classes), so a TU
+    // must recompile when the set changes even if its own source did not —
+    // without this, a TU cached while a class was unconstructed is reused
+    // after another TU starts constructing it, and the link loses the
+    // factory. Part of the cache key, like langHash.
+    // Type/enum-member name -> defining project source (from the parsed
+    // programs, where struct/enum provenance still exists).
+    std::map<std::string, std::string> typeNameToSource;
+    std::string langHash;   // hash of the serialised effective [language] config
+    std::string keySalt;    // "" for build; the test file path for test links
+    std::string cacheDir;
+    bool dbg = false, bc = false;
+    uint64_t page = 4096;
+};
+
+// Package-declaration ownership, per file (design §7.2): the first TU in
+// link order that imports the module a package file belongs to emits that
+// file's declarations; a file no linked TU imports directly (it was pulled
+// in transitively by another package) falls back to the first linked TU
+// that imports any package, else the first linked TU. Every loaded package
+// file gets exactly one owner, so the definitions are emitted once, and
+// only the owner records the file as a dep — a TU that neither imports nor
+// references a package recompiles nothing when the package changes. An
+// `@import` spelled with a package alias resolves through
+// g_cnPackageCanonicalByName, like the canonical spelling.
+static std::map<std::string, std::string> cnPackageFileOwners(
+    const std::vector<std::pair<std::string, const aster_cn::Program*>>& linkSet) {
+    std::map<std::string, std::string> owners;
+    auto canonicalOf = [](const std::string& requested) {
+        const auto found = g_cnPackageCanonicalByName.find(requested);
+        return found == g_cnPackageCanonicalByName.end() ? requested : found->second;
+    };
+    for (const auto& tu : linkSet) {
+        if (!tu.second) continue;
+        for (const auto& import : tu.second->imports) {
+            const auto files = g_cnPackageFilesByModule.find(canonicalOf(import.moduleName));
+            if (files == g_cnPackageFilesByModule.end()) continue;
+            for (const auto& file : files->second)
+                if (!owners.count(file)) owners[file] = tu.first;
+        }
+    }
+    std::string fallback;
+    for (const auto& tu : linkSet) {
+        if (tu.second && !tu.second->imports.empty()) { fallback = tu.first; break; }
+    }
+    if (fallback.empty() && !linkSet.empty()) fallback = linkSet.front().first;
+    if (!fallback.empty())
+        for (const auto& file : g_cnPackageFilesLoaded)
+            if (!owners.count(file)) owners[file] = fallback;
+    return owners;
+}
+
+
+
+static void cnVisitCnExpression(const aster_cn::Expression& expression,
+                                const std::function<void(const aster_cn::Expression&)>& visit);
+static void cnVisitCnStatement(const aster_cn::Statement& statement,
+                               const std::function<void(const aster_cn::Expression&)>& visit) {
+    if (statement.hasExpression) cnVisitCnExpression(statement.expression, visit);
+    for (const auto& e : statement.expressions) cnVisitCnExpression(e, visit);
+    for (const auto& s : statement.body) cnVisitCnStatement(s, visit);
+    for (const auto& e : statement.conditions) cnVisitCnExpression(e, visit);
+    for (const auto& values : statement.caseValues)
+        for (const auto& e : values) cnVisitCnExpression(e, visit);
+    for (const auto& branch : statement.branches)
+        for (const auto& s : branch) cnVisitCnStatement(s, visit);
+    for (const auto& s : statement.elseBody) cnVisitCnStatement(s, visit);
+}
+static void cnVisitCnExpression(const aster_cn::Expression& expression,
+                                const std::function<void(const aster_cn::Expression&)>& visit) {
+    visit(expression);
+    for (const auto& child : expression.children) cnVisitCnExpression(child, visit);
+    if (expression.closure)
+        for (const auto& s : expression.closure->body) cnVisitCnStatement(s, visit);
+}
+static void cnVisitCnProgramExpressions(const aster_cn::Program& program,
+                                        const std::function<void(const aster_cn::Expression&)>& visit) {
+    for (const auto& method : program.methods)
+        for (const auto& s : method.body) cnVisitCnStatement(s, visit);
+    for (const auto& global : program.globals) cnVisitCnStatement(global, visit);
+    for (const auto& declaration : program.classes) {
+        for (const auto& field : declaration.fields)
+            if (field.hasInitializer) cnVisitCnExpression(field.initializer, visit);
+        for (const auto& method : declaration.methods)
+            for (const auto& s : method.body) cnVisitCnStatement(s, visit);
+    }
+    for (const auto& declaration : program.structures)
+        for (const auto& field : declaration.fields)
+            if (field.hasInitializer) cnVisitCnExpression(field.initializer, visit);
+    for (const auto& declaration : program.enums)
+        for (const auto& member : declaration.members)
+            if (member.hasExpression) cnVisitCnExpression(member.expression, visit);
+}
+
+// Every identifier/type name a source's own declarations mention: the
+// over-approximating half of dep tracking (a merely mentioned name counts
+// as a use). Resolved against the symbol/type maps by the caller.
+static void cnCollectCnProgramNames(const aster_cn::Program& program, std::set<std::string>& out) {
+    auto addType = [&](const std::string& typeName) { if (!typeName.empty()) out.insert(typeName); };
+    for (const auto& method : program.methods) {
+        addType(method.returnType);
+        for (const auto& p : method.parameters) addType(p.typeName);
+    }
+    for (const auto& global : program.globals) addType(global.typeName);
+    for (const auto& declaration : program.classes) {
+        addType(declaration.baseName);
+        for (const auto& field : declaration.fields) addType(field.typeName);
+        for (const auto& method : declaration.methods) {
+            addType(method.returnType);
+            for (const auto& p : method.parameters) addType(p.typeName);
+        }
+    }
+    for (const auto& declaration : program.structures)
+        for (const auto& field : declaration.fields) addType(field.typeName);
+    for (const auto& declaration : program.interfaceClasses) {
+        addType(declaration.baseName);
+        for (const auto& method : declaration.methods) {
+            addType(method.returnType);
+            for (const auto& p : method.parameters) addType(p.typeName);
+        }
+    }
+    cnVisitCnProgramExpressions(program, [&](const aster_cn::Expression& e) {
+        if (!e.value.empty()) out.insert(e.value);
+        if (e.closure) {
+            addType(e.closure->returnType);
+            for (const auto& p : e.closure->parameters) addType(p.typeName);
+            for (const auto& capture : e.closure->captures) out.insert(capture);
+        }
+    });
+}
+
+// Classes constructed anywhere in the merged program (Call whose first
+// child names a class). This is the exact syntactic condition the lowering
+// uses to record a construction (cnExpressionToAster), so the defining TU
+// of each such class emits its factory/initializer.
+static std::set<std::string> cnFindConstructedClasses(const aster_cn::Program& program) {
+    std::set<std::string> classNames;
+    for (const auto& declaration : program.classes) classNames.insert(declaration.name);
+    std::set<std::string> constructed;
+    cnVisitCnProgramExpressions(program, [&](const aster_cn::Expression& expression) {
+        if (expression.kind != "Call" || expression.children.empty()) return;
+        const aster_cn::Expression& first = expression.children.front();
+        if ((first.kind == "Identifier" || first.kind == "TypeName") && classNames.count(first.value))
+            constructed.insert(first.value);
+    });
+    return constructed;
+}
+
+static void cnCollectEmittedExprRefs(const Expr& expression, std::set<std::string>& symbols,
+                                     std::set<std::string>& typeNames) {
+    switch (expression.k) {
+        case Expr::Call: symbols.insert(expression.name); break;
+        case Expr::Var: symbols.insert(expression.name); break;
+        case Expr::StructLit: if (!expression.name.empty()) typeNames.insert(expression.name); break;
+        case Expr::Cast: case Expr::SizeOf: case Expr::Len:
+            if (tyIsStruct(expression.ty)) typeNames.insert(structOf(expression.ty.sid).name);
+            break;
+        default: break;
+    }
+    if (expression.a) cnCollectEmittedExprRefs(*expression.a, symbols, typeNames);
+    if (expression.b) cnCollectEmittedExprRefs(*expression.b, symbols, typeNames);
+    for (const auto& arg : expression.args)
+        if (arg) cnCollectEmittedExprRefs(*arg, symbols, typeNames);
+}
+static void cnCollectEmittedStmtRefs(const Stmt& statement, std::set<std::string>& symbols,
+                                     std::set<std::string>& typeNames) {
+    if (tyIsStruct(statement.ty)) typeNames.insert(structOf(statement.ty.sid).name);
+    switch (statement.k) {
+        case Stmt::Assign: case Stmt::FieldAssign: case Stmt::IndexAssign: case Stmt::DerefAssign:
+            if (!statement.name.empty()) symbols.insert(statement.name);
+            break;
+        default: break;
+    }
+    if (statement.expr) cnCollectEmittedExprRefs(*statement.expr, symbols, typeNames);
+    if (statement.idx) cnCollectEmittedExprRefs(*statement.idx, symbols, typeNames);
+    for (const auto& s : statement.thenBody) cnCollectEmittedStmtRefs(s, symbols, typeNames);
+    for (const auto& s : statement.elseBody) cnCollectEmittedStmtRefs(s, symbols, typeNames);
+    for (const auto& s : statement.forInit) cnCollectEmittedStmtRefs(s, symbols, typeNames);
+    for (const auto& s : statement.forStep) cnCollectEmittedStmtRefs(s, symbols, typeNames);
+    for (const auto& e : statement.caseExprs)
+        if (e) cnCollectEmittedExprRefs(*e, symbols, typeNames);
+    for (const auto& body : statement.caseBodies)
+        for (const auto& s : body) cnCollectEmittedStmtRefs(s, symbols, typeNames);
+}
+// The exact half of dep tracking: every symbol/type the TU's own lowered
+// code references (calls, global reads/writes, struct literals, signature
+// types). Combined with the AST name scan, this is what makes a body-only
+// edit to a used file recompile its users.
+static void cnCollectEmittedReferences(const std::vector<Function>& functions,
+                                       const std::vector<Global>& globals,
+                                       std::set<std::string>& symbols,
+                                       std::set<std::string>& typeNames) {
+    for (const auto& function : functions) {
+        if (tyIsStruct(function.retType)) typeNames.insert(structOf(function.retType.sid).name);
+        for (const auto& paramType : function.paramTypes)
+            if (tyIsStruct(paramType)) typeNames.insert(structOf(paramType.sid).name);
+        for (const auto& s : function.body) cnCollectEmittedStmtRefs(s, symbols, typeNames);
+    }
+    for (const auto& global : globals) {
+        if (tyIsStruct(global.ty)) typeNames.insert(structOf(global.ty.sid).name);
+        if (global.initExpr) cnCollectEmittedExprRefs(*global.initExpr, symbols, typeNames);
+        for (const auto& s : global.runtimeInitStatements) cnCollectEmittedStmtRefs(s, symbols, typeNames);
+    }
+}
+
+// Emitted-symbol name -> defining source file, from the merged tables the
+// lowering just populated. Covers top-level methods/globals (by source and
+// external symbol name), class methods, static fields, vtable/interface
+// tables and thunks, and class factories/initializers.
+static std::map<std::string, std::string> cnSymbolToSourceMap(const aster_cn::Program& program) {
+    std::map<std::string, std::string> result;
+    for (const auto& entry : g_cnTopLevelMethods) {
+        result[entry.first] = entry.second.sourceFile;
+        result[cnFunctionSymbolName(entry.first)] = entry.second.sourceFile;
+    }
+    for (const auto& entry : g_cnTopLevelGlobals) {
+        result[entry.first] = entry.second.sourceFile;
+        // B-P3: an `extern` declaration's emitted symbol belongs to its
+        // definition, not to the declaring TU. When the definition is
+        // registered under the symbol name (a cross-language pair), the
+        // definition's entry maps the symbol to its own file, so the
+        // declaration must not overwrite it with the declaring TU. An
+        // `extern`-only global has no definition entry and keeps its
+        // declaring TU as the symbol's source.
+        const std::string symbol = cnGlobalSymbolName(entry.first);
+        if (symbol == entry.first || !g_cnTopLevelGlobals.count(symbol))
+            result[symbol] = entry.second.sourceFile;
+    }
+    auto classSourceFile = [&](int sid) -> std::string {
+        const std::string className = structOf(sid).name;
+        const auto found = std::find_if(program.classes.begin(), program.classes.end(),
+            [&](const aster_cn::ClassDeclaration& d) { return d.name == className; });
+        return found == program.classes.end() ? std::string() : found->sourceFile;
+    };
+    for (const auto& classEntry : g_cnClassMethods)
+        for (const auto& methodEntry : classEntry.second)
+            result[methodEntry.second.functionName] = methodEntry.second.sourceFile;
+    for (const auto& classEntry : g_cnClassStaticFields)
+        for (const auto& fieldEntry : classEntry.second)
+            result[fieldEntry.second.globalName] = classSourceFile(classEntry.first);
+    for (const auto& entry : g_cnClassVtableGlobals)
+        result[entry.second] = classSourceFile(entry.first);
+    for (const auto& entry : g_cnInterfaceTableGlobals)
+        result[entry.second] = classSourceFile(entry.first.first);
+    for (const auto& classEntry : g_cnClassMethods) {
+        const int sid = classEntry.first;
+        for (const auto& methodEntry : classEntry.second) {
+            if (!methodEntry.second.isStatic && !methodEntry.second.isConstructor)
+                result[cnClassVtableThunkName(sid, methodEntry.first)] =
+                    methodEntry.second.sourceFile;
+        }
+        result[cnClassConstructorName(sid)] = classSourceFile(sid);
+        result[cnClassInitializerName(sid)] = classSourceFile(sid);
+    }
+    for (const auto& entry : g_cnInterfaceTableGlobals) {
+        const auto order = g_cnInterfaceMethodOrder.find(entry.first.second);
+        if (order == g_cnInterfaceMethodOrder.end()) continue;
+        for (const auto& methodName : order->second)
+            result[cnInterfaceThunkName(entry.first.first, entry.first.second, methodName)] =
+                classSourceFile(entry.first.first);
+    }
+    return result;
+}
+
+// Foreign sources a TU depends on: the union of the emitted-reference scan
+// and the AST name scan, resolved through the symbol/type maps. Package
+// files are deps when the TU references a package symbol (any referenced
+// name with a module prefix) or emits package declarations itself.
+static std::set<std::string> cnForeignSourcesForTu(const CnPerSourceContext& ctx,
+                                                   const std::string& sp,
+                                                   const aster_cn::Program& ownParsed,
+                                                   const std::set<std::string>& referencedSymbols,
+                                                   const std::set<std::string>& referencedTypes) {
+    std::set<std::string> files;
+    const std::map<std::string, std::string> symbolToSource = cnSymbolToSourceMap(*ctx.program);
+    auto addFile = [&](const std::string& file) { if (!file.empty() && file != sp) files.insert(file); };
+    auto addPackageFiles = [&]() {
+        if (ctx.packageFiles)
+            for (const auto& file : *ctx.packageFiles) addFile(file);
+    };
+    for (const auto& name : referencedSymbols) {
+        const auto found = symbolToSource.find(name);
+        if (found != symbolToSource.end()) addFile(found->second);
+        else if (name.compare(0, 12, "__aster_mod_") == 0) addPackageFiles();
+    }
+    for (const auto& name : referencedTypes) {
+        const auto found = ctx.typeNameToSource.find(name);
+        if (found != ctx.typeNameToSource.end()) addFile(found->second);
+        else if (name.compare(0, 12, "__aster_mod_") == 0) addPackageFiles();
+    }
+    std::set<std::string> mentioned;
+    cnCollectCnProgramNames(ownParsed, mentioned);
+    for (const auto& name : mentioned) {
+        const auto found = symbolToSource.find(name);
+        if (found != symbolToSource.end()) { addFile(found->second); continue; }
+        const auto typeFound = ctx.typeNameToSource.find(name);
+        if (typeFound != ctx.typeNameToSource.end()) { addFile(typeFound->second); continue; }
+        if (name.compare(0, 12, "__aster_mod_") == 0) addPackageFiles();
+    }
+    // The owner of a package file emits its declarations, so it depends
+    // on that file even when it references none of its symbols. Every
+    // other TU records a package file only when it references one of its
+    // symbols (above): a TU that neither owns nor references a package
+    // file records no package dep, so a package edit leaves it reused.
+    for (const auto& entry : ctx.packageFileOwners)
+        if (entry.second == sp) addFile(entry.first);
+    return files;
+}
+
+// For every foreign symbol this TU's lowered code references, add an
+// external stub with the exact signature and emitted symbol name the
+// defining TU produces, so Sema accepts the calls and Codegen emits the
+// relocations the linker resolves. Symbols this TU defines (or already
+// carries as an external declaration) are left alone; unknown names are
+// locals, enum constants or field names and need no stub.
+static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Global>& globals,
+                               const aster_cn::Program& program,
+                               const std::set<std::string>& referenced) {
+    std::set<std::string> definedFunctions, definedGlobals;
+    for (const auto& f : functions) definedFunctions.insert(f.name);
+    for (const auto& g : globals) definedGlobals.insert(g.name);
+    for (const auto& name : referenced) {
+        if (name.empty() || definedFunctions.count(name) || definedGlobals.count(name)) continue;
+        if (name.compare(0, 15, "__aster_string_") == 0 || name == "__aster_empty_string") continue;
+        // Generated per-TU helpers are only ever referenced by the TU that
+        // minted them; a missing one is an internal error, not a stub.
+        if (name.compare(0, 20, "__aster_cn_closure_") == 0 ||
+            name.compare(0, 25, "__aster_cn_make_closure_") == 0 ||
+            name.compare(0, 25, "__aster_cn_adapter_thunk_") == 0 ||
+            name.compare(0, 31, "__aster_cn_interface_upcast_") == 0)
+            throw Error("internal error: per-source build references a generated helper it did not emit: " + name);
+        const auto signature = g_cnFunctionSignatures.find(name);
+        if (signature != g_cnFunctionSignatures.end()) {
+            Function stub;
+            stub.name = name;
+            stub.external = true;
+            stub.retType = signature->second.returnType;
+            stub.returnPtr = stub.retType.k == Ty::Ptr;
+            stub.returnBool = stub.retType == Ty::Bool;
+            // An instance method's emitted function takes an implicit
+            // `this` first parameter, but g_cnFunctionSignatures records
+            // only the declared parameters. A stub built from the
+            // signature alone is one parameter short, and every foreign
+            // call fails Sema's arity check ("expected 0, got 1" for a
+            // no-arg method). Static methods have no `this`.
+            for (const auto& classEntry : g_cnClassMethods) {
+                bool foundMethod = false;
+                for (const auto& methodEntry : classEntry.second) {
+                    if (methodEntry.second.functionName == name && !methodEntry.second.isStatic) {
+                        stub.params.push_back("__aster_cn_this");
+                        stub.paramTypes.push_back(Ty::ptrTo(classEntry.first));
+                        stub.paramPtr.push_back(true);
+                        stub.paramBool.push_back(false);
+                        stub.paramDims.emplace_back();
+                        stub.paramFuncSig.emplace_back();
+                        stub.paramIsFunc.push_back(false);
+                        foundMethod = true;
+                        break;
+                    }
+                }
+                if (foundMethod) break;
+            }
+            for (size_t i = 0; i < signature->second.parameterTypes.size(); ++i) {
+                stub.params.push_back("__aster_cn_stub_arg_" + std::to_string(i));
+                stub.paramTypes.push_back(signature->second.parameterTypes[i]);
+                stub.paramPtr.push_back(!signature->second.parameterDims[i].empty() ||
+                                        signature->second.parameterTypes[i].k == Ty::Ptr);
+                stub.paramBool.push_back(signature->second.parameterDims[i].empty() &&
+                                         signature->second.parameterTypes[i] == Ty::Bool);
+                stub.paramDims.push_back(signature->second.parameterDims[i]);
+                stub.paramFuncSig.push_back(signature->second.parameterFuncSigs[i]);
+                stub.paramIsFunc.push_back(signature->second.parameterIsFunc[i]);
+            }
+            functions.push_back(std::move(stub));
+            definedFunctions.insert(name);
+            continue;
+        }
+        bool handled = false;
+        for (const auto& classEntry : g_cnClassIndex) {
+            const int sid = classEntry.second;
+            if (name != cnClassConstructorName(sid) && name != cnClassInitializerName(sid)) continue;
+            const CnClassMethodInfo* userConstructor = cnFindClassConstructor(sid);
+            const bool isFactory = name == cnClassConstructorName(sid);
+            Function stub;
+            stub.name = name;
+            stub.external = true;
+            if (isFactory) {
+                stub.retType = Ty::ptrTo(sid);
+                stub.returnPtr = true;
+            } else {
+                stub.retType = Ty::Void;
+                stub.params.push_back("__aster_cn_stub_arg_0");
+                stub.paramTypes.push_back(Ty::ptrTo(sid));
+                stub.paramPtr.push_back(true);
+                stub.paramBool.push_back(false);
+                stub.paramDims.emplace_back();
+                stub.paramFuncSig.emplace_back();
+                stub.paramIsFunc.push_back(false);
+            }
+            const size_t firstArg = isFactory ? 0 : 1;
+            if (userConstructor) {
+                for (size_t i = 0; i < userConstructor->parameterTypes.size(); ++i) {
+                    stub.params.push_back("__aster_cn_stub_arg_" + std::to_string(firstArg + i));
+                    stub.paramTypes.push_back(userConstructor->parameterTypes[i]);
+                    stub.paramPtr.push_back(!userConstructor->parameterDims[i].empty() ||
+                                            userConstructor->parameterTypes[i].k == Ty::Ptr);
+                    stub.paramBool.push_back(userConstructor->parameterDims[i].empty() &&
+                                             userConstructor->parameterTypes[i] == Ty::Bool);
+                    stub.paramDims.push_back(userConstructor->parameterDims[i]);
+                    stub.paramFuncSig.push_back(userConstructor->parameterFuncSigs[i]);
+                    stub.paramIsFunc.push_back(userConstructor->parameterIsFunc[i]);
+                }
+            }
+            functions.push_back(std::move(stub));
+            definedFunctions.insert(name);
+            handled = true;
+            break;
+        }
+        if (handled) continue;
+        if (name == "alloc") {
+            Function stub;
+            stub.name = "alloc";
+            stub.params = {"n"};
+            stub.paramTypes = {Ty::I32};
+            stub.paramPtr = {false};
+            stub.paramBool = {false};
+            stub.paramDims.resize(1);
+            stub.paramFuncSig.resize(1);
+            stub.paramIsFunc = {false};
+            stub.retType = Ty::Ptr;
+            stub.returnPtr = true;
+            stub.external = true;
+            functions.push_back(std::move(stub));
+            definedFunctions.insert(name);
+            continue;
+        }
+        if (name == "__aster_cn_str_concat" || name == "__aster_cn_str_order" ||
+            name == "__aster_cn_str_view" || name == "__aster_cn_string_from_view") {
+            const Ty bytePointer = tyPtrToElem(Ty::U8);
+            Function stub;
+            stub.name = name;
+            stub.external = true;
+            if (name == "__aster_cn_string_from_view") {
+                stub.params = {"view"};
+                stub.paramTypes = {cnBackendType("string_view", 0, 0)};
+                stub.retType = Ty::string();
+                stub.returnPtr = true;
+            } else if (name == "__aster_cn_str_view") {
+                stub.params = {"source"};
+                stub.paramTypes = {bytePointer};
+                stub.retType = cnBackendType("string_view", 0, 0);
+            } else {
+                stub.params = {"left", "right"};
+                stub.paramTypes = {bytePointer, bytePointer};
+                stub.retType = name == "__aster_cn_str_concat" ? bytePointer : Ty::I32;
+                stub.returnPtr = name == "__aster_cn_str_concat";
+            }
+            stub.paramPtr.assign(stub.params.size(), true);
+            if (name == "__aster_cn_string_from_view") stub.paramPtr.assign(stub.params.size(), false);
+            stub.paramBool.assign(stub.params.size(), false);
+            stub.paramDims.resize(stub.params.size());
+            stub.paramFuncSig.resize(stub.params.size());
+            stub.paramIsFunc.assign(stub.params.size(), false);
+            functions.push_back(std::move(stub));
+            definedFunctions.insert(name);
+            continue;
+        }
+        bool handledGlobal = false;
+        const auto globalDecl = std::find_if(program.globals.begin(), program.globals.end(),
+            [&](const aster_cn::Statement& d) {
+                return d.name == name ||
+                    (d.isExternal && d.externalName == name);
+            });
+        if (globalDecl != program.globals.end()) {
+            Global stub;
+            stub.name = name;
+            stub.external = true;
+            stub.ty = cnBackendType(globalDecl->typeName, globalDecl->line, globalDecl->column);
+            stub.align = tyAlign(stub.ty);
+            stub.isBool = stub.ty == Ty::Bool;
+            stub.isFunc = cnFunctionTypeSignature(globalDecl->typeName, stub.funcSig,
+                                                  globalDecl->line, globalDecl->column);
+            if (!globalDecl->arrayDimensions.empty()) {
+                Expr::LitSuffix suffix = Expr::LSNone;
+                const uint64_t length = cnIntegerValue(globalDecl->arrayDimensions.front(), suffix,
+                                                       globalDecl->line, globalDecl->column);
+                stub.isArray = true;
+                stub.count = static_cast<uint32_t>(length);
+                stub.dims.push_back(static_cast<uint32_t>(length));
+            }
+            globals.push_back(std::move(stub));
+            definedGlobals.insert(name);
+            handledGlobal = true;
+        }
+        if (!handledGlobal) {
+            for (const auto& classEntry : g_cnClassStaticFields) {
+                for (const auto& fieldEntry : classEntry.second) {
+                    if (fieldEntry.second.globalName != name) continue;
+                    Global stub;
+                    stub.name = name;
+                    stub.external = true;
+                    stub.ty = fieldEntry.second.type;
+                    stub.align = tyAlign(stub.ty);
+                    stub.isBool = stub.ty == Ty::Bool;
+                    stub.isFunc = fieldEntry.second.isFunc;
+                    stub.funcSig = fieldEntry.second.funcSig;
+                    if (fieldEntry.second.arrayLength != 0) {
+                        stub.isArray = true;
+                        stub.count = fieldEntry.second.arrayLength;
+                        stub.dims.push_back(fieldEntry.second.arrayLength);
+                    }
+                    globals.push_back(std::move(stub));
+                    definedGlobals.insert(name);
+                    handledGlobal = true;
+                    break;
+                }
+                if (handledGlobal) break;
+            }
+        }
+        if (!handledGlobal) {
+            for (const auto& entry : g_cnClassVtableGlobals) {
+                if (entry.second != name) continue;
+                Global stub;
+                stub.name = name;
+                stub.external = true;
+                stub.ty = Ty::ofStruct(g_cnClassVtableIndex.at(entry.first));
+                stub.align = tyAlign(stub.ty);
+                globals.push_back(std::move(stub));
+                definedGlobals.insert(name);
+                handledGlobal = true;
+                break;
+            }
+        }
+        if (!handledGlobal) {
+            for (const auto& entry : g_cnInterfaceTableGlobals) {
+                if (entry.second != name) continue;
+                const std::string typeName =
+                    cnInterfaceTableTypeName(entry.first.first, entry.first.second);
+                const auto sidIt = g_structIndex.find(typeName);
+                if (sidIt != g_structIndex.end()) {
+                    Global stub;
+                    stub.name = name;
+                    stub.external = true;
+                    stub.ty = Ty::ofStruct(sidIt->second);
+                    stub.align = tyAlign(stub.ty);
+                    globals.push_back(std::move(stub));
+                    definedGlobals.insert(name);
+                    handledGlobal = true;
+                }
+                break;
+            }
+        }
+        // Anything else (a local, an enum constant, a field name) needs no stub.
+    }
+}
+
+// One bilingual source through the per-source cache: lower only this TU,
+// record its foreign-source deps, stub its foreign references, compile and
+// publish with the mainline cache's meta format and publish path. Returns
+// the object path, or "" for a TU that defines nothing emittable (a
+// struct/enum-only TU still gets a meta entry and still counts, so its own
+// edits are detected; it just contributes no object to the link).
+static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
+                                         const aster_cn::Program& ownParsed,
+                                         const std::string& sp, uint64_t poolSalt,
+                                         int& compiled, int& reused, bool noCache) {
+    const std::string src = readFile(sp);
+    const std::string srcHash = sha256Hex(src);
+    const std::string flags = std::string(ctx.dbg ? "g" : "-") + std::string(ctx.bc ? "b" : "-") +
+        "|" + std::to_string(ctx.page);
+    const std::string key = sha256Hex(std::string(kVersion) + "|cn|" + flags + "|" + sp + "|" +
+                                      ctx.langHash + "|" + ctx.constructedHash + "|" + ctx.keySalt +
+                                      "|" + ctx.ownersHash);
+    const std::string objPath = ctx.cacheDir + "/cn-" + key + ".o";
+    const std::string metaPath = ctx.cacheDir + "/cn-" + key + ".meta";
+    bool reuse = false;
+    if (!noCache && fileExists(objPath) && fileExists(metaPath))
+        reuse = readProjectCacheMetaForReuse(metaPath, objPath, flags, sp, srcHash);
+    if (reuse) {
+        ++reused;
+        return readFile(objPath).empty() ? std::string() : objPath;
+    }
+    // B-P2: the assets this TU embeds are build inputs too — an edit to
+    // one must recompile the TU, like an edit to a foreign source.
+    // cnEmbedFile records each read in g_buildDeps (the mainline rule);
+    // clear it here so the entries below are exactly this TU's reads.
+    g_buildDeps.clear();
+    std::vector<Global> globals;
+    std::vector<Function> functions = cnProgramToAster(*ctx.program, globals, true, sp, false,
+        &ctx.forceConstructedClasses, poolSalt, &ctx.packageFileOwners);
+    // Take this TU's embed reads before the next TU's lowering
+    // overwrites them, then clear so nothing leaks across TUs.
+    const std::map<std::string, std::string> embedDeps = g_buildDeps;
+    g_buildDeps.clear();
+    std::set<std::string> referencedSymbols, referencedTypes;
+    cnCollectEmittedReferences(functions, globals, referencedSymbols, referencedTypes);
+    const std::set<std::string> depFiles =
+        cnForeignSourcesForTu(ctx, sp, ownParsed, referencedSymbols, referencedTypes);
+    cnAddExternalStubs(functions, globals, *ctx.program, referencedSymbols);
+    std::vector<CompiledFunction> compiledFns =
+        compileProgram(functions, globals, false, true, ctx.bc, ctx.dbg);
+    bool emptyTu = compiledFns.empty();
+    if (emptyTu) {
+        // A TU with only constant-initialised globals still owns storage
+        // the link needs; keep it alive with a dummy function (the bilingual
+        // link runs without GC, so the dummy stays in the binary — it is a
+        // single RET and never called).
+        bool hasRealGlobal = false;
+        for (const auto& g : globals) if (!g.external) { hasRealGlobal = true; break; }
+        if (hasRealGlobal) {
+            Function keepalive;
+            keepalive.name = "__aster_cn_tu_keepalive_" + key.substr(0, 16);
+            keepalive.retType = Ty::Void;
+            keepalive.body.emplace_back(Stmt::Return);
+            functions.push_back(std::move(keepalive));
+        compileProgram(functions, globals, false, true, ctx.bc, ctx.dbg);
+            emptyTu = compiledFns.empty();
+        }
+    }
+    std::map<std::string, std::string> depHashes;
+    for (const auto& dep : depFiles)
+        if (fileExists(dep)) depHashes[dep] = sha256Hex(readFile(dep));
+    // B-P2: the embedded assets, with the hash recorded when they were
+    // read (an asset that vanished since is dropped — the reuse check
+    // fails closed on a missing dep file anyway).
+    for (const auto& dep : embedDeps)
+        if (fileExists(dep.first)) depHashes[dep.first] = dep.second;
+    if (emptyTu) {
+        const std::string tmp = mkTempPath(ctx.cacheDir, ".aster-tmp");
+        if (std::rename(tmp.c_str(), objPath.c_str()) != 0) {
+            const int e = errno;
+            std::remove(tmp.c_str());
+            throw Error("cannot move " + tmp + " into place: " + std::strerror(e));
+        }
+        writeFileAtomic(metaPath, projectCacheMetaText(flags, sp, srcHash, sha256Hex(std::string()),
+                                                       depHashes));
+        ++compiled;
+        return std::string();
+    }
+    DebugLineBlob debugLine;
+    DebugInfoBlob debugInfo;
+    EhFrameBlob ehFrame;
+    if (ctx.dbg) {
+        const ObjectLayout layout = layoutObject(compiledFns, globals);
+        const size_t slash = sp.find_last_of('/');
+        debugLine = encodeDebugLine(layout.lineRows, layout.ins.size() * 4,
+                                    slash == std::string::npos ? std::string() : sp.substr(0, slash),
+                                    baseNameOf(sp));
+        debugInfo = encodeDebugInfo(layout, compiledFns, functions, globals,
+                                    slash == std::string::npos ? std::string() : sp.substr(0, slash),
+                                    baseNameOf(sp));
+        ehFrame = encodeEhFrame(layout, compiledFns);
+    }
+    const std::string tmp = mkTempPath(ctx.cacheDir, ".aster-tmp");
+    writeObject(tmp, compiledFns, globals, false, debugLine, debugInfo, ehFrame);
+    const std::string objBytes = readFile(tmp);
+    if (std::rename(tmp.c_str(), objPath.c_str()) != 0) {
+        const int e = errno;
+        std::remove(tmp.c_str());
+        throw Error("cannot move " + tmp + " into place: " + std::strerror(e));
+    }
+    writeFileAtomic(metaPath, projectCacheMetaText(flags, sp, srcHash, sha256Hex(objBytes), depHashes));
+    ++compiled;
+    return objPath;
 }
 
 struct CnStableValueCandidate {
@@ -24898,17 +25752,111 @@ int main(int argc,char**argv){
                 std::cerr<<"aster deps: usage: aster deps <source.ast> [...] [-o <object.o>]\n";
                 return 2;
             }
+            // Bilingual name -> file map for the dep scan: every project
+            // source (when in a project) plus every requested source.
+            aster_cn::ProjectLanguageConfig depsLanguage;
+            if(fileExists("aster.proj"))depsLanguage=aster_cn::readProjectLanguage("aster.proj");
+            std::map<std::string, std::string> depsNameToFile;
+            {
+                std::vector<std::string> depsAll=srcs;
+                if(fileExists("aster.proj")){
+                    const ProjectSpec depsSpec=parseProjectFile("aster.proj");
+                    for(const auto& s:depsSpec.sources)depsAll.push_back(s);
+                }
+                std::sort(depsAll.begin(),depsAll.end());
+                depsAll.erase(std::unique(depsAll.begin(),depsAll.end()),depsAll.end());
+                std::vector<aster_cn::Program> depsPrograms;
+                bool depsHasImports=false;
+                for(const auto& path:depsAll){
+                    if(!fileExists(path))continue;
+                    try{
+                        const std::string src=readFile(path);
+                        const aster_cn::Language language=aster_cn::selectLanguage(
+                            src,false,aster_cn::Language::Zh,depsLanguage);
+                        aster_cn::Program parsed=aster_cn::parseProgram(src,language,path);
+                        if(!parsed.imports.empty())depsHasImports=true;
+                        depsPrograms.push_back(std::move(parsed));
+                    }catch(const std::exception&){/* not a bilingual source; per-file mainline fallback below */}
+                }
+                for(const auto& parsed:depsPrograms){
+                    for(const auto& m:parsed.methods)depsNameToFile.emplace(m.name,parsed.sourceFile);
+                    for(const auto& g:parsed.globals)depsNameToFile.emplace(g.name,parsed.sourceFile);
+                    for(const auto& s:parsed.structures)depsNameToFile.emplace(s.name,parsed.sourceFile);
+                    for(const auto& e:parsed.enums){
+                        depsNameToFile.emplace(e.name,parsed.sourceFile);
+                        for(const auto& m:e.members)depsNameToFile.emplace(m.name,parsed.sourceFile);
+                    }
+                    for(const auto& c:parsed.classes){
+                        depsNameToFile.emplace(c.name,parsed.sourceFile);
+                        for(const auto& m:c.methods)depsNameToFile.emplace(m.name,parsed.sourceFile);
+                    }
+                    for(const auto& i:parsed.interfaceClasses)depsNameToFile.emplace(i.name,parsed.sourceFile);
+                }
+                if(depsHasImports){
+                    try{
+                        aster_cn::Program depsRoots;
+                        if(!depsPrograms.empty()){
+                            depsRoots.language=depsPrograms.front().language;
+                            depsRoots.sourceFile=depsPrograms.front().sourceFile;
+                        }
+                        for(const auto& parsed:depsPrograms){
+                            depsRoots.structures.insert(depsRoots.structures.end(),parsed.structures.begin(),parsed.structures.end());
+                            depsRoots.enums.insert(depsRoots.enums.end(),parsed.enums.begin(),parsed.enums.end());
+                            depsRoots.classes.insert(depsRoots.classes.end(),parsed.classes.begin(),parsed.classes.end());
+                            depsRoots.interfaceClasses.insert(depsRoots.interfaceClasses.end(),parsed.interfaceClasses.begin(),parsed.interfaceClasses.end());
+                            depsRoots.globals.insert(depsRoots.globals.end(),parsed.globals.begin(),parsed.globals.end());
+                            depsRoots.methods.insert(depsRoots.methods.end(),parsed.methods.begin(),parsed.methods.end());
+                            depsRoots.imports.insert(depsRoots.imports.end(),parsed.imports.begin(),parsed.imports.end());
+                        }
+                        char depsCwdBuffer[4096];
+                        const std::string depsCwd=getcwd(depsCwdBuffer,sizeof depsCwdBuffer)?depsCwdBuffer:std::string(".");
+                        cnResolvePackageImports(depsRoots,depsLanguage,std::vector<std::string>{depsCwd});
+                    }catch(const std::exception&){/* package resolution failed; deps lists project sources only */}
+                }
+            }
             for(const auto& sp:srcs){
-                g_buildDeps.clear();
-                const std::string src=readFile(sp);
-                setSourceCache(sp,src);
-                Parser p(src,false,dirNameOf(sp),nullptr,sp);p.parse();
                 std::string target=obj;
                 if(target.empty()){
                     target="build/"+baseNameOf(sp);
                     if(target.size()>4&&target.compare(target.size()-4,4,".ast")==0)target=target.substr(0,target.size()-4);
                     target+=".o";
                 }
+                // Bilingual first: the default frontend parses `:` sources
+                // the mainline parser rejects. A file that is not bilingual
+                // falls back to the mainline parser, so `->` sources keep
+                // working exactly as before.
+                bool bilingual=false;
+                aster_cn::Program parsed;
+                try{
+                    const std::string src=readFile(sp);
+                    setSourceCache(sp,src);
+                    const aster_cn::Language language=aster_cn::selectLanguage(
+                        src,false,aster_cn::Language::Zh,depsLanguage);
+                    parsed=aster_cn::parseProgram(src,language,sp);
+                    bilingual=true;
+                }catch(const std::exception&){bilingual=false;}
+                if(bilingual){
+                    std::set<std::string> deps;
+                    std::set<std::string> mentioned;
+                    cnCollectCnProgramNames(parsed,mentioned);
+                    for(const auto& name:mentioned){
+                        const auto found=depsNameToFile.find(name);
+                        if(found!=depsNameToFile.end()&&found->second!=sp)deps.insert(found->second);
+                    }
+                    for(const auto& import:parsed.imports){
+                        const auto files=g_cnPackageFilesByModule.find(import.moduleName);
+                        if(files!=g_cnPackageFilesByModule.end())
+                            for(const auto& file:files->second)deps.insert(file);
+                    }
+                    std::cout<<target<<": "<<sp;
+                    for(const auto& dep:deps)std::cout<<" "<<dep;
+                    std::cout<<"\n";
+                    continue;
+                }
+                g_buildDeps.clear();
+                const std::string src=readFile(sp);
+                setSourceCache(sp,src);
+                Parser p(src,false,dirNameOf(sp),nullptr,sp);p.parse();
                 std::cout<<target<<": "<<sp;
                 for(const auto& kv:g_buildDeps)std::cout<<" "<<kv.first;
                 std::cout<<"\n";
@@ -25007,96 +25955,143 @@ int main(int argc,char**argv){
                         exe+="-"+sha256Hex(testPath).substr(0,12);
                     testExecutables[exe]=testPath;
                     if(!makeDirs(dirNameOf(exe))){std::cerr<<"aster test: cannot create "<<dirNameOf(exe)<<"\n";return 1;}
-                    std::string testFingerprint=std::string(kVersion)+"|cn-test|"+
-                        (dbg?"g":"-")+(bc2?"b":"-")+"|"+std::to_string(testPage)+"\n";
-                    for(size_t i=0;i<packageRoots.size();++i)
-                        testFingerprint+="package-root "+std::to_string(i)+" "+packageRoots[i]+"\n";
-                    std::vector<std::string> testInputs;
-                    testInputs.push_back("aster.proj");
-                    for(const auto& path:spec.sources) testInputs.push_back(path);
-                    testInputs.push_back(testPath);
-                    testInputs.push_back(testCwd);
-                    for(const auto& moduleDir:bilingualModuleDirs) testInputs.push_back(moduleDir);
-                    std::sort(testInputs.begin(),testInputs.end());
-                    testInputs.erase(std::unique(testInputs.begin(),testInputs.end()),testInputs.end());
-                    for(const auto& path:testInputs) {
-                        testFingerprint+="input "+path+" ";
-                        if(fileExists(path)) testFingerprint+=sha256Hex(readFile(path));
-                        else if(dirExists(path)) {
-                            std::vector<std::string> moduleFiles;
-                            std::error_code moduleError;
-                            for(std::filesystem::recursive_directory_iterator it(
-                                    path,std::filesystem::directory_options::skip_permission_denied,
-                                    moduleError), end; it!=end; it.increment(moduleError)) {
-                                if(moduleError) { moduleError.clear(); continue; }
-                                if(it->is_regular_file(moduleError)&&it->path().extension()==".ast")
-                                    moduleFiles.push_back(it->path().string());
-                                moduleError.clear();
-                            }
-                            std::sort(moduleFiles.begin(),moduleFiles.end());
-                            for(const auto& moduleFile:moduleFiles)
-                                testFingerprint+=moduleFile+"="+sha256Hex(readFile(moduleFile))+";";
-                        } else testFingerprint+="<missing>";
-                        testFingerprint.push_back('\n');
+                    // Per-source test link: library sources (entry source
+                    // excluded, as before) plus this test file, each through
+                    // the per-source cache. The key is salted with the test
+                    // file path: a library object is only ever linked with
+                    // the test it was lowered against, so a library that
+                    // references a test-file symbol can never be reused
+                    // under a different test.
+                    std::vector<std::pair<std::string, aster_cn::Program>> testLibraries;
+                    for(const auto& path:spec.sources) {
+                        if(!fileExists(path)){std::cerr<<"aster test: missing source "<<path<<"\n";return 1;}
+                        const std::string source=readFile(path);
+                        const aster_cn::Language language=aster_cn::selectLanguage(
+                            source,false,aster_cn::Language::Zh,testLanguage);
+                        aster_cn::Program program=aster_cn::parseProgram(source,language,path);
+                        // The program's own entry source is not a library: a test defines
+                        // its own main, so the file that supplies the app's is left out.
+                        // Detected by parsing, not guessed from a file name (mirrors the
+                        // original-parser test path below).
+                        bool hasEntry=false;
+                        for(const auto& m:program.methods)
+                            if(m.name=="main"||m.name=="启动方法")hasEntry=true;
+                        if(hasEntry)continue;
+                        testLibraries.emplace_back(path,std::move(program));
                     }
-                    const std::string object="build/.cache/cn-test-"+sha256Hex(testFingerprint)+".o";
-                    const bool reuse=!noCache&&fileExists(object);
-                    if(!reuse) {
-                        std::vector<aster_cn::Program> libraryPrograms;
-                        for(const auto& path:spec.sources) {
-                            if(!fileExists(path)){std::cerr<<"aster test: missing source "<<path<<"\n";return 1;}
-                            const std::string source=readFile(path);
-                            const aster_cn::Language language=aster_cn::selectLanguage(
-                                source,false,aster_cn::Language::Zh,testLanguage);
-                            libraryPrograms.push_back(aster_cn::parseProgram(source,language,path));
-                        }
-                        const std::string testSource=readFile(testPath);
-                        const aster_cn::Language testSourceLanguage=aster_cn::selectLanguage(
-                            testSource,false,aster_cn::Language::Zh,testLanguage);
-                        const aster_cn::Program testProgram=aster_cn::parseProgram(
-                            testSource,testSourceLanguage,testPath);
-                        aster_cn::Program roots;
-                        roots.language=testProgram.language;
-                        roots.sourceFile=testProgram.sourceFile;
-                        for(const auto& library:libraryPrograms) {
-                            roots.structures.insert(roots.structures.end(),library.structures.begin(),library.structures.end());
-                            roots.enums.insert(roots.enums.end(),library.enums.begin(),library.enums.end());
-                            roots.classes.insert(roots.classes.end(),library.classes.begin(),library.classes.end());
-                            roots.interfaceClasses.insert(roots.interfaceClasses.end(),library.interfaceClasses.begin(),library.interfaceClasses.end());
-                            roots.globals.insert(roots.globals.end(),library.globals.begin(),library.globals.end());
-                            roots.methods.insert(roots.methods.end(),library.methods.begin(),library.methods.end());
-                            roots.imports.insert(roots.imports.end(),library.imports.begin(),library.imports.end());
-                        }
-                        roots.structures.insert(roots.structures.end(),testProgram.structures.begin(),testProgram.structures.end());
-                        roots.enums.insert(roots.enums.end(),testProgram.enums.begin(),testProgram.enums.end());
-                        roots.classes.insert(roots.classes.end(),testProgram.classes.begin(),testProgram.classes.end());
-                        roots.interfaceClasses.insert(roots.interfaceClasses.end(),testProgram.interfaceClasses.begin(),testProgram.interfaceClasses.end());
-                        roots.globals.insert(roots.globals.end(),testProgram.globals.begin(),testProgram.globals.end());
-                        roots.methods.insert(roots.methods.end(),testProgram.methods.begin(),testProgram.methods.end());
-                        roots.imports.insert(roots.imports.end(),testProgram.imports.begin(),testProgram.imports.end());
+                    const std::string testSource=readFile(testPath);
+                    const aster_cn::Language testSourceLanguage=aster_cn::selectLanguage(
+                        testSource,false,aster_cn::Language::Zh,testLanguage);
+                    const aster_cn::Program testProgram=aster_cn::parseProgram(
+                        testSource,testSourceLanguage,testPath);
+                    aster_cn::Program roots;
+                    roots.language=testProgram.language;
+                    roots.sourceFile=testProgram.sourceFile;
+                    for(const auto& library:testLibraries) {
+                        roots.structures.insert(roots.structures.end(),library.second.structures.begin(),library.second.structures.end());
+                        roots.enums.insert(roots.enums.end(),library.second.enums.begin(),library.second.enums.end());
+                        roots.classes.insert(roots.classes.end(),library.second.classes.begin(),library.second.classes.end());
+                        roots.interfaceClasses.insert(roots.interfaceClasses.end(),library.second.interfaceClasses.begin(),library.second.interfaceClasses.end());
+                        roots.globals.insert(roots.globals.end(),library.second.globals.begin(),library.second.globals.end());
+                        roots.methods.insert(roots.methods.end(),library.second.methods.begin(),library.second.methods.end());
+                        roots.imports.insert(roots.imports.end(),library.second.imports.begin(),library.second.imports.end());
+                    }
+                    roots.structures.insert(roots.structures.end(),testProgram.structures.begin(),testProgram.structures.end());
+                    roots.enums.insert(roots.enums.end(),testProgram.enums.begin(),testProgram.enums.end());
+                    roots.classes.insert(roots.classes.end(),testProgram.classes.begin(),testProgram.classes.end());
+                    roots.interfaceClasses.insert(roots.interfaceClasses.end(),testProgram.interfaceClasses.begin(),testProgram.interfaceClasses.end());
+                    roots.globals.insert(roots.globals.end(),testProgram.globals.begin(),testProgram.globals.end());
+                    roots.methods.insert(roots.methods.end(),testProgram.methods.begin(),testProgram.methods.end());
+                    roots.imports.insert(roots.imports.end(),testProgram.imports.begin(),testProgram.imports.end());
                         const aster_cn::Program resolved=cnResolvePackageImports(roots,testLanguage,packageRoots);
-                        std::vector<Global> globals;
-                        std::vector<Function> functions=cnProgramToAster(resolved,globals,true);
-                        const std::vector<CompiledFunction> generated=
-                            compileProgram(functions,globals,false,true,bc2,dbg);
-                        DebugLineBlob line; DebugInfoBlob info; EhFrameBlob eh;
-                        if(dbg) {
-                            const ObjectLayout layout=layoutObject(generated,globals);
-                            line=encodeDebugLine(layout.lineRows,layout.ins.size()*4,
-                                                 dirNameOf(testPath),baseNameOf(testPath));
-                            info=encodeDebugInfo(layout,generated,functions,globals,
-                                                 dirNameOf(testPath),baseNameOf(testPath));
-                            eh=encodeEhFrame(layout,generated);
+                    // The exactly-one-main check, at merged level: the test
+                    // file supplies main; the libraries must not.
+                    bool testHasMain=false;
+                    for(const auto& method:resolved.methods) if(method.name=="main") testHasMain=true;
+                    if(!testHasMain)
+                        throw Error(resolved.language==aster_cn::Language::Zh
+                            ? "程序必须定义 启动方法" : "program must define main");
+                    std::map<std::string, std::string> testTypeToSource;
+                    auto testAddTypes=[&](const aster_cn::Program& parsed) {
+                        for(const auto& s:parsed.structures) testTypeToSource[s.name]=parsed.sourceFile;
+                        for(const auto& e:parsed.enums) {
+                            testTypeToSource[e.name]=parsed.sourceFile;
+                            for(const auto& m:e.members) testTypeToSource[m.name]=parsed.sourceFile;
                         }
-                        writeObject(object,generated,globals,false,line,info,eh);
-                        ++compiled;
-                    } else ++reused;
-                    linkObjects({object},exe,0x400000,2,testPage,true);
+                        for(const auto& c:parsed.classes) testTypeToSource[c.name]=parsed.sourceFile;
+                        for(const auto& i:parsed.interfaceClasses) testTypeToSource[i.name]=parsed.sourceFile;
+                    };
+                    for(const auto& library:testLibraries) testAddTypes(library.second);
+                    testAddTypes(testProgram);
+                    std::string testLangText=std::string("default=")+
+                        (testLanguage.hasDefault
+                            ? (testLanguage.defaultLanguage==aster_cn::Language::Zh?"zh":"en") : "-")+
+                        ";zhAllowed="+(testLanguage.zhAllowed?"1":"0")+
+                        ";enAllowed="+(testLanguage.enAllowed?"1":"0");
+                    for(const auto& moduleDir:bilingualModuleDirs)
+                        testLangText+=";module-dir="+moduleDir;
+                    const std::set<std::string> testPackageFiles=g_cnPackageFilesLoaded;
+                    CnPerSourceContext testCtx;
+                    testCtx.program=&resolved;
+                    {
+                        // Package declarations are emitted by the first
+                        // linked TU importing each file's module (the
+                        // test file here when no library imports it), so
+                        // a library that neither imports nor references a
+                        // package records no package dep.
+                        std::vector<std::pair<std::string, const aster_cn::Program*>> testLinkSet;
+                        for (const auto& library : testLibraries)
+                            testLinkSet.emplace_back(library.first, &library.second);
+                        testLinkSet.emplace_back(testPath, &testProgram);
+                        testCtx.packageFileOwners = cnPackageFileOwners(testLinkSet);
+                    }
+                    testCtx.packageFiles=&testPackageFiles;
+                    testCtx.forceConstructedClasses=cnFindConstructedClasses(resolved);
+                    {
+                        std::string constructedText;
+                        for(const auto& name:testCtx.forceConstructedClasses){constructedText+=name;constructedText+='\n';}
+                        testCtx.constructedHash=sha256Hex(constructedText);
+                    }
+                    testCtx.typeNameToSource=testTypeToSource;
+                    testCtx.langHash=sha256Hex(testLangText);
+                    testCtx.keySalt=testPath;
+                    testCtx.cacheDir="build/.cache";
+                    testCtx.dbg=dbg;
+                    testCtx.bc=bc2;
+                    testCtx.page=testPage;
+                    std::vector<std::string> testObjs;
+                    for(size_t i=0;i<testLibraries.size();++i) {
+                        const std::string obj=cachedCnProjectObject(
+                            testCtx,testLibraries[i].second,testLibraries[i].first,
+                            (i+1)*1000000,compiled,reused,noCache);
+                        if(!obj.empty()) testObjs.push_back(obj);
+                    }
+                    {
+                        const std::string obj=cachedCnProjectObject(
+                            testCtx,testProgram,testPath,
+                            (testLibraries.size()+1)*1000000,compiled,reused,noCache);
+                        if(!obj.empty()) testObjs.push_back(obj);
+                    }
+                    if(testObjs.empty()){std::cerr<<"aster test: no objects to link\n";return 1;}
+                    // No GC here, like the mainline project build: GC prunes
+                    // from _start, and a foreign TU's __aster_init is
+                    // unreachable from main (only the entry TU's own init is
+                    // called from its prologue), so GC drops it before the
+                    // linker can synthesize the entry stub that walks the
+                    // chain — every foreign runtime-initialized global would
+                    // silently stay zero. Without GC the chain survives and
+                    // the A-21 order check still runs.
+                    linkObjects(testObjs,exe,0x400000,2,testPage,false);
                     pid_t pid=::fork();
                     if(pid<0){std::cerr<<"aster test: cannot fork\n";return 1;}
                     if(pid==0){execAarch64Image(exe,{});std::perror("aster test");::_exit(127);}
                     int st=0;
-                    if(::waitpid(pid,&st,0)<0){std::cerr<<"aster test: waitpid failed\n";return 1;}
+                    // v0.23.82-dev (bilingual): the same bounded wait as the
+                    // original-parser test path below; a hanging test is killed
+                    // and reported instead of hanging aster.
+                    const int wr=waitChildWithTimeout(pid,st,timeoutSec,"aster test");
+                    if(wr<0)return 1;
+                    if(wr==1){++ran;++failed;std::cout<<"FAIL "<<testPath<<" (timed out after "<<timeoutSec<<"s)\n";continue;}
                     const int rc=WIFEXITED(st)?WEXITSTATUS(st):(WIFSIGNALED(st)?128+WTERMSIG(st):1);
                     ++ran;
                     if(rc==0)std::cout<<"PASS "<<testPath<<"\n";
@@ -25279,7 +26274,20 @@ int main(int argc,char**argv){
                                 g_buildDeps.clear();
                                 Parser p(src,false,dirNameOf(sp),nullptr,sp);p.parse();
                                 for(const auto& f:p.functions)if(f.name=="main")++mains;
-                            }catch(...){}
+                            }catch(...){
+                                // Bilingual sources use `:` return types, which
+                                // the mainline parser rejects; count a bilingual
+                                // entry instead, so doctor works on bilingual
+                                // projects too.
+                                try{
+                                    const std::string src=readFile(sp);
+                                    aster_cn::ProjectLanguageConfig lang;
+                                    if(fileExists("aster.proj"))lang=aster_cn::readProjectLanguage("aster.proj");
+                                    const aster_cn::Language language=aster_cn::selectLanguage(src,false,aster_cn::Language::Zh,lang);
+                                    aster_cn::Program prog=aster_cn::parseProgram(src,language,sp);
+                                    for(const auto& m:prog.methods)if(m.name=="main"||m.name=="\u542f\u52a8\u65b9\u6cd5")++mains;
+                                }catch(...){}
+                            }
                         }
                         g_buildDeps.clear();
                         if(mains==0)say("fail","no source defines `main` — an exe project needs one");
@@ -25458,86 +26466,92 @@ int main(int argc,char**argv){
                 if(!targetDir.empty()&&!makeDirs(targetDir)){std::cerr<<"aster build: cannot create "<<targetDir<<"\n";return 1;}
                 const std::string cacheDir="build/.cache";
                 if(!makeDirs(cacheDir)){std::cerr<<"aster "<<cmd<<": cannot create "<<cacheDir<<"\n";return 1;}
-                std::vector<std::string> fingerprintPaths{"aster.proj"};
-                for(const auto& sourcePath:spec.sources) fingerprintPaths.push_back(sourcePath);
-                std::vector<std::string> fingerprintRoots;
-                for(const auto& moduleDir:bilingualModuleDirs) fingerprintRoots.push_back(moduleDir);
-                std::error_code walkError;
-                for(std::filesystem::recursive_directory_iterator it(
-                        bilingualCwd,std::filesystem::directory_options::skip_permission_denied,
-                        walkError), end; it!=end; it.increment(walkError)) {
-                    if(walkError) { walkError.clear(); continue; }
-                    const auto& entry=*it;
-                    if(entry.is_directory(walkError)) {
-                        if(entry.path().filename()=="build" || entry.path().filename()==".git")
-                            it.disable_recursion_pending();
-                        continue;
-                    }
-                    if(!walkError && entry.is_regular_file(walkError) &&
-                       entry.path().extension()==".ast")
-                        fingerprintPaths.push_back(entry.path().string());
-                    walkError.clear();
-                }
-                for(const auto& moduleDir:fingerprintRoots) {
-                    std::error_code moduleError;
-                    for(std::filesystem::recursive_directory_iterator it(
-                            moduleDir,std::filesystem::directory_options::skip_permission_denied,
-                            moduleError), end; it!=end; it.increment(moduleError)) {
-                        if(moduleError) { moduleError.clear(); continue; }
-                        const auto& entry=*it;
-                        if(entry.is_regular_file(moduleError) && entry.path().extension()==".ast")
-                            fingerprintPaths.push_back(entry.path().string());
-                        moduleError.clear();
+                // Per-source build: one cached object per deduplicated
+                // source, linked in aster.proj order. The whole-project
+                // fingerprint and its fileExists-only reuse are gone: each
+                // TU's validity comes from its own meta (src + obj hashes
+                // + foreign-source dep hashes). The exactly-one-main check
+                // stays at merged level, as before — for exe projects only:
+                // an APK project has no main (its entry is
+                // ANativeActivity_onCreate / aster_main in the sources).
+                bool bilingualHasMain=false;
+                for(const auto& method:program.methods) if(method.name=="main") bilingualHasMain=true;
+                if(!bilingualHasMain)
+                    throw Error(program.language==aster_cn::Language::Zh
+                        ? "程序必须定义 启动方法" : "program must define main");
+                std::map<std::string, std::string> bilingualTypeToSource;
+                for(const auto& parsed:parsedSources) {
+                    for(const auto& s:parsed.structures) bilingualTypeToSource[s.name]=parsed.sourceFile;
+                    for(const auto& e:parsed.enums) {
+                        bilingualTypeToSource[e.name]=parsed.sourceFile;
+                        for(const auto& m:e.members) bilingualTypeToSource[m.name]=parsed.sourceFile;
                     }
                 }
-                std::sort(fingerprintPaths.begin(),fingerprintPaths.end());
-                fingerprintPaths.erase(std::unique(fingerprintPaths.begin(),fingerprintPaths.end()),
-                                       fingerprintPaths.end());
-                std::string fingerprint=std::string(kVersion)+"|cn-project|"+
-                    (dbg?"g":"-")+(bc2?"b":"-")+"|"+std::to_string(bilingualPage)+"\n";
+                std::string bilingualLangText=std::string("default=")+
+                    (bilingualLanguage.hasDefault
+                        ? (bilingualLanguage.defaultLanguage==aster_cn::Language::Zh?"zh":"en") : "-")+
+                    ";zhAllowed="+(bilingualLanguage.zhAllowed?"1":"0")+
+                    ";enAllowed="+(bilingualLanguage.enAllowed?"1":"0");
                 for(const auto& moduleDir:bilingualModuleDirs)
-                    fingerprint+="module-dir "+moduleDir+"\n";
-                for(const auto& path:fingerprintPaths) {
-                    fingerprint+=path+" ";
-                    fingerprint+=fileExists(path)?sha256Hex(readFile(path)):"<missing>";
-                    fingerprint.push_back('\n');
+                    bilingualLangText+=";module-dir="+moduleDir;
+                const std::set<std::string> bilingualPackageFiles=g_cnPackageFilesLoaded;
+                CnPerSourceContext bilingualCtx;
+                bilingualCtx.program=&program;
+                {
+                    // Package declarations are emitted by the first
+                    // source importing each file's module, so a source
+                    // that neither imports nor references a package
+                    // records no package dep.
+                    std::vector<std::pair<std::string, const aster_cn::Program*>> bilingualLinkSet;
+                    for (size_t i = 0; i < spec.sources.size(); ++i)
+                        bilingualLinkSet.emplace_back(spec.sources[i], &parsedSources[i]);
+                    bilingualCtx.packageFileOwners = cnPackageFileOwners(bilingualLinkSet);
                 }
-                const std::string cacheKey=sha256Hex(fingerprint);
-                const std::string objectPath=cacheDir+"/cn-"+cacheKey+".o";
-                const bool reused=!noCache&&fileExists(objectPath);
-                if(!reused) {
-                    std::vector<Global> globals;
-                    const std::vector<Function> functions=cnProgramToAster(program,globals,true);
-                    const auto compiled=compileProgram(functions,globals,false,true,bc2,dbg);
-                    DebugLineBlob bilingualDebugLine;
-                    DebugInfoBlob bilingualDebugInfo;
-                    EhFrameBlob bilingualEhFrame;
-                    if(dbg) {
-                        const ObjectLayout layout=layoutObject(compiled,globals);
-                        bilingualDebugLine=encodeDebugLine(layout.lineRows,layout.ins.size()*4,
-                                                           dirNameOf(program.sourceFile),
-                                                           baseNameOf(program.sourceFile));
-                        bilingualDebugInfo=encodeDebugInfo(layout,compiled,functions,globals,
-                                                            dirNameOf(program.sourceFile),
-                                                            baseNameOf(program.sourceFile));
-                        bilingualEhFrame=encodeEhFrame(layout,compiled);
-                    }
-                    const std::string temporary=objectPath+".tmp";
-                    writeObject(temporary,compiled,globals,false,bilingualDebugLine,
-                                bilingualDebugInfo,bilingualEhFrame);
-                    writeFileAtomic(objectPath,readFile(temporary));
-                    std::remove(temporary.c_str());
+                bilingualCtx.packageFiles=&bilingualPackageFiles;
+                bilingualCtx.forceConstructedClasses=cnFindConstructedClasses(program);
+                {
+                    std::string constructedText;
+                    for(const auto& name:bilingualCtx.forceConstructedClasses){constructedText+=name;constructedText+='\n';}
+                    bilingualCtx.constructedHash=sha256Hex(constructedText);
                 }
-                linkObjects({objectPath},target,0x400000,2,bilingualPage,true);
+                bilingualCtx.typeNameToSource=bilingualTypeToSource;
+                bilingualCtx.langHash=sha256Hex(bilingualLangText);
+                bilingualCtx.keySalt="";
+                bilingualCtx.cacheDir=cacheDir;
+                bilingualCtx.dbg=dbg;
+                bilingualCtx.bc=bc2;
+                bilingualCtx.page=bilingualPage;
+                std::vector<std::string> bilingualObjs;
+                int bilingualCompiled=0, bilingualReused=0;
+                for(size_t i=0;i<spec.sources.size();++i) {
+                    const std::string obj=cachedCnProjectObject(
+                        bilingualCtx,parsedSources[i],spec.sources[i],
+                        (i+1)*1000000,bilingualCompiled,bilingualReused,noCache);
+                    if(!obj.empty()) bilingualObjs.push_back(obj);
+                }
+                if(bilingualObjs.empty()){std::cerr<<"aster "<<cmd<<": no objects to link\n";return 1;}
+                // No GC here, like the mainline project build: GC prunes
+                // from _start, and a foreign TU's __aster_init is unreachable
+                // from main (only the entry TU's own init is called from its
+                // prologue), so GC drops it before the linker can synthesize
+                // the entry stub that walks the chain — every foreign
+                // runtime-initialized global would silently stay zero.
+                // Without GC the chain survives and the A-21 order check
+                // still runs.
+                linkObjects(bilingualObjs,target,0x400000,2,bilingualPage,false);
                 std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
-                         <<" ("<<spec.sources.size()<<" sources, "
-                         <<(reused?"0 compiled, 1 reused":"1 compiled, 0 reused")<<")\n";
+                         <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n";
                 if(isRun){
                     pid_t pid=::fork();
                     if(pid==0){execAarch64Image(target,runArgs);std::perror("aster run");::_exit(127);}
                     int st=0;
                     if(pid<0){std::cerr<<"aster run: cannot fork\n";return 1;}
-                    if(::waitpid(pid,&st,0)<0){std::cerr<<"aster run: waitpid failed\n";return 1;}
+                    // v0.23.82-dev (bilingual): the same bounded wait as the
+                    // original-parser run path below; a hanging program is
+                    // killed and reported instead of hanging aster.
+                    const int wr=waitChildWithTimeout(pid,st,timeoutSec,"aster run");
+                    if(wr<0)return 1;
+                    if(wr==1)return 124;
                     if(WIFEXITED(st))return WEXITSTATUS(st);
                     if(WIFSIGNALED(st))return 128+WTERMSIG(st);
                     return 1;

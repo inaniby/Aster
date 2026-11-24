@@ -316,6 +316,12 @@ printf '%s\n' '[8/9] Mutated aster.proj and cache .meta files through build/doct
 # failed-closed meta) and 1/2 (rejected with a diagnostic). The seed
 # project is built once first, so the .meta mutants start from a warm cache
 # and a bad meta must fail closed to a recompile: all 21 must still build.
+# Per-source bilingual metas are `build/.cache/cn-<key>.meta` (design §7.3),
+# one per source and byte-identical in format to the mainline meta
+# (`version` / `flags` / `src <path> <sha256>` / `obj <sha256>` /
+# `dep <sha256> <path>`), so the generator -- which globs `*.meta` and picks
+# the one whose `src` line names src/main.ast -- needs no change for the
+# per-source rework; it already targets exactly this format.
 "$WORK/aster-asan" new "$WORK/proj-seed" >/dev/null
 (cd "$WORK/proj-seed" && "$WORK/aster-asan" build >"$WORK/proj-seed.log" 2>&1) \
     || { echo 'FAIL: the seed project for the proj/meta corpus did not build:'; cat "$WORK/proj-seed.log" >&2; exit 1; }

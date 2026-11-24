@@ -51,16 +51,16 @@ echo '[project build] existing build command compiles mixed-language sources'
 if "$RUNNER" "$TMP/project/build/bilingual"; then status=0; else status=$?; fi
 [ "$status" -eq 0 ] || { echo "FAIL: bilingual project build returned $status, expected 0" >&2; exit 1; }
 (cd "$TMP/project" && "$ASTER_BIN" build > build-cache.log)
-grep -q '0 compiled, 1 reused' "$TMP/project/build-cache.log" || {
+grep -q '0 compiled, 2 reused' "$TMP/project/build-cache.log" || {
     echo 'FAIL: bilingual project build did not reuse its cached object' >&2; cat "$TMP/project/build-cache.log" >&2; exit 1;
 }
 printf '\n' >> "$TMP/project/src/helper.ast"
 (cd "$TMP/project" && "$ASTER_BIN" build > build-source-change.log)
-grep -q '1 compiled, 0 reused' "$TMP/project/build-source-change.log" || {
+grep -q '2 compiled, 0 reused' "$TMP/project/build-source-change.log" || {
     echo 'FAIL: bilingual source edit did not invalidate the project cache' >&2; cat "$TMP/project/build-source-change.log" >&2; exit 1;
 }
 (cd "$TMP/project" && "$ASTER_BIN" build --no-cache > build-no-cache.log)
-grep -q '1 compiled, 0 reused' "$TMP/project/build-no-cache.log" || {
+grep -q '2 compiled, 0 reused' "$TMP/project/build-no-cache.log" || {
     echo 'FAIL: bilingual --no-cache did not rebuild the project' >&2; cat "$TMP/project/build-no-cache.log" >&2; exit 1;
 }
 if command -v readelf >/dev/null 2>&1; then
@@ -183,25 +183,25 @@ return 加一(41) - 42;
 }
 SRC
 (cd "$TMP/test-project" && "$ASTER_BIN" test > test-first.log)
-grep -q '1 compiled, 0 reused' "$TMP/test-project/test-first.log" || {
+grep -q '2 compiled, 0 reused' "$TMP/test-project/test-first.log" || {
     echo 'FAIL: bilingual aster test did not compile its test object' >&2; cat "$TMP/test-project/test-first.log" >&2; exit 1;
 }
 (cd "$TMP/test-project" && "$ASTER_BIN" test > test-second.log)
-grep -q '0 compiled, 1 reused' "$TMP/test-project/test-second.log" || {
+grep -q '0 compiled, 2 reused' "$TMP/test-project/test-second.log" || {
     echo 'FAIL: bilingual aster test did not reuse its test object' >&2; cat "$TMP/test-project/test-second.log" >&2; exit 1;
 }
 printf '\n' >> "$TMP/test-project/tests/basic.ast"
 (cd "$TMP/test-project" && "$ASTER_BIN" test > test-change.log)
-grep -q '1 compiled, 0 reused' "$TMP/test-project/test-change.log" || {
+grep -q '1 compiled, 1 reused' "$TMP/test-project/test-change.log" || {
     echo 'FAIL: bilingual aster test did not invalidate its cache after a test-source edit' >&2; cat "$TMP/test-project/test-change.log" >&2; exit 1;
 }
 mkdir -p "$TMP/test-project/modules-a" "$TMP/test-project/modules-b"
 (cd "$TMP/test-project" && "$ASTER_BIN" test --module-dir modules-a --module-dir modules-b > test-order.log)
-grep -q '1 compiled, 0 reused' "$TMP/test-project/test-order.log" || {
+grep -q '2 compiled, 0 reused' "$TMP/test-project/test-order.log" || {
     echo 'FAIL: bilingual aster test did not include module-root order in its cache key' >&2; cat "$TMP/test-project/test-order.log" >&2; exit 1;
 }
 (cd "$TMP/test-project" && "$ASTER_BIN" test --module-dir modules-b --module-dir modules-a > test-order-reversed.log)
-grep -q '1 compiled, 0 reused' "$TMP/test-project/test-order-reversed.log" || {
+grep -q '2 compiled, 0 reused' "$TMP/test-project/test-order-reversed.log" || {
     echo 'FAIL: changing module-root order incorrectly reused bilingual test cache' >&2; cat "$TMP/test-project/test-order-reversed.log" >&2; exit 1;
 }
 mkdir -p "$TMP/test-project/test-packages"
@@ -220,16 +220,16 @@ return helper.add_one(41) - 42;
 }
 SRC
 (cd "$TMP/test-project" && "$ASTER_BIN" test --module-dir test-packages > test-package-first.log)
-grep -q '1 compiled, 0 reused' "$TMP/test-project/test-package-first.log" || {
+grep -q '2 compiled, 0 reused' "$TMP/test-project/test-package-first.log" || {
     echo 'FAIL: bilingual aster test did not compile an external package test' >&2; cat "$TMP/test-project/test-package-first.log" >&2; exit 1;
 }
 (cd "$TMP/test-project" && "$ASTER_BIN" test --module-dir test-packages > test-package-second.log)
-grep -q '0 compiled, 1 reused' "$TMP/test-project/test-package-second.log" || {
+grep -q '0 compiled, 2 reused' "$TMP/test-project/test-package-second.log" || {
     echo 'FAIL: bilingual aster test did not reuse an external package test' >&2; cat "$TMP/test-project/test-package-second.log" >&2; exit 1;
 }
 printf '\n' >> "$TMP/test-project/test-packages/helper.ast"
 (cd "$TMP/test-project" && "$ASTER_BIN" test --module-dir test-packages > test-package-change.log)
-grep -q '1 compiled, 0 reused' "$TMP/test-project/test-package-change.log" || {
+grep -q '1 compiled, 1 reused' "$TMP/test-project/test-package-change.log" || {
     echo 'FAIL: external package edit did not invalidate bilingual test cache' >&2; cat "$TMP/test-project/test-package-change.log" >&2; exit 1;
 }
 
