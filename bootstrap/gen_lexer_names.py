@@ -84,6 +84,20 @@ KEYWORDS = [
     ("do", "Do"),           # v0.23.77-dev
 ]
 
+# P1-13 (FIX-REPORT §8): `i8`/`i16` are context keywords in the host
+# compiler — the lexer leaves them as Ident and parseType reads them in
+# type position, so they are NOT in the host's keyword chain and the
+# --check below compares that chain against KEYWORDS minus this list.
+# They stay in KEYWORDS because the bootstrap lexer
+# (bootstrap/aster.ast keyword_kind) and the C twin (tests/lexer_names.h)
+# still reserve them; that bootstrap gap is a separate item for the user
+# to decide (FIX-REPORT §8.6), so the emitted tables are unchanged until
+# then. If that item lands, delete these two entries from KEYWORDS (and
+# this list) instead of extending the exception.
+CONTEXT_KEYWORDS = [
+    ("i8", "I8"), ("i16", "I16"),
+]
+
 # The record width the retired packed name table used; kept as the name-length
 # bound in check_list. The longest name, "MinusMinus", is 10 bytes.
 RECORD = 12
@@ -180,10 +194,15 @@ def check_against_cpp():
             "update it here first, then src/aster.cpp."
             % (only_cpp or "nothing", only_py or "nothing"))
     pairs = cpp_keyword_pairs()
-    if pairs != KEYWORDS:
+    # The host chain holds the reserved words only; the context keywords
+    # (CONTEXT_KEYWORDS above) are read in type position instead, so they
+    # are not in the chain. KEYWORDS itself still lists all 35 words the
+    # bootstrap lexer and the C twin reserve.
+    host_keywords = [p for p in KEYWORDS if p not in CONTEXT_KEYWORDS]
+    if pairs != host_keywords:
         die("the lexer's keyword chain in src/aster.cpp disagrees with "
-            "KEYWORDS\n    src/aster.cpp: %s\n    this file:     %s"
-            % (pairs, KEYWORDS))
+            "KEYWORDS minus CONTEXT_KEYWORDS\n    src/aster.cpp: %s\n    this file:     %s"
+            % (pairs, host_keywords))
 
 
 # ---------------------------------------------------------------------------

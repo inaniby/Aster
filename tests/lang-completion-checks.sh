@@ -103,6 +103,10 @@ if "$ASTER" build-elf "$OUT/bad4.ast" -o "$OUT/bad4.elf" >"$OUT/bad4.log" 2>&1; 
 grep -q 'main must take no parameters' "$OUT/bad4.log" || fail "wrong refusal: $(head -1 "$OUT/bad4.log")"
 printf '  %-40s %s\n' 'one parameter and a ptr argc refused' 'ok'
 
+# P1-13: the host chain holds 33 reserved words — `i8`/`i16` are context
+# keywords there — while the generator's KEYWORDS still lists 35 (the
+# bootstrap lexer and the C twin reserve them; see CONTEXT_KEYWORDS in
+# bootstrap/gen_lexer_names.py). --check compares against the 33.
 printf '%s\n' '[8/9] the token generator agrees with the compiler'
 python3 - <<'PY' || exit 1
 import re

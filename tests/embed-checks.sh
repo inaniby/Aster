@@ -28,6 +28,7 @@
 #   6. compiler mutations, each a way to get the bytes subtly wrong
 set -eu
 cd "$(dirname "$0")/.."
+ROOT=$PWD  # absolute: the mutant builds below cd into $OUT/mut-*
 OUT=${OUT:-tmp-embed-checks}
 mkdir -p "$OUT"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 
@@ -398,8 +399,14 @@ print('\n'.join(sorted(n for n in os.listdir(root) if n.startswith('mut-'))))
 PY
 
 for m in len-off-by-one no-dedup adds-nul ignores-embed-dir; do
+    # The mutant is a copy of src/aster.cpp in $OUT/mut-*, so the bilingual
+    # headers (src/cn_*.hpp/.cpp, pulled in via __has_include since the
+    # bilingual base) are only found with -I src — without it the build
+    # fails with 'aster_cn' not declared and, as a knock-on, the B-P4
+    # diagnostic-file helpers look unused. Same precedent as the other
+    # suites' mutant builds (e.g. lang-completion [9/9] uses -I src).
     ( cd "$OUT/mut-$m" && c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
-        -o aster aster.cpp ) &
+        -I "$ROOT/src" -o aster aster.cpp ) &
 done
 wait
 for m in len-off-by-one no-dedup adds-nul ignores-embed-dir; do

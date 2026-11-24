@@ -66,16 +66,21 @@ grep -qF 'if(to==Ty::Ptr)return isNullConstant(e);' src/aster.cpp \
 grep -qF 'static bool ptrToAssignable(Ty to,Ty from,const Expr& e){' src/aster.cpp \
     || { echo 'FAIL: ptrToAssignable no longer takes the expression it needs' >&2; exit 1; }
 [ "$(grep -o 'ptrToAssignable(' src/aster.cpp | wc -l)" -ge 5 ] \
-    || { echo 'FAIL: expected ptrToAssignable at its definition and assignment gates' >&2; exit 1; }
+    || { echo 'FAIL: expected ptrToAssignable at its definition and call gates' >&2; exit 1; }
 # The four gates: a ptr argument, a ptr return, a ptr local, a ptr assignment —
 # in both passes, because sema is the rule and codegen is its defensive twin.
+# P1-10 (FIX-REPORT §8): the assignment gate is the pre-bilingual form, not
+# ptrToAssignable — `p = &u8arr;` is accepted (bdb7eb7 behaviour) while the
+# stride rule still applies at `let` initialization, so the gate pinned here
+# is the local form plus the global form's `(expected ptr)` throw.
 for pat in \
   'if(actual!=Ty::Ptr&&!isNullConstant(*e.args[i]))throw Error("argument type mismatch calling "' \
   '} else if(isPtr!=currentReturnPtr&&!(currentReturnPtr&&isNullConstant(e)))' \
   'if(!actualPtr&&!isNullConstant(*s.expr))throw Error("type mismatch initializing '"'"'"' \
   'if(!actualPtr&&!isNullConstant(*s.expr))throw Error("type mismatch assigning variable: "+an);' \
   'if(actual.k!=Ty::Ptr&&!isNullConstant(*s.expr))' \
-  'if(!ptrToAssignable(b->ty,actual,*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));' \
+  'if(actual!=Ty::Ptr&&!isNullConstant(*s.expr))throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name));' \
+  'throw Error(loc(s.line,s.col,"type mismatch assigning variable: "+s.name+" (expected ptr)"));' \
   'if(!(retPtr&&isNullConstant(*s.expr)))'
 do
     grep -qF "$pat" src/aster.cpp \
