@@ -25269,10 +25269,59 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
     } else {
         cnEffectiveConstructors = stringPool.classConstructors;
     }
+    bool cnEmitsFactoryForAny = false;
+    if (cnPerSource) {
+        for (const int candidate : cnEffectiveConstructors) {
+            const auto sourceClass = std::find_if(program.classes.begin(), program.classes.end(),
+                [&](const aster_cn::ClassDeclaration& declaration) {
+                    return declaration.name == structOf(candidate).name;
+                });
+            if (sourceClass != program.classes.end() && cnOwnsSource(sourceClass->sourceFile)) {
+                cnEmitsFactoryForAny = true;
+                break;
+            }
+        }
+    }
     if (!cnEffectiveConstructors.empty() || stringPool.usesClosureEnv ||
         stringPool.usesClosureAdapter) {
-        if (names.count("alloc"))
-            throw Error("class construction, capturing closures, or callback adapters require the standard library alloc function; alloc is already declared");
+        // The alloc stub is an external declaration: a TU that emits a
+        // factory or uses closures needs it; a TU that only emits a base
+        // initializer (which never calls alloc) does not.
+        const bool cnNeedsAlloc = !cnPerSource || cnEmitsFactoryForAny ||
+            stringPool.usesClosureEnv || stringPool.usesClosureAdapter;
+        // B26: an `alloc` the program already declares is reused when its
+        // signature matches the stub's (`alloc(n: i32) -> ptr`); the stub
+        // is only injected when no declaration exists, and the conflict
+        // check now runs after cnNeedsAlloc — a TU that does not need
+        // alloc neither throws nor injects. A mismatched declaration
+        // still throws, but only on a TU that truly needs alloc (a
+        // factory TU cannot call a wrong-shaped alloc). The signature
+        // comes from g_cnFunctionSignatures for a method (the usual
+        // case: the standard library's `fn alloc`; globalBindings holds
+        // only let/const globals, never methods) and from
+        // globalBindings for a function-typed global. A TU that reuses
+        // a foreign alloc gets its external declaration from
+        // cnAddExternalStubs, which builds it from the same registered
+        // signature; the owning TU already carries the definition.
+        bool cnAllocDeclared = false;
+        if (names.count("alloc")) {
+            const auto declared = g_cnFunctionSignatures.find("alloc");
+            if (declared != g_cnFunctionSignatures.end()) {
+                cnAllocDeclared = declared->second.parameterTypes.size() == 1 &&
+                    declared->second.parameterTypes[0] == Ty::I32 &&
+                    declared->second.parameterDims[0].empty() &&
+                    !declared->second.parameterIsFunc[0] &&
+                    declared->second.returnType == Ty::Ptr;
+            } else {
+                const auto global = globalBindings.find("alloc");
+                if (global != globalBindings.end() && global->second.isFunc)
+                    cnAllocDeclared = global->second.funcSig.params.size() == 1 &&
+                        global->second.funcSig.params[0] == Ty::I32 &&
+                        global->second.funcSig.ret == Ty::Ptr;
+            }
+            if (!cnAllocDeclared && cnNeedsAlloc)
+                throw Error("class construction, capturing closures, or callback adapters require the standard library alloc function; alloc is already declared");
+        }
         Function allocator;
         allocator.name = "alloc";
         allocator.params = {"n"};
@@ -25285,7 +25334,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
         allocator.retType = Ty::Ptr;
         allocator.returnPtr = true;
         allocator.external = true;
-        functions.push_back(std::move(allocator));
+        if (cnNeedsAlloc && !cnAllocDeclared) functions.push_back(std::move(allocator));
         names.insert("alloc");
 
         // C-2: a TU that lowers a callback adapter also needs the pool
@@ -25302,7 +25351,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& program,
             adapterAllocator.retType = Ty::Ptr;
             adapterAllocator.returnPtr = true;
             adapterAllocator.external = true;
-            functions.push_back(std::move(adapterAllocator));
+            if (cnNeedsAlloc) functions.push_back(std::move(adapterAllocator));
             names.insert("aster_cn_adapter_alloc");
         }
 

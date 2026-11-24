@@ -97,3 +97,150 @@ if "$ASTER_BIN" build-cn-obj "$TMP/iface-missing.ast" -o "$TMP/iface-missing.o" 
     echo 'FAIL: class missing an interface method was accepted' >&2
     exit 1
 fi
+grep -q "does not implement interface '可读': missing method '读'" "$TMP/iface-missing.err" || {
+    echo 'FAIL: expected missing-interface-method rejection' >&2
+    exit 1
+}
+
+echo '[4/5] B26: a class plus a declared alloc in one project builds'
+mkdir -p "$TMP/b26/src"
+cat > "$TMP/b26/aster.proj" <<'PROJ'
+kind exe
+[language]
+default = "en"
+src/std.ast
+src/widget.ast
+src/main.ast
+PROJ
+cat > "$TMP/b26/src/std.ast" <<'SRC'
+// aster:language=en
+fn alloc(n: i32) -> ptr {
+return 0;
+}
+SRC
+cat > "$TMP/b26/src/widget.ast" <<'SRC'
+// aster:language=en
+class Widget {
+let value: i32;
+fn get(): i32 {
+return this.value;
+}
+}
+let g_widget: Widget = Widget();
+SRC
+cat > "$TMP/b26/src/main.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 {
+let w: Widget = Widget();
+return w.get();
+}
+SRC
+(cd "$TMP/b26" && "$ASTER_BIN" build >"$TMP/b26-build.log" 2>&1) || {
+    echo 'FAIL: B26 project (class + declared alloc) did not build' >&2
+    cat "$TMP/b26-build.log" >&2
+    exit 1
+}
+[ -x "$TMP/b26/build/b26" ] || { echo 'FAIL: B26 project produced no exe' >&2; exit 1; }
+for tu in std widget main; do
+    (cd "$TMP/b26" && "$ASTER_BIN" build-cn-obj --project "$TMP/b26/aster.proj" "src/$tu.ast" -o "$TMP/b26/$tu.o" >"$TMP/b26-$tu.log" 2>&1) || {
+        echo "FAIL: B26 build-cn-obj --project for $tu failed" >&2
+        cat "$TMP/b26-$tu.log" >&2
+        exit 1
+    }
+done
+# The declared alloc is reused, not duplicated: defined in the TU that
+# owns it, an undefined reference in the factory TU, and absent from the
+# TU that needs no alloc at all.
+readelf -sW "$TMP/b26/std.o" | grep ' alloc$' | grep -qv UND || {
+    echo 'FAIL: B26 std.o does not define alloc' >&2; exit 1; }
+readelf -sW "$TMP/b26/widget.o" | grep -q 'UND alloc$' || {
+    echo 'FAIL: B26 widget.o does not reference alloc' >&2; exit 1; }
+readelf -sW "$TMP/b26/main.o" | grep -q ' alloc$' && {
+    echo 'FAIL: B26 main.o should not mention alloc' >&2; exit 1; }
+# No alloc anywhere: the stub is only a declaration, so the link still
+# fails with the undefined symbol (B26 must not break this).
+mkdir -p "$TMP/b26-noalloc/src"
+cp "$TMP/b26/aster.proj" "$TMP/b26-noalloc/aster.proj"
+sed -i '/src\/std.ast/d' "$TMP/b26-noalloc/aster.proj"
+cp "$TMP/b26/src/widget.ast" "$TMP/b26/src/main.ast" "$TMP/b26-noalloc/src/"
+if (cd "$TMP/b26-noalloc" && "$ASTER_BIN" build 2>"$TMP/b26-noalloc.err"); then
+    echo 'FAIL: B26 project without alloc built' >&2
+    exit 1
+fi
+grep -q "undefined function symbol 'alloc'" "$TMP/b26-noalloc.err" || {
+    echo 'FAIL: B26 no-alloc project failed without the alloc link error' >&2
+    cat "$TMP/b26-noalloc.err" >&2
+    exit 1
+}
+# Mismatched alloc: the throw is kept where alloc is truly needed (the
+# factory TU), and still not raised where it is not (the main TU).
+mkdir -p "$TMP/b26-mismatch/src"
+cp "$TMP/b26/aster.proj" "$TMP/b26-mismatch/aster.proj"
+cp "$TMP/b26/src/widget.ast" "$TMP/b26/src/main.ast" "$TMP/b26-mismatch/src/"
+cat > "$TMP/b26-mismatch/src/std.ast" <<'SRC'
+// aster:language=en
+fn alloc(n: i32) -> i32 {
+return 0;
+}
+SRC
+if (cd "$TMP/b26-mismatch" && "$ASTER_BIN" build 2>"$TMP/b26-mismatch.err"); then
+    echo 'FAIL: B26 mismatched-alloc project built' >&2
+    exit 1
+fi
+grep -q 'alloc is already declared' "$TMP/b26-mismatch.err" || {
+    echo 'FAIL: B26 mismatched alloc did not report the conflict' >&2
+    cat "$TMP/b26-mismatch.err" >&2
+    exit 1
+}
+if (cd "$TMP/b26-mismatch" && "$ASTER_BIN" build-cn-obj --project "$TMP/b26-mismatch/aster.proj" src/widget.ast -o "$TMP/b26-mismatch/widget.o" 2>"$TMP/b26-mismatch-widget.err"); then
+    echo 'FAIL: B26 mismatched alloc was accepted by the factory TU' >&2
+    exit 1
+fi
+grep -q 'alloc is already declared' "$TMP/b26-mismatch-widget.err" || {
+    echo 'FAIL: B26 factory TU did not report the alloc conflict' >&2
+    cat "$TMP/b26-mismatch-widget.err" >&2
+    exit 1
+}
+(cd "$TMP/b26-mismatch" && "$ASTER_BIN" build-cn-obj --project "$TMP/b26-mismatch/aster.proj" src/main.ast -o "$TMP/b26-mismatch/main.o" >"$TMP/b26-mismatch-main.log" 2>&1) || {
+    echo 'FAIL: B26 main TU (needs no alloc) was rejected for the mismatched alloc' >&2
+    cat "$TMP/b26-mismatch-main.log" >&2
+    exit 1
+}
+
+echo '[5/5] B26: a class plus the real standard-library alloc runs'
+mkdir -p "$TMP/b26rt/src"
+cp "$TMP/b26/aster.proj" "$TMP/b26rt/aster.proj"
+cp "$ROOT/stdlib/aster_std.ast" "$TMP/b26rt/src/std.ast"
+cat > "$TMP/b26rt/src/widget.ast" <<'SRC'
+// aster:language=en
+class Widget {
+let value: i32 = 0;
+fn get(): i32 {
+return this.value;
+}
+fn bump(x: i32): i32 {
+this.value = this.value + x;
+return this.value;
+}
+}
+SRC
+cat > "$TMP/b26rt/src/main.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 {
+let w: Widget = Widget();
+return w.bump(41);
+}
+SRC
+(cd "$TMP/b26rt" && "$ASTER_BIN" build >"$TMP/b26rt-build.log" 2>&1) || {
+    echo 'FAIL: B26 runtime project (class + real stdlib alloc) did not build' >&2
+    cat "$TMP/b26rt-build.log" >&2
+    exit 1
+}
+if [ "$CAN_RUN" -eq 1 ]; then
+    if "$RUNNER" "$TMP/b26rt/build/b26rt"; then status=0; else status=$?; fi
+    [ "$status" -eq 41 ] || { echo "FAIL: B26 runtime returned $status, expected 41" >&2; exit 1; }
+else
+    echo 'SKIP: execution requires qemu-aarch64 or AArch64 Linux'
+fi
+
+echo 'PASS: bilingual class checks'
