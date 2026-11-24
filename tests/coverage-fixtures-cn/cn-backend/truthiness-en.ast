@@ -23,39 +23,15 @@ count = count - 1;
 if (0) {
 return 90;
 }
-let target: i32 = 0;
-let pointer: ptr = null;
-if (pointer) {
+let flag: bool = true;
+if (flag) {
+total = total + 1;
+}
+flag = false;
+if (flag) {
 return 91;
 }
-pointer = &target;
-if (pointer) {
-total = total + 1;
-}
-pointer = null;
-if (pointer) {
-return 92;
-}
-let precise: f64 = 0.0;
-if (precise) {
-return 93;
-}
-precise = 1.5;
-if (precise) {
-total = total + 1;
-}
-let single: f32 = f32(0.0);
-if (single) {
-return 94;
-}
-single = f32(2.0);
-if (single) {
-total = total + 1;
-}
-if (null) {
-return 95;
-}
-if ("text") {
+if (count == 0) {
 total = total + 1;
 }
 return total;

@@ -1,0 +1,8 @@
+// aster:language=en
+fn main(): i32 {
+let x: f64 = 1.5;
+if (x) {
+return 1;
+}
+return 0;
+}

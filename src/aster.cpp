@@ -20567,41 +20567,20 @@ static void cnValidateClosureExpression(const aster_cn::Expression& expression,
 static void cnRequireCondition(const aster_cn::Expression& expression,
                               const CnLoweringContext& context) {
     const Ty type = cnExpressionType(expression, context);
-    if (type != Ty::Bool && !tyIsInteger(type) && type != Ty::Ptr && !tyIsFloat(type))
+    if (type != Ty::Bool && !tyIsInteger(type))
         throw Error(loc(expression.line, expression.column,
-                        "condition must be bool, numeric, or pointer"));
+                        "condition must be bool or integer"));
 }
 
 static E cnConditionToAster(const aster_cn::Expression& source,
                             CnLoweringContext& context,
                             std::vector<Stmt>& prefix) {
-    const Ty type = cnExpressionType(source, context);
-    E value = cnLowerStatementExpression(source, context.strings, context, prefix);
-    if (type != Ty::Ptr && !tyIsFloat(type)) return value;
-
-    E zero;
-    if (type == Ty::Ptr) {
-        zero.reset(new Expr(Expr::Num, 0));
-    } else {
-        zero.reset(new Expr(Expr::Num));
-        zero->isFloat = true;
-        zero->fv = 0.0;
-        if (type == Ty::F32) {
-            E cast(new Expr(Expr::Cast));
-            cast->ty = Ty::F32;
-            cast->a = std::move(zero);
-            zero = std::move(cast);
-        }
-    }
-    zero->line = source.line;
-    zero->col = source.column;
-
-    E condition(new Expr(Expr::Ne));
-    condition->a = std::move(value);
-    condition->b = std::move(zero);
-    condition->line = source.line;
-    condition->col = source.column;
-    return condition;
+    // Both callers run cnRequireCondition on the same expression first, so
+    // the condition is Bool or an integer here and lowers unchanged
+    // (nonzero integers are truthy, matching the mainline condition rule).
+    // Pointer and float conditions are rejected before reaching this
+    // function, so there is no != 0 comparison to emit.
+    return cnLowerStatementExpression(source, context.strings, context, prefix);
 }
 
 static E cnEnumDefaultValue(Ty type, unsigned line, unsigned column) {

@@ -770,39 +770,15 @@ count = count - 1
 如果 (0)
 返回 90
 结束 如果
-变量 target: 整数 = 0
-变量 pointer: 指针 = 空
-如果 (pointer)
+变量 flag: 逻辑型 = 真
+如果 (flag)
+total = total + 1
+结束 如果
+flag = 假
+如果 (flag)
 返回 91
 结束 如果
-pointer = &target
-如果 (pointer)
-total = total + 1
-结束 如果
-pointer = 空
-如果 (pointer)
-返回 92
-结束 如果
-变量 precise: f64 = 0.0
-如果 (precise)
-返回 93
-结束 如果
-precise = 1.5
-如果 (precise)
-total = total + 1
-结束 如果
-变量 single: 单精度 = 单精度(0.0)
-如果 (single)
-返回 94
-结束 如果
-single = 单精度(2.0)
-如果 (single)
-total = total + 1
-结束 如果
-如果 (空)
-返回 95
-结束 如果
-如果 ("text")
+如果 (count == 0)
 total = total + 1
 结束 如果
 返回 total
@@ -834,39 +810,15 @@ count = count - 1;
 if (0) {
 return 90;
 }
-let target: i32 = 0;
-let pointer: ptr = null;
-if (pointer) {
+let flag: bool = true;
+if (flag) {
+total = total + 1;
+}
+flag = false;
+if (flag) {
 return 91;
 }
-pointer = &target;
-if (pointer) {
-total = total + 1;
-}
-pointer = null;
-if (pointer) {
-return 92;
-}
-let precise: f64 = 0.0;
-if (precise) {
-return 93;
-}
-precise = 1.5;
-if (precise) {
-total = total + 1;
-}
-let single: f32 = f32(0.0);
-if (single) {
-return 94;
-}
-single = f32(2.0);
-if (single) {
-total = total + 1;
-}
-if (null) {
-return 95;
-}
-if ("text") {
+if (count == 0) {
 total = total + 1;
 }
 return total;
@@ -878,10 +830,140 @@ cmp "$TMP/truthiness-zh.o" "$TMP/truthiness-en.o" || { echo "FAIL: \$TMP/truthin
 "$ASTER_BIN" link-obj "$TMP/truthiness-zh.o" -o "$TMP/truthiness"
 if [ "$CAN_RUN" -eq 1 ]; then
     if "$RUNNER" "$TMP/truthiness"; then status=0; else status=$?; fi
-    [ "$status" -eq 7 ] || { echo "FAIL: expected exit 7, got $status" >&2; exit 1; }
+    [ "$status" -eq 5 ] || { echo "FAIL: expected exit 5, got $status" >&2; exit 1; }
 else
     echo 'SKIP: execution requires qemu-aarch64 or AArch64 Linux'
 fi
+
+# #3 (2026-11-24): conditions accept Bool/integer only; pointer and float
+# conditions are rejected in both `如果/if` and `循环/while`, both languages.
+cat > "$TMP/cond-ptr-if-zh.ast" <<'SRC'
+// aster:language=zh
+方法 启动方法(): 整数
+变量 p: 指针 = 空
+如果 (p)
+返回 1
+结束 如果
+返回 0
+结束 方法
+SRC
+if "$ASTER_BIN" build-cn-obj "$TMP/cond-ptr-if-zh.ast" -o "$TMP/cond-ptr-if-zh.o" 2> "$TMP/cond-ptr-if-zh.err"; then
+    echo 'FAIL: pointer if condition accepted (zh)' >&2
+    exit 1
+fi
+grep -q 'condition must be bool or integer' "$TMP/cond-ptr-if-zh.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/cond-ptr-if-zh.err" >&2; exit 1; }
+
+cat > "$TMP/cond-ptr-if-en.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 {
+let p: ptr = null;
+if (p) {
+return 1;
+}
+return 0;
+}
+SRC
+if "$ASTER_BIN" build-cn-obj --language en "$TMP/cond-ptr-if-en.ast" -o "$TMP/cond-ptr-if-en.o" 2> "$TMP/cond-ptr-if-en.err"; then
+    echo 'FAIL: pointer if condition accepted (en)' >&2
+    exit 1
+fi
+grep -q 'condition must be bool or integer' "$TMP/cond-ptr-if-en.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/cond-ptr-if-en.err" >&2; exit 1; }
+
+cat > "$TMP/cond-float-if-zh.ast" <<'SRC'
+// aster:language=zh
+方法 启动方法(): 整数
+变量 x: f64 = 1.5
+如果 (x)
+返回 1
+结束 如果
+返回 0
+结束 方法
+SRC
+if "$ASTER_BIN" build-cn-obj "$TMP/cond-float-if-zh.ast" -o "$TMP/cond-float-if-zh.o" 2> "$TMP/cond-float-if-zh.err"; then
+    echo 'FAIL: float if condition accepted (zh)' >&2
+    exit 1
+fi
+grep -q 'condition must be bool or integer' "$TMP/cond-float-if-zh.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/cond-float-if-zh.err" >&2; exit 1; }
+
+cat > "$TMP/cond-float-if-en.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 {
+let x: f64 = 1.5;
+if (x) {
+return 1;
+}
+return 0;
+}
+SRC
+if "$ASTER_BIN" build-cn-obj --language en "$TMP/cond-float-if-en.ast" -o "$TMP/cond-float-if-en.o" 2> "$TMP/cond-float-if-en.err"; then
+    echo 'FAIL: float if condition accepted (en)' >&2
+    exit 1
+fi
+grep -q 'condition must be bool or integer' "$TMP/cond-float-if-en.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/cond-float-if-en.err" >&2; exit 1; }
+
+cat > "$TMP/cond-ptr-while-zh.ast" <<'SRC'
+// aster:language=zh
+方法 启动方法(): 整数
+变量 p: 指针 = 空
+循环 (p)
+返回 1
+结束 循环
+返回 0
+结束 方法
+SRC
+if "$ASTER_BIN" build-cn-obj "$TMP/cond-ptr-while-zh.ast" -o "$TMP/cond-ptr-while-zh.o" 2> "$TMP/cond-ptr-while-zh.err"; then
+    echo 'FAIL: pointer while condition accepted (zh)' >&2
+    exit 1
+fi
+grep -q 'condition must be bool or integer' "$TMP/cond-ptr-while-zh.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/cond-ptr-while-zh.err" >&2; exit 1; }
+
+cat > "$TMP/cond-ptr-while-en.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 {
+let p: ptr = null;
+while (p) {
+return 1;
+}
+return 0;
+}
+SRC
+if "$ASTER_BIN" build-cn-obj --language en "$TMP/cond-ptr-while-en.ast" -o "$TMP/cond-ptr-while-en.o" 2> "$TMP/cond-ptr-while-en.err"; then
+    echo 'FAIL: pointer while condition accepted (en)' >&2
+    exit 1
+fi
+grep -q 'condition must be bool or integer' "$TMP/cond-ptr-while-en.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/cond-ptr-while-en.err" >&2; exit 1; }
+
+cat > "$TMP/cond-float-while-zh.ast" <<'SRC'
+// aster:language=zh
+方法 启动方法(): 整数
+变量 x: 单精度 = 单精度(2.0)
+循环 (x)
+返回 1
+结束 循环
+返回 0
+结束 方法
+SRC
+if "$ASTER_BIN" build-cn-obj "$TMP/cond-float-while-zh.ast" -o "$TMP/cond-float-while-zh.o" 2> "$TMP/cond-float-while-zh.err"; then
+    echo 'FAIL: float while condition accepted (zh)' >&2
+    exit 1
+fi
+grep -q 'condition must be bool or integer' "$TMP/cond-float-while-zh.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/cond-float-while-zh.err" >&2; exit 1; }
+
+cat > "$TMP/cond-float-while-en.ast" <<'SRC'
+// aster:language=en
+fn main(): i32 {
+let x: f32 = f32(2.0);
+while (x) {
+return 1;
+}
+return 0;
+}
+SRC
+if "$ASTER_BIN" build-cn-obj --language en "$TMP/cond-float-while-en.ast" -o "$TMP/cond-float-while-en.o" 2> "$TMP/cond-float-while-en.err"; then
+    echo 'FAIL: float while condition accepted (en)' >&2
+    exit 1
+fi
+grep -q 'condition must be bool or integer' "$TMP/cond-float-while-en.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/cond-float-while-en.err" >&2; exit 1; }
 
 printf '%s\n' '[2/19] signed count loops link and run on AArch64 Linux'
 cat > "$TMP/flow.ast" <<'SRC'
@@ -1162,7 +1244,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/struct-if.ast" -o "$TMP/struct-if.o" 2> "$TMP
     echo 'FAIL: struct if condition accepted' >&2
     exit 1
 fi
-grep -q 'condition must be bool, numeric, or pointer' "$TMP/struct-if.err" || { echo "FAIL: expected 'condition must be bool, numeric, or pointer' in \$TMP/struct-if.err" >&2; exit 1; }
+grep -q 'condition must be bool or integer' "$TMP/struct-if.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/struct-if.err" >&2; exit 1; }
 
 cat > "$TMP/struct-while.ast" <<'SRC'
 // aster:language=en
@@ -1179,7 +1261,7 @@ if "$ASTER_BIN" build-cn-obj "$TMP/struct-while.ast" -o "$TMP/struct-while.o" 2>
     echo 'FAIL: struct while condition accepted' >&2
     exit 1
 fi
-grep -q 'condition must be bool, numeric, or pointer' "$TMP/struct-while.err" || { echo "FAIL: expected 'condition must be bool, numeric, or pointer' in \$TMP/struct-while.err" >&2; exit 1; }
+grep -q 'condition must be bool or integer' "$TMP/struct-while.err" || { echo "FAIL: expected 'condition must be bool or integer' in \$TMP/struct-while.err" >&2; exit 1; }
 
 cat > "$TMP/range-match-zh.ast" <<'SRC'
 // aster:language=zh

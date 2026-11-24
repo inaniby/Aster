@@ -26,39 +26,15 @@ count = count - 1
 如果 (0)
 返回 90
 结束 如果
-变量 target: 整数 = 0
-变量 pointer: 指针 = 空
-如果 (pointer)
+变量 flag: 逻辑型 = 真
+如果 (flag)
+total = total + 1
+结束 如果
+flag = 假
+如果 (flag)
 返回 91
 结束 如果
-pointer = &target
-如果 (pointer)
-total = total + 1
-结束 如果
-pointer = 空
-如果 (pointer)
-返回 92
-结束 如果
-变量 precise: f64 = 0.0
-如果 (precise)
-返回 93
-结束 如果
-precise = 1.5
-如果 (precise)
-total = total + 1
-结束 如果
-变量 single: 单精度 = 单精度(0.0)
-如果 (single)
-返回 94
-结束 如果
-single = 单精度(2.0)
-如果 (single)
-total = total + 1
-结束 如果
-如果 (空)
-返回 95
-结束 如果
-如果 ("text")
+如果 (count == 0)
 total = total + 1
 结束 如果
 返回 total
