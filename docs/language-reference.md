@@ -796,6 +796,7 @@ a raw AArch64 `SVC #0`, no libc. A user function of the same name shadows one.
 | `fstat` | **80** | `(fd: i32, buf: ptr) -> i32` — `st_size` at offset 48 (79 is `newfstatat`) |
 | `mmap` | 222 | `(addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64) -> ptr` — page-aligned `offset` (EINVAL otherwise), answers an address |
 | `brk` | 214 | `(addr: ptr) -> ptr` — null queries the break, a page-aligned address grows it |
+| `clock_gettime` | 113 | `(clockid: i32, tp: ptr) -> i32` — `CLOCK_MONOTONIC=1`, timespec `sec` i64 at +0, `nsec` i64 at +8, 0 ok / raw `-errno` on failure (v0.23.82-dev) |
 
 Results are the **raw kernel return**: failure answers `-errno`, not libc's `-1`
 (`close` of a bad fd → `-9` → exit 247). Companion to `write` (64); see the

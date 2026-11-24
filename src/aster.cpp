@@ -5439,6 +5439,19 @@ struct Codegen {
                     if(!exprIsPtr(*e.args[0]))throw Error(loc(e.line,e.col,"brk argument must be ptr"));
                     return syscallInsn(214,e.args,std::vector<Ty>{Ty::Ptr},Ty::Ptr);
                 }
+                // v0.23.82-dev: clock_gettime(2) at 113 — see the checkCall
+                // entry for the typing. The Linux fbdev backend needs a
+                // monotonic clock that does not depend on /proc/uptime
+                // (denied to an app process on Android 16): CLOCK_MONOTONIC
+                // is 1, the timespec is sec i64 at +0 and nsec i64 at +8,
+                // and the answer is 0 on success and the raw kernel return
+                // -errno on failure, like the other syscalls here.
+                if(e.name=="clock_gettime"&&!functionArities.count(e.name)){
+                    if(e.args.size()!=2)throw Error(loc(e.line,e.col,"clock_gettime expects (clockid: i32, tp: ptr)"));
+                    if(exprIsPtr(*e.args[0]))throw Error(loc(e.line,e.col,"clock_gettime first argument must be i32"));
+                    if(!exprIsPtr(*e.args[1]))throw Error(loc(e.line,e.col,"clock_gettime second argument must be ptr"));
+                    return syscallInsn(113,e.args,std::vector<Ty>{Ty::I32,Ty::Ptr});
+                }
                 auto sig=functionArities.find(e.name);
                 if(sig==functionArities.end()){
                     // v0.23.24-dev: the callee is not a function name. It may
@@ -9310,6 +9323,18 @@ static bool semaTypeIsPlaceholder(const Expr& e){
             if(e.args.size()!=1)throw Error(loc(e.line,e.col,"brk expects (addr: ptr)"));
             if(typeOf(*e.args[0])!=Ty::Ptr)throw Error(loc(e.line,e.col,"brk argument must be ptr"));
             return Ty::Ptr;
+        }
+        // v0.23.82-dev: clock_gettime(2) at 113 — the monotonic clock for
+        // the Linux fbdev backend, whose /proc/uptime read is denied to an
+        // app process on Android 16. Two arguments (clockid: i32, tp: ptr),
+        // answers i32 (0 ok, the raw kernel return -errno on failure).
+        // The timespec is sec i64 at +0 and nsec i64 at +8;
+        // CLOCK_MONOTONIC is 1.
+        if(e.name=="clock_gettime"&&!arities.count(e.name)){
+            if(e.args.size()!=2)throw Error(loc(e.line,e.col,"clock_gettime expects (clockid: i32, tp: ptr)"));
+            if(typeOf(*e.args[0])==Ty::Ptr)throw Error(loc(e.line,e.col,"clock_gettime first argument must be i32"));
+            if(typeOf(*e.args[1])!=Ty::Ptr)throw Error(loc(e.line,e.col,"clock_gettime second argument must be ptr"));
+            return Ty::I32;
         }
         auto sig=arities.find(e.name);
         if(sig==arities.end()){

@@ -72,7 +72,7 @@ printf 'TWENTY-BYTES-EXACT!' > "$W/data.txt"
 # [3/5] Differential battery. Every case is fed $W/input.bin on stdin (ignored
 # by the cases that do not read it) and compared against the C oracle on stdout
 # and exit status.
-CASES="cat_stdin chunked7 openat_read fstat_size close_badfd"
+CASES="cat_stdin chunked7 openat_read fstat_size close_badfd clock_mono clock_bad"
 
 emit_case(){
     n="$1"
@@ -213,6 +213,82 @@ int main(void){
 }
 CEOF
         ;;
+    clock_mono)
+        # clock_gettime(2) at 113 (v0.23.82-dev): the monotonic clock for the
+        # Linux fbdev backend, whose /proc/uptime read is denied to an app
+        # process on Android 16. The case checks the shape, not the value —
+        # the time itself differs between the two runs, so stdout is empty
+        # and the verdict is the exit status: 0 only if both calls answer 0,
+        # sec > 0, nsec in [0, 1e9), and the second reading is not earlier
+        # than the first. The C oracle is libc's clock_gettime, which
+        # answers the same 0 on the success path.
+        cat > "$W/$n.ast" <<AST
+let ts: i64[2] = 0;
+let ts2: i64[2] = 0;
+fn main() -> i32 {
+    let r: i32 = clock_gettime(1, ts);
+    if (r != 0) { return 1; }
+    let sec: i64 = load_i64(ts);
+    let nsec: i64 = load_i64(ts + 8);
+    if (sec <= 0) { return 2; }
+    if (nsec < 0 || nsec >= 1000000000) { return 3; }
+    let r2: i32 = clock_gettime(1, ts2);
+    if (r2 != 0) { return 4; }
+    let sec2: i64 = load_i64(ts2);
+    let nsec2: i64 = load_i64(ts2 + 8);
+    let ns1: i64 = sec * 1000000000 + nsec;
+    let ns2: i64 = sec2 * 1000000000 + nsec2;
+    if (ns2 < ns1) { return 5; }
+    return 0;
+}
+AST
+        cat > "$W/$n.c" <<CEOF
+#include <time.h>
+int main(void){
+    struct timespec t, t2;
+    if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return 1;
+    if (t.tv_sec <= 0) return 2;
+    if (t.tv_nsec < 0 || t.tv_nsec >= 1000000000L) return 3;
+    if (clock_gettime(CLOCK_MONOTONIC, &t2) != 0) return 4;
+    long long ns1 = (long long)t.tv_sec * 1000000000LL + t.tv_nsec;
+    long long ns2 = (long long)t2.tv_sec * 1000000000LL + t2.tv_nsec;
+    if (ns2 < ns1) return 5;
+    return 0;
+}
+CEOF
+        ;;
+    clock_bad)
+        # The failure path, raw: an invalid clockid answers -EINVAL (-22)
+        # and a null tp answers -EFAULT (-14) — the raw kernel return, not
+        # libc's -1, exactly as close_badfd pins for close. The C oracle is
+        # the same raw SVC in inline asm (x8 = 113), because libc's
+        # clock_gettime would normalise both failures to -1.
+        cat > "$W/$n.ast" <<AST
+let ts: i64[2] = 0;
+fn main() -> i32 {
+    let r1: i32 = clock_gettime(999, ts);
+    if (r1 != 0 - 22) { return 1; }
+    let r2: i32 = clock_gettime(1, ptr(0));
+    if (r2 != 0 - 14) { return 2; }
+    return 0;
+}
+AST
+        cat > "$W/$n.c" <<CEOF
+static long raw_clock_gettime(long clk, void *tp){
+    register long x8 __asm__("x8") = 113;  /* SYS_clock_gettime on AArch64 */
+    register long x0 __asm__("x0") = clk;
+    register long x1 __asm__("x1") = (long)tp;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1) : "memory");
+    return x0;
+}
+static long long ts[2];
+int main(void){
+    if (raw_clock_gettime(999, ts) != -22) return 1;   /* -EINVAL */
+    if (raw_clock_gettime(1, 0) != -14) return 2;       /* -EFAULT */
+    return 0;
+}
+CEOF
+        ;;
     *)
         echo "internal error: no such case '$n'" >&2
         return 1
@@ -284,6 +360,15 @@ reject "close with a pointer argument" \
 reject "fstat with an integer buffer" \
     'fn main() -> i32 { let n: i32 = fstat(3, 5); return n; }' \
     "fstat second argument must be ptr"
+reject "clock_gettime with one argument" \
+    'fn main() -> i32 { let n: i32 = clock_gettime(1); return n; }' \
+    "clock_gettime expects (clockid: i32, tp: ptr)"
+reject "clock_gettime with a pointer clockid" \
+    'fn main() -> i32 { let n: i32 = clock_gettime("x", &buf); return n; } let buf: i64[2] = 0;' \
+    "clock_gettime first argument must be i32"
+reject "clock_gettime with an integer tp" \
+    'fn main() -> i32 { let n: i32 = clock_gettime(1, 5); return n; }' \
+    "clock_gettime second argument must be ptr"
 
 # ---------------------------------------------------------------------------
 # [5/5] Mutation probes — break the implementation on purpose and assert the
@@ -329,5 +414,43 @@ if "$OUT/aster_m_read" build-elf "$W/cat_stdin.ast" -o "$W/cat_stdin.mab" >/dev/
     echo "FAIL: m_read_dispatch — cat_stdin still compiled without the read dispatch" >&2; exit 1
 fi
 printf 'PASS: m_read_dispatch — removing the read dispatch breaks the compiler\n'
+
+# m_clock_num: renumber clock_gettime from 113 to 9999 (no such syscall).
+# The call then answers -ENOSYS (-38), so clock_mono's first check fails
+# and its exit status diverges from the C oracle (0). A wrong number is
+# exactly the silent breakage this suite exists to catch.
+cp src/aster.cpp "$W/m_clock.cpp"
+sed -i 's/syscallInsn(113,e\.args/syscallInsn(9999,e.args/' "$W/m_clock.cpp"
+if ! grep -q 'syscallInsn(9999,e.args' "$W/m_clock.cpp"; then
+    echo "FAIL: m_clock_num — sed did not apply (the 113->9999 renumber is gone?)" >&2; exit 1
+fi
+${CXX:-c++} -std=c++17 -O2 -w "$W/m_clock.cpp" -o "$OUT/aster_m_clock" 2>/dev/null
+emit_case clock_mono
+if "$OUT/aster_m_clock" build-elf "$W/clock_mono.ast" -o "$W/clock_mono.mab" >/dev/null 2>&1; then
+    mrc=0
+    run "$W/clock_mono.mab" <"$W/input.bin" >"$W/clock_mono.mout" 2>/dev/null || mrc=$?
+    "$HOSTCC" -O2 -fwrapv -fno-builtin "$W/clock_mono.c" -o "$W/clock_mono.ccb" >/dev/null 2>&1
+    crc=0; run "$W/clock_mono.ccb" <"$W/input.bin" >"$W/clock_mono.ccout" 2>/dev/null || crc=$?
+    if cmp -s "$W/clock_mono.mout" "$W/clock_mono.ccout" && [ "$mrc" -eq "$crc" ]; then
+        echo "FAIL: m_clock_num — renumbering clock_gettime 113->9999 did NOT diverge (probe is blind)" >&2; exit 1
+    fi
+    printf 'PASS: m_clock_num — clock_gettime 113->9999 diverges from the C oracle\n'
+else
+    printf 'PASS: m_clock_num — mutated compiler no longer builds clock_mono correctly\n'
+fi
+
+# m_clock_dispatch: delete the clock_gettime() dispatch block. The call is
+# then an undeclared function, so clock_mono no longer compiles.
+cp src/aster.cpp "$W/m_clockd.cpp"
+sed -i '/if(e.name=="clock_gettime"&&!functionArities.count(e.name)){/,/^                }$/d' "$W/m_clockd.cpp"
+if grep -q 'if(e.name=="clock_gettime"&&!functionArities.count(e.name)){' "$W/m_clockd.cpp"; then
+    echo "FAIL: m_clock_dispatch — sed did not remove the clock_gettime dispatch" >&2; exit 1
+fi
+${CXX:-c++} -std=c++17 -O2 -w "$W/m_clockd.cpp" -o "$OUT/aster_m_clockd" 2>/dev/null
+emit_case clock_mono
+if "$OUT/aster_m_clockd" build-elf "$W/clock_mono.ast" -o "$W/clock_mono.mab2" >/dev/null 2>&1; then
+    echo "FAIL: m_clock_dispatch — clock_mono still compiled without the clock_gettime dispatch" >&2; exit 1
+fi
+printf 'PASS: m_clock_dispatch — removing the clock_gettime dispatch breaks the compiler\n'
 
 printf '%s\n' 'ALL SYSCALL-IO CHECKS PASSED'
