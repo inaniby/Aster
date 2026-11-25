@@ -9,7 +9,7 @@ and this file is the bug.
 
 ## Shape of the system
 
-One C++17 translation unit, ~20k lines, zero dependencies beyond the standard
+One C++17 translation unit, ~30k lines, zero dependencies beyond the standard
 library. There is no intermediate representation, no assembler, no external
 linker: the parser's AST is consumed directly by a code generator that emits
 AArch64 instruction words, which an in-process ELF writer serializes. The APK

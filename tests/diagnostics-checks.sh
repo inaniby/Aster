@@ -19,7 +19,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 # A parse error with a deterministic location. The oversized literal lands at
-# column 27 of line 1 (verified by aster's own "file:1:27:" prefix below).
+# column 26 of line 1 (verified by aster's own "file:1:26:" prefix below).
 cat > "$WORK/huge.ast" <<'AST'
 fn main() : i32 { return 999999999999999999999999999; }
 AST
@@ -29,7 +29,7 @@ out=$(./aster build-elf "$WORK/huge.ast" -o "$WORK/x" 2>&1 || true)
 echo "$out"
 
 # 1) The original message text is still present (backward compatibility).
-printf '%s\n' "$out" | grep -qF 'integer literal is too large at 1:27' \
+printf '%s\n' "$out" | grep -qF 'integer literal is too large at 1:26' \
     || { echo "FAIL: original diagnostic message missing"; exit 1; }
 
 # 2) The source line is echoed.

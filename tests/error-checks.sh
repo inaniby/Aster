@@ -97,7 +97,7 @@ check_error tmp-duplicate-param.ast 'duplicate parameter name in function add: a
 cat > tmp-huge-literal.ast <<'AST'
 fn main() : i32 { return 999999999999999999999999999999999999999999999999999999999999; }
 AST
-check_error tmp-huge-literal.ast 'integer literal is too large at 1:27'
+check_error tmp-huge-literal.ast 'integer literal is too large at 1:26'
 cat > tmp-huge-array.ast <<'AST'
 let buf: i32[999999999999999999999999999999999999999999999999999999999999] = 0;
 fn main() : i32 { return 0; }

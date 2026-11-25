@@ -68,7 +68,7 @@ import pathlib
 s = pathlib.Path('src/aster.cpp').read_text(encoding='utf-8')
 
 # D-03 — both linkers carry the same analysis.
-assert s.count('(s.info&0xfu)!=2') == 2, 'a linker still puts STT_FUNC in ownerOf'
+assert s.count('(s.info&0xfu)!=2)ownerOf.emplace') == 2, 'a linker still puts STT_FUNC in ownerOf'
 assert s.count('r.type!=283') == 2, 'a linker still counts CALL26 as a global read'
 assert s.count('checkInitOrder(inputs,ownerOf,initRefs,initNameByInput);') == 2
 print('  OK D-03: function symbols excluded from ownerOf, CALL26 from initRefs, both linkers')
@@ -319,6 +319,8 @@ AST
     {
         echo "kind $2"
         [ "$2" = apk ] && echo 'package com.example.aster'
+        echo '[language]'
+        echo 'default = "en"'
         echo 'src/main.ast'
         [ -n "$3" ] && echo "page-size $3"
     } > "$W/$1/aster.proj"
@@ -346,11 +348,11 @@ proj_build pexe
 "$PY" "$W/elfkit.py" checkload "$W/pcli2/build/.cache/pcli2.so" 16384
 "$PY" "$W/elfkit.py" checkload "$W/pexe/build/pexe" 16384
 bump; bump; bump; bump; bump
-case "$(proj_flags p16)" in *'|16384') ;; *) fail 'p16 cache flags lost 16384' ;; esac
-case "$(proj_flags p4)" in *'|4096') ;; *) fail 'p4 cache flags lost 4096' ;; esac
-case "$(proj_flags pcli)" in *'|4096') ;; *) fail 'CLI 4096 did not override project 16384' ;; esac
-case "$(proj_flags pcli2)" in *'|16384') ;; *) fail 'CLI 16384 did not override project 4096' ;; esac
-case "$(proj_flags pexe)" in *'|16384') ;; *) fail 'exe project lost 16384' ;; esac
+case "$(proj_flags p16)" in *'|16384'*) ;; *) fail 'p16 cache flags lost 16384' ;; esac
+case "$(proj_flags p4)" in *'|4096'*) ;; *) fail 'p4 cache flags lost 4096' ;; esac
+case "$(proj_flags pcli)" in *'|4096'*) ;; *) fail 'CLI 4096 did not override project 16384' ;; esac
+case "$(proj_flags pcli2)" in *'|16384'*) ;; *) fail 'CLI 16384 did not override project 4096' ;; esac
+case "$(proj_flags pexe)" in *'|16384'*) ;; *) fail 'exe project lost 16384' ;; esac
 bump
 if proj_build pbad; then fail 'an invalid project page-size was accepted'; fi
 grep -qE 'page-size' "$W/pbad.log" || fail 'the invalid page-size was rejected without a message'
@@ -366,6 +368,8 @@ fn main() : i32 { return 0; }
 AST
 cat > "$W/ptest/aster.proj" <<'PROJ'
 kind exe
+[language]
+default = "en"
 src/main.ast
 test tests/t.ast
 page-size 16384
@@ -373,7 +377,7 @@ PROJ
 (cd "$W/ptest" && "$A" test >"$W/ptest.log" 2>&1) \
     || { cat "$W/ptest.log"; fail 'aster test failed on a 16 KB project'; }
 grep -qF 'PASS tests/t.ast' "$W/ptest.log" || fail 'aster test did not run the test'
-case "$(proj_flags ptest)" in *'|16384') ;; *) fail 'aster test cache flags lost 16384' ;; esac
+case "$(proj_flags ptest)" in *'|16384'*) ;; *) fail 'aster test cache flags lost 16384' ;; esac
 "$PY" "$W/elfkit.py" checkload "$W/ptest/build/tests/t" 16384
 bump; bump
 printf '  %-40s %s\n' 'D-04 project matrix (apk/exe/test)' 'page-size effective, CLI wins'
@@ -534,10 +538,14 @@ PY
 # still caught by the other, so the mutant that restores the original defect
 # removes both at once (in both linkers) and must be refused by link-so/link-obj.
 mutate 'm1: both D-03 filters removed (original mis-refusal)' \
-    '(s.info&0xfu)!=2' 'true' 2 'r.type!=283' 'true' 2
+    '(s.info&0xfu)!=2)ownerOf.emplace' 'true)ownerOf.emplace' 2 'r.type!=283' 'true' 2
 mutate 'm2: project page-size is discarded again' \
     'const uint64_t filePage = cliPageSet ? ps : (spec.pageSize?spec.pageSize:ps);' \
-    'const uint64_t filePage = ps;' 2
+    'const uint64_t filePage = ps;' 2 \
+    'const uint64_t bilingualPage = cliPageSet ? ps : (spec.pageSize ? spec.pageSize : ps);' \
+    'const uint64_t bilingualPage = ps;' 1 \
+    'const uint64_t testPage=cliPageSet?ps:(spec.pageSize?spec.pageSize:ps);' \
+    'const uint64_t testPage=ps;' 1
 mutate 'm3: explicit --page-size no longer recorded' \
     'cliPageSet=true;' '' 2
 mutate 'm4: the TLS block alignment is no longer derived' \

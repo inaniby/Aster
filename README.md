@@ -216,7 +216,7 @@ self-tests that protocol and the build cache, so a regression in either mechanis
 than hiding behind it. The first complete run over the then-113 default suites finished 109 PASS / 4
 FAIL; all four were stale test fixtures (baseline filters, a missing `_GNU_SOURCE`, and two source
 guards), and the follow-up complete run was **113/113 PASS** with the APK gate 3/3. The gate now runs
-**172** suites — the count in `DEFAULT_SUITES` in `tests/ci.sh` — and `src/aster.cpp` is 17,066 lines:
+**173** suites — the count in `DEFAULT_SUITES` in `tests/ci.sh` — and `src/aster.cpp` is 30,560 lines:
 `tests/coverage-checks.sh` builds with `--coverage -O0`, drives every example in five
 modes plus the link/APK/keygen/flag/error paths, and floors `src/aster.cpp` line coverage at **80%**
 (measured 80.58% of 9562 executable lines); `tests/mutation-score-checks.sh` censuses the standardized mutation

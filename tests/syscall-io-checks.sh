@@ -424,7 +424,7 @@ sed -i 's/syscallInsn(113,e\.args/syscallInsn(9999,e.args/' "$W/m_clock.cpp"
 if ! grep -q 'syscallInsn(9999,e.args' "$W/m_clock.cpp"; then
     echo "FAIL: m_clock_num — sed did not apply (the 113->9999 renumber is gone?)" >&2; exit 1
 fi
-${CXX:-c++} -std=c++17 -O2 -w "$W/m_clock.cpp" -o "$OUT/aster_m_clock" 2>/dev/null
+${CXX:-c++} -std=c++17 -O2 -w -I src "$W/m_clock.cpp" -o "$OUT/aster_m_clock" 2>/dev/null
 emit_case clock_mono
 if "$OUT/aster_m_clock" build-elf "$W/clock_mono.ast" -o "$W/clock_mono.mab" >/dev/null 2>&1; then
     mrc=0
@@ -446,7 +446,7 @@ sed -i '/if(e.name=="clock_gettime"&&!functionArities.count(e.name)){/,/^       
 if grep -q 'if(e.name=="clock_gettime"&&!functionArities.count(e.name)){' "$W/m_clockd.cpp"; then
     echo "FAIL: m_clock_dispatch — sed did not remove the clock_gettime dispatch" >&2; exit 1
 fi
-${CXX:-c++} -std=c++17 -O2 -w "$W/m_clockd.cpp" -o "$OUT/aster_m_clockd" 2>/dev/null
+${CXX:-c++} -std=c++17 -O2 -w -I src "$W/m_clockd.cpp" -o "$OUT/aster_m_clockd" 2>/dev/null
 emit_case clock_mono
 if "$OUT/aster_m_clockd" build-elf "$W/clock_mono.ast" -o "$W/clock_mono.mab2" >/dev/null 2>&1; then
     echo "FAIL: m_clock_dispatch — clock_mono still compiled without the clock_gettime dispatch" >&2; exit 1
