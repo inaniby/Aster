@@ -11,6 +11,13 @@
 namespace aster_cn {
 namespace {
 
+// v0.23.85-dev (limits batch 3): the parser nesting cap, now a settable
+// value instead of a constant: --max-nesting-depth (default 256, like
+// Clang's -fbracket-depth). Set from aster.cpp's main() through
+// aster_cn::setMaxNestingDepth (defined below, after this anonymous
+// namespace closes); the standalone cn_parse_main tool keeps the default.
+unsigned g_cnMaxNestingDepth = 256;
+
 std::string quoted(const std::string& value) {
     std::string out = "\"";
     for (char ch : value) {
@@ -67,24 +74,26 @@ public:
         : tokens_(std::move(tokens)), language_(language), sourceFile_(std::move(sourceFile)) {}
 
     // P0-4: recursion depth guard, mirroring the mainline parser's
-    // DepthGuard(256) on expr()/statement()/parseType. Without it a hostile
+    // DepthGuard on expr()/statement()/parseType. Without it a hostile
     // input such as 10000 nested parentheses drove the recursive-descent
     // parser off the C stack (segfault, exit 139). Each guarded function has
-    // its own counter so one construct nests 256 deep before the guard trips;
-    // the counters are per-Parser, so sequential siblings do not accumulate.
-    // The message starts with "expected " so classifyDiagnostic() reports it
-    // as A-011, and parseProgram()'s decorateDiagnostic() keeps it a single
-    // clean diagnostic. This lives in cn_parser.cpp (not aster.cpp) because
+    // its own counter so one construct nests g_cnMaxNestingDepth deep
+    // before the guard trips; the counters are per-Parser, so sequential
+    // siblings do not accumulate. The cap defaults to 256 and is settable
+    // via aster_cn::setMaxNestingDepth (--max-nesting-depth). The message
+    // starts with "expected " so classifyDiagnostic() reports it as A-011,
+    // and parseProgram()'s decorateDiagnostic() keeps it a single clean
+    // diagnostic. This lives in cn_parser.cpp (not aster.cpp) because
     // this file is also compiled standalone by cn_parse_main.cpp, where the
     // mainline RecursionGuard/DepthGuard do not exist.
-    static constexpr unsigned kMaxNestingDepth = 256;
     struct DepthGuard {
         unsigned& d;
         DepthGuard(unsigned& depth, const char* what, const Token& token) : d(depth) {
-            if (++d > kMaxNestingDepth) {
+            if (++d > g_cnMaxNestingDepth) {
                 --d;
                 throw std::runtime_error(std::string("expected ") + what +
-                    " nesting within 256 levels at " + std::to_string(token.line) +
+                    " nesting within " + std::to_string(g_cnMaxNestingDepth) +
+                    " levels at " + std::to_string(token.line) +
                     ":" + std::to_string(token.column));
             }
         }
@@ -1945,16 +1954,20 @@ private:
 
 // P0-4: dump walks an already-parsed AST, so it is bounded by the parser
 // caps above — but only loosely: one root-to-leaf dump path can stack
-// statement nesting (<=256) and expression nesting (<=256) plus closure
-// bodies, so the dump limit is 1024, not 256, to never false-trip on legal
-// input. The message still starts with "expected " so it classifies A-011.
+// statement nesting and expression nesting plus closure bodies, so the
+// dump limit is 4x the parse cap (1024 at the default 256), to never
+// false-trip on legal input. v0.23.85-dev (limits batch 3): the 4x
+// scaling keeps a raised --max-nesting-depth from tripping the dump.
+// The message still starts with "expected " so it classifies A-011.
 thread_local unsigned g_cnDumpDepth = 0;
 struct CnDumpDepthGuard {
     CnDumpDepthGuard(const char* what, unsigned line, unsigned column) {
-        if (++g_cnDumpDepth > 1024) {
+        const unsigned limit = std::max(1024u, 4u * g_cnMaxNestingDepth);
+        if (++g_cnDumpDepth > limit) {
             --g_cnDumpDepth;
             throw std::runtime_error(std::string("expected ") + what +
-                " nesting within 1024 levels at " + std::to_string(line) +
+                " nesting within " + std::to_string(limit) +
+                " levels at " + std::to_string(line) +
                 ":" + std::to_string(column));
         }
     }
@@ -2073,6 +2086,9 @@ void dumpStatements(std::ostringstream& out, const std::vector<Statement>& state
 }
 
 }  // namespace
+
+void setMaxNestingDepth(unsigned depth) { g_cnMaxNestingDepth = depth; }
+unsigned maxNestingDepth() { return g_cnMaxNestingDepth; }
 
 Program parseProgram(const std::string& source, Language language, const std::string& sourceFile) {
     try {

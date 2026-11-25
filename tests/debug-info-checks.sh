@@ -154,8 +154,8 @@ while read -r name low size dline; do
     want=$(grep -n "^fn $name" "$SRC" | head -1 | cut -d: -f1)
     [ "$dline" = "$want" ] || fail "subprogram $name says line $dline, the source says $want"
 done < "$OUT/funcs.txt"
-# The frame base is SP: Aster's frame is a fixed 8192 bytes and SP does not move
-# again inside a body, so no CFA rules are needed to read a slot.
+# The frame base is SP: Aster's frame has one size for the whole body and SP
+# does not move again inside it, so no CFA rules are needed to read a slot.
 nfb=$(grep -c 'frame_base=breg31+0' "$OUT/tree.txt" || true)
 [ "$nfb" -eq "$NFUNCS" ] || fail "expected $NFUNCS frame bases of breg31+0, got $nfb"
 
@@ -497,8 +497,12 @@ eqaddr "$(awk '{print $2}' "$OUT/units.pie")" "$(section_addr "$OUT/dbg.pie" .te
 # A test that cannot fail is decoration. Shift every frame slot by one and
 # require the checks above to notice; if the injected change ever stops
 # applying, this step fails so the guard gets fixed instead of quietly passing.
-sed 's|slot\*8);return e;|slot*8+8);return e;|' src/aster.cpp > "$OUT/mutant.cpp"
-grep -q 'slot\*8+8);return e;' "$OUT/mutant.cpp" \
+# v0.23.84-dev (limits batch 2): the fbreg offset is no longer slot*8 in a
+# helper that returns an expression — the writer passes a byte offset
+# (v.byteOff for arrays, v.slot*8 for the rest), so the shift moves both
+# arms by one slot.
+sed 's|fbregOps(v.byteOff>=0?v.byteOff:v.slot\*8)|fbregOps(v.byteOff>=0?v.byteOff+8:v.slot*8+8)|' src/aster.cpp > "$OUT/mutant.cpp"
+grep -q 'v.byteOff+8:v.slot\*8+8' "$OUT/mutant.cpp" \
     || fail "the shifted-slot mutation no longer applies to src/aster.cpp"
 $CXX -std=c++17 -O2 -w -I src "$OUT/mutant.cpp" -o "$OUT/aster-mutant"
 "$OUT/aster-mutant" build-elf "$SRC" -g -o "$OUT/mutant.elf" >/dev/null

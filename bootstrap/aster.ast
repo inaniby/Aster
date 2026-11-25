@@ -285,16 +285,27 @@ let tytab: ptr = "i32\0\0\0\0\0\0\0\0\0\0\0\0\0i64\0\0\0\0\0\0\0\0\0\0\0\0\0u8\0
 
 // ---------------------------------------------------------------------------
 // Buffers and scanner state. Fixed sizes, no allocator: the source is capped
-// at 1 MiB (LEXER-SPEC.md §3), which also caps the decoded string pool,
+// at 4 MiB (LEXER-SPEC.md §3), which also caps the decoded string pool,
 // because every pool byte costs at least one source byte.
+// v0.23.85-dev (limits batch 3): source/strpool 1 MiB -> 4 MiB, tokens and
+// nodes 65536 -> 262144, and the cross-function symbol table 4096 -> 16384
+// (ELF symtab 4160 -> 16448 with it: the +64 is the section/file symbols).
+// 16384 keeps the 1 MiB .strtab comfortable (16k symbols at ~16 bytes of
+// name is ~256 KiB); 65536 would press against it. 4 MiB is the largest source that still keeps the
+// bootstrap's own .bss modest (two 4 MiB byte buffers plus 4x token/node
+// tables); 262144 tokens/nodes is 4x headroom over the old caps, and the
+// token cap still bounds the node cap (every node is introduced by a token).
+// The host's global-array element cap moved with this (src/aster.cpp
+// kMaxNonFrameArrayElements 1048576 -> 4194304): without it the host would
+// refuse these u8[4194304] globals outright.
 // ---------------------------------------------------------------------------
-let srcbuf: u8[1048576] = 0;      // the source text
-let strpool: u8[1048576] = 0;     // decoded string-literal values
-let tkind: i32[65536] = 0;        // the tokens, five parallel arrays
-let tstart: i32[65536] = 0;       //   text offset: srcbuf, or strpool for String
-let tlen: i32[65536] = 0;         //   text length in bytes
-let tline: i32[65536] = 0;
-let tcol: i32[65536] = 0;
+let srcbuf: u8[4194304] = 0;      // the source text
+let strpool: u8[4194304] = 0;     // decoded string-literal values
+let tkind: i32[262144] = 0;        // the tokens, five parallel arrays
+let tstart: i32[262144] = 0;       //   text offset: srcbuf, or strpool for String
+let tlen: i32[262144] = 0;         //   text length in bytes
+let tline: i32[262144] = 0;
+let tcol: i32[262144] = 0;
 let outbuf: u8[65536] = 0;        // the dump, flushed when full
 let nbuf: u8[24] = 0;             // scratch for decimal rendering
 // One diagnostic line's staging buffer. It flushes when full rather than
@@ -317,24 +328,24 @@ let outlen: i32 = 0;              // outbuf fill level
 let elen: i32 = 0;                // ebuf fill level
 
 // ---------------------------------------------------------------------------
-// The AST pool (PARSER-SPEC.md §3): seven parallel i32 arrays of 65536
+// The AST pool (PARSER-SPEC.md §3): seven parallel i32 arrays of 262144
 // entries, indexed by handle (handle = array index + 1; 0 means "no node").
 // Every child of every node lives in one sibling chain — nfirst heads it,
 // nnext links it, nlast tails it so an append is O(1). Nothing else is
 // stored per node: a Num's value is converted from its token's text at emit
 // time, a name is the token's bytes, a String's value the pool's.
 // ---------------------------------------------------------------------------
-let nkind: i32[65536] = 0;        // the node's kind (§2: 0-63 expr, 64-127 stmt, 128+ structural)
-let ntok: i32[65536] = 0;         // the introducing token's index; -1 means the End token
-let nfirst: i32[65536] = 0;       // first child of the sibling chain (0 = none)
-let nlast: i32[65536] = 0;        // last child of that chain
-let nnext: i32[65536] = 0;        // next sibling in the chain
-let nnty: i32[65536] = 0;         // the type tag — Param, Global, Function (return), Let
-let ncount: i32[65536] = 0;       // a Global's array element count (1 for a scalar)
+let nkind: i32[262144] = 0;        // the node's kind (§2: 0-63 expr, 64-127 stmt, 128+ structural)
+let ntok: i32[262144] = 0;         // the introducing token's index; -1 means the End token
+let nfirst: i32[262144] = 0;       // first child of the sibling chain (0 = none)
+let nlast: i32[262144] = 0;        // last child of that chain
+let nnext: i32[262144] = 0;        // next sibling in the chain
+let nnty: i32[262144] = 0;         // the type tag — Param, Global, Function (return), Let
+let ncount: i32[262144] = 0;       // a Global's array element count (1 for a scalar)
 // v0.23.77-dev: the label token of a labeled loop, or the target name a
 // labeled break/continue asks for (0 = unlabeled).
-let nlab: i32[65536] = 0;
-let nnodes: i32 = 0;              // nodes allocated (C3 caps this at 65536)
+let nlab: i32[262144] = 0;
+let nnodes: i32 = 0;              // nodes allocated (C3 caps this at 262144)
 
 // The expression machine's work stacks (§7): values, operators (token kind
 // plus precedence), and the marker stack. §10 proves the caps bound them all:
@@ -359,8 +370,8 @@ let sdepth: i32 = 0;              // C2: blocks entered + else-if links taken
 // are sized past the tightest bound the caps allow — the token cap (E9) lets
 // at most 8192 items of the smallest item shape through, so neither can
 // overrun before E9 or C3 fires.
-let fntok: i32[16384] = 0;        // declared function name tokens
-let gltok: i32[16384] = 0;        // declared global name tokens
+let fntok: i32[65536] = 0;        // declared function name tokens
+let gltok: i32[65536] = 0;        // declared global name tokens
 let ptok: i32[34] = 0;            // one function's parameter name tokens (P7 fires at 33)
 let nfuncs: i32 = 0;
 let nglobs: i32 = 0;
@@ -386,10 +397,10 @@ let d2a_len: i32 = 0;
 let numval: i64 = 0;              // the converted number (§6.2)
 let numu: u64 = 0;                // the same value, wide (§6.2, v0.23.77-dev)
 let numf: i64 = 0;                // the bits of a float literal (v0.23.77-dev)
-let nflt: i32[65536] = 0;         // per node: 1 when it is a float literal
+let nflt: i32[262144] = 0;         // per node: 1 when it is a float literal
 let tchv: i32[131072] = 0;        // per token: the byte value of a Char token
-let nchv: i32[65536] = 0;         // per node: value + 1 when a character literal
-let nbool: i32[65536] = 0;        // per node: 0 no, 1 the literal 'false', 2 'true'
+let nchv: i32[262144] = 0;         // per node: value + 1 when a character literal
+let nbool: i32[262144] = 0;        // per node: 0 no, 1 the literal 'false', 2 'true'
 let tflt: i32[131072] = 0;        // per token: 1 when the Number spelled a '.'
 let numflag: i32 = 0;             // 0 fits, 1 too large (P52/P53), 2 saturated above i64max (P51)
 let numcnt: i32 = 0;              // the same value as an i32 count, saturated at 1048577
@@ -401,11 +412,11 @@ let nparams: i32 = 0;             // the parameters of the function being parsed
 // allows — a left-associative binary chain — is far deeper than that. Every
 // stack entry stands for a distinct node, so the node cap bounds them all;
 // the checks below are the guards that keep a handle inside the arrays.
-let estk: i32[65536] = 0;         // the dump's pending siblings
-let edep: i32[65536] = 0;         //   their depths
-let wstk: i32[65536] = 0;         // the folder's walk: node handles
-let wmark: i32[65536] = 0;        //   0 enter, 1 combine
-let wval: i64[65536] = 0;         //   the folded values
+let estk: i32[262144] = 0;         // the dump's pending siblings
+let edep: i32[262144] = 0;         //   their depths
+let wstk: i32[262144] = 0;         // the folder's walk: node handles
+let wmark: i32[262144] = 0;        //   0 enter, 1 combine
+let wval: i64[262144] = 0;         //   the folded values
 
 // ---------------------------------------------------------------------------
 // M3c semantic pass — symbol table and scratch (SEMANTIC-SPEC.md, frozen
@@ -422,12 +433,12 @@ let SK_PARAM: i32 = 2;
 let SK_LOCAL: i32 = 3;
 let SK_EXTERN_FN: i32 = 4;
 let SK_EXTERN_LET: i32 = 5;
-// cross-function symbol table (functions + globals + externs) — S23 cap 4096
-let sname: i32[4096] = 0;       // name token index
-let skind: i32[4096] = 0;       // SK_*
-let stag: i32[4096] = 0;        // type tag
-let scnt: i32[4096] = 0;        // array element count (1 = scalar)
-let sfn: i32[4096] = 0;         // the N_Function node handle (re-walk params/return)
+// cross-function symbol table (functions + globals + externs) — S23 cap 16384
+let sname: i32[16384] = 0;       // name token index
+let skind: i32[16384] = 0;       // SK_*
+let stag: i32[16384] = 0;        // type tag
+let scnt: i32[16384] = 0;        // array element count (1 = scalar)
+let sfn: i32[16384] = 0;         // the N_Function node handle (re-walk params/return)
 let nsym: i32 = 0;
 // per-function locals (reused between functions) — S21 cap 500
 let ln_name: i32[4096] = 0;
@@ -438,8 +449,8 @@ let nlocs: i32 = 0;
 let sc_start: i32[128] = 0;     // scope stack: nlocs recorded at each scope entry
 let sc_depth: i32 = 0;
 // per-expression type results, indexed by node handle
-let ex_ty: i32[65536] = 0;       // type tag, or -2 for a bool-valued expression
-let ex_arr: i32[65536] = 0;      // 1 if the type is an array (element = ex_ty)
+let ex_ty: i32[262144] = 0;       // type tag, or -2 for a bool-valued expression
+let ex_arr: i32[262144] = 0;      // 1 if the type is an array (element = ex_ty)
 // resolved-symbol scratch (fillers for find_var / find_call)
 let rs_tag: i32 = 0;
 let rs_cnt: i32 = 0;
@@ -528,7 +539,7 @@ fn take() : i32 {
 // The position is passed in: it was captured before the token's first byte.
 // ---------------------------------------------------------------------------
 fn push(k: i32, start: i32, length: i32, tl: i32, tc: i32) : i32 {
-    if (ntoks >= 65536) { return die_np("too many tokens (limit 65536)"); }
+    if (ntoks >= 262144) { return die_np("too many tokens (limit 262144)"); }
     tkind[ntoks] = k;
     tstart[ntoks] = start;
     tlen[ntoks] = length;
@@ -1128,12 +1139,12 @@ fn die_e6(l: i32, c: i32) : i32 {
 // ---------------------------------------------------------------------------
 fn read_source() : i32 {
     srclen = 0;
-    while (srclen < 1048576) {
-        let n: i32 = read(0, srcbuf + srclen, 1048576 - srclen);
+    while (srclen < 4194304) {
+        let n: i32 = read(0, srcbuf + srclen, 4194304 - srclen);
         if (n <= 0) { return 0; }
         srclen = srclen + n;
     }
-    if (read(0, nbuf, 1) > 0) { return die_np("source exceeds 1048576 bytes"); }
+    if (read(0, nbuf, 1) > 0) { return die_np("source exceeds 4194304 bytes"); }
     return 0;
 }
 
@@ -1586,12 +1597,12 @@ fn put_escaped(start: i32, n: i32) : i32 {
 // ---------------------------------------------------------------------------
 
 // The pool. A handle is the array index plus one, so 0 means "no node" and
-// every access is arr[h-1]. C3 caps the pool at 65536 — a guard rather than
+// every access is arr[h-1]. C3 caps the pool at 262144 — a guard rather than
 // a reachable path, since every node is introduced by a token that consumes
 // one and E9 caps those first, but it is the guard that keeps a handle
 // inside the arrays, so it stays.
 fn newnode(k: i32, t: i32) : i32 {
-    if (nnodes >= 65536) { return die_np("too many AST nodes (limit 65536)"); }
+    if (nnodes >= 262144) { return die_np("too many AST nodes (limit 262144)"); }
     nkind[nnodes] = k;
     ntok[nnodes] = t;
     nfirst[nnodes] = 0;
@@ -1842,7 +1853,7 @@ fn convert_num(t: i32) : i32 {
                 numu = numu * bu + du;
             }
         }
-        if (numcnt > 1048576) { numcnt = 1048577; } else { numcnt = numcnt * base + d; }
+        if (numcnt > 4194304) { numcnt = 4194305; } else { numcnt = numcnt * base + d; }
         j = j + 1;
     }
     numval = numu;
@@ -2515,9 +2526,9 @@ fn array_dim(g: i32) : i32 {
     if (numflag == 1) {
         return die_at("array length is too large", tok_line(nt), tok_col(nt));
     }
-    if (numcnt < 1 || numcnt > 1048576) {
+    if (numcnt < 1 || numcnt > 4194304) {
         die_open();
-        bputs("array length must be between 1 and 1048576: ");
+        bputs("array length must be between 1 and 4194304: ");
         bputname(ntok[g - 1]);
         return die_close(tok_line(nt), tok_col(nt));
     }
@@ -2571,6 +2582,7 @@ fn global_decl(external: i32) : i32 {
         }
         i = i + 1;
     }
+    if (nglobs >= 65536) { die_np("too many globals (limit 65536)"); return 0; }
     gltok[nglobs] = nt;
     nglobs = nglobs + 1;
     if (external == 1) {
@@ -2755,6 +2767,7 @@ fn function_decl(external: i32) : i32 {
         }
         i = i + 1;
     }
+    if (nfuncs >= 65536) { die_np("too many functions (limit 65536)"); return 0; }
     fntok[nfuncs] = nt;
     nfuncs = nfuncs + 1;
     return f;
@@ -3688,13 +3701,13 @@ fn is_const(h: i32) : i32 {
             // v0.23.77-dev: a prefix node walks only its operand - without
             // address-of here the walk treated it as binary and read a child
             // that does not exist.
-            if (sp >= 65536) { die_np("internal: walk stack overflow"); return 0; }
+            if (sp >= 262144) { die_np("internal: walk stack overflow"); return 0; }
             wstk[sp] = nfirst[n - 1];
             sp = sp + 1;
             continue;
         }
         if (is_fold_binary(k) == 1) {
-            if (sp + 2 > 65536) { die_np("internal: walk stack overflow"); return 0; }
+            if (sp + 2 > 262144) { die_np("internal: walk stack overflow"); return 0; }
             wstk[sp] = nnext[nfirst[n - 1] - 1];
             sp = sp + 1;
             wstk[sp] = nfirst[n - 1];
@@ -3790,19 +3803,19 @@ fn fold(h: i32) : i64 {
             // the value was validated where the node was built (§7.1), so
             // this conversion cannot fail and the flag is provably clear
             convert_num(ntok[n - 1]);
-            if (vp >= 65536) { die_np("internal: value stack overflow"); return 0; }
+            if (vp >= 262144) { die_np("internal: value stack overflow"); return 0; }
             wval[vp] = numval;
             vp = vp + 1;
             continue;
         }
         if (k == E_Neg || k == E_AddrOf || k == E_Deref) {
-            if (sp + 2 > 65536) { die_np("internal: walk stack overflow"); return 0; }
+            if (sp + 2 > 262144) { die_np("internal: walk stack overflow"); return 0; }
             wstk[sp] = n; wmark[sp] = 1; sp = sp + 1;
             wstk[sp] = nfirst[n - 1]; wmark[sp] = 0; sp = sp + 1;
             continue;
         }
         if (is_fold_binary(k) == 1) {
-            if (sp + 3 > 65536) { die_np("internal: walk stack overflow"); return 0; }
+            if (sp + 3 > 262144) { die_np("internal: walk stack overflow"); return 0; }
             wstk[sp] = n; wmark[sp] = 1; sp = sp + 1;
             wstk[sp] = nnext[nfirst[n - 1] - 1]; wmark[sp] = 0; sp = sp + 1;
             wstk[sp] = nfirst[n - 1]; wmark[sp] = 0; sp = sp + 1;
@@ -3889,7 +3902,7 @@ fn emit(root: i32) : i32 {
             if (emit_node(h, d) != 0) { return 1; }
             let nx: i32 = nnext[h - 1];
             if (nx != 0) {
-                if (esp >= 65536) {
+                if (esp >= 262144) {
                     die_np("internal: dump stack overflow");
                     return 1;
                 }
@@ -4707,7 +4720,7 @@ fn sema(prog: i32) : i32 {
     while (c != 0) {
         let k: i32 = nkind[c - 1];
         if (k == N_Function) {
-            if (nsym > 4095) { die_at("too many symbols", tok_line(ntok[c - 1]), tok_col(ntok[c - 1])); return 1; }
+            if (nsym > 16383) { die_at("too many symbols", tok_line(ntok[c - 1]), tok_col(ntok[c - 1])); return 1; }
             let s: i32 = nsym; nsym = nsym + 1;
             sname[s] = ntok[c - 1] + 1;
             skind[s] = SK_FN;
@@ -4716,7 +4729,7 @@ fn sema(prog: i32) : i32 {
             scnt[s] = 1;
             sfn[s] = c;
         } else if (k == N_Global) {
-            if (nsym > 4095) { die_at("too many symbols", tok_line(ntok[c - 1]), tok_col(ntok[c - 1])); return 1; }
+            if (nsym > 16383) { die_at("too many symbols", tok_line(ntok[c - 1]), tok_col(ntok[c - 1])); return 1; }
             let s: i32 = nsym; nsym = nsym + 1;
             sname[s] = ntok[c - 1];
             skind[s] = SK_GLOBAL;
@@ -4823,16 +4836,16 @@ fn free_tmp(r: i32) : i32 {
 // once every label is placed. Function labels are allocated by cg_collect
 // (one per non-extern function symbol, plus __aster_init), so a BL's target
 // is a label id like any other. push_fix records the word just emitted.
-let labels: i32[65536] = 0;   // label id -> word offset
+let labels: i32[262144] = 0;   // label id -> word offset
 let nlabels: i32 = 0;
-let fx_pos: i32[65536] = 0;   // the placeholder's word index
-let fx_kind: i32[65536] = 0;  // 0 B.cond, 1 B, 2 BL
-let fx_label: i32[65536] = 0; // the target label id
-let fx_cond: i32[65536] = 0;  // a B.cond's condition code
+let fx_pos: i32[262144] = 0;   // the placeholder's word index
+let fx_kind: i32[262144] = 0;  // 0 B.cond, 1 B, 2 BL
+let fx_label: i32[262144] = 0; // the target label id
+let fx_cond: i32[262144] = 0;  // a B.cond's condition code
 let nfix: i32 = 0;
 
 fn new_label() : i32 {
-    if (nlabels >= 65536) { cg_die("too many labels"); return -1; }
+    if (nlabels >= 262144) { cg_die("too many labels"); return -1; }
     let l: i32 = nlabels;
     nlabels = nlabels + 1;
     return l;
@@ -4842,7 +4855,7 @@ fn place_label(l: i32) : i32 {
     return 0;
 }
 fn push_fix(kind: i32, label: i32, cond: i32) : i32 {
-    if (nfix >= 65536) { return cg_die("fixup table overflow"); }
+    if (nfix >= 262144) { return cg_die("fixup table overflow"); }
     fx_pos[nfix] = textlen - 1;
     fx_kind[nfix] = kind;
     fx_label[nfix] = label;
@@ -5139,12 +5152,12 @@ fn emit_mem(is_store: i32, scale: i32, rt: i32, rn: i32, off: i32) : i32 {
 // initialiser), and main's symbol row. Nothing here emits an instruction —
 // gen_function consumes these tables, elf_emit the sizes.
 // ---------------------------------------------------------------------------
-let str_addr: i64[65536] = 0;   // per E_String node handle -> absolute address
-let g_addr: i64[4096] = 0;      // per global symbol row -> absolute address
-let g_sec: i32[4096] = 0;       // 1 = .data, 0 = .bss
-let g_init: i32[4096] = 0;      // runtime-init global symbol rows, declaration order
+let str_addr: i64[262144] = 0;   // per E_String node handle -> absolute address
+let g_addr: i64[16384] = 0;      // per global symbol row -> absolute address
+let g_sec: i32[16384] = 0;       // 1 = .data, 0 = .bss
+let g_init: i32[16384] = 0;      // runtime-init global symbol rows, declaration order
 let ninit: i32 = 0;
-let fn_lab: i32[4096] = 0;      // per function symbol row -> label id
+let fn_lab: i32[16384] = 0;      // per function symbol row -> label id
 let init_lab: i32 = 0;          // __aster_init's label (0 when there is none)
 let main_sym: i32 = -1;         // main's symbol row (-1 = absent, C10)
 let has_stub: i32 = 0;
@@ -5152,10 +5165,10 @@ let rodata_size: i32 = 0;
 let data_size: i32 = 0;
 let bss_size: i32 = 0;
 let bss_base: i64 = 0;
-let fn_words: i32[4096] = 0;    // per function symbol row -> emitted words
+let fn_words: i32[16384] = 0;   // per function symbol row -> emitted words
 let init_words: i32 = 0;        // __aster_init's emitted words (elf_emit sizes it)
-let sstk: i32[65536] = 0;       // the string walk's pending siblings
-let pstk: i32[65536] = 0;       // the ptr-yield walk's pending children
+let sstk: i32[262144] = 0;       // the string walk's pending siblings
+let pstk: i32[262144] = 0;       // the ptr-yield walk's pending children
 
 fn ty_width(t: i32) : i32 {
     if (t == TY_BOOL) { return 1; }
@@ -5195,7 +5208,7 @@ fn cg_strings(root: i32) : i32 {
             }
             let nx: i32 = nnext[h - 1];
             if (nx != 0) {
-                if (esp >= 65536) { return cg_die("internal compiler error: walk stack overflow"); }
+                if (esp >= 262144) { return cg_die("internal compiler error: walk stack overflow"); }
                 sstk[esp] = nx;
                 esp = esp + 1;
             }
@@ -5237,7 +5250,7 @@ fn expr_yields_ptr(h: i32) : i32 {
         }
         if (k == E_Add || k == E_Sub) {
             let l: i32 = nfirst[n - 1];
-            if (esp + 2 > 65536) { cg_die("internal compiler error: walk stack overflow"); return 0; }
+            if (esp + 2 > 262144) { cg_die("internal compiler error: walk stack overflow"); return 0; }
             pstk[esp] = nnext[l - 1];
             esp = esp + 1;
             pstk[esp] = l;
@@ -5527,14 +5540,14 @@ fn cg_die_name_at(msg: ptr<u8>, t: i32) : i32 {
 // and the combine reads its children's registers from there. This is
 // tc_expr's shape (bootstrap/aster.ast:2696) with the per-node type results
 // swapped for registers.
-let gx_node: i32[65536] = 0;
-let gx_state: i32[65536] = 0;
-let gx_want: i32[65536] = 0;
-let gx_val: i32[65536] = 0;    // node handle -> result register
+let gx_node: i32[262144] = 0;
+let gx_state: i32[262144] = 0;
+let gx_want: i32[262144] = 0;
+let gx_val: i32[262144] = 0;    // node handle -> result register
 let gx_top: i32 = 0;
 
 fn gx_push_bin(n: i32, wantL: i32, wantR: i32, wt: i32) : i32 {
-    if (gx_top + 3 > 65536) { return cg_die_at_node("internal compiler error: expression stack overflow", n); }
+    if (gx_top + 3 > 262144) { return cg_die_at_node("internal compiler error: expression stack overflow", n); }
     let l: i32 = nfirst[n - 1];
     let r: i32 = nnext[l - 1];
     gx_node[gx_top] = n; gx_state[gx_top] = 1; gx_want[gx_top] = wt; gx_top = gx_top + 1;
@@ -5543,7 +5556,7 @@ fn gx_push_bin(n: i32, wantL: i32, wantR: i32, wt: i32) : i32 {
     return 0;
 }
 fn gx_push_un(n: i32, wantC: i32, wt: i32) : i32 {
-    if (gx_top + 2 > 65536) { return cg_die_at_node("internal compiler error: expression stack overflow", n); }
+    if (gx_top + 2 > 262144) { return cg_die_at_node("internal compiler error: expression stack overflow", n); }
     gx_node[gx_top] = n; gx_state[gx_top] = 1; gx_want[gx_top] = wt; gx_top = gx_top + 1;
     gx_node[gx_top] = nfirst[n - 1]; gx_state[gx_top] = 0; gx_want[gx_top] = wantC; gx_top = gx_top + 1;
     return 0;
@@ -5556,7 +5569,7 @@ fn gx_push_un(n: i32, wantC: i32, wt: i32) : i32 {
 // result. This is the bootstrap half of the M4 fix; tests/codegen-twin.c
 // mirrors it byte-for-byte.
 fn gx_push_logical(n: i32, wt: i32) : i32 {
-    if (gx_top + 2 > 65536) { return cg_die_at_node("internal compiler error: expression stack overflow", n); }
+    if (gx_top + 2 > 262144) { return cg_die_at_node("internal compiler error: expression stack overflow", n); }
     gx_node[gx_top] = n; gx_state[gx_top] = 2; gx_want[gx_top] = wt; gx_top = gx_top + 1;
     gx_node[gx_top] = nfirst[n - 1]; gx_state[gx_top] = 0; gx_want[gx_top] = TY_I32; gx_top = gx_top + 1;
     return 0;
@@ -7566,15 +7579,15 @@ fn shstr_add(lit: ptr<u8>) : i32 {
 // in emission order (main first, then source order — cg_gen_program's walk),
 // and the globals in symbol-row (declaration) order. 4096 rows plus the
 // three synthetic entries at the head.
-let sym_name: i32[4160] = 0;    // .strtab offset of the name
-let sym_info: i32[4160] = 0;    // (STB_GLOBAL << 4) | STT_*
-let sym_shndx: i32[4160] = 0;   // the section the symbol lives in
-let sym_val: i64[4160] = 0;     // st_value
-let sym_size: i64[4160] = 0;    // st_size
+let sym_name: i32[16448] = 0;    // .strtab offset of the name
+let sym_info: i32[16448] = 0;    // (STB_GLOBAL << 4) | STT_*
+let sym_shndx: i32[16448] = 0;   // the section the symbol lives in
+let sym_val: i64[16448] = 0;     // st_value
+let sym_size: i64[16448] = 0;    // st_size
 let elf_nsym: i32 = 0;
 
 fn sym_add(name_off: i32, info: i32, shndx: i32, val: i64, size: i64) : i32 {
-    if (elf_nsym >= 4160) { return cg_die("too many symbols"); }
+    if (elf_nsym >= 16448) { return cg_die("too many symbols"); }
     sym_name[elf_nsym] = name_off;
     sym_info[elf_nsym] = info;
     sym_shndx[elf_nsym] = shndx;

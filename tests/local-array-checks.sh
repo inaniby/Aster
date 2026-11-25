@@ -10,10 +10,10 @@ cd "$(dirname "$0")/.."
 OUT=${OUT:-tmp-local-array-checks}
 mkdir -p "$OUT"; trap 'rm -rf "$OUT"' EXIT HUP INT TERM
 
-printf '%s\n' '[1/8] Strictly build Aster compiler'
+printf '%s\n' '[1/9] Strictly build Aster compiler'
 ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror src/aster.cpp -o "$OUT/aster"
 
-printf '%s\n' '[2/8] Source guard: local arrays are allocated, initialized and indexed in the frame'
+printf '%s\n' '[2/9] Source guard: local arrays are allocated, initialized and indexed in the frame'
 # A regression that drops the frame allocation, the per-element initialization,
 # or either index path must fail here before any behavioral test runs.
 grep -qF 'std::map<int,uint32_t> localArrayLength' src/aster.cpp \
@@ -28,8 +28,10 @@ grep -qF 'is too large: length ' src/aster.cpp \
 # store base and the slotElemTypes record are new, and those are guarded here.
 grep -qF 'const uint32_t esz=tySize(elem);' src/aster.cpp \
     || { echo 'FAIL: local-array element width (esz) missing from Stmt::Let' >&2; exit 1; }
-grep -qF 'const uint32_t slots=(uint32_t)(((uint64_t)s.count*esz+7u)/8u);' src/aster.cpp \
-    || { echo 'FAIL: local-array slot packing (ceil(N*sizeof(T)/8)) missing from Stmt::Let' >&2; exit 1; }
+grep -qF 'const uint64_t arrayBytes=(uint64_t)s.count*esz;' src/aster.cpp \
+    || { echo 'FAIL: local-array byte size (count*esz) missing from Stmt::Let' >&2; exit 1; }
+grep -qF 'const uint32_t slots=(uint32_t)((arrayBytes+7u)/8u);' src/aster.cpp \
+    || { echo 'FAIL: local-array slot packing (ceil(arrayBytes/8)) missing from Stmt::Let' >&2; exit 1; }
 grep -qF 'const uint32_t strBase=esz==1?0x39000000u:esz==2?0x79000000u:esz==8?0xf9000000u:0xb9000000u;' src/aster.cpp \
     || { echo 'FAIL: element-width store base (STRB/STRH/STR X/STR W) missing from Stmt::Let' >&2; exit 1; }
 grep -qF 'STR[W|H|B] WZR / STR XZR' src/aster.cpp \
@@ -44,13 +46,18 @@ grep -qF 'slotElemTypes[slot]=elem;' src/aster.cpp \
 # started being computed in one place; v0.23.31-dev added the fifth,
 # emitIndexAddr's, where a subscript chain materializes the same local base
 # (after its subscripts, because one of them can put a global's address in X16).
-test "$(grep -cF '0x91000000u|(uint32_t(slot*8)<<10)' src/aster.cpp)" -eq 5 \
-    || { echo 'FAIL: expected exactly five ADD Xd, SP, #slot*8 encodings with sh=0 (0x91000000 base)' >&2; exit 1; }
+# v0.23.84-dev (limits batch 2) added the sixth, emitStructAddr's Var case, and
+# all six now go through arrayBaseOff(slot): for a low array that emits the
+# identical single ADD Xd, SP, #slot*8; for a high array (base at 8192 or
+# above) it emits the multi-ADD sequence that reaches the high base, so the
+# sh=0 single-word form can no longer be grepped for directly.
+test "$(grep -cF 'arrayBaseOff(slot)' src/aster.cpp)" -eq 6 \
+    || { echo 'FAIL: expected exactly six arrayBaseOff(slot) base materializations' >&2; exit 1; }
 grep -qF 'cannot return a local array' src/aster.cpp \
     || { echo 'FAIL: dangling-frame guard (returning a local array) missing' >&2; exit 1; }
 printf '%s\n' 'PASS: local-array allocation, initialization and both index paths present'
 
-printf '%s\n' '[3/8] Rejection: non-constant local array initializer'
+printf '%s\n' '[3/9] Rejection: non-constant local array initializer'
 cat > "$OUT/nonconst.ast" <<'AST'
 fn get() : i32 { return 3; }
 fn main() : i32 { let a: i32[4] = get(); return a[0]; }
@@ -63,7 +70,7 @@ printf '%s\n' "$out" | grep -qF "array initializer must be a constant expression
     || { echo "FAIL: wrong diagnostic for non-constant initializer: $out" >&2; exit 1; }
 printf '%s\n' 'PASS: let a: i32[4] = get() rejected (frame init must be compile-time constant)'
 
-printf '%s\n' '[4/8] Rejection: constant out-of-bounds indexes on a LOCAL array'
+printf '%s\n' '[4/9] Rejection: constant out-of-bounds indexes on a LOCAL array'
 cat > "$OUT/oob-read.ast" <<'AST'
 fn main() : i32 { let a: i32[4] = 0; return a[4]; }
 AST
@@ -85,7 +92,7 @@ printf '%s\n' "$out" | grep -qF "array index out of bounds for 'a': index -1, le
     || { echo "FAIL: wrong diagnostic for out-of-bounds local write: $out" >&2; exit 1; }
 printf '%s\n' 'PASS: a[4] read and a[-1] write on local i32[4] rejected with name/index/length'
 
-printf '%s\n' '[5/8] Rejection: misuse matrix (whole assign, scalar index, bool element, zero length, shadowed bounds, return array)'
+printf '%s\n' '[5/9] Rejection: misuse matrix (whole assign, scalar index, bool element, zero length, shadowed bounds, return array)'
 cat > "$OUT/whole.ast" <<'AST'
 fn main() : i32 { let a: i32[4] = 0; a = 1; return 0; }
 AST
@@ -124,7 +131,7 @@ AST
 if out=$("$OUT/aster" build-elf "$OUT/zero.ast" -o "$OUT/zero" 2>&1); then
     echo 'FAIL: compiler accepted a zero-length local array' >&2; exit 1
 fi
-printf '%s\n' "$out" | grep -qF "local array length must be between 1 and 1000: a" \
+printf '%s\n' "$out" | grep -qF "local array length must be between 1 and 6142: a" \
     || { echo "FAIL: wrong diagnostic for zero-length array: $out" >&2; exit 1; }
 
 # A local array shadows a same-named global array: the bounds check must use
@@ -153,7 +160,7 @@ printf '%s\n' "$out" | grep -qF "cannot return a local array (its frame storage 
     || { echo "FAIL: wrong diagnostic for returning a local array: $out" >&2; exit 1; }
 printf '%s\n' 'PASS: whole-assign / scalar-index / bool-element / zero-length / shadowed-bounds / return-array all rejected'
 
-printf '%s\n' '[6/8] Acceptance: dynamic index loop over a local array (qemu self-check)'
+printf '%s\n' '[6/9] Acceptance: dynamic index loop over a local array (qemu self-check)'
 cat > "$OUT/loop.ast" <<'AST'
 fn main() : i32 {
     let a: i32[4] = 0;
@@ -171,7 +178,7 @@ AST
 ./tests/run-aarch64.sh "$OUT/loop"
 printf '%s\n' 'PASS: 10+20+30+60 summed through a dynamic-index while loop == 120 (exit 0)'
 
-printf '%s\n' '[7/8] Acceptance: local array decays to its frame address (ptr argument, odd length)'
+printf '%s\n' '[7/9] Acceptance: local array decays to its frame address (ptr argument, odd length)'
 cat > "$OUT/decay.ast" <<'AST'
 fn addAll(p: ptr, n: i32) : i32 {
     let k: i32 = 0;
@@ -193,7 +200,7 @@ AST
 ./tests/run-aarch64.sh "$OUT/decay"
 printf '%s\n' 'PASS: addAll(a, 3) over an odd-length local array == 6 (exit 0)'
 
-printf '%s\n' '[8/8] Acceptance: base offset when the array is NOT in slot 0 (qemu self-check)'
+printf '%s\n' '[8/9] Acceptance: base offset when the array is NOT in slot 0 (qemu self-check)'
 # Regression: v0.22.49-dev first materialized the frame base with the 0x91400000
 # ADD encoding, whose sh bit (bit 22) scales the imm12 field by 4096 — so the
 # base was SP + (slot*8 << 12). Every earlier test happened to declare the array
@@ -214,3 +221,57 @@ AST
 "$OUT/aster" build-elf "$OUT/offset.ast" -o "$OUT/offset"
 ./tests/run-aarch64.sh "$OUT/offset"
 printf '%s\n' 'PASS: i32[4] behind a scalar local (slot 1) reads/writes its own frame bytes (0+5+10+15 == 30, exit 0)'
+
+printf '%s\n' '[9/9] Acceptance + rejection: large local arrays in the high region (v0.23.84-dev, limits batch 2)'
+# A 2000-element i32 array is 8000 bytes: it no longer fits the 500 low slots,
+# so it lives in the high region at frame offset 8192 and the frame grows to
+# 16384. Fill, sum, spot-check, and check a scalar declared after the array.
+cat > "$OUT/big.ast" <<'AST'
+fn big() : i32 {
+    let a: i32[2000] = 0;
+    let i: i32 = 0;
+    while (i < 2000) { a[i] = i * 3 + 1; i = i + 1; }
+    let sum: i32 = 0;
+    i = 0;
+    while (i < 2000) { sum = sum + a[i]; i = i + 1; }
+    if (sum != 5999000) { return 1; }
+    if (a[0] != 1) { return 2; }
+    if (a[1999] != 5998) { return 3; }
+    if (a[1000] != 3001) { return 4; }
+    return 0;
+}
+fn main() : i32 { return big(); }
+AST
+"$OUT/aster" build-elf "$OUT/big.ast" -o "$OUT/big"
+./tests/run-aarch64.sh "$OUT/big"
+printf '%s\n' 'PASS: i32[2000] fills, sums to 5999000 and spot-checks in a 16384-byte frame (exit 0)'
+
+# The single-array cap is byte-derived: i32[6143] is 24572 bytes, past the
+# 24568-byte high-array budget, so it must still be rejected with the new limit.
+cat > "$OUT/over.ast" <<'AST'
+fn main() : i32 { let a: i32[6143] = 0; return 0; }
+AST
+if out=$("$OUT/aster" build-elf "$OUT/over.ast" -o "$OUT/over" 2>&1); then
+    echo 'FAIL: compiler accepted i32[6143] past the high-array budget' >&2; exit 1
+fi
+printf '%s\n' "$out" | grep -qF "local array length must be between 1 and 6142: a" \
+    || { echo "FAIL: wrong diagnostic for i32[6143]: $out" >&2; exit 1; }
+printf '%s\n' 'PASS: i32[6143] rejected with the byte-derived 6142-element limit'
+
+# Four i32[2000] arrays are each legal alone but together need 32000 high-array
+# bytes, past the 24568-byte shared budget: the fourth must fail in codegen.
+cat > "$OUT/budget.ast" <<'AST'
+fn main() : i32 {
+    let a: i32[2000] = 0;
+    let b: i32[2000] = 0;
+    let c: i32[2000] = 0;
+    let d: i32[2000] = 0;
+    return a[0] + b[0] + c[0] + d[0];
+}
+AST
+if out=$("$OUT/aster" build-elf "$OUT/budget.ast" -o "$OUT/budget" 2>&1); then
+    echo 'FAIL: compiler accepted four i32[2000] arrays past the shared frame budget' >&2; exit 1
+fi
+printf '%s\n' "$out" | grep -qF "exceeds the frame limit" \
+    || { echo "FAIL: wrong diagnostic for the shared-budget overrun: $out" >&2; exit 1; }
+printf '%s\n' 'PASS: four i32[2000] arrays rejected when the shared 24568-byte budget runs out'

@@ -3,9 +3,11 @@
 #
 # `-g` makes aster emit call-frame information beside the line table and the
 # .debug_info it already wrote, so a debugger can walk a stack instead of only
-# printing the frame it stopped in. Aster's frames are uniform — every
-# function's prologue is exactly `SUB SP, SP, #8192` and SP never moves again —
-# so a whole function's unwind table is six bytes of CFI:
+# printing the frame it stopped in. Aster's frames have one size per function —
+# 8192 by default (the size this suite's small functions take), smaller under
+# `--compact-frames`, larger for a function with big local arrays — and SP
+# never moves again inside a body, so a whole function's unwind table is six
+# bytes of CFI:
 #
 #     CFA        r31 (sp) + 8192, from one instruction past the prologue
 #     r30 (x30)  at CFA-8, for a body that returns; absent for the entry

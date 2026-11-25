@@ -76,7 +76,7 @@ grep -qF 'v0.23.28-dev: a local array extension, open to every element type.' sr
 # v0.23.31-dev: the suffix is one `[N]` per dimension, read by arrayDimList()
 # and totalled by dimsTotal(); the recorded array is the same one — `isArray`
 # and the total element `count` — only the spelling of how they are set moved.
-grep -qF 'if(!s.dims.empty()){s.isArray=true;s.count=dimsTotal(s.dims,1000,"local array length",id.s,id.line,id.col);}' src/aster.cpp \
+grep -qF 'if(!s.dims.empty()){s.isArray=true;s.count=dimsTotal(s.dims,localLimit,"local array length",id.s,id.line,id.col);}' src/aster.cpp \
     || { echo 'FAIL: letStatement() no longer records a local array' >&2; exit 1; }
 # The element type is carried on the binding, not re-derived from the name.
 # v0.23.31-dev: the binding also carries every dimension length now, so a
@@ -100,7 +100,7 @@ grep -qF 'v0.23.28-dev: `let pts : Point [ 4 ] = Point { 0, 0 };`' src/aster.cpp
 # when this guard was written; the float globals joined in v0.23.77-dev, so the
 # count moved with them — what the guard pins is that *every* branch that opens a
 # `[` totals its dimension list through dimsTotal().
-[ "$(grep -c 'g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);' src/aster.cpp)" -eq 5 ] \
+[ "$(grep -c 'g.isArray=true;g.count=dimsTotal(g.dims,kMaxNonFrameArrayElements,"array length",g.name,id.line,id.col);' src/aster.cpp)" -eq 5 ] \
     || { echo 'FAIL: globalDeclaration() must open [N] in all three branches' >&2; exit 1; }
 # And the struct image is repeated once per element when it is an array.
 grep -qF '            const uint64_t n=g.isArray?g.count:1;' src/aster.cpp \
@@ -480,18 +480,18 @@ if ! "$A" build-elf "$OUT/r.ast" -o "$OUT/r.a64" >"$OUT/r.err" 2>&1; then
     echo "FAIL: nested array field was refused: $(sed -n '1p' "$OUT/r.err")" >&2; exit 1
 fi
 printf '  %-34s accepted\n' 'nested array field'
-reject 'array field of zero length' 'array field length must be between 1 and 1000' \
+reject 'array field of zero length' 'array field length must be between 1 and 4194304' \
     'struct P { x: i32[0] }
 fn main() : i32 { return 0; }'
 # Lengths: the two limits the three parsers share.
-reject 'local bool[0]'              'local array length must be between 1 and 1000' \
+reject 'local bool[0]'              'local array length must be between 1 and 6142' \
     'fn main() : i32 { let a: bool[0] = true; return 0; }'
-reject 'local bool[1001]'           'local array length must be between 1 and 1000' \
-    'fn main() : i32 { let a: bool[1001] = true; return 0; }'
-reject 'global bool[0]'             'array length must be between 1 and 1048576' \
+reject 'local bool[6143]'           'local array length must be between 1 and 6142' \
+    'fn main() : i32 { let a: bool[6143] = true; return 0; }'
+reject 'global bool[0]'             'array length must be between 1 and 4194304' \
     'let f: bool[0] = true;
 fn main() : i32 { return 0; }'
-reject 'global Point[0]'            'array length must be between 1 and 1048576' \
+reject 'global Point[0]'            'array length must be between 1 and 4194304' \
     'struct P { x: i32 }
 let p: P[0] = P { 1 };
 fn main() : i32 { return 0; }'
@@ -710,13 +710,13 @@ mutate 'm10: local arrays, integers only' \
 # it, so position no longer names the Bool branch, and a mutant that cripples
 # another branch proves nothing about this one.
 mutate 'm11: a bool global is never an array' \
-    '/`let flags : bool \[ 4 \] = true;`/,/g.isArray=true;g.count=dimsTotal/s/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/' \
+    '/`let flags : bool \[ 4 \] = true;`/,/g.isArray=true;g.count=dimsTotal/s/g.isArray=true;g.count=dimsTotal(g.dims,kMaxNonFrameArrayElements,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/' \
     must_not_compile 'global bool[2]' 'let f: bool[2] = true;
 fn main() : i32 { if (f[1]) { return 1; } return 0; }'
 # m12: the same for the Struct branch — addressed by its marker too, for the
 # same reason as m11 (it used to be "the second of the three identical lines").
 mutate 'm12: a struct global is never an array' \
-    '/`let pts : Point \[ 4 \] = Point { 0, 0 };`/,/g.isArray=true;g.count=dimsTotal/s/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/' \
+    '/`let pts : Point \[ 4 \] = Point { 0, 0 };`/,/g.isArray=true;g.count=dimsTotal/s/g.isArray=true;g.count=dimsTotal(g.dims,kMaxNonFrameArrayElements,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/' \
     must_not_compile 'global Point[2]' 'struct Point { x: i32, y: i32 }
 let p: Point[2] = Point { 1, 2 };
 fn main() : i32 { return p[1].x; }'

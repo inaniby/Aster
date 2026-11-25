@@ -82,9 +82,9 @@ grep -qF 'uint32_t dimsTotal(std::vector<uint32_t>& dims,uint32_t limit,const st
 # composite, scalar), so the count below is five rather than three.
 # `count` is still the total element count — that is what kept the frame
 # reservation and the initializer broadcast unchanged.
-grep -qF 's.count=dimsTotal(s.dims,1000,"local array length",id.s,id.line,id.col);' src/aster.cpp \
+grep -qF 's.count=dimsTotal(s.dims,localLimit,"local array length",id.s,id.line,id.col);' src/aster.cpp \
     || { echo 'FAIL: a local multi-dimensional declaration no longer totals its count' >&2; exit 1; }
-[ "$(grep -c 'g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);' src/aster.cpp)" -eq 5 ] \
+[ "$(grep -c 'g.isArray=true;g.count=dimsTotal(g.dims,kMaxNonFrameArrayElements,"array length",g.name,id.line,id.col);' src/aster.cpp)" -eq 5 ] \
     || { echo 'FAIL: globalDeclaration() must open a dimension list in all three branches' >&2; exit 1; }
 grep -qF 's.fields.push_back({fn.s,fty,0,flen,std::move(dims),std::move(fieldFuncSig),fieldIsFunc});' src/aster.cpp \
     || { echo 'FAIL: structDeclaration() no longer records a field dimension list' >&2; exit 1; }
@@ -323,9 +323,9 @@ reject 'inner subscript out of bounds' 'array index out of bounds: index 3, leng
     'fn main() : i32 { let a: i32[2][3] = 0; return a[0][3]; }'
 reject 'negative subscript'         "array index out of bounds for 'a': index -1, length 2" \
     'fn main() : i32 { let a: i32[2][3] = 0; return a[0 - 1][0]; }'
-reject 'zero dimension'             'local array length must be between 1 and 1000: a' \
+reject 'zero dimension'             'local array length must be between 1 and 6142: a' \
     'fn main() : i32 { let a: i32[0][3] = 0; return a[0][0]; }'
-reject 'total too large'            'local array length must be between 1 and 1000: a' \
+reject 'total too large'            'local array length must be between 1 and 6142: a' \
     'fn main() : i32 { let a: i32[1000][1000] = 0; return a[0][0]; }'
 reject 'scalar, two subscripts'     'cannot index non-array variable: x' \
     'fn main() : i32 { let x: i32 = 1; return x[0][1]; }'

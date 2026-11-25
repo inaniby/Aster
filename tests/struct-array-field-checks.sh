@@ -268,12 +268,13 @@ reject 'global literal of array-field struct' "struct 'B' contains an array fiel
     'struct B { nums: i32[4] }
 let gb: B = B { 0 };
 fn main() : i32 { return 0; }'
-# An array field length is bounded like a local array.
-reject 'array field length 0'        'array field length must be between 1 and 1000' \
+# An array field length is bounded like a global array, not like a local one:
+# the field lives in its struct, not in the frame, so its cap is 4194304.
+reject 'array field length 0'        'array field length must be between 1 and 4194304' \
     'struct B { nums: i32[0] }
 fn main() : i32 { return 0; }'
-reject 'array field length 1001'     'array field length must be between 1 and 1000' \
-    'struct B { nums: i32[1001] }
+reject 'array field length 4194305'   'array field length must be between 1 and 4194304' \
+    'struct B { nums: i32[4194305] }
 fn main() : i32 { return 0; }'
 # A struct array field element is still not a register value: it cannot be
 # returned or read into an integer — only copied as a whole, or walked field by

@@ -135,7 +135,7 @@ AST
 if ./aster build-elf tmp-array-zero.ast -o tmp-array-zero 2>tmp-array-zero.err; then
   echo 'FAIL: compiler accepted a zero-length array' >&2; exit 1
 fi
-grep -F 'array length must be between 1 and 1048576: x' tmp-array-zero.err >/dev/null
+grep -F 'array length must be between 1 and 4194304: x' tmp-array-zero.err >/dev/null
 echo 'PASS: diagnostic zero-length array rejected'
 
 cat > tmp-array-nonconst.ast <<'AST'

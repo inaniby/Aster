@@ -536,8 +536,14 @@ mutate 'm8: the stride is always four' \
 # m7: the frame address is the slot index rather than the slot's byte offset,
 # so `&a` names the wrong place for every array past slot 0 — the shape of the
 # v0.22.50-dev frame-base encoding bug, with the same kind of invisibility.
+# v0.23.84-dev (limits batch 2): all six base materializations share
+# arrayBaseOff(slot), so the mutation breaks only the `&`-address site
+# (emitStructAddr's Var case, the one `&a` lowers through) — breaking the
+# shared helper instead would move the array's own stores with it and the
+# case could not see the rule, and the plain decay site is not what `&a`
+# uses at all.
 mutate 'm7: frame address not scaled' \
-    's/if(slot>=0){emit(addImm(kGlobalBase,31,(uint32_t)slot\*8));return;}/if(slot>=0){emit(addImm(kGlobalBase,31,(uint32_t)slot));return;}/' \
+    's/if(localArrayLength.count(slot))emitAddOff(kGlobalBase,31,arrayBaseOff(slot));/if(localArrayLength.count(slot))emitAddOff(kGlobalBase,31,(uint32_t)slot);/' \
     must_differ '& of a second-slot array' 7 'fn main() : i32 {
     let pad: i32 = 1;
     let a: i32[4] = 7;

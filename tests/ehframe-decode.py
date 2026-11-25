@@ -7,11 +7,12 @@ ELF64 section table by hand (no pyelftools, no objdump), applies Aster's own
 relocations when the file is still relocatable, runs each CFI program through a
 row machine, and prints the result in a form a shell script can assert on.
 
-Aster's frames are uniform — every function's prologue is exactly
-`SUB SP, SP, #8192` and SP never moves again — so a whole function's unwind
-table is a handful of bytes:
+Aster's frames have one size per function — 8192 by default, smaller under
+`--compact-frames`, larger for a function with big local arrays — and SP never
+moves again inside a body, so a whole function's unwind table is a handful
+of bytes:
 
-    CFA        r31 (sp) + 8192, from one instruction past the prologue
+    CFA        r31 (sp) + frame, from one instruction past the prologue
     r30 (x30)  at CFA-8, for a body that returns; absent for main, which exits
 
 Modes:

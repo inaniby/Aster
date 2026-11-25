@@ -243,6 +243,13 @@ struct Program {
     std::vector<EventBlockDeclaration> events;
 };
 
+// v0.23.85-dev (limits batch 3): the parser nesting cap, configurable
+// via --max-nesting-depth (default 256, like Clang's -fbracket-depth).
+// Set once per process from aster.cpp's main() before any compile runs;
+// the standalone cn_parse_main tool keeps the default.
+void setMaxNestingDepth(unsigned depth);
+unsigned maxNestingDepth();
+
 Program parseProgram(const std::string& source, Language language,
                      const std::string& sourceFile = {});
 std::string readPackageName(const std::string& source, Language language);

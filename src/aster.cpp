@@ -137,6 +137,20 @@ struct RecursionGuard {
     }
     ~RecursionGuard(){--d;}
 };
+// v0.23.85-dev (limits batch 3): the parser/lowering nesting caps, now
+// configurable instead of hard-coded. --max-nesting-depth (default 256,
+// like Clang's -fbracket-depth) bounds how deep the recursive-descent
+// parsers nest (mainline DepthGuard and the bilingual cn_parser guard);
+// --max-lowering-depth (default 2048) bounds the sema/codegen/lowering
+// walks over the tree the parser built (RecursionGuard and
+// CnLoweringDepthGuard). The lowering cap is floored at the parse cap:
+// a tree the parser accepted must never be refused by a later walk, so
+// the effective lowering limit is max(--max-lowering-depth,
+// --max-nesting-depth). Defaults are unchanged, so every program that
+// compiled before still compiles. Set once per process from main()
+// (applyDepthOpts) before any compile runs.
+static unsigned g_maxParseDepth=256;
+static unsigned g_maxLoweringDepth=2048;
 std::string readFile(const std::string& p) {
     std::ifstream f(p, std::ios::binary);
     if (!f) throw Error("cannot open input: " + p);
@@ -1049,28 +1063,29 @@ static std::string tyNameFull(Ty t) {
 // built, so the struct must already be in it — which it is: the caller appends
 // the (still empty) definition first, then lays it out, so a struct that
 // contains itself is rejected rather than recursing forever.
-// v0.23.65-dev: the accumulation is 64-bit and the 1024-byte limit is checked
+// v0.23.65-dev: the accumulation is 64-bit and the span limit is checked
 // *as the fields are placed*, not after. Both changes came out of the same
 // finding: a struct of 8192 fields of 512 x 1024 bytes each reaches exactly
-// 2^32, which a uint32_t accumulator wraps to **0** — and 0 passes the
-// `size > 1024` check that used to run afterwards, so the compiler accepted a
-// 4 GiB struct, reported `sizeof` as 0 and laid every field over whatever the
-// zero-size slot happened to sit on. Accumulating in 64 bits removes the wrap;
+// 2^32, which a uint32_t accumulator wraps to **0** — and 0 passes any
+// after-the-fact size check, so the compiler accepted a 4 GiB struct,
+// reported `sizeof` as 0 and laid every field over whatever the zero-size
+// slot happened to sit on. Accumulating in 64 bits removes the wrap;
 // checking the limit at the first field that crosses it removes the window in
 // which a nonsense size is held at all, and names the field that crossed.
-// The largest struct Aster will lay out. v0.23.65-dev: namespace scope, because
-// layoutStruct enforces it while it places the fields (see below), not the
-// caller after the fact.
-static constexpr uint32_t kMaxStructSize = 1024;
-// The span ceiling is the second guard: `f.offset` is a uint32_t, so no
-// running offset may exceed it even if kMaxStructSize is raised later.
+// v0.23.83-dev (limits batch 1): the 1024-byte cap that used to sit beside
+// this guard is gone — a struct is now as large as its fields make it. What
+// remains is the structural limit: `f.offset` is a uint32_t, so no running
+// offset (and no final size) may exceed the 32-bit span. The field-address
+// sites (emitStructAddr, emitStructStore) and the copy loop (emitStructCopy)
+// handle large offsets with base-register addressing instead of a single
+// immediate, so a struct past 4 KiB still lays out, passes and returns
+// correctly; only a field offset that cannot be a uint32_t is refused.
 static void layoutStruct(StructDef& s,const Token& id) {
     static constexpr uint64_t kMaxStructSpan=0xffffffffULL;
     uint64_t off = 0; uint32_t align = 1;
     const auto tooLarge=[&](const StructField& f,uint64_t at){
         throw Error(loc(id.line,id.col,std::string(structKindName(s))+" "+id.s+" is too large: field '"+f.name+
-                        "' reaches offset "+std::to_string(at)+" (limit "+
-                        std::to_string(kMaxStructSize)+" bytes)"));
+                        "' reaches offset "+std::to_string(at)+" (field offsets are 32-bit)"));
     };
     // v0.23.70-dev: a union is the struct layout with one difference — every
     // member sits at offset 0, so its alignment is the widest member's and its
@@ -1089,10 +1104,9 @@ static void layoutStruct(StructDef& s,const Token& id) {
             const uint64_t fieldSize = f.len ? elemSize * f.len : elemSize;
             if (fieldSize > maxSize) { maxSize = fieldSize; widest = &f; }
             if (fieldSize > kMaxStructSpan) tooLarge(f,fieldSize);
-            if (fieldSize > (uint64_t)kMaxStructSize) tooLarge(f,fieldSize);
         }
         const uint64_t size = (maxSize + align - 1u) & ~(uint64_t)(align - 1u);
-        if (size > (uint64_t)kMaxStructSize) tooLarge(*widest,size);
+        if (size > kMaxStructSpan) tooLarge(*widest,size);
         s.align = align; s.size = (uint32_t)size;
         return;
     }
@@ -1112,14 +1126,13 @@ static void layoutStruct(StructDef& s,const Token& id) {
         f.offset = (uint32_t)off;
         off += fieldSize;
         if (off > kMaxStructSpan) tooLarge(f,off);
-        if (off > (uint64_t)kMaxStructSize) tooLarge(f,off);
     }
     s.align = align;
     // The final round-up can still push a struct that was under the limit on
     // every field over it, so the limit is asserted on the size too — the same
     // message, so there is one way to be told.
     const uint64_t size = (off + align - 1u) & ~(uint64_t)(align - 1u);
-    if (size > (uint64_t)kMaxStructSize) tooLarge(s.fields.back(),size);
+    if (size > kMaxStructSpan) tooLarge(s.fields.back(),size);
     s.size = (uint32_t)size;
 }
 // The single spelling of "this is not a type name", shared by the parameter,
@@ -1564,6 +1577,29 @@ static int64_t castConstValue(int64_t v,Ty to){
 // not mtime: a fresh checkout or a `cp -p` keeps the bytes and still rebuilds.
 std::map<std::string,std::string> g_buildDeps;
 
+// v0.23.84-dev (limits batch 2): the frame and array ceilings the second
+// limits batch establishes. A function's frame is 8192 bytes by default and
+// grows past it only for a function with large local arrays: the historical
+// tail (spill, call grid, struct scratch, return address) stays where it
+// was, the arrays live above it, and the return address moves to the new
+// top. The 32768 cap is the return-address immediate — STR/LDR X30,
+// [SP, #off] scales its imm12 by 8, so frame-8 tops out at 32760. The
+// high-array budget is what is left above the historical frame once the
+// return address has its 8 bytes: 32768 - 8192 - 8 = 24568. A single local
+// array may use at most that many bytes, which is why its element cap is
+// byte-derived (24568/sizeof(T): 6142 for i32, 3071 for i64, 24568 for u8).
+// Parameters and struct fields cost no frame, so they share the
+// non-frame cap the globals already use (4194304 elements): the only thing
+// it guards is the dims product staying in 32 bits. v0.23.85-dev (limits
+// batch 3): raised from 1048576 so the bootstrap's enlarged 4 MiB source
+// buffers (u8[4194304] globals in bootstrap/aster.ast) can compile at all
+// under this host; a 4 MiB-element u8 array is 4 MiB of .bss.
+static constexpr uint32_t kMaxFrameBytes=32768u;
+static constexpr uint32_t kMaxHighArrayBytes=24568u;
+static constexpr uint32_t kMaxNonFrameArrayElements=4194304u;
+// One local array's element cap, from its byte size (see above).
+static uint32_t localArrayElemLimit(Ty elem){const uint32_t esz=tySize(elem);return esz?kMaxHighArrayBytes/esz:1u;}
+
 class Parser {
     std::vector<Token> t; size_t p=0;
     bool requireMain=true;
@@ -1638,7 +1674,7 @@ class Parser {
         // `fn(…)->…`) used to recurse through parseType/pointerType/
         // needType with no guard and segfaulted the compiler (exit 139).
         // Guard the nesting itself; sequential types do not accumulate.
-        DepthGuard depthGuard(typeDepth,256,"type");
+        DepthGuard depthGuard(typeDepth,g_maxParseDepth,"type");
         switch(cur().k){
             case TK::I8:  out=Ty::I8;   ++p; return true;
             case TK::I16: out=Ty::I16;  ++p; return true;
@@ -1766,8 +1802,8 @@ class Parser {
     Ty arrayParamType(std::vector<uint32_t>* outDims=nullptr){
         Ty t=needType(kTypeExpected);
         if(cur().k!=TK::LBracket)return t;
-        std::vector<uint32_t> dims=arrayDimList("array parameter length",1000,"parameter");
-        dimsTotal(dims,1000,"array parameter length","parameter",cur().line,cur().col);
+        std::vector<uint32_t> dims=arrayDimList("array parameter length",kMaxNonFrameArrayElements,"parameter");
+        dimsTotal(dims,kMaxNonFrameArrayElements,"array parameter length","parameter",cur().line,cur().col);
         if(outDims)*outDims=dims;
         return tyPtrToElem(t);
     }
@@ -1904,13 +1940,13 @@ class Parser {
                 while(cur().k==TK::LBracket){
                     ++p; const auto lt=need(TK::Number,"expected array length after '['");
                     const uint64_t d=unsignedLiteral(lt,"array length");
-                    if(d==0||d>1000)throw Error("array length out of range at "+std::to_string(lt.line)+":"+std::to_string(lt.col));
+                    if(d==0||d>kMaxNonFrameArrayElements)throw Error("array length out of range at "+std::to_string(lt.line)+":"+std::to_string(lt.col));
                     dims.push_back((uint32_t)d);
                     if(dims.size()>8)throw Error(loc(lt.line,lt.col,"arrays support at most 8 dimensions"));
                     need(TK::RBracket,"expected ']' after array length");
                 }
                 need(TK::RParen,("expected ')' after "+op+" type").c_str());
-                dimsTotal(dims,1048576,"array length","the "+op+" type",ln,cl);
+                dimsTotal(dims,kMaxNonFrameArrayElements,"array length","the "+op+" type",ln,cl);
                 E x(new Expr(op=="sizeof"?Expr::SizeOf:Expr::Len));
                 x->ty=t; x->idims=dims; x->line=ln; x->col=cl;
                 // Type-form folds immediately: no binding context is required.
@@ -2143,7 +2179,6 @@ class Parser {
             if(eat(TK::LParen)){E x(new Expr(Expr::Call));x->name=tok.s;x->line=tok.line;x->col=tok.col;
                 if(cur().k!=TK::RParen){do{x->args.push_back(expr());}while(eat(TK::Comma));}
                 need(TK::RParen,"expected ')' after function arguments");
-                if(x->args.size()>32)throw Error(loc(x->line,x->col,"function calls support at most 32 arguments"));
                 return x;}
             if(eat(TK::LBracket)){E idx=expr();need(TK::RBracket,"expected ']' after array index");E x(new Expr(Expr::Index));x->name=tok.s;x->line=tok.line;x->col=tok.col;x->a=std::move(idx);return x;}
             // S { v1, v2 } : an aggregate literal, one value per field, in
@@ -2199,7 +2234,6 @@ class Parser {
                 z->a=std::move(x);z->name="";z->line=lp.line;z->col=lp.col;
                 if(cur().k!=TK::RParen){do{z->args.push_back(expr());}while(eat(TK::Comma));}
                 need(TK::RParen,"expected ')' after function arguments");
-                if(z->args.size()>32)throw Error(loc(z->line,z->col,"function calls support at most 32 arguments"));
                 x=std::move(z);
             } else {
                 // v0.23.29-dev: a fixed-length array field may be subscripted
@@ -2264,7 +2298,7 @@ class Parser {
         // chain drove the host off the C stack with no diagnostic. Guard
         // the chain itself; the guard is scoped, so flat operands do not
         // accumulate depth.
-        DepthGuard depthGuard(exprDepth,256,"expression");
+        DepthGuard depthGuard(exprDepth,g_maxParseDepth,"expression");
         if(eat(TK::Star)){E x=unary();E z(new Expr(Expr::Deref));z->line=x->line;z->col=x->col;z->a=std::move(x);return z;}
         // &x : the address of an lvalue. Only a struct lvalue has a typed
         // address today (Sema rejects the rest), so this is how a struct
@@ -2349,7 +2383,7 @@ class Parser {
     // hand side of another conditional (`c ? a : d ? b : e` nests right, as in
     // C). Both arms are parsed at full expr() precedence.
     E expr(){
-        DepthGuard depthGuard(exprDepth,256,"expression");
+        DepthGuard depthGuard(exprDepth,g_maxParseDepth,"expression");
         E x=logical();
         if(cur().k==TK::Question){
             auto q=t[p++];
@@ -2595,8 +2629,15 @@ class Parser {
         // arrayDimList itself — the same shape every declaration site uses,
         // so one function owns the whole spelling.
         if(cur().k==TK::LBracket){
-            s.dims=arrayDimList("local array length",1000,id.s);
-            if(!s.dims.empty()){s.isArray=true;s.count=dimsTotal(s.dims,1000,"local array length",id.s,id.line,id.col);}
+            // v0.23.84-dev (limits batch 2): the cap is byte-derived, not a
+            // fixed element count — one array may use at most
+            // kMaxHighArrayBytes of frame, so the element count follows the
+            // element's width (6142 for i32, 3071 for i64, 24568 for u8).
+            // The frame budget shared by every array in the function is
+            // enforced again in codegen, where the other arrays are known.
+            const uint32_t localLimit=localArrayElemLimit(ty);
+            s.dims=arrayDimList("local array length",localLimit,id.s);
+            if(!s.dims.empty()){s.isArray=true;s.count=dimsTotal(s.dims,localLimit,"local array length",id.s,id.line,id.col);}
         }
         if(!s.isArray&&cur().k==TK::At)throw Error(loc(id.line,id.col,"local alignment is not supported: "+id.s));
         // v0.23.29-dev: a struct local may be declared without an initializer —
@@ -2717,7 +2758,7 @@ class Parser {
         // statement()'s DepthGuard, and segfaulted the compiler (exit 139)
         // on a long chain. Guard the chain itself; a single `if` costs one
         // level, nested `if`s in blocks are counted by statement() as well.
-        DepthGuard depthGuard(ifDepth,256,"if statement");
+        DepthGuard depthGuard(ifDepth,g_maxParseDepth,"if statement");
         Stmt s(Stmt::If);need(TK::LParen,"expected '(' after if");s.expr=expr();s.line=s.expr->line;s.col=s.expr->col;need(TK::RParen,"expected ')' after condition");s.thenBody=block();
         if(eat(TK::Else)){
             if(eat(TK::If)){std::vector<Stmt> eb;eb.push_back(ifStatement());s.elseBody=std::move(eb);}
@@ -2812,7 +2853,7 @@ class Parser {
         return s;
     }
     Stmt statement(){
-        DepthGuard depthGuard(stmtDepth,256,"statement");
+        DepthGuard depthGuard(stmtDepth,g_maxParseDepth,"statement");
         // v0.23.77-dev: `static let n: T = e;` — a function-local binding with
         // file-scope storage. `static` is a context keyword (like `tls`), so the
         // reserved-word count does not move. The declaration itself is parsed by
@@ -2927,7 +2968,7 @@ class Parser {
     // + - * /, a cast to f64 of a folded integer, and nothing else — a global
     // initializer has no run time in which to compute anything else.
     bool constantFloat(const Expr& e,double& out){
-        RecursionGuard depthGuard(constExprDepth,2048,"constant float expression");
+        RecursionGuard depthGuard(constExprDepth,g_maxLoweringDepth,"constant float expression");
         switch(e.k){
             case Expr::Num:
                 if(!e.isFloat)return false;
@@ -2971,7 +3012,7 @@ class Parser {
         }
     }
     int64_t foldConst(const Expr& e,bool u64Target=false){
-        RecursionGuard depthGuard(foldDepth,2048,"constant expression");
+        RecursionGuard depthGuard(foldDepth,g_maxLoweringDepth,"constant expression");
         switch(e.k){
             case Expr::Num:
                 // v0.23.80-dev: a float literal is not an integer constant
@@ -3066,7 +3107,7 @@ class Parser {
         }
     }
     bool isConstExpr(const Expr& e){
-        RecursionGuard depthGuard(constExprDepth,2048,"constant expression");
+        RecursionGuard depthGuard(constExprDepth,g_maxLoweringDepth,"constant expression");
         switch(e.k){
             case Expr::Num: return true;
             case Expr::SizeOf: case Expr::Len: return true;   // v0.23.35-dev: a compile-time constant
@@ -3204,13 +3245,15 @@ class Parser {
                 // v0.23.29-dev: a field may be a fixed-length array (`xs: T[N]`).
                 // Any element type is allowed (scalar, bool, struct or ptr) —
                 // the element is a value of its own type once indexed. The
-                // length shares the local-array limit (1..1000).
+                // length shares the non-frame cap the globals use (1..4194304):
+                // a field lives in its struct, not in a frame, and layoutStruct
+                // still guards the struct's own 32-bit span.
                 // v0.23.31-dev: it may be multi-dimensional (`xs: T[N][M]`), so
                 // the field carries each length outermost first in `dims` while
                 // `len` stays the total the layout already multiplies by.
                 std::vector<uint32_t> dims;
                 if(cur().k==TK::LBracket)
-                    dims=arrayDimList("array field length",1000,id.s+"."+fn.s);
+                    dims=arrayDimList("array field length",kMaxNonFrameArrayElements,id.s+"."+fn.s);
                 uint32_t flen=0;
                 if(!dims.empty()){
                     // v0.23.38-dev: an array of fn-pointers is refused here
@@ -3220,7 +3263,7 @@ class Parser {
                     // worst of both. A plain `ptr[4]` field is unaffected.
                     if(fieldIsFunc)
                         throw Error(loc(fn.line,fn.col,"an array of function pointers is not supported: "+id.s+"."+fn.s));
-                    flen=dimsTotal(dims,1000,"array field length",id.s+"."+fn.s,fn.line,fn.col);
+                    flen=dimsTotal(dims,kMaxNonFrameArrayElements,"array field length",id.s+"."+fn.s,fn.line,fn.col);
                 }
                 for(const auto& old:s.fields)if(old.name==fn.s)throw Error(loc(fn.line,fn.col,"duplicate field in "+kind+" "+id.s+": "+fn.s));
                 s.fields.push_back({fn.s,fty,0,flen,std::move(dims),std::move(fieldFuncSig),fieldIsFunc});
@@ -3334,8 +3377,8 @@ class Parser {
             Global g;g.name=id.s;g.external=external;g.ty=Ty::F32;g.align=4;g.tls=tls;g.isConst=isConst;
             for(const auto& old:globals)if(old.name==g.name)throw Error(loc(id.line,id.col,"duplicate global variable: "+g.name));
             if(cur().k==TK::LBracket){
-                g.dims=arrayDimList("array length",1048576,g.name);
-                if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);}
+                g.dims=arrayDimList("array length",kMaxNonFrameArrayElements,g.name);
+                if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,kMaxNonFrameArrayElements,"array length",g.name,id.line,id.col);}
             }
             if(external){need(TK::Semi,"expected ';' after extern global declaration");}
             else {
@@ -3359,8 +3402,8 @@ class Parser {
             Global g;g.name=id.s;g.external=external;g.ty=Ty::F64;g.align=8;g.tls=tls;g.isConst=isConst;
             for(const auto& old:globals)if(old.name==g.name)throw Error(loc(id.line,id.col,"duplicate global variable: "+g.name));
             if(cur().k==TK::LBracket){
-                g.dims=arrayDimList("array length",1048576,g.name);
-                if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);}
+                g.dims=arrayDimList("array length",kMaxNonFrameArrayElements,g.name);
+                if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,kMaxNonFrameArrayElements,"array length",g.name,id.line,id.col);}
             }
             if(external){need(TK::Semi,"expected ';' after extern global declaration");}
             else {
@@ -3399,8 +3442,8 @@ class Parser {
             if(cur().k==TK::LBracket){
                 // v0.23.31-dev: one `[N]` per dimension, outermost first; the
                 // total element count is what `.data`/`.bss` sizing uses.
-                g.dims=arrayDimList("array length",1048576,g.name);
-                if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);}
+                g.dims=arrayDimList("array length",kMaxNonFrameArrayElements,g.name);
+                if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,kMaxNonFrameArrayElements,"array length",g.name,id.line,id.col);}
             }
             if(external){need(TK::Semi,"expected ';' after extern global declaration");}
             else {
@@ -3427,8 +3470,8 @@ class Parser {
             if(cur().k==TK::LBracket){
                 // v0.23.31-dev: several `[N]` pairs; the total element count is
                 // the number of copies `layoutObject` lays out end to end.
-                g.dims=arrayDimList("array length",1048576,g.name);
-                if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);}
+                g.dims=arrayDimList("array length",kMaxNonFrameArrayElements,g.name);
+                if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,kMaxNonFrameArrayElements,"array length",g.name,id.line,id.col);}
             }
             // v0.23.67-dev: a const has to be given a value. A binding no
             // assignment may change and that was never initialized has no
@@ -3460,8 +3503,8 @@ class Parser {
             // v0.23.31-dev: one `[N]` per dimension. The element type is the
             // type written before the first `[` and every later read, write and
             // address computation reads it back from there.
-            g.dims=arrayDimList("array length",1048576,g.name);
-            if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);}
+            g.dims=arrayDimList("array length",kMaxNonFrameArrayElements,g.name);
+            if(!g.dims.empty()){g.isArray=true;g.count=dimsTotal(g.dims,kMaxNonFrameArrayElements,"array length",g.name,id.line,id.col);}
         }
         if(eat(TK::At)){
             auto a=need(TK::Ident,"expected 'align' after '@'");
@@ -3569,7 +3612,8 @@ public:
     // Recursive-descent parsers can be driven off the C stack by input such as
     // `((((((...1...))))))` or a hundred nested ifs. These counters make the
     // parser say "too deep" long before the process would die without a
-    // diagnostic; the limits are far above any hand-written program.
+    // diagnostic; the limits are far above any hand-written program. The cap
+    // is g_maxParseDepth (default 256, --max-nesting-depth).
     unsigned exprDepth=0, stmtDepth=0, foldDepth=0, constExprDepth=0, typeDepth=0, ifDepth=0;
     struct DepthGuard {
         unsigned& d;
@@ -3777,7 +3821,6 @@ public:
                 f.paramDims.push_back(pd);
                 for(const auto& old:f.params)if(old==id.s)throw Error("duplicate parameter name in function "+f.name+": "+id.s);
                 f.params.push_back(id.s);
-                if(f.params.size()>32)throw Error("functions support at most 32 parameters: "+f.name);
             }while(eat(TK::Comma));}
             need(TK::RParen,"expected ')' after parameters");
             need(TK::Colon,"expected ':'");
@@ -3839,7 +3882,7 @@ public:
 // dereferences) simply do not fold, leaving the index unchecked at run time.
 static bool constantInteger(const Expr& e,int64_t& out){
     static thread_local unsigned depth=0;
-    RecursionGuard depthGuard(depth,2048,"constant expression");
+    RecursionGuard depthGuard(depth,g_maxLoweringDepth,"constant expression");
     int64_t a=0,b=0;
     switch(e.k){
         // v0.23.25-dev: a bool literal is not an integer constant. Folding it
@@ -4106,6 +4149,11 @@ struct DebugVar {
     bool isArray=false;
     std::vector<uint32_t> dims;    // outermost first; empty for a scalar
     unsigned line=0;
+    // v0.23.84-dev (limits batch 2): the array's byte offset from the frame
+    // base, when it differs from slot*8 — a local array that lives in the
+    // high region above the historical 8192-byte frame. -1 keeps the old
+    // slot*8 rule for every other variable.
+    int byteOff=-1;
 };
 struct Codegen {
     struct Reloc { uint64_t offset; std::string symbol; uint32_t type; };
@@ -4155,6 +4203,35 @@ struct Codegen {
     bool injectInit=false;
     std::string initSymbol;
     int callDepth=0;
+    // v0.23.83-dev (limits batch 1): the call-argument scratch grid used to be
+    // one fixed 256-byte slot per nesting level (4160 + callDepth*256), which
+    // is what capped a call's staging at 256 bytes — 32 eight-byte arguments
+    // and no more. The grid is claimed dynamically now: each staging sequence
+    // takes the bytes its arguments need, nested claims stack above it, and
+    // the claim is released when the sequence is done. The discipline is
+    // strictly LIFO (a nested claim always releases before its outer one),
+    // so one top pointer is the whole allocator. The ceiling is the aggregate
+    // tail (kDstScratchBase): the grid must never reach the struct scratch
+    // that lives above it. Codegen is built fresh per function, so the top
+    // resets with it, like callDepth and scratchHigh.
+    // The 256-byte floor is deliberate, not a leftover: a call that stages
+    // 256 bytes or fewer claims exactly one old slot, so every program the
+    // old compiler accepted still emits byte for byte what it emitted — the
+    // struct-checks byte-identity baseline does not move. Only a call the old
+    // compiler refused (more than 256 bytes of staging) claims more, and
+    // only nested calls inside such a call ever sit at a new base.
+    uint32_t scratchTop=4160;
+    static constexpr uint32_t kScratchCeiling=8024;   // kDstScratchBase
+    uint32_t claimScratch(uint32_t bytes){
+        bytes=(bytes+7u)&~7u;
+        if(bytes<256u)bytes=256u;
+        const uint32_t base=scratchTop;
+        scratchTop+=bytes;
+        if(scratchTop>kScratchCeiling)
+            throw Error("call arguments need more scratch space than the frame provides ("+std::to_string(scratchTop)+" bytes)");
+        return base;
+    }
+    void releaseScratch(uint32_t base){ scratchTop=base; }
     mutable unsigned typeDepth=0;
     // v0.23.77-dev (audit A-11): memoised operand types. Every operator asks
     // exprType for both operands twice — once in the void check above the type
@@ -4203,6 +4280,26 @@ struct Codegen {
     std::map<int,bool> pointerSlots;
     std::map<int,bool> boolSlots;              // frame slots holding a bool (stored as a 4-byte i32 0/1)
     std::map<int,uint32_t> localArrayLength;   // frame slot -> element count for local i32[N] arrays
+    // v0.23.84-dev (limits batch 2): the high-array area. A local array
+    // that does not fit the low slots (0..3999) is laid out above the
+    // historical 8192-byte frame instead — its bytes start at 8192 +
+    // highArrayBytes and the frame grows past 8192 to cover them (see the
+    // frame computation at the end of run()). highArrayBase maps the
+    // array's slot to that byte offset; arrayBaseOff answers it for every
+    // site that materializes the array's base, and is slot*8 for a low
+    // array, so every low array emits exactly what it always did. A high
+    // array's slot is a token, not storage: it comes from a range above
+    // kMaxLocals (kHighArraySlotBase) so it never collides with a low slot
+    // and never trips the low-slot accounting, while any site that
+    // accidentally treated it as a storage slot would fail loudly on the
+    // loadVar range check instead of addressing the wrong bytes.
+    uint32_t highArrayBytes=0;
+    std::map<int,uint32_t> highArrayBase;
+    static constexpr int kHighArraySlotBase=10000;
+    uint32_t arrayBaseOff(int slot) const {
+        auto it=highArrayBase.find(slot);
+        return it==highArrayBase.end()?(uint32_t)slot*8:it->second;
+    }
     // v0.23.31-dev: frame slot -> the local array's dimension list. A
     // one-dimensional array's list has one entry, equal to the length above;
     // a two-dimensional one's first entry is the outer length (which is what
@@ -4500,7 +4597,7 @@ struct Codegen {
         return t;
     }
     Ty exprTypeUncached(const Expr& e) const {
-        RecursionGuard depthGuard(typeDepth,2048,"expression type");
+        RecursionGuard depthGuard(typeDepth,g_maxLoweringDepth,"expression type");
         // v0.23.68-dev: refuse to use a void result as a value. The recursive
         // exprType calls resolve each operand type (a void call resolves to
         // Ty::Void), and the message points at the operator. This lives before
@@ -4916,18 +5013,20 @@ struct Codegen {
     // STRB (0x39000000) from LDRB (0x39400000) — so storeStackT(v, 4160, U8)
     // emitted a *load* at offset 64.
     //
-    // Every call argument is staged in the scratch area at 4160 +
-    // callDepth*256, which is past 4095, so this was not a corner case: the
-    // caller stored a u8 argument by loading it, and handed the callee
-    // whatever the uninitialized stack held. `fn g(a: u8) -> u8 { return a; }`
-    // called as g(200) returned 0, and had never returned anything else — a
-    // u8 parameter had not worked since it was introduced in v0.23.2-dev,
+    // Every call argument is staged in the scratch area, which starts at
+    // 4160 — past 4095 — so this was not a corner case: the caller stored a
+    // u8 argument by loading it, and handed the callee whatever the
+    // uninitialized stack held. `fn g(a: u8) -> u8 { return a; }` called as
+    // g(200) returned 0, and had never returned anything else — a u8
+    // parameter had not worked since it was introduced in v0.23.2-dev,
     // while u8 locals, globals, array elements and struct fields (all at small
     // offsets) were correct, which is what made it look like an ABI problem.
     //
     // u16 survived only by arithmetic: 4160/2 == 2080 fits, and even the
-    // deepest scratch (4160 + 14*256 + 31*8 == 7992) is 3996 after the shift.
-    // Struct fields cannot reach it either — a struct is capped at 1024 bytes.
+    // deepest grid byte (below 8024) is 4008 after the shift. Struct field
+    // offsets are checked where they are encoded (emitStructAddr reaches them
+    // through a base register past 4095; emitStructStore does the same for a
+    // literal), so a field past the range is addressed, not mis-encoded.
     // ----------------------------------------------------------------------
     static bool stackOffFits(uint32_t off,Ty t){
         if(t==Ty::I8||t==Ty::U8||t==Ty::Char) return off<=4095u;          // unscaled 12 bits
@@ -5061,7 +5160,11 @@ struct Codegen {
         const bool outerRec=recordingScratch;recordingScratch=true;
         const int live=nextTemp;
         spillTemps(live);
-        const uint32_t scratchByte=4160u+uint32_t(callDepth)*256u;++callDepth;
+        // v0.23.83-dev (limits batch 1): the grid is claimed, not indexed by
+        // nesting level — a syscall stages at most a handful of arguments, so
+        // the claim is small, but it still stacks above any outer call's grid
+        // instead of assuming a fixed 256-byte slot is free there.
+        const uint32_t scratchByte=claimScratch(uint32_t(args.size())*8u);++callDepth;
         for(size_t i=0;i<args.size();++i){
             int v=gen(*args[i],tys[i]);
             storeStackOff(v,scratchByte+uint32_t(i)*8u,tys[i]);
@@ -5098,11 +5201,12 @@ struct Codegen {
         // access through that pointer would fault (v0.23.41-dev).
         int d=temp();emit((tyIs64(resultTy)?0xaa0003e0u:0x2a0003e0u)|uint32_t(d)); // MOV (X|W)d, (X|W)0
         restoreTemps(live);
+        releaseScratch(scratchByte);
         recordingScratch=outerRec;   // v0.23.80-dev (P1-8)
         return d;
     }
     int gen(const Expr& e,Ty want=Ty::I32){
-        RecursionGuard depthGuard(genDepth,2048,"expression codegen");
+        RecursionGuard depthGuard(genDepth,g_maxLoweringDepth,"expression codegen");
         // Typed IR (P3.1 follow-up): guard. Every node gen reaches must carry
         // a resolved type agreeing with Codegen's exprType -- the "two
         // resolvers, one contract" check made mechanical: annotate must have
@@ -5178,11 +5282,16 @@ struct Codegen {
                     // A local array name decays to its frame address (ptr), like a global array.
                     if(localArrayLength.count(slot)){
                         int d=temp();
-                        // ADD Xd, SP, #slot*8 — the 0x91.. base keeps the sh bit (bit 22) at 0.
+                        // ADD Xd, SP, #base — the 0x91.. base keeps the sh bit (bit 22) at 0.
                         // With sh=1 (0x91 4 00000) the imm12 field is scaled by 4096, which is
                         // invisible while the array sits in slot 0 (offset 0) and writes far
                         // outside the 8 KiB frame for any other slot.
-                        emit(0x91000000u|(uint32_t(slot*8)<<10)|(31u<<5)|uint32_t(d));
+                        // v0.23.84-dev (limits batch 2): the base comes from
+                        // arrayBaseOff, so a high-region array (past 8192)
+                        // takes the chunked ADDs emitAddOff emits; a low
+                        // array's offset is at most 4000, so emitAddOff
+                        // emits the same single word this used to.
+                        emitAddOff(d,31,arrayBaseOff(slot));
                         return d;
                     }
                     if(tyIsStruct(slotType(slot)))
@@ -5357,7 +5466,7 @@ struct Codegen {
                     spillTemps(live);
                     static const Ty wts[3]={Ty::I32,Ty::Ptr,Ty::I32};
                     const uint32_t woff[3]={0,8,16};
-                    const int scratchByte=4160+callDepth*256;++callDepth;
+                    const uint32_t scratchByte=claimScratch(24);++callDepth;
                     for(int i=0;i<3;++i){
                         int v=gen(*e.args[i],wts[i]);
                         storeStackOff(v,uint32_t(scratchByte+woff[i]),wts[i]);
@@ -5376,6 +5485,7 @@ struct Codegen {
                     emit(0xd4000001u);                          // SVC #0
                     int d=temp();emit(0x2a0003e0u|uint32_t(d));// MOV Wd, W0 — bytes written
                     restoreTemps(live);
+                    releaseScratch(scratchByte);
                     recordingScratch=outerRec;   // v0.23.80-dev (P1-8)
                     return d;
                 }
@@ -5970,9 +6080,10 @@ struct Codegen {
     // -----------------------------------------------------------------------
     // Frame bytes the compiler keeps for itself, above the variable slots
     // (0..4000), the temporary spill area (4080..) and the argument scratch
-    // area (4160..7992): a slot per nesting level while an aggregate literal
-    // is being stored, one register saved across a copy, and the hidden
-    // result pointer of a function returning a struct larger than 16 bytes.
+    // area (4160..8024, claimed per call — v0.23.83-dev): a slot per nesting
+    // level while an aggregate literal is being stored, one register saved
+    // across a copy, and the hidden result pointer of a function returning a
+    // struct larger than 16 bytes.
     static constexpr uint32_t kDstScratchBase   = 8024;   // 4 levels x 8 bytes
     static constexpr uint32_t kStoreScratchBase = 8064;   // 8 levels x 8 bytes
     static constexpr uint32_t kCopyScratch      = 8152;
@@ -6003,18 +6114,22 @@ struct Codegen {
     // composites at x1/x2 and x3/x4. A composite larger than 16 bytes is
     // replaced by a pointer to a caller-made copy wherever it ends up — even
     // on the stack, where it is an eight-byte slot holding that address.
+    // v0.23.83-dev (limits batch 1): the four arrays used to be fixed
+    // 32-element tables, which is what the 32-argument cap was guarding.
+    // They are vectors sized to the call now, so an argument list of any
+    // length lays out — the register/stack assignment below is unchanged.
     struct ArgLayout {
-        int reg[32];            // first integer register, or -1 (stack, or an f64)
-        int fp[32];             // v0.23.77-dev: first FP register for an f64, or -1
-        int count[32];          // 1 or 2 registers
-        uint32_t stackOff[32];  // byte offset in the incoming stack area
-        uint32_t stackBytes;    // the area's size, rounded up to 16
+        std::vector<int> reg;            // first integer register, or -1 (stack, or an f64)
+        std::vector<int> fp;             // v0.23.77-dev: first FP register for an f64, or -1
+        std::vector<int> count;          // 1 or 2 registers
+        std::vector<uint32_t> stackOff;  // byte offset in the incoming stack area
+        uint32_t stackBytes;             // the area's size, rounded up to 16
     };
     static ArgLayout layoutArgs(const std::vector<Ty>& ts,size_t n){
         ArgLayout l{};
-        for(size_t i=0;i<32;++i){l.reg[i]=-1;l.fp[i]=-1;l.count[i]=1;}
+        l.reg.assign(n,-1);l.fp.assign(n,-1);l.count.assign(n,1);l.stackOff.assign(n,0);
         int ngrn=0,fpreg=0;uint32_t nsaa=0;
-        for(size_t i=0;i<n&&i<32;++i){
+        for(size_t i=0;i<n;++i){
             const Ty t=i<ts.size()?ts[i]:Ty::I32;
             // v0.23.77-dev: an f64 argument takes the next d register, allocated
             // independently of the integer bank (AAPCS64: v0-v7 for the first
@@ -6137,7 +6252,7 @@ struct Codegen {
                 checkArrayBounds(name,index);
                 const int r=gen(index);
                 emitBoundsCheck(name,index,r);
-                emit(0x91000000u|(uint32_t(slot*8)<<10)|(31u<<5)|uint32_t(kGlobalBase)); // ADD X16, SP, #slot*8
+                emitAddOff(kGlobalBase,31,arrayBaseOff(slot)); // ADD X16, SP, #base
                 emitElemIndex(r,elem);
                 releaseTemp(r);
                 return;
@@ -6289,7 +6404,7 @@ struct Codegen {
         // are summed in is nobody's business but the register allocator's.
         if(!cur->name.empty()){
             const int slot=lookup(cur->name);
-            if(slot>=0)emit(0x91000000u|(uint32_t(slot*8)<<10)|(31u<<5)|uint32_t(kGlobalBase)); // ADD X16, SP, #slot*8
+            if(slot>=0)emitAddOff(kGlobalBase,31,arrayBaseOff(slot)); // ADD X16, SP, #base
             else emitGlobalAddress(cur->name);
         } else {
             emitStructAddr(*cur->a);                // X16 = structBase + fieldOffset
@@ -6373,7 +6488,7 @@ struct Codegen {
             } else {
                 emitStructAddr(*e.a);
             }
-            if(f->offset)emit(addImm(kGlobalBase,kGlobalBase,f->offset));
+            if(f->offset)emitAddOff(kGlobalBase,kGlobalBase,f->offset);
             return;
         }
         if(e.k==Expr::Deref){
@@ -6384,7 +6499,14 @@ struct Codegen {
         }
         if(e.k==Expr::Var){
             const int slot=lookup(e.name);
-            if(slot>=0){emit(addImm(kGlobalBase,31,(uint32_t)slot*8));return;}
+            if(slot>=0){
+                // v0.23.84-dev (limits batch 2): a local array's address is
+                // its frame base (arrayBaseOff); any other local's is its
+                // slot, which addImm still reaches (slots stay under 500).
+                if(localArrayLength.count(slot))emitAddOff(kGlobalBase,31,arrayBaseOff(slot));
+                else emit(addImm(kGlobalBase,31,(uint32_t)slot*8));
+                return;
+            }
             if(globals.count(e.name)){emitGlobalAddress(e.name);return;}
             throw Error("unknown variable: "+e.name);
         }
@@ -6395,10 +6517,21 @@ struct Codegen {
     // alignment, so the tail only appears when the alignment is 4.
     void emitStructCopy(int dst,int src,uint32_t size){
         storeStackOff(15,kCopyScratch+spAdj,Ty::I64);  // x15 carries the bytes
-        uint32_t off=0;
+        // v0.23.83-dev (limits batch 1): the copy advances its bases in
+        // 32 KiB steps. An eight-byte load/store carries its offset in 12
+        // bits scaled by 8, so a plain immediate tops out at 32760 — and a
+        // struct past that used to mis-encode silently (the offset bits
+        // spilled into the opcode, exactly like the u8 scratch bug the
+        // stackOffFits note above was written about). Every call site passes
+        // scratch registers (X16/X17), so advancing them here is free. Below
+        // 32 KiB the emission is byte for byte what it was: the first chunk
+        // never advances.
+        uint32_t off=0,base=0;
         for(;size-off>=8;off+=8){
-            emit(0xf9400000u|((off/8)<<10)|(uint32_t(src)<<5)|15);   // LDR X15, [Xsrc, #off]
-            emit(0xf9000000u|((off/8)<<10)|(uint32_t(dst)<<5)|15);   // STR X15, [Xdst, #off]
+            if(off-base>=32768u){emitAddOff(src,src,32768u);emitAddOff(dst,dst,32768u);base+=32768u;}
+            const uint32_t o=off-base;
+            emit(0xf9400000u|((o/8)<<10)|(uint32_t(src)<<5)|15);   // LDR X15, [Xsrc, #o]
+            emit(0xf9000000u|((o/8)<<10)|(uint32_t(dst)<<5)|15);   // STR X15, [Xdst, #o]
         }
         if(off<size){
             // A struct's size is a multiple of its alignment, not of four:
@@ -6406,13 +6539,17 @@ struct Codegen {
             // two bytes past the destination. Copy a whole word when one is
             // left, then finish one byte at a time (v0.23.61-dev).
             if(size-off>=4){
-                emit(0xb9400000u|((off/4)<<10)|(uint32_t(src)<<5)|15);
-                emit(0xb9000000u|((off/4)<<10)|(uint32_t(dst)<<5)|15);
+                if(off-base>16380u){emitAddOff(src,src,off-base);emitAddOff(dst,dst,off-base);base=off;}
+                const uint32_t o=off-base;
+                emit(0xb9400000u|((o/4)<<10)|(uint32_t(src)<<5)|15);
+                emit(0xb9000000u|((o/4)<<10)|(uint32_t(dst)<<5)|15);
                 off+=4;
             }
             for(;off<size;++off){
-                emit(0x39400000u|(off<<10)|(uint32_t(src)<<5)|15);   // LDRB W15, [Xsrc, #off]
-                emit(0x39000000u|(off<<10)|(uint32_t(dst)<<5)|15);   // STRB W15, [Xdst, #off]
+                if(off-base>4095u){emitAddOff(src,src,off-base);emitAddOff(dst,dst,off-base);base=off;}
+                const uint32_t o=off-base;
+                emit(0x39400000u|(o<<10)|(uint32_t(src)<<5)|15);   // LDRB W15, [Xsrc, #o]
+                emit(0x39000000u|(o<<10)|(uint32_t(dst)<<5)|15);   // STRB W15, [Xdst, #o]
             }
         }
         loadStackOff(15,kCopyScratch+spAdj,Ty::I64);
@@ -6467,11 +6604,11 @@ struct Codegen {
         const auto tm=argTypes.find(e.name);
         const std::vector<Ty>& argT=tm==argTypes.end()?noArgTypes:tm->second;
         const size_t nargs=e.args.size();
-        // v0.23.80-dev (P1-9): the parser limits calls to 32 arguments, but
-        // argOff/copyOff below are fixed 32-element arrays — the limit must
-        // not rest on the parser alone, or any future path that builds a
-        // Call with more arguments writes past the stack arrays.
-        if(nargs>32)throw Error("function calls support at most 32 arguments");
+        // v0.23.83-dev (limits batch 1): no argument-count cap — layoutArgs
+        // and the offset tables below are sized to the call, and the scratch
+        // grid is claimed for exactly the bytes this call stages (see
+        // claimScratch), so a Call of any length marshals. The nesting cap
+        // below stays: it is about call depth, not argument count.
         auto at=[&](size_t i)->Ty{
             // v0.23.37-dev: a typed fn-pointer stages each argument at the
             // width its signature declares — the AAPCS64 rule a direct call
@@ -6504,7 +6641,8 @@ struct Codegen {
         std::vector<Ty> ts(nargs);
         for(size_t i=0;i<nargs;++i)ts[i]=at(i);
         const ArgLayout lay=layoutArgs(ts,nargs);
-        uint32_t argOff[32]={0},copyOff[32]={0},cur=0,copyArea=0;
+        std::vector<uint32_t> argOff(nargs,0),copyOff(nargs,0);
+        uint32_t cur=0,copyArea=0;
         for(size_t i=0;i<nargs;++i){
             if(tyIsStruct(at(i)))usesStructScratch=true;   // aggregate argument: tail
             argOff[i]=cur;
@@ -6515,7 +6653,11 @@ struct Codegen {
             cur+=(structInMemory(at(i))&&!isLValue(*e.args[i]))
                 ?((tySize(at(i))+7u)&~uint32_t(7u)):argBytes(at(i));
         }
-        if(cur>256)throw Error("the arguments of this call need more scratch space than the frame provides");
+        // v0.23.83-dev (limits batch 1): `cur` is the grid this call stages —
+        // eight bytes a scalar, sixteen a register pair, the whole value of a
+        // composite built here. It used to be refused past 256 (one fixed
+        // slot per nesting level); the claim below takes exactly that much
+        // and refuses only past the frame's grid ceiling.
         if(sretBytes||tyIsStruct(rt))usesStructScratch=true;   // the aggregate tail
         const uint32_t sretArea=(sretBytes+15u)&~uint32_t(15u);
         for(size_t i=0;i<nargs;++i){
@@ -6545,7 +6687,16 @@ struct Codegen {
         // switch off an outer call's recording.
         const bool outerRec=recordingScratch;recordingScratch=true;
         spillTemps(live);
-        const int scratchByte=4160+callDepth*256;++callDepth;
+        // v0.23.83-dev (limits batch 1): claim grid for this call — 40
+        // scalars take 320, which no fixed 256-byte slot held. The claim
+        // stays live until the sequence is done (the register loads and
+        // the stack copies below still read the grid), and only then is it
+        // released, so a nested call staged inside an argument stacks above
+        // it instead of overwriting it. callDepth still counts the nesting
+        // for the 14-level cap; the grid itself is sized by the claim, with
+        // a 256-byte floor that keeps small calls byte-identical (see
+        // claimScratch).
+        const uint32_t scratchByte=claimScratch(cur);++callDepth;
         for(size_t i=0;i<nargs;++i){
             const Ty ty=at(i);const uint32_t off=uint32_t(scratchByte+argOff[i]);
             if(structInMemory(ty)){
@@ -6697,6 +6848,7 @@ struct Codegen {
         }
         if(total){emit(0x910003ffu|(total<<10));spAdj=0;}
         restoreTemps(live);
+        releaseScratch(scratchByte);
         recordingScratch=outerRec;   // v0.23.80-dev (P1-8): the restore is
         // recorded too — it must read the rebased slot the spill wrote.
         return d;
@@ -6723,23 +6875,37 @@ struct Codegen {
             // v0.23.70-dev: a union literal writes only its first member, so
             // every other byte has to be zero before that write. The struct
             // branch never reaches this, which keeps its codegen identical.
+            // v0.23.83-dev (limits batch 1): the zeroing advances its base in
+            // 32 KiB steps, the same chunking emitStructCopy uses — a plain
+            // immediate offset tops out at 32760 for an eight-byte store, and
+            // a union past that used to mis-encode silently.
             if(sd.isUnion){
-                uint32_t b=0;
-                for(;size-b>=8;b+=8)emit(storeAtT(31,17,b,Ty::I64));
-                if(size-b>=4){emit(storeAtT(31,17,b,Ty::I32));b+=4;}
-                if(size-b>=2){emit(storeAtT(31,17,b,Ty::U16));b+=2;}
-                if(size-b>=1)emit(storeAtT(31,17,b,Ty::U8));
+                uint32_t b=0,base=0;
+                for(;size-b>=8;b+=8){
+                    if(b-base>=32768u){emitAddOff(17,17,32768u);base+=32768u;}
+                    emit(storeAtT(31,17,b-base,Ty::I64));
+                }
+                if(size-b>=4){if(b-base>16380u){emitAddOff(17,17,b-base);base=b;}emit(storeAtT(31,17,b-base,Ty::I32));b+=4;}
+                if(size-b>=2){if(b-base>8190u){emitAddOff(17,17,b-base);base=b;}emit(storeAtT(31,17,b-base,Ty::U16));b+=2;}
+                if(size-b>=1){if(b-base>4095u){emitAddOff(17,17,b-base);base=b;}emit(storeAtT(31,17,b-base,Ty::U8));}
             }
             const size_t n=sd.isUnion?1u:sd.fields.size();
             for(size_t i=0;i<n;++i){
                 const StructField& f=sd.fields[i];
                 loadStackOff(17,save,Ty::I64);
                 if(tyIsStruct(f.ty)){
-                    emit(addImm(kGlobalBase,17,f.offset));
+                    // v0.23.83-dev (limits batch 1): addImm refuses past 4095;
+                    // a nested field past that is addressed in steps instead.
+                    emitAddOff(kGlobalBase,17,f.offset);
                     emitStructStore(*e.args[i]);
                 } else {
                     int v=(f.ty==Ty::Bool&&exprIsBool(*e.args[i]))?genBool(*e.args[i]):gen(*e.args[i],f.ty);
-                    emit(storeAtT(v,17,f.offset,f.ty));
+                    // v0.23.83-dev (limits batch 1): a field offset past the
+                    // width's immediate range is reached through X16 instead
+                    // of mis-encoded in place — the same fallback loadStackOff
+                    // applies to frame offsets.
+                    if(stackOffFits(f.offset,f.ty))emit(storeAtT(v,17,f.offset,f.ty));
+                    else {emitAddOff(kGlobalBase,17,f.offset);emit(storeAtT(v,16,0,f.ty));}
                     releaseTemp(v);
                 }
             }
@@ -7015,10 +7181,15 @@ struct Codegen {
     // copies/returns an aggregate keeps none of the compiler scratch tail.
     std::vector<size_t> frameWords;
     std::vector<size_t> incomingBaseWords;
+    // v0.23.84-dev (limits batch 2): main's three ADDs that rebuild the
+    // initial SP (4095 + 4095 + 2 = 8192), recorded so a frame past 8192
+    // patches them to one shifted ADD and two NOPs at the end of run().
+    std::vector<size_t> mainArgsWords;
     // v0.23.82-dev (D-01): the incoming-argument base is frame-sized (X16 =
     // SP + frame), so in compact mode it reserves the same two words the
     // frame move does and is patched with framePairX16 below; the default
-    // layout keeps its single ADD X16, SP, #8192 byte for byte.
+    // layout keeps its single ADD X16, SP, #8192 byte for byte — and a frame
+    // past 8192 patches that one word to the shifted form (see run()).
     void emitIncomingBase(){
         incomingBaseWords.push_back(code.size());
         if(compact){emit(0x910003f0u);emit(0xd503201fu);} // ADD X16, SP, #0; NOP (patched)
@@ -7129,8 +7300,11 @@ struct Codegen {
     // sequence is the same either way — only whether X0 holds a value differs.
     void retVoid(){
         if(isMain){emit(0xd2800000u|(93u<<5)|8u);emit(0xd4000001u);}
-        else {if(compact){raWords.push_back(code.size());emit(0xf94003feu); // LDR X30, [SP, #off]: patched
-        } else emit(0xf94003feu|(uint32_t(1023)<<10));                     // LDR X30, [SP, #8184]
+        else {raWords.push_back(code.size());emit(0xf94003feu); // LDR X30, [SP, #off]: patched
+            // v0.23.84-dev (limits batch 2): the load is recorded in both
+            // layouts now — a frame past 8192 restores X30 from frame-8,
+            // and the patch below writes that offset; at 8192 it writes
+            // 8184, the word this used to bake in.
             epilogueAdds.push_back(code.size());
             if(compact){emit(0);emit(0);}else emit(0);
             emit(0xd65f03c0u);}
@@ -7221,28 +7395,60 @@ struct Codegen {
                     // initializer per element, at slot*8 + i*sizeof(T).
                     const Ty elem=s.ty;
                     const uint32_t esz=tySize(elem);
-                    const uint32_t slots=(uint32_t)(((uint64_t)s.count*esz+7u)/8u);
-                    if(nextSlot+(int)slots>kMaxLocals)
-                        throw Error("local array '"+s.name+"' is too large: length "+std::to_string(s.count)+" exceeds the frame limit (1000 elements)");
-                    const int slot=nextSlot;nextSlot+=(int)slots;
+                    const uint64_t arrayBytes=(uint64_t)s.count*esz;
+                    const uint32_t slots=(uint32_t)((arrayBytes+7u)/8u);
+                    const uint32_t storageBytes=slots*8u;   // 8-aligned storage
+                    // v0.23.84-dev (limits batch 2): where the array lives. An
+                    // array that fits the low slots stays there, byte for byte
+                    // what the old compiler emitted; one that does not moves
+                    // to the high area above the historical 8192-byte frame
+                    // (base 8192 + highArrayBytes, 8-aligned), and the frame
+                    // grows past 8192 to cover it — see the frame computation
+                    // at the end of run(). The parser already caps one array
+                    // at kMaxHighArrayBytes, so the first refusal below is
+                    // defensive; the second is the real shared-budget guard,
+                    // when several large arrays together pass the budget.
+                    // A high array's slot is a token from kHighArraySlotBase
+                    // (see highArrayBase): it binds the name and carries the
+                    // length, but no low slot is consumed for its bytes, so
+                    // scalars declared after it still take low slots and
+                    // their loadVar immediates stay in range.
+                    int slot;uint32_t baseOff;bool isHigh=false;
+                    if(nextSlot+(int)slots<=kMaxLocals){
+                        slot=nextSlot;nextSlot+=(int)slots;baseOff=(uint32_t)slot*8;
+                    } else {
+                        if(storageBytes>kMaxHighArrayBytes)
+                            throw Error("local array '"+s.name+"' is too large: length "+std::to_string(s.count)+" exceeds the frame limit ("+std::to_string(kMaxHighArrayBytes)+" bytes)");
+                        if(highArrayBytes+storageBytes>kMaxHighArrayBytes)
+                            throw Error("local array '"+s.name+"' is too large: length "+std::to_string(s.count)+" exceeds the frame limit ("+std::to_string(highArrayBytes)+" of "+std::to_string(kMaxHighArrayBytes)+" high-array bytes already used)");
+                        baseOff=8192u+highArrayBytes;highArrayBytes+=storageBytes;isHigh=true;
+                        slot=kHighArraySlotBase+(int)highArrayBase.size();highArrayBase[slot]=baseOff;
+                    }
                     if(tyIsStruct(elem)){
                         // A provided aggregate is broadcast as before; a
                         // missing one zero-fills storage before element stores.
                         if(s.expr){
                             for(uint32_t i=0;i<s.count;++i){
-                                emitAddOff(kGlobalBase,31,uint32_t(slot*8)+i*esz);
+                                emitAddOff(kGlobalBase,31,baseOff+i*esz);
                                 emitStructStore(*s.expr);
                             }
                         } else {
                             // Chinese array literals lower to one indexed
                             // aggregate store per element, after this zero fill.
-                            for(uint32_t i=0;i<slots;++i)
-                                emit(0xf90003e0u|31u|((uint32_t(slot+i))<<10));
+                            if(isHigh){
+                                for(uint32_t i=0;i<slots;++i){
+                                    emitAddOff(kGlobalBase,31,baseOff+i*8u);
+                                    emit(0xf900021fu); // STR XZR, [X16]
+                                }
+                            } else {
+                                for(uint32_t i=0;i<slots;++i)
+                                    emit(0xf90003e0u|31u|((uint32_t(slot+i))<<10));
+                            }
                         }
                         pointerSlots[slot]=true;localArrayLength[slot]=s.dims[0];slotDims[slot]=s.dims;slotElemTypes[slot]=elem;scopes.back()[s.name]=slot;
                     // v0.23.32-dev: a local array is one variable whose type is an
                     // array of `elem`; its base slot is the address the name decays to.
-                    if(emitLineInfo)debugVars.push_back({s.name,elem,slot,false,true,s.dims,s.line});
+                    if(emitLineInfo)debugVars.push_back({s.name,elem,slot,false,true,s.dims,s.line,(int)baseOff});
                         return;
                     }
                     int64_t value=0;
@@ -7277,17 +7483,43 @@ struct Codegen {
                     if(addrFill){
                         for(uint32_t i=0;i<s.count;++i){
                             const int v=gen(*s.expr,Ty::Ptr);   // the address first: X16 is the base
-                            emitAddOff(kGlobalBase,31,uint32_t(slot*8)+i*esz);
+                            emitAddOff(kGlobalBase,31,baseOff+i*esz);
                             emit(storeGlobalT(v,Ty::Ptr));      // STR Xv, [X16]
                             releaseTemp(v);
                         }
                         pointerSlots[slot]=true;localArrayLength[slot]=s.dims[0];slotDims[slot]=s.dims;slotElemTypes[slot]=elem;scopes.back()[s.name]=slot;
                     // v0.23.32-dev: a local array is one variable whose type is an
                     // array of `elem`; its base slot is the address the name decays to.
-                    if(emitLineInfo)debugVars.push_back({s.name,elem,slot,false,true,s.dims,s.line});
+                    if(emitLineInfo)debugVars.push_back({s.name,elem,slot,false,true,s.dims,s.line,(int)baseOff});
                         return;
                     }
-                    for(uint32_t i=0;i<s.count;++i){
+                    // v0.23.84-dev (limits batch 2): a high array cannot use
+                    // the single [SP, #imm] store — its base alone is past
+                    // the scaled imm12 range — so it stores through X16,
+                    // rebased by 4096 whenever the element offset would pass
+                    // the width's STR window (4095 for u8, 8190 for u16,
+                    // 16380 for i32, 32760 for i64). A low array keeps the
+                    // loop below it, instruction for instruction.
+                    if(isHigh){
+                        emitAddOff(kGlobalBase,31,baseOff);
+                        uint32_t chunk=0;
+                        const uint32_t maxRel=esz==1?4095u:esz==2?8190u:esz==8?32760u:16380u;
+                        for(uint32_t i=0;i<s.count;++i){
+                            const uint32_t rel=i*esz;
+                            if(rel-chunk>maxRel){emitAddOff(kGlobalBase,kGlobalBase,4096u);chunk+=4096u;}
+                            const uint32_t imm=(rel-chunk)/esz;
+                            if(init==0){emit(strBase|(imm<<10)|0x200u|31u);continue;} // STR[W|H|B] WZR / STR XZR
+                            int d=temp();
+                            if(esz==8){
+                                emitMov64(d,init);
+                            } else {
+                                emit(0x52800000u|(((uint32_t)init&0xffffu)<<5)|uint32_t(d)); // MOVZ Wd, #low
+                                if((uint32_t)init>>16)emit(0x72a00000u|((((uint32_t)init>>16)&0xffffu)<<5)|uint32_t(d)); // MOVK Wd, #high, LSL #16
+                            }
+                            emit(strBase|(imm<<10)|0x200u|uint32_t(d));
+                            releaseTemp(d);
+                        }
+                    } else for(uint32_t i=0;i<s.count;++i){
                         const uint32_t imm=(uint32_t(slot*8)+i*esz)/esz;
                         if(init==0){emit(strBase|(imm<<10)|0x3e0u|31u);continue;} // STR[W|H|B] WZR / STR XZR
                         int d=temp();
@@ -7305,7 +7537,7 @@ struct Codegen {
                     pointerSlots[slot]=true;localArrayLength[slot]=s.dims[0];slotDims[slot]=s.dims;slotElemTypes[slot]=elem;scopes.back()[s.name]=slot;
                     // v0.23.32-dev: a local array is one variable whose type is an
                     // array of `elem`; its base slot is the address the name decays to.
-                    if(emitLineInfo)debugVars.push_back({s.name,elem,slot,false,true,s.dims,s.line});
+                    if(emitLineInfo)debugVars.push_back({s.name,elem,slot,false,true,s.dims,s.line,(int)baseOff});
                 } else {
                     if(nextSlot>=kMaxLocals)throw Error("too many local declarations (limit 500)");
                     const bool actualPtr=exprIsPtr(*s.expr),actualBool=exprIsBool(*s.expr);
@@ -7457,7 +7689,7 @@ struct Codegen {
                 // store a struct variable takes — not a value in a register.
                 if(tyIsStruct(elem)){
                     if(localPtr)emit(loadVar64(kGlobalBase,slot)); // LDR X16, [SP, #slot*8]
-                    else if(localArray)emit(0x91000000u|(uint32_t(slot*8)<<10)|(31u<<5)|uint32_t(kGlobalBase)); // ADD X16, SP, #slot*8 (sh = 0)
+                    else if(localArray)emitAddOff(kGlobalBase,31,arrayBaseOff(slot)); // ADD X16, SP, #base
                     else emitGlobalAddress(an);
                     emitElemIndex(r,elem);
                     releaseTemp(r);
@@ -7466,7 +7698,7 @@ struct Codegen {
                 }
                 int v=gen(*s.expr,elem);
                 if(localPtr)emit(loadVar64(kGlobalBase,slot)); // LDR X16, [SP, #slot*8]
-                else if(localArray)emit(0x91000000u|(uint32_t(slot*8)<<10)|(31u<<5)|uint32_t(kGlobalBase)); // ADD X16, SP, #slot*8 (sh = 0)
+                else if(localArray)emitAddOff(kGlobalBase,31,arrayBaseOff(slot)); // ADD X16, SP, #base
                 else emitGlobalAddress(an);
                 emitElemIndex(r,elem);
                 emit(storeGlobalT(v,elem)); // STR <T>v, [X16]
@@ -7671,19 +7903,24 @@ struct Codegen {
             // v0.23.77-dev: the kernel enters a static image with argc at
             // [sp] and argv at [sp+8]; x0/x1 are unspecified — they are only
             // set when a dynamic loader hands over to a program. The frame is
-            // already allocated (8192 bytes, the documented contract), so the
-            // initial stack pointer is sp + 8192 and the three arguments are
-            // read from there into x0/x1/x2, which is exactly where the
-            // parameter loop below expects a first, second and third one.
+            // already allocated (8192 bytes by default, more for a function
+            // with large local arrays — see the frame computation at the end
+            // of run()), so the initial stack pointer is sp + frame and the
+            // three arguments are read from there into x0/x1/x2, which is
+            // exactly where the parameter loop below expects a first, second
+            // and third one.
             // SP is addressable only by ADD (immediate), whose imm12 tops out
             // at 4095, so 8192 is built from 4095 + 4095 + 2.
             if(compact){
                 // X16 holds the initial SP: the prologue captured it before the
                 // frame moved the stack pointer.
             } else {
-                emit(0x913FFFF0u);            // ADD  X16, SP, #4095
-                emit(0x913FFE10u);            // ADD  X16, X16, #4095
-                emit(0x91000A10u);            // ADD  X16, X16, #2     ; X16 = initial SP
+                // v0.23.84-dev (limits batch 2): recorded, so a frame past
+                // 8192 patches the first word to one shifted ADD and the
+                // other two to NOPs; at 8192 the three words stand.
+                mainArgsWords.push_back(code.size());emit(0x913FFFF0u);            // ADD  X16, SP, #4095
+                mainArgsWords.push_back(code.size());emit(0x913FFE10u);            // ADD  X16, X16, #4095
+                mainArgsWords.push_back(code.size());emit(0x91000A10u);            // ADD  X16, X16, #2     ; X16 = initial SP
             }
             emit(0xF9400200u);            // LDR  X0, [X16]        ; argc
             emit(0x91002201u);            // ADD  X1, X16, #8      ; argv
@@ -7691,8 +7928,11 @@ struct Codegen {
             emit(0x91002042u);            // ADD  X2, X2, #8       ; envp = argv + 8*(argc+1)
         }
         if(!isMain){
-            if(compact){raWords.push_back(code.size());emit(0xf90003feu);} // STR X30, [SP, #off]: patched
-            else emit(0xf90003feu|(uint32_t(1023)<<10));                   // STR X30, [SP, #8184]
+            // v0.23.84-dev (limits batch 2): the store is recorded in both
+            // layouts now — a frame past 8192 saves X30 at frame-8, and the
+            // patch at the end of run() writes that offset; at 8192 it
+            // writes 8184, the word this used to bake in.
+            raWords.push_back(code.size());emit(0xf90003feu); // STR X30, [SP, #off]: patched
         }
         // A struct larger than 16 bytes is returned through the buffer the
         // caller handed over in X8. Every return writes through it, and X8 is
@@ -7836,13 +8076,37 @@ struct Codegen {
                 raOff=frameBytes-8u;
             }
         }
-        if(frameBytes>8192u)frameBytes=8192u;
-        if(frameBytes==8192u)raOff=8184u;
+        // v0.23.84-dev (limits batch 2): a function with high arrays grows
+        // past the historical frame. The high area starts at 8192, the
+        // return address takes the 8 bytes at the new top, and the frame is
+        // rounded up to a 4096 multiple so the prologue and the epilogue
+        // stay one shifted SUB/ADD each in both layouts (framePair's fast
+        // path below, and the single-word patch for the default layout).
+        // The compact branches above can only shrink the frame — their
+        // wants are at most 8191 and the grid they rebase sits below 8192 —
+        // so raising it here cannot disturb a rebased grid or the tail.
+        // The 32768 cap is kMaxFrameBytes (the return-address immediate);
+        // the declaration-time budget already holds highArrayBytes inside
+        // it, so the throw is defensive only.
+        if(highArrayBytes>0){
+            const uint32_t highNeed=(8192u+highArrayBytes+8u+4095u)&~4095u;
+            if(highNeed>frameBytes)frameBytes=highNeed;
+        }
+        if(frameBytes>kMaxFrameBytes)
+            throw Error("internal compiler error: frame exceeds 32768 bytes");
+        raOff=frameBytes-8u;
         frameBytesUsed=frameBytes;
         frameWordsUsed=compact?2u:1u;
         auto framePair=[&](uint32_t size,bool sub)->std::pair<uint32_t,uint32_t>{
             const uint32_t base=sub?0xd10003ffu:0x910003ffu;   // SUB/ADD SP, SP, #imm12
             const uint32_t wide=sub?0xd14007ffu:0x914007ffu;   // SUB/ADD SP, SP, #0x1, LSL #12 (4096)
+            // v0.23.84-dev (limits batch 2): a frame past 8191 is always a
+            // 4096 multiple (the high-array floor rounds it), so it moves in
+            // one shifted SUB/ADD (imm12 = size/4096, LSL #12) with a NOP
+            // second word. Frames of 8191 and below keep the encodings they
+            // always had.
+            if(size>8191u&&(size%4096u)==0u)
+                return {base|((size/4096u)<<10)|0x400000u,0xd503201f};
             if(size<=4095u)return {base|(size<<10),0xd503201f};// NOP second
             const uint32_t rest=size-4096u;
             return {wide,rest==4096u?wide:(base|(rest<<10))};
@@ -7853,15 +8117,24 @@ struct Codegen {
         // first word is ADD X16, SP, #1, LSL #12 (0x914007f0), the wide
         // second word ADD X16, X16, #1, LSL #12 (0x91400610).
         auto framePairX16=[&](uint32_t size)->std::pair<uint32_t,uint32_t>{
+            // v0.23.84-dev (limits batch 2): as framePair — a frame past
+            // 8191 is a 4096 multiple and takes one shifted ADD X16, SP,
+            // #n, LSL #12 with a NOP second word.
+            if(size>8191u&&(size%4096u)==0u)
+                return {0x91400000u|((size/4096u)<<10)|0x3f0u,0xd503201f};
             if(size<=4095u)return {0x910003f0u|(size<<10),0xd503201f}; // ADD X16, SP, #size; NOP
             const uint32_t rest=size-4096u;
             return {0x914007f0u,rest==4096u?0x91400610u:(0x91000210u|(rest<<10))};
         };
+        // v0.23.84-dev (limits batch 2): the default frame is 8192 or a 4096
+        // multiple past it, so one shifted SUB/ADD carries either — n=2 is
+        // the historical 0xd1400bff / 0x91400bff word, byte for byte.
+        const uint32_t framePages=frameBytes/4096u;
         if(compact){
             const auto sp0=framePair(frameBytes,true);
             code[frameWords[0]]=sp0.first;code[frameWords[1]]=sp0.second;
         } else {
-            code[frameWords[0]]=0xd1400bffu;        // SUB SP, SP, #8192
+            code[frameWords[0]]=0xd14003ffu|(framePages<<10);   // SUB SP, SP, #n, LSL #12
         }
         auto patchImm12=[&](size_t at,uint32_t off){code[at]=(code[at]&~(0xFFFu<<10))|((off/8u)<<10);};
         for(size_t at:raWords)patchImm12(at,raOff);
@@ -7870,8 +8143,19 @@ struct Codegen {
         // already right; a compact frame takes the framePairX16 pair, which
         // covers (4096, 8191] with two ADDs and keeps the small-frame shape
         // (ADD #frame, NOP) byte for byte apart from the reserved NOP word.
+        // v0.23.84-dev (limits batch 2): in the default layout the same word
+        // is patched to the shifted form when the frame grew past 8192.
         if(compact)
             for(size_t at:incomingBaseWords){const auto bp=framePairX16(frameBytes);code[at]=bp.first;code[at+1]=bp.second;}
+        else
+            for(size_t at:incomingBaseWords)code[at]=0x914003f0u|(framePages<<10); // ADD X16, SP, #n, LSL #12
+        // v0.23.84-dev (limits batch 2): main's three ADDs build 8192; a
+        // larger frame is one shifted ADD, the other two words NOPs.
+        if(frameBytes>8192u&&mainArgsWords.size()==3){
+            code[mainArgsWords[0]]=0x914003f0u|(framePages<<10);
+            code[mainArgsWords[1]]=0xd503201fu;
+            code[mainArgsWords[2]]=0xd503201fu;
+        }
         if(rebase){
             for(const auto& fx:scratchFixes){
                 const uint32_t no=rebaseOff(fx.off);
@@ -7882,7 +8166,7 @@ struct Codegen {
             const auto sp1=framePair(frameBytes,false);
             for(size_t at:epilogueAdds){code[at]=sp1.first;code[at+1]=sp1.second;}
         } else {
-            for(size_t at:epilogueAdds)code[at]=0x91400bffu;   // ADD SP, SP, #8192
+            for(size_t at:epilogueAdds)code[at]=0x914003ffu|(framePages<<10);   // ADD SP, SP, #n, LSL #12
         }
         return code;
     }
@@ -8807,7 +9091,7 @@ static bool semaTypeIsPlaceholder(const Expr& e){
         return t;
     }
     Ty typeOf(const Expr& e){
-        RecursionGuard depthGuard(typeDepth,2048,"expression");
+        RecursionGuard depthGuard(typeDepth,g_maxLoweringDepth,"expression");
         switch(e.k){
             case Expr::Num:
                 if(e.boolLit) return Ty::Bool;
@@ -9376,11 +9660,9 @@ static bool semaTypeIsPlaceholder(const Expr& e){
                     checkArgument(e.displayName(),i+1,fs->params[i],*e.args[i],typeOf(*e.args[i]));
                 return fs->ret;
             }
-            // v0.23.80-dev (P1-9): the parser limits calls to 32 arguments;
-            // sema's bare-ptr path is the second layer, so a Call that
-            // reaches here any other way is refused before codegen's fixed
-            // 32-element argument arrays are indexed.
-            if(e.args.size()>32)throw Error(loc(e.line,e.col,"function calls support at most 32 arguments"));
+            // v0.23.83-dev (limits batch 1): there is no argument-count cap any
+            // more — codegen's argument layout and scratch grid are sized to
+            // the call, so the bare-ptr path has nothing to refuse on count.
             // A struct argument needs a signature to lay out — register class,
             // copy area, hidden result pointer — and a ptr variable has none,
             // so a composite is refused rather than silently mis-marshalled.
@@ -10072,7 +10354,8 @@ struct ObjectLayout {
     std::map<std::string,std::pair<uint64_t,uint64_t>> functions; // name -> (text offset, size)
     // v0.23.77-dev: each function's own frame size, what its FDE's
     // DW_CFA_def_cfa_offset reports. 8192 for the functions that keep the
-    // historical scratch tail.
+    // historical scratch tail; more for one whose frame grew past it
+    // (large local arrays, v0.23.84-dev), less for a compacted one.
     std::map<std::string,uint32_t> frameBytes;
     std::map<std::string,uint8_t> frameWords;   // 1 or 2 instructions for SUB/ADD
     std::vector<uint8_t> data;
@@ -10489,11 +10772,12 @@ struct DwarfDieWriter {
     }
     void name(const std::string& s){info.insert(info.end(),s.begin(),s.end());info.push_back(0);}
     void expr(const std::vector<uint8_t>& ops){dbgUleb(info,(uint64_t)ops.size());info.insert(info.end(),ops.begin(),ops.end());}
-    // DW_OP_fbreg(slot*8): the variable's frame offset from DW_AT_frame_base.
-    static std::vector<uint8_t> fbregOps(int slot){std::vector<uint8_t> e;e.push_back(0x91);dbgSleb(e,(int64_t)slot*8);return e;}
-    // DW_OP_breg31 + 0: "the value of SP right now". Aster's frame is a fixed
-    // 8192 bytes and SP does not move again inside the body, so SP itself is
-    // the frame base — no CFA rules and no .eh_frame are needed to read it.
+    // DW_OP_fbreg(byteOff): the variable's frame offset from DW_AT_frame_base.
+    static std::vector<uint8_t> fbregOps(int byteOff){std::vector<uint8_t> e;e.push_back(0x91);dbgSleb(e,(int64_t)byteOff);return e;}
+    // DW_OP_breg31 + 0: "the value of SP right now". Aster's frame has one
+    // size for the whole body and SP does not move again inside it, so SP
+    // itself is the frame base — no CFA rules and no .eh_frame are needed
+    // to read it.
     static std::vector<uint8_t> frameBaseOps(){std::vector<uint8_t> e;e.push_back(0x8f);dbgSleb(e,0);return e;}
     // DW_OP_addr with a zeroed 8-byte operand: the linker fills it in.
     void addrOps(const std::string& symbol,int64_t addend){
@@ -10687,7 +10971,7 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
             dbgUleb(w.info,param?kAbbrParam:kAbbrLocalVar);
             w.name(v.name);
             dbgPut32(w.info,varRefs[vi]);
-            w.expr(DwarfDieWriter::fbregOps(v.slot));
+            w.expr(DwarfDieWriter::fbregOps(v.byteOff>=0?v.byteOff:v.slot*8));
             dbgPut32(w.info,(uint32_t)v.line);
         }
         dbgUleb(w.info,0);                                 // end of the subprogram's children
@@ -10710,12 +10994,14 @@ static DebugInfoBlob encodeDebugInfo(const ObjectLayout& L,
 // that a debugger can name the frame it stopped in and nothing above it.
 // Call-frame information is the second half of the same observation the last
 // round was built on, and it is free for the same reason: **every Aster frame
-// is a fixed 8192 bytes and SP does not move again inside a body**. So the
-// canonical frame address is one rule — CFA = SP + 8192 once the prologue's
-// SUB has run — and the return address is one more: a body that returns stores
-// X30 at SP + 8184, which is CFA - 8. There is no frame pointer, no push/pop
-// bookkeeping and no variable-sized frame, so a function's entire unwinding
-// table is six bytes of CFI.
+// has one size for the whole body and SP does not move again inside it**.
+// The size is the function's own — 8192 by default, smaller under
+// --compact-frames, larger for a function with big local arrays — so the
+// canonical frame address is one rule per function: CFA = SP + frame once
+// the prologue's SUB has run, and the return address is one more: a body
+// that returns stores X30 at SP + frame - 8, which is CFA - 8. There is no
+// frame pointer, no push/pop bookkeeping and no variable-sized frame, so a
+// function's entire unwinding table is six bytes of CFI.
 //
 // The layout is the one `aarch64-linux-gnu-gcc` emits, read off a real object
 // rather than from a specification: a CIE with augmentation "zR" — a
@@ -13392,8 +13678,8 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
 "       aster new [--apk] <dir>              scaffold a program or APK project\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
-"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [-- args]\n"
-"       aster test  [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [--no-cache] [--timeout SECONDS] [filter]\n"
+"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [-- args]\n"
+"       aster test  [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [filter]\n"
 "       aster doctor [--strict]             check the host and the project it is run in\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
 "       aster fmt [--language zh|en] [--check|--write] <source.ast>\n"
@@ -13455,6 +13741,18 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "  --timeout SECONDS  how long `aster run`/`aster test` wait for the child before\n"
 "                 killing it (SIGTERM, then SIGKILL after 5s): default 60, 0 disables;\n"
 "                 --timeout wins over $ASTER_RUN_TIMEOUT.\n"
+"  --max-nesting-depth N  parser nesting cap (default 256, like Clang's\n"
+"                 -fbracket-depth; 16..2048): how deep parentheses, nested\n"
+"                 `if` and nested expressions may nest before the compiler\n"
+"                 refuses the input with a diagnostic instead of dying on\n"
+"                 the C stack. Accepted by build-obj/build-elf/build-pie/\n"
+"                 build-so/build-apk/build-cn-obj/build/run/test.\n"
+"  --max-lowering-depth N  sema/codegen/lowering walk cap (default 2048,\n"
+"                 64..3072); the effective cap is max(N, --max-nesting-depth),\n"
+"                 so a tree the parser accepted is never refused by a later\n"
+"                 walk. `aster build`/`run`/`test` record both caps in the\n"
+"                 object-cache key, so a cached object is never reused\n"
+"                 across different caps.\n"
 "  @embed(\"PATH\")   the address of a file's bytes, which the compiler reads and puts\n"
 "                 in rodata; @embed_len(\"PATH\") is how many bytes there are. PATH is\n"
 "                 relative to the source file's own directory, or to --embed-dir DIR\n"
@@ -16897,7 +17195,8 @@ static bool cnIsParentConstructorCall(const aster_cn::Expression& expression) {
 }
 
 // P0-4: recursion depth guard for the bilingual lowering walkers. The limit
-// is 2048, not the parser's 256, deliberately: it mirrors the mainline
+// is g_maxLoweringDepth (default 2048, --max-lowering-depth), not the
+// parser's 256, deliberately: it mirrors the mainline
 // sema/codegen walks (RecursionGuard(..., 2048, ...) on expression type and
 // codegen), because the parser builds left-deep trees iteratively from flat
 // source — `1+1+1+...` with 1500 terms is a 1500-deep left spine that the
@@ -16912,10 +17211,10 @@ struct CnLoweringDepthGuard {
     unsigned& d;
     CnLoweringDepthGuard(unsigned& depth, const char* what, unsigned line, unsigned column)
         : d(depth) {
-        if (++d > 2048) {
+        if (++d > g_maxLoweringDepth) {
             --d;
             throw Error(loc(line, column, std::string("expected ") + what +
-                            " nesting within 2048 levels"));
+                            " nesting within " + std::to_string(g_maxLoweringDepth) + " levels"));
         }
     }
     ~CnLoweringDepthGuard() { --d; }
@@ -17251,9 +17550,9 @@ static std::vector<uint32_t> cnParameterArrayDimensions(
     Expr::LitSuffix suffix = Expr::LSNone;
     const uint64_t length = cnIntegerValue(parameter.arrayDimensions.front(), suffix,
                                            line, column);
-    if (suffix != Expr::LSNone || length == 0 || length > 1000)
+    if (suffix != Expr::LSNone || length == 0 || length > kMaxNonFrameArrayElements)
         throw Error(loc(line, column,
-                        "array parameter length must be between 1 and 1000"));
+                        "array parameter length must be between 1 and "+std::to_string(kMaxNonFrameArrayElements)));
     return {static_cast<uint32_t>(length)};
 }
 
@@ -20897,9 +21196,9 @@ static uint32_t cnClassFieldArrayLength(const aster_cn::StructFieldDeclaration& 
     Expr::LitSuffix suffix = Expr::LSNone;
     const uint64_t length = cnIntegerValue(field.arrayDimensions.front(), suffix,
                                            field.line, field.column);
-    if (suffix != Expr::LSNone || length == 0 || length > 1000)
+    if (suffix != Expr::LSNone || length == 0 || length > kMaxNonFrameArrayElements)
         throw Error(loc(field.line, field.column,
-                        "array field length must be between 1 and 1000"));
+                        "array field length must be between 1 and "+std::to_string(kMaxNonFrameArrayElements)));
     return static_cast<uint32_t>(length);
 }
 
@@ -21574,9 +21873,9 @@ static void cnRegisterStructures(const aster_cn::Program& program) {
                 Expr::LitSuffix suffix = Expr::LSNone;
                 const uint64_t length = cnIntegerValue(field.arrayDimensions.front(), suffix,
                                                        field.line, field.column);
-                if (suffix != Expr::LSNone || length == 0 || length > 1000)
+                if (suffix != Expr::LSNone || length == 0 || length > kMaxNonFrameArrayElements)
                     throw Error(loc(field.line, field.column,
-                                    "array field length must be between 1 and 1000"));
+                                    "array field length must be between 1 and "+std::to_string(kMaxNonFrameArrayElements)));
                 nativeField.len = static_cast<uint32_t>(length);
                 nativeField.dims.push_back(nativeField.len);
             }
@@ -22668,8 +22967,12 @@ static std::vector<Stmt> cnStatementsToAster(const std::vector<aster_cn::Stateme
                 Expr::LitSuffix suffix = Expr::LSNone;
                 const uint64_t length = cnIntegerValue(statement.arrayDimensions.front(), suffix,
                                                        statement.line, statement.column);
-                if (suffix != Expr::LSNone || length == 0 || length > 1000)
-                    throw Error(loc(statement.line, statement.column, "array length must be between 1 and 1000"));
+                // v0.23.84-dev (limits batch 2): the cap is byte-derived,
+                // like the English frontend's — one array may use at most
+                // kMaxHighArrayBytes of frame.
+                const uint32_t localLimit = localArrayElemLimit(declaredType);
+                if (suffix != Expr::LSNone || length == 0 || length > localLimit)
+                    throw Error(loc(statement.line, statement.column, "array length must be between 1 and "+std::to_string(localLimit)));
                 converted.isArray = true;
                 converted.count = static_cast<uint32_t>(length);
                 localArrayLength = converted.count;
@@ -25893,9 +26196,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             Expr::LitSuffix suffix = Expr::LSNone;
             const uint64_t length = cnIntegerValue(declaration.arrayDimensions.front(), suffix,
                                                    declaration.line, declaration.column);
-            if (suffix != Expr::LSNone || length == 0 || length > 1048576)
+            if (suffix != Expr::LSNone || length == 0 || length > kMaxNonFrameArrayElements)
                 throw Error(loc(declaration.line, declaration.column,
-                                "global array length must be between 1 and 1048576"));
+                                "global array length must be between 1 and "+std::to_string(kMaxNonFrameArrayElements)));
             arrayLength = static_cast<uint32_t>(length);
         }
         CnBinding globalBinding{type, arrayLength != 0, arrayLength};
@@ -26200,9 +26503,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             Expr::LitSuffix suffix = Expr::LSNone;
             const uint64_t length = cnIntegerValue(declaration.arrayDimensions.front(), suffix,
                                                    declaration.line, declaration.column);
-            if (suffix != Expr::LSNone || length == 0 || length > 1048576)
+            if (suffix != Expr::LSNone || length == 0 || length > kMaxNonFrameArrayElements)
                 throw Error(loc(declaration.line, declaration.column,
-                                "global array length must be between 1 and 1048576"));
+                                "global array length must be between 1 and "+std::to_string(kMaxNonFrameArrayElements)));
             arrayLength = static_cast<uint32_t>(length);
         }
         if (isConstant && !declaration.hasExpression)
@@ -27241,6 +27544,10 @@ struct CnPerSourceContext {
     // cache flags, so an exe object is never reused for an APK build.
     bool sharedObject = false;
     uint64_t page = 4096;
+    // v0.23.85-dev (limits batch 3): the nesting caps this TU was compiled
+    // with. Part of the cache flags, like dbg/bc/page: an object compiled
+    // under one cap must never be reused for a run under another.
+    unsigned maxParseDepth = 256, maxLoweringDepth = 2048;
 };
 
 // Package-declaration ownership, per file (design §7.2): the first TU in
@@ -27852,7 +28159,8 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
     // (main aliased to _start, non-PIC) must never be reused for an APK
     // link, and vice versa. Existing bilingual caches miss once.
     const std::string flags = std::string(ctx.dbg ? "g" : "-") + std::string(ctx.bc ? "b" : "-") +
-        std::string(ctx.sharedObject ? "p" : "-") + "|" + std::to_string(ctx.page);
+        std::string(ctx.sharedObject ? "p" : "-") + "|" + std::to_string(ctx.page) +
+        "|" + std::to_string(ctx.maxParseDepth) + "|" + std::to_string(ctx.maxLoweringDepth);
     const std::string key = sha256Hex(std::string(kVersion) + "|cn|" + flags + "|" + sp + "|" +
                                       ctx.langHash + "|" + ctx.constructedHash + "|" + ctx.keySalt +
                                       "|" + ctx.ownersHash);
@@ -28202,6 +28510,34 @@ int main(int argc,char**argv){
     // arguments are read: publishing before the parse is how --embed-dir and
     // --include-dir would both silently do nothing.
     auto publishPathOpts=[&](){ g_srcPathOpts.embedDir=embedDir;g_srcPathOpts.includeDir=includeDir; };
+    // v0.23.85-dev (limits batch 3): nesting caps, configurable per run.
+    // --max-nesting-depth N: parser nesting, default 256 (Clang's
+    // -fbracket-depth default), accepted 16..2048. --max-lowering-depth N:
+    // sema/codegen/lowering walks, default 2048, accepted 64..3072. The
+    // effective lowering cap is max(lower, parse): a tree the parser
+    // accepted must never be refused by a later walk. The upper bounds
+    // are measured, not guessed: on the 8 MiB process stack the parser
+    // segfaults past ~3500 guard units (zh parens: clean at 3072,
+    // segfault at 4096; en parens clean at 5120, segfault at 6144;
+    // en ifs clean at 4096, segfault at 5120), so 2048 keeps at least
+    // 40% margin on every path; the lowering walks segfault past ~3350
+    // flat-chain terms (3300 compiles and runs, 3400 segfaults), so
+    // 3072 is the largest verified-safe value. The lower bounds keep a
+    // mistyped value from silently refusing ordinary programs.
+    uint64_t maxParseDepthOpt=256, maxLoweringDepthOpt=2048;
+    auto effectiveLoweringDepth=[&]()->unsigned{ return (unsigned)std::max(maxLoweringDepthOpt,maxParseDepthOpt); };
+    auto applyDepthOpts=[&](){
+        g_maxParseDepth=(unsigned)maxParseDepthOpt;
+        g_maxLoweringDepth=effectiveLoweringDepth();
+        aster_cn::setMaxNestingDepth((unsigned)maxParseDepthOpt);
+    };
+    // Parses one --max-*-depth value; false means out of range or not a
+    // decimal integer (the caller prints the command's own message).
+    auto parseDepthValue=[&](const char* v,uint64_t lo,uint64_t hi,uint64_t& out)->bool{
+        uint64_t parsed=0;
+        if(!parseCliUInt(v,hi,parsed)||parsed<lo)return false;
+        out=parsed; return true;
+    };
     auto parseArgs=[&](int from)->bool{
         for(int i=from;i<argc;++i){const std::string a=argv[i];
             if(a=="-o"){if(i+1>=argc)return false;output=argv[++i];haveOutput=true;}
@@ -28210,6 +28546,10 @@ int main(int argc,char**argv){
             else if(a=="--gc-sections")gcSections=true;
             else if(a=="-g"||a=="--debug-line")debugLine=true;
             else if(a=="--compact-frames")compactFrames=true;
+            else if(a=="--max-nesting-depth"){if(i+1>=argc){std::cerr<<"aster: --max-nesting-depth requires an argument\n";return false;} if(!parseDepthValue(argv[++i],16,2048,maxParseDepthOpt)){std::cerr<<"aster: --max-nesting-depth must be a decimal integer between 16 and 2048\n";return false;}}
+            else if(a.rfind("--max-nesting-depth=",0)==0){if(!parseDepthValue(a.c_str()+20,16,2048,maxParseDepthOpt)){std::cerr<<"aster: --max-nesting-depth must be a decimal integer between 16 and 2048\n";return false;}}
+            else if(a=="--max-lowering-depth"){if(i+1>=argc){std::cerr<<"aster: --max-lowering-depth requires an argument\n";return false;} if(!parseDepthValue(argv[++i],64,3072,maxLoweringDepthOpt)){std::cerr<<"aster: --max-lowering-depth must be a decimal integer between 64 and 3072\n";return false;}}
+            else if(a.rfind("--max-lowering-depth=",0)==0){if(!parseDepthValue(a.c_str()+21,64,3072,maxLoweringDepthOpt)){std::cerr<<"aster: --max-lowering-depth must be a decimal integer between 64 and 3072\n";return false;}}
             else if(a=="--soname"){if(i+1>=argc)return false;soname=argv[++i];haveSoname=true;}
             else if(a=="--needed"){if(i+1>=argc)return false;needed.emplace_back(argv[++i]);}
             else if(a.rfind("--soname=",0)==0){soname=a.substr(9);haveSoname=true;}
@@ -28239,6 +28579,7 @@ int main(int argc,char**argv){
         }
         if(pageSize!=4096&&pageSize!=16384){std::cerr<<"Aster: --page-size must be 4096 or 16384 (got "<<pageSize<<")\n";return false;}
         publishPathOpts();
+        applyDepthOpts();
         return haveOutput;
     };
     try{
@@ -28601,6 +28942,10 @@ int main(int argc,char**argv){
                 if(a=="-g"||a=="--debug-line")dbg=true;
                 else if(a=="--bounds-check")bc2=true;
                 else if(a=="--no-cache")noCache=true;
+                else if(a=="--max-nesting-depth"){if(i+1>=argc||!parseDepthValue(argv[++i],16,2048,maxParseDepthOpt)){std::cerr<<"aster test: --max-nesting-depth must be a decimal integer between 16 and 2048\n";return 2;}}
+                else if(a.rfind("--max-nesting-depth=",0)==0){if(!parseDepthValue(a.c_str()+20,16,2048,maxParseDepthOpt)){std::cerr<<"aster test: --max-nesting-depth must be a decimal integer between 16 and 2048\n";return 2;}}
+                else if(a=="--max-lowering-depth"){if(i+1>=argc||!parseDepthValue(argv[++i],64,3072,maxLoweringDepthOpt)){std::cerr<<"aster test: --max-lowering-depth must be a decimal integer between 64 and 3072\n";return 2;}}
+                else if(a.rfind("--max-lowering-depth=",0)==0){if(!parseDepthValue(a.c_str()+21,64,3072,maxLoweringDepthOpt)){std::cerr<<"aster test: --max-lowering-depth must be a decimal integer between 64 and 3072\n";return 2;}}
                 else if(a=="--timeout"){
                     if(i+1>=argc||!parseCliUInt(argv[++i],86400,timeoutVal)){
                         std::cerr<<"aster test: --timeout must be a decimal integer between 0 and 86400\n";return 2;
@@ -28629,6 +28974,7 @@ int main(int argc,char**argv){
                 else {std::cerr<<"aster test: usage: aster test [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [--no-cache] [filter]\n";return 2;}
             }
             if(ps!=4096&&ps!=16384){std::cerr<<"aster test: --page-size must be 4096 or 16384\n";return 2;}
+            applyDepthOpts();
             long timeoutSec=60;
             if(!resolveRunTimeout(timeoutSet?(long)timeoutVal:-1,timeoutSec,"aster test"))return 2;
             if(!fileExists("aster.proj")){
@@ -28812,6 +29158,8 @@ int main(int argc,char**argv){
                     testCtx.dbg=dbg;
                     testCtx.bc=bc2;
                     testCtx.page=testPage;
+                    testCtx.maxParseDepth=(unsigned)maxParseDepthOpt;
+                    testCtx.maxLoweringDepth=effectiveLoweringDepth();
                     std::vector<std::string> testObjs;
                     for(size_t i=0;i<testLibraries.size();++i) {
                         const std::string obj=cachedCnProjectObject(
@@ -29125,6 +29473,10 @@ int main(int argc,char**argv){
                 if(a=="-o"){if(i+1>=argc){std::cerr<<"aster "<<cmd<<": -o needs a path\n";return 2;}out=argv[++i];}
                 else if(a=="-g"||a=="--debug-line")dbg=true;
                 else if(a=="--bounds-check")bc2=true;
+                else if(a=="--max-nesting-depth"){if(i+1>=argc||!parseDepthValue(argv[++i],16,2048,maxParseDepthOpt)){std::cerr<<"aster "<<cmd<<": --max-nesting-depth must be a decimal integer between 16 and 2048\n";return 2;}}
+                else if(a.rfind("--max-nesting-depth=",0)==0){if(!parseDepthValue(a.c_str()+20,16,2048,maxParseDepthOpt)){std::cerr<<"aster "<<cmd<<": --max-nesting-depth must be a decimal integer between 16 and 2048\n";return 2;}}
+                else if(a=="--max-lowering-depth"){if(i+1>=argc||!parseDepthValue(argv[++i],64,3072,maxLoweringDepthOpt)){std::cerr<<"aster "<<cmd<<": --max-lowering-depth must be a decimal integer between 64 and 3072\n";return 2;}}
+                else if(a.rfind("--max-lowering-depth=",0)==0){if(!parseDepthValue(a.c_str()+21,64,3072,maxLoweringDepthOpt)){std::cerr<<"aster "<<cmd<<": --max-lowering-depth must be a decimal integer between 64 and 3072\n";return 2;}}
                 else if(a=="--no-cache")noCache=true;
                 else if(a=="--timeout"){
                     if(i+1>=argc||!parseCliUInt(argv[++i],86400,timeoutVal)){
@@ -29153,6 +29505,7 @@ int main(int argc,char**argv){
             }
             if(!isRun&&timeoutSet){std::cerr<<"aster build: --timeout only applies to `aster run` (and `aster test`)\n";return 2;}
             if(ps!=4096&&ps!=16384){std::cerr<<"aster "<<cmd<<": --page-size must be 4096 or 16384\n";return 2;}
+            applyDepthOpts();
             long timeoutSec=60;
             if(isRun&&!resolveRunTimeout(timeoutSet?(long)timeoutVal:-1,timeoutSec,"aster run"))return 2;
             if(!fileExists("aster.proj")){
@@ -29322,6 +29675,8 @@ int main(int argc,char**argv){
                 bilingualCtx.dbg=dbg;
                 bilingualCtx.bc=bc2;
                 bilingualCtx.page=bilingualPage;
+                bilingualCtx.maxParseDepth=(unsigned)maxParseDepthOpt;
+                bilingualCtx.maxLoweringDepth=effectiveLoweringDepth();
                 bilingualCtx.sharedObject=bilingualIsApk;
                 std::vector<std::string> bilingualObjs;
                 int bilingualCompiled=0, bilingualReused=0;
@@ -29627,6 +29982,10 @@ int main(int argc,char**argv){
                 // checks its own work before writing.
                 else if(a=="--no-verify")selfVerify=false;
                 else if(a=="--bounds-check")boundsCheck=true;
+                else if(a=="--max-nesting-depth"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --max-nesting-depth requires an argument\n";return 2;} if(!parseDepthValue(v,16,2048,maxParseDepthOpt)){std::cerr<<"aster: build-apk: --max-nesting-depth must be a decimal integer between 16 and 2048\n";return 2;}}
+                else if(a.rfind("--max-nesting-depth=",0)==0){if(!parseDepthValue(a.c_str()+20,16,2048,maxParseDepthOpt)){std::cerr<<"aster: build-apk: --max-nesting-depth must be a decimal integer between 16 and 2048\n";return 2;}}
+                else if(a=="--max-lowering-depth"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --max-lowering-depth requires an argument\n";return 2;} if(!parseDepthValue(v,64,3072,maxLoweringDepthOpt)){std::cerr<<"aster: build-apk: --max-lowering-depth must be a decimal integer between 64 and 3072\n";return 2;}}
+                else if(a.rfind("--max-lowering-depth=",0)==0){if(!parseDepthValue(a.c_str()+21,64,3072,maxLoweringDepthOpt)){std::cerr<<"aster: build-apk: --max-lowering-depth must be a decimal integer between 64 and 3072\n";return 2;}}
                 else if(a=="-g"||a=="--debug-line")debugLine=true;
                 else if(a.rfind("--soname=",0)==0){soSoname=a.substr(9);}
                 else if(!a.empty()&&a[0]=='-'){std::cerr<<"aster: build-apk: unknown option "<<a<<"\n";return 2;}
@@ -29660,6 +30019,7 @@ int main(int argc,char**argv){
             // build-apk reads its own argv (a different set of options), so the
             // path options are published here rather than by parseArgs above.
             publishPathOpts();
+            applyDepthOpts();
             std::vector<uint8_t> so;
             if(inSo.size()>4&&inSo.compare(inSo.size()-4,4,".ast")==0){
                 // Convenience path: compile the Aster source into the packaged
@@ -29755,7 +30115,7 @@ int main(int argc,char**argv){
             bool withDebugInfo = false, withBoundsCheck = false, withCountCheck = true;
             aster_cn::Language languageOverride = aster_cn::Language::Zh;
             auto usageError = [&]() {
-                std::cerr << "Aster: build-cn-obj usage: aster build-cn-obj [--language zh|en] [--project FILE] [--module-dir DIR] [-g] [--bounds-check] [--no-count-check] <source.ast> -o <output.o>\n";
+                std::cerr << "Aster: build-cn-obj usage: aster build-cn-obj [--language zh|en] [--project FILE] [--module-dir DIR] [-g] [--bounds-check] [--no-count-check] [--max-nesting-depth N] [--max-lowering-depth N] <source.ast> -o <output.o>\n";
                 return 2;
             };
             for (int i = 2; i < argc; ++i) {
@@ -29796,6 +30156,16 @@ int main(int argc,char**argv){
                     withBoundsCheck = true;
                 } else if (argument == "--no-count-check") {
                     withCountCheck = false;
+                } else if (argument == "--max-nesting-depth") {
+                    if (i + 1 >= argc) return usageError();
+                    if (!parseDepthValue(argv[++i], 16, 2048, maxParseDepthOpt)) return usageError();
+                } else if (argument.rfind("--max-nesting-depth=", 0) == 0) {
+                    if (!parseDepthValue(argument.c_str() + 20, 16, 2048, maxParseDepthOpt)) return usageError();
+                } else if (argument == "--max-lowering-depth") {
+                    if (i + 1 >= argc) return usageError();
+                    if (!parseDepthValue(argv[++i], 64, 3072, maxLoweringDepthOpt)) return usageError();
+                } else if (argument.rfind("--max-lowering-depth=", 0) == 0) {
+                    if (!parseDepthValue(argument.c_str() + 21, 64, 3072, maxLoweringDepthOpt)) return usageError();
                 } else if (!argument.empty() && argument[0] == '-') {
                     return usageError();
                 } else if (input.empty()) {
@@ -29805,6 +30175,7 @@ int main(int argc,char**argv){
                 }
             }
             if (input.empty() || !haveOutputPath || outputPath.empty()) return usageError();
+            applyDepthOpts();
             const std::string source = readFile(input);
             setSourceCache(input, source);
             g_cnDiagnosticActive = true;
@@ -30072,12 +30443,12 @@ int main(int argc,char**argv){
         }
 #endif
         if(cmd=="link-obj"||cmd=="link-pie"){
-            if(!parseArgs(2)||sources.empty()||pic||boundsCheck||!soname.empty()||!needed.empty()){std::cerr<<kUsage;return 2;}
+            if(!parseArgs(2)||sources.empty()||pic||boundsCheck||!soname.empty()||!needed.empty()||maxParseDepthOpt!=256||maxLoweringDepthOpt!=2048){std::cerr<<kUsage;return 2;}
             if(cmd=="link-obj")linkObjects(sources,output,0x400000,2,pageSize,gcSections);else linkObjects(sources,output,0,3,pageSize,gcSections);
             return 0;
         }
         if(cmd=="link-so"){
-            if(!parseArgs(2)||sources.empty()||pic||boundsCheck||gcSections){std::cerr<<kUsage;return 2;}
+            if(!parseArgs(2)||sources.empty()||pic||boundsCheck||gcSections||maxParseDepthOpt!=256||maxLoweringDepthOpt!=2048){std::cerr<<kUsage;return 2;}
             linkSharedObjects(sources,output,soname,needed,pageSize);
             return 0;
         }

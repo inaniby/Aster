@@ -85,8 +85,9 @@ print('  OK F64 immediates are unscaled; F32 keeps its factor of two')
 assert s.count('if(want<=8191u){') == 2, 'both compact-frame bounds are gone'
 assert 'if(compact)\n            for(size_t at:incomingBaseWords){const auto bp=framePairX16(frameBytes);code[at]=bp.first;code[at+1]=bp.second;}' in s, 'the incoming-base patch lost its guard'
 assert '0x910003f0u|(size<<10)' in s, 'the legal small-frame patch is gone'
-assert 'if(frameBytes>8192u)frameBytes=8192u;' in s, 'frameBytes lost its 8192 clamp'
-print('  OK a compact frame above 8191 falls back to the default 8192 frame')
+assert 'if(frameBytes>kMaxFrameBytes)' in s, 'frameBytes lost its 32768 cap'
+assert 'raOff=frameBytes-8u;' in s, 'the return address no longer sits at frame-8'
+print('  OK the frame is per-function up to the 32768 cap, RA at frame-8')
 
 assert 'bool seenDot=false, seenExp=false;' in s, 'lexer lost its one-dot/one-exp state'
 assert "!seenDot&&!seenExp&&q=='.'" in s, 'the fractional-part guard is gone'
@@ -124,8 +125,11 @@ def words(path):
             return list(struct.unpack_from('<' + 'I'*(size//4), b, off))
     raise SystemExit('FAIL: no .text section in %s' % path)
 
-# ADD X16, SP, #imm12{,LSL #12}: shift is bit 22; the only legal shifted
-# form in an Aster image is the default 8192 frame, 0x91400bf0.
+# ADD X16, SP, #imm12{,LSL #12}: shift is bit 22; the legal shifted forms
+# in an Aster image are ADD X16, SP, #n, LSL #12 for n = 1..8 (0x914007f0
+# through 0x914023f0): n = 1 is the first word of the two-word encoding for
+# frames in (4096, 8191], n = 2 the default 8192 frame, and n = 3..8 the
+# grown frames (12288..32768) a large local array needs.
 # STR/LDR D/S with Rn = SP; Rt varies, so mask bits 4:0 out of the tag.
 def add16_sp(w):  return ((w & 0xff000000) == 0x91000000
                           and ((w >> 5) & 0x1f) == 31 and (w & 0x1f) == 16)
@@ -148,12 +152,13 @@ def main():
                 print(imm12(w))
     elif cmd == 'badspadd':
         # The old defect wrote frameBytes (>=4096) into an unscaled imm12, so
-        # the shift field lit up and Rd/Rn were corrupted. Two shifted ADD
-        # X16,SP words are legal: 0x91400bf0 (ADD X16, SP, #2, LSL #12, the
-        # default 8192 frame) and 0x914007f0 (ADD X16, SP, #1, LSL #12, the
-        # first word of the two-word encoding for frames in (4096, 8191]).
+        # the shift field lit up and Rd/Rn were corrupted. Eight shifted ADD
+        # X16,SP words are legal: 0x914007f0 + (n-1)*0x400 for n = 1..8 (ADD
+        # X16, SP, #n, LSL #12) — n = 1 is the first word of the two-word
+        # encoding for frames in (4096, 8191], n = 2 the default 8192 frame,
+        # and n = 3..8 the grown frames a large local array needs.
         bad = [w for w in ws
-               if add16_sp(w) and (w & 0x00400000) and w not in (0x91400bf0, 0x914007f0)]
+               if add16_sp(w) and (w & 0x00400000) and w not in (0x914007f0, 0x91400bf0, 0x91400ff0, 0x914013f0, 0x914017f0, 0x91401bf0, 0x91401ff0, 0x914023f0)]
         if bad:
             print('BAD ' + ' '.join('%08x' % w for w in bad), path)
             sys.exit(1)
