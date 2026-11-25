@@ -576,11 +576,24 @@ let heap_size: i32 = 0;
 fn malloc(n: i32) : ptr {
     if (heap_base == 0) {
         heap_base = mmap(ptr(0), 65536, 3, 34, 0 - 1, 0);
+        // mmap answers a pointer in [-4095, -1] on failure (a negated
+        // errno): a failed mapping must answer 0, not leave a bogus base
+        // for this and later calls to hand out. The base is reset so a
+        // later call retries the mapping.
+        let mapped: i64 = i64(heap_base);
+        if (mapped < 0 && mapped >= 0 - 4095) {
+            heap_base = 0;
+            return 0;
+        }
         heap_size = 65536;
         heap_used = 0;
     }
     if (n <= 0) { return 0; }
     let need: i32 = (n + 7) & (0 - 8);
+    // A request near i32's top wraps the rounding above to a non-positive
+    // `need`, which the exhaustion check below would then pass: such a
+    // request can never fit the 64 KiB mapping, so it answers 0 as well.
+    if (need <= 0) { return 0; }
     if (heap_used + need > heap_size) { return 0; }
     let p: ptr = heap_base + heap_used;
     heap_used = heap_used + need;
@@ -894,7 +907,7 @@ fn aster_cn_adapter_free(p: ptr) : i32 {
     if (p == 0) { return 0; }
     if (aster_cn_adapter_pool_base == 0) { return 0; }
     let off: i64 = i64(p) - i64(aster_cn_adapter_pool_base);
-    if (off < 0 || off >= i64(kAsterCnAdapterContextSize) * i64(kAsterCnAdapterPoolSlots) || off % 24 != 0) { return 0; }
+    if (off < 0 || off >= i64(kAsterCnAdapterContextSize) * i64(kAsterCnAdapterPoolSlots) || off % i64(kAsterCnAdapterContextSize) != 0) { return 0; }
     let cur: ptr = aster_cn_adapter_free_head;
     while (cur != 0) {
         if (cur == p) { return 0; }
@@ -1001,17 +1014,19 @@ fn vec32_push(v: ptr<Vec32>, x: i32) : i32 {
         v.data = bigger;
         v.cap = v.cap * 2;
     }
-    store_i64(v.data + v.count * 4, i64(x));
+    // An element is 4 bytes: a 64-bit store here would clobber the next one.
+    *(v.data + v.count * 4) = x;
     v.count = v.count + 1;
     return v.count;
 }
 fn vec32_get(v: ptr<Vec32>, i: i32) : i32 {
     if (i < 0 || i >= v.count) { return 0; }
-    return i32(load_i64(v.data + i * 4));
+    return *(v.data + i * 4);
 }
 fn vec32_set(v: ptr<Vec32>, i: i32, x: i32) : i32 {
     if (i < 0 || i >= v.count) { return 0 - 1; }
-    store_i64(v.data + i * 4, i64(x));
+    // 4 bytes, like the push: a 64-bit store would clobber the next element.
+    *(v.data + i * 4) = x;
     return x;
 }
 
@@ -1295,7 +1310,6 @@ fn next_line(line: ptr<u8>) : ptr<u8> {
     return 0;
 }
 
-// str_dup(s): a copy of s in the growable arena (0 when the arena refuses).
 // to_upper(s): ASCII letters to uppercase *in place* (the buffer must be
 // writable), answering s.
 fn to_upper(s: ptr<u8>) : ptr<u8> {
@@ -1473,42 +1487,78 @@ fn f64_bits(m: i64, k: i32) : i64 {
     // A value of 1..2 times 2^(top+k). The biased exponent is that plus 1023,
     // and the fraction field wants 52 bits below the leading one.
     let e: i32 = top + k + 1023;
+    let one: u64 = 1;
+    if (e <= 0) {
+        // Subnormal or zero: the fraction field is the value scaled by 2^1074,
+        // rounded half-to-even. Below half of the smallest subnormal the
+        // answer is zero, as the hardware gives.
+        let s: i32 = k + 1074;
+        let m2: u64 = 0;
+        if (s >= 0) {
+            m2 = a << s;
+        } else {
+            let drop: i32 = 0 - s;
+            if (drop == 64) {
+                if (a > 9223372036854775808) { m2 = 1; }
+            } else if (drop < 64) {
+                m2 = a >> drop;
+                let rest: u64 = a - (m2 << drop);
+                let half: u64 = one << (drop - 1);
+                if (rest > half) {
+                    m2 = m2 + 1;
+                } else if (rest == half) {
+                    if ((m2 & 1) == 1) { m2 = m2 + 1; }
+                }
+            }
+        }
+        if (m2 >= 4503599627370496) {
+            // Rounded up to the smallest normal: exponent field 1, fraction 0.
+            let nbits: u64 = 4503599627370496;
+            if (neg == 1) { nbits = nbits | (one << 63); }
+            let nout: i64 = nbits;
+            return nout;
+        }
+        if (m2 == 0) { return 0; }
+        // Subnormal: exponent field 0, fraction m2.
+        if (neg == 1) { m2 = m2 | (one << 63); }
+        let sout: i64 = m2;
+        return sout;
+    }
     let mant: u64 = 0;
     if (top <= 52) {
         // exact: shift the bits up into the 53-bit form, drop the leading one
         mant = (a << (52 - top)) & 4503599627370495;
-        if (e <= 0) {
-            // subnormal: the leading one is implicit only above the bias, so
-            // shift the whole value right by (1 - e) and round there.
-            mant = a >> (1 - top - k);
-            e = 0;
-        }
     } else {
         let drop: i32 = top - 52;
         mant = a >> drop;
         // the bits that fall off decide the rounding
         let rest: u64 = a - (mant << drop);
-        let one: u64 = 1;
         let half: u64 = one << (drop - 1);
         if (rest > half) {
             mant = mant + 1;
         } else if (rest == half) {
             if ((mant & 1) == 1) { mant = mant + 1; }
         }
-        if (mant > 4503599627370495) {
+        // Only a carry past all 53 bits moves the exponent: the leading one
+        // is dropped by the mask below, never shifted into the exponent.
+        if (mant > 9007199254740991) {
             mant = mant >> 1;
             e = e + 1;
         }
+        mant = mant & 4503599627370495;
     }
     if (e >= 2047) {
         // overflow: infinity, which is what the hardware would answer
-        if (neg == 1) { return 0 - 9218868437227405312; }
+        if (neg == 1) { return 0 - 4503599627370496; }
         return 9218868437227405312;
     }
     let eu: u64 = e;
     let bits: u64 = (eu << 52) | mant;
+    // The sign is a bit, not a negation: negating the bit pattern as an
+    // integer only coincides with flipping the sign bit when the exponent
+    // field is 1024 and the fraction is zero.
+    if (neg == 1) { bits = bits | (one << 63); }
     let out: i64 = bits;
-    if (neg == 1) { return 0 - out; }
     return out;
 }
 
@@ -1631,6 +1681,7 @@ fn strncat(dst: ptr<u8>, src: ptr<u8>, room: i32) : ptr<u8> {
     return dst;
 }
 
+// str_dup(s): a copy of s in the growable arena (0 when the arena refuses).
 fn str_dup(s: ptr<u8>) : ptr<u8> {
     let n: i32 = strlen(s);
     let p: ptr = alloc(n + 1);
@@ -1690,7 +1741,13 @@ fn map_slot(m: ptr<Map>, key: ptr<u8>) : i32 {
     let mask: i32 = m.cap - 1;
     let i: i32 = i32(hash_str(key) & i64(mask));
     let tomb: i32 = 0 - 1;
-    while (1) {
+    // The probe is bounded to one full circle: a table with no empty slot
+    // (live keys plus tombstones filling every slot) would otherwise loop
+    // forever. A tombstone found on the run is still a usable slot; with
+    // neither a tombstone nor an empty slot there is nowhere to put the
+    // key, so the answer is -1 and the caller grows and retries.
+    let n: i32 = 0;
+    while (n < m.cap) {
         let k: ptr<u8> = map_key_at(m, i);
         if (k == 0) {
             if (tomb >= 0) { return tomb; }
@@ -1702,20 +1759,28 @@ fn map_slot(m: ptr<Map>, key: ptr<u8>) : i32 {
             return i;
         }
         i = (i + 1) & mask;
+        n = n + 1;
     }
+    if (tomb >= 0) { return tomb; }
     return 0 - 1;
 }
 
 fn map_find(m: ptr<Map>, key: ptr<u8>) : i32 {
     let mask: i32 = m.cap - 1;
     let i: i32 = i32(hash_str(key) & i64(mask));
-    while (1) {
+    // Bounded to one full circle, like map_slot: a table with no empty
+    // slot would otherwise loop forever on an absent key. A key that is
+    // present is still found (the probe covers every slot); an absent key
+    // answers -1, which is this function's contract.
+    let n: i32 = 0;
+    while (n < m.cap) {
         let k: ptr<u8> = map_key_at(m, i);
         if (k == 0) { return 0 - 1; }
         if (k != map_tomb()) {
             if (streq(k, key) == 1) { return i; }
         }
         i = (i + 1) & mask;
+        n = n + 1;
     }
     return 0 - 1;
 }
@@ -1732,7 +1797,9 @@ fn map_grow(m: ptr<Map>) : i32 {
     let i: i32 = 0;
     while (i < oldcap) {
         let k: ptr<u8> = ptr<u8>(ptr(load_i64(old + i * 16)));
-        if (k != 0) {
+        // A tombstone is not a live entry: rehashing it would hash the marker
+        // address itself (and count it), so only live keys move.
+        if (k != 0 && k != map_tomb()) {
             let v: ptr = ptr(load_i64(old + i * 16 + 8));
             let j: i32 = map_slot(m, k);
             store_i64(m.ents + j * 16, i64(k));
@@ -1755,6 +1822,15 @@ fn map_put(m: ptr<Map>, key: ptr<u8>, val: ptr) : i32 {
         if (map_grow(m) != 0) { return 0 - 1; }
     }
     let i: i32 = map_slot(m, key);
+    if (i < 0) {
+        // The table is full of live keys and tombstones (the count-based
+        // grow check above does not see tombstones): grow and retry once.
+        // Growing drops the tombstones, so the retry finds a slot; if the
+        // arena refuses, the answer is -1 as usual.
+        if (map_grow(m) != 0) { return 0 - 1; }
+        i = map_slot(m, key);
+        if (i < 0) { return 0 - 1; }
+    }
     let fresh: i32 = 1;
     if (map_key_at(m, i) != 0 && map_key_at(m, i) != map_tomb()) { fresh = 0; }
     store_i64(m.ents + i * 16, i64(key));

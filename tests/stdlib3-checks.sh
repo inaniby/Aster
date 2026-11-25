@@ -61,7 +61,18 @@ printf '%s\n' '[4/8] the C twin agrees byte for byte'
 # AArch64 libc — and Aster's fmt_f64 — spell it "nan", so an x86-built twin
 # disagrees on that one line and loses a check. HOSTCC + RUNNER make the byte
 # comparison identical on both hosts without weakening a single pinned line.
-${HOSTCC:-cc} -O1 -w tests/aster-std3-twin.c -o "$OUT/twin" || fail 'the twin did not build'
+# v0.23.85-dev: when HOSTCC is unset, prefer the AArch64 cross compiler if
+# one is installed, so the default environment builds the twin for the same
+# target as the demo instead of silently falling back to x86 cc. An explicit
+# HOSTCC still wins.
+if [ -z "${HOSTCC:-}" ]; then
+    if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+        HOSTCC=aarch64-linux-gnu-gcc
+    else
+        HOSTCC=cc
+    fi
+fi
+"$HOSTCC" -O1 -w tests/aster-std3-twin.c -o "$OUT/twin" || fail 'the twin did not build'
 "$RUNNER" "$OUT/twin" > "$OUT/twin.out" 2>&1 || true
 cmp -s "$OUT/demo.out" "$OUT/twin.out" || { diff -u "$OUT/twin.out" "$OUT/demo.out" | head -20 >&2; fail 'the demo and its C twin disagree'; }
 ok 'demo output == printf output'
