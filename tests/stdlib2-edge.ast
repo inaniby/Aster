@@ -5,6 +5,7 @@ extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32;
 extern fn strchr(s: ptr<u8>, c: i32) : i32;
 extern fn strstr(h: ptr<u8>, n: ptr<u8>) : i32;
 extern fn atoi(s: ptr<u8>) : i32;
+extern fn atof(s: ptr<u8>, out: ptr<f64>) : i32;
 extern fn fmt_i32(buf: ptr<u8>, v: i32) : i32;
 extern fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) : i32;
 extern fn sort_i32(a: ptr, n: i32) : i32;
@@ -30,6 +31,24 @@ fn main() : i32 {
     if (atoi("00012") != 12) { return 6; }
     if (atoi("-") != 0) { return 7; }
     if (atoi("  +0") != 0) { return 8; }
+
+    // atoi skips all ASCII whitespace, not just spaces (is_space: 9..13, 32)
+    if (atoi("\t-123") != 0 - 123) { return 20; }
+    if (atoi("\n42") != 42) { return 21; }
+    if (atoi("\r7") != 7) { return 22; }
+
+    // atof with a huge exponent: +inf on overflow, 0.0 on underflow, and
+    // 0.0 (not NaN) when the mantissa is zero. A finite positive v never
+    // satisfies v == v * 2.0, so that test names +inf exactly.
+    let v: f64 = 0.0;
+    if (atof("1e999", &v) != 5) { return 23; }
+    if (!(v > 0.0 && v == v * 2.0)) { return 23; }
+    if (atof("1e-999", &v) != 6) { return 24; }
+    if (v != 0.0) { return 24; }
+    if (atof("1e999999999999", &v) != 14) { return 25; }
+    if (!(v > 0.0 && v == v * 2.0)) { return 25; }
+    if (atof("0e999", &v) != 5) { return 26; }
+    if (v != 0.0) { return 26; }
 
     // formatters: the digit clamp and the most negative value
     if (fmt_hex(b, 0, 0) != 1) { return 9; }

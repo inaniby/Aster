@@ -136,7 +136,7 @@ if [ "$und" -ne 1 ]; then
     readelf -sW "$W/std.o" | awk '$7=="UND"' >&2
     exit 1
 fi
-printf 'PASS: std.o — 1 UND entry (the null symbol), 13 functions, 2 globals defined\n'
+printf 'PASS: std.o — 1 UND entry (the null symbol), 109 functions, 23 globals defined\n'
 
 # ---------------------------------------------------------------------------
 # [6/8] One definition per symbol: linking a second object that also defines

@@ -238,14 +238,14 @@ fn strcat(d: ptr<u8>, s: ptr<u8>) : i32 {
     return dl + sl;
 }
 
-// atoi(s): leading spaces, an optional sign, then decimal digits until the
+// atoi(s): leading whitespace, an optional sign, then decimal digits until the
 // first non-digit. Anything else is 0, and a lone sign is 0 too. The value
 // wraps like ordinary 32-bit arithmetic past the range, which is what an
 // unchecked C atoi does with 32 bits.
 
 fn atoi(s: ptr<u8>) : i32 {
     let i: i32 = 0;
-    while (load_u8(s + i) == 32) { i = i + 1; }
+    while (is_space(load_u8(s + i))) { i = i + 1; }
     let neg: i32 = 0;
     let ch: i32 = load_u8(s + i);
     if (ch == 45) { neg = 1; i = i + 1; }

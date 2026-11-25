@@ -11,7 +11,7 @@ fn main() : i32 {
     let ok: i32 = 0;
 
     // 1. write a file through the wrappers, then measure and read it back
-    let fd: i32 = fd_open("io-demo.txt", 577, 420);        // O_WRONLY|O_CREAT|O_TRUNC
+    let fd: i32 = fd_open("io-demo.txt", O_WRONLY | O_CREAT | O_TRUNC, 420);
     if (fd >= 0) { ok = ok + 1; }
     let wrote: i32 = write_all(fd, "hello, library\n", 15);
     fd_close(fd);

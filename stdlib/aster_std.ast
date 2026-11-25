@@ -417,13 +417,13 @@ fn strcat(d: ptr<u8>, s: ptr<u8>) : i32 {
     return dl + sl;
 }
 
-// atoi(s): leading spaces, an optional sign, then decimal digits until the
+// atoi(s): leading whitespace, an optional sign, then decimal digits until the
 // first non-digit. Anything else is 0, and a lone sign is 0 too. The value
 // wraps like ordinary 32-bit arithmetic past the range, which is what an
 // unchecked C atoi does with 32 bits.
 fn atoi(s: ptr<u8>) : i32 {
     let i: i32 = 0;
-    while (load_u8(s + i) == 32) { i = i + 1; }
+    while (is_space(load_u8(s + i))) { i = i + 1; }
     let neg: i32 = 0;
     let ch: i32 = load_u8(s + i);
     if (ch == 45) { neg = 1; i = i + 1; }
@@ -716,8 +716,21 @@ fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) : i32 {
 // Linux's AT_FDCWD, the only directory handle a program needs here.
 const kAtFdcwd: i32 = 0 - 100;
 
+// The open(2) flags, Linux values, in value order. fd_open takes these by
+// name — `O_WRONLY | O_CREAT | O_TRUNC` is 577 — instead of bare numbers.
+const O_RDONLY: i32 = 0;
+const O_WRONLY: i32 = 1;
+const O_RDWR: i32 = 2;
+const O_CREAT: i32 = 64;
+const O_EXCL: i32 = 128;
+const O_TRUNC: i32 = 512;
+const O_APPEND: i32 = 1024;
+const O_NONBLOCK: i32 = 2048;
+const O_CLOEXEC: i32 = 524288;
+
 // fd_open(path, flags, mode): openat(AT_FDCWD, …) with the caller's flags
-// (`O_RDONLY` = 0, `O_WRONLY|O_CREAT|O_TRUNC` = 577). Answers the fd, or -1.
+// (the `O_*` constants above, e.g. `O_WRONLY|O_CREAT|O_TRUNC` = 577).
+// Answers the fd, or -1.
 fn fd_open(path: ptr<u8>, flags: i32, mode: i32) : i32 {
     return openat(kAtFdcwd, path, flags, mode);
 }
@@ -1152,7 +1165,7 @@ fn digit_value(c: i32) : i32 {
 }
 
 // strtoi(s, base, out): the integer in s read in `base` (2..36, or 0 for
-// "auto": 0x/0X hex, 0b/0B binary, otherwise decimal), with leading spaces and
+// "auto": 0x/0X hex, 0b/0B binary, otherwise decimal), with leading whitespace and
 // an optional sign. The value is written through `out` as an i64; the answer is
 // the number of bytes consumed, or -1 when there was no digit at all. Reading
 // stops at the first character that is not a digit of the base, exactly as
@@ -1161,7 +1174,7 @@ fn strtoi(s: ptr<u8>, base: i32, out: ptr<u8>) : i32 {
     let i: i32 = 0;
     let b: i32 = base;
     if (b != 0 && (b < 2 || b > 36)) { return 0 - 1; }
-    while (load_u8(s + i) == 32) { i = i + 1; }
+    while (is_space(load_u8(s + i))) { i = i + 1; }
     let neg: i32 = 0;
     let ch: i32 = load_u8(s + i);
     if (ch == 45) { neg = 1; i = i + 1; }
@@ -1196,7 +1209,7 @@ fn strtoi(s: ptr<u8>, base: i32, out: ptr<u8>) : i32 {
 // language does not do). Answers the bytes consumed, or -1 with no digits.
 fn atof(s: ptr<u8>, out: ptr<f64>) : i32 {
     let i: i32 = 0;
-    while (load_u8(s + i) == 32) { i = i + 1; }
+    while (is_space(load_u8(s + i))) { i = i + 1; }
     let neg: i32 = 0;
     let ch: i32 = load_u8(s + i);
     if (ch == 45) { neg = 1; i = i + 1; }
@@ -1235,7 +1248,13 @@ fn atof(s: ptr<u8>, out: ptr<f64>) : i32 {
         while (1) {
             let c: i32 = load_u8(s + j);
             if (c < 48 || c > 57) { break; }
-            exp = exp * 10 + (c - 48);
+            // Clamp the exponent at 1000: the digits are still consumed and
+            // counted, but the multiplier loop below stays bounded, and a
+            // clamped exponent overflows 10^exp to inf exactly when C's
+            // strtod overflows (exp > 308). Without the clamp the i32
+            // accumulator wraps negative and the loop runs zero times,
+            // silently returning 1.0 for "1e999999999999".
+            if (exp < 1000) { exp = exp * 10 + (c - 48); if (exp > 1000) { exp = 1000; } }
             ed = ed + 1;
             j = j + 1;
         }
@@ -1243,7 +1262,11 @@ fn atof(s: ptr<u8>, out: ptr<f64>) : i32 {
             let mult: f64 = 1.0;
             let k: i32 = 0;
             while (k < exp) { mult = mult * 10.0; k = k + 1; }
-            if (eneg) { v = v / mult; } else { v = v * mult; }
+            // Skip the multiply/divide for a zero mantissa: 0.0 * inf is
+            // NaN, but C's strtod gives 0.0 for "0e999".
+            if (v != 0.0) {
+                if (eneg) { v = v / mult; } else { v = v * mult; }
+            }
             i = j;
         }
     }
