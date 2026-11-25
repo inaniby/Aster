@@ -86,42 +86,42 @@ check() {
 A=$OUT/aster
 if [ "$have_qemu" = yes ]; then
 # --- 1. a two-dimensional store: the right-hand side, one column each ---
-check "$A" '2d store <- constant'              42 'fn main() -> i32 { let m: i32[2][3] = 0; m[0][1] = 42; return m[0][1]; }'
+check "$A" '2d store <- constant'              42 'fn main() : i32 { let m: i32[2][3] = 0; m[0][1] = 42; return m[0][1]; }'
 check "$A" '2d store <- global'                42 'let g: i32 = 42;
-fn main() -> i32 { let m: i32[2][3] = 0; m[0][1] = g; return m[0][1]; }'
-check "$A" '2d store <- call'                  42 'fn f() -> i32 { return 42; }
-fn main() -> i32 { let m: i32[2][3] = 0; m[0][1] = f(); return m[0][1]; }'
-check "$A" '2d store <- local'                 42 'fn main() -> i32 { let m: i32[2][3] = 0; let v: i32 = 42; m[0][1] = v; return m[0][1]; }'
+fn main() : i32 { let m: i32[2][3] = 0; m[0][1] = g; return m[0][1]; }'
+check "$A" '2d store <- call'                  42 'fn f() : i32 { return 42; }
+fn main() : i32 { let m: i32[2][3] = 0; m[0][1] = f(); return m[0][1]; }'
+check "$A" '2d store <- local'                 42 'fn main() : i32 { let m: i32[2][3] = 0; let v: i32 = 42; m[0][1] = v; return m[0][1]; }'
 check "$A" '2d store, variable subscripts'     42 'let g: i32 = 42;
-fn main() -> i32 { let m: i32[2][3] = 0; let i: i32 = 0; let j: i32 = 1; m[i][j] = g; return m[0][1]; }'
+fn main() : i32 { let m: i32[2][3] = 0; let i: i32 = 0; let j: i32 = 1; m[i][j] = g; return m[0][1]; }'
 check "$A" '3d store <- global'                 7 'let g: i32 = 7;
-fn main() -> i32 { let m: i32[2][2][2] = 0; m[0][1][1] = g; return m[0][1][1]; }'
+fn main() : i32 { let m: i32[2][2][2] = 0; m[0][1][1] = g; return m[0][1][1]; }'
 # --- 2. a struct array field: the subscript, one column each ---
 check "$A" 'struct field [constant]'           12 'struct S { xs: i32[4] }
-fn main() -> i32 { let s: S; s.xs[2] = 12; return s.xs[2]; }'
+fn main() : i32 { let s: S; s.xs[2] = 12; return s.xs[2]; }'
 check "$A" 'struct field [global]'             12 'struct S { xs: i32[4] }
 let gi: i32 = 2;
-fn main() -> i32 { let s: S; s.xs[2] = 12; return s.xs[gi]; }'
+fn main() : i32 { let s: S; s.xs[2] = 12; return s.xs[gi]; }'
 check "$A" 'struct field [local]'              12 'struct S { xs: i32[4] }
-fn main() -> i32 { let s: S; let li: i32 = 2; s.xs[2] = 12; return s.xs[li]; }'
+fn main() : i32 { let s: S; let li: i32 = 2; s.xs[2] = 12; return s.xs[li]; }'
 check "$A" 'struct field [call]'               12 'struct S { xs: i32[4] }
-fn fi() -> i32 { return 2; }
-fn main() -> i32 { let s: S; s.xs[2] = 12; return s.xs[fi()]; }'
+fn fi() : i32 { return 2; }
+fn main() : i32 { let s: S; s.xs[2] = 12; return s.xs[fi()]; }'
 check "$A" 'struct field store, [global]'      42 'struct S { xs: i32[4] }
 let gi: i32 = 2;
-fn main() -> i32 { let s: S; s.xs[gi] = 42; return s.xs[2]; }'
+fn main() : i32 { let s: S; s.xs[gi] = 42; return s.xs[2]; }'
 # --- 3. a store through a typed pointer: the object's own width ---
 check "$A" 'ptr<i64> store, global object'      1 'let q: i64 = 0;
-fn main() -> i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
-check "$A" 'ptr<i64> store, local object'       1 'fn main() -> i32 { let q: i64 = 0; let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
+fn main() : i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
+check "$A" 'ptr<i64> store, local object'       1 'fn main() : i32 { let q: i64 = 0; let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
 check "$A" 'ptr<i64> store keeps 300'          44 'let q: i64 = 0;
-fn main() -> i32 { let p: ptr<i64> = &q; *p = 300; return i32(q); }'
+fn main() : i32 { let p: ptr<i64> = &q; *p = 300; return i32(q); }'
 # --- 4. `(bool)` of a 64-bit operand: all 64 bits ---
-check "$A" '(bool) u64 low bit'                 1 'fn main() -> i32 { let a: u64 = 1; if (bool(a)) { return 1; } return 0; }'
-check "$A" '(bool) u64 bit 32'                  1 'fn main() -> i32 { let a: u64 = 4294967296; if (bool(a)) { return 1; } return 0; }'
-check "$A" '(bool) i64 negative'                1 'fn main() -> i32 { let a: i64 = -1; if (bool(a)) { return 1; } return 0; }'
-check "$A" '(bool) u64 zero'                    0 'fn main() -> i32 { let a: u64 = 0; if (bool(a)) { return 1; } return 0; }'
-check "$A" '(bool) u64 bit 32, through a bool'  1 'fn main() -> i32 { let a: u64 = 4294967296; let b: bool = bool(a); if (b) { return 1; } return 0; }'
+check "$A" '(bool) u64 low bit'                 1 'fn main() : i32 { let a: u64 = 1; if (bool(a)) { return 1; } return 0; }'
+check "$A" '(bool) u64 bit 32'                  1 'fn main() : i32 { let a: u64 = 4294967296; if (bool(a)) { return 1; } return 0; }'
+check "$A" '(bool) i64 negative'                1 'fn main() : i32 { let a: i64 = -1; if (bool(a)) { return 1; } return 0; }'
+check "$A" '(bool) u64 zero'                    0 'fn main() : i32 { let a: u64 = 0; if (bool(a)) { return 1; } return 0; }'
+check "$A" '(bool) u64 bit 32, through a bool'  1 'fn main() : i32 { let a: u64 = 4294967296; let b: bool = bool(a); if (b) { return 1; } return 0; }'
 printf '%s\n' 'PASS: 19 witnesses, every column of every fix'
 fi
 
@@ -146,23 +146,23 @@ if [ "$have_qemu" = yes ] && [ "$have_cc" = yes ] && [ -f tests/eval-order-twin.
             printf '  %-44s %s\n' "$name" "$got"
         }
         diffcase A2 'let g: i32 = 42;
-fn main() -> i32 { let m: i32[2][3] = 0; m[0][1] = g; return m[0][1]; }'
-        diffcase A3 'fn f() -> i32 { return 42; }
-fn main() -> i32 { let m: i32[2][3] = 0; m[0][1] = f(); return m[0][1]; }'
+fn main() : i32 { let m: i32[2][3] = 0; m[0][1] = g; return m[0][1]; }'
+        diffcase A3 'fn f() : i32 { return 42; }
+fn main() : i32 { let m: i32[2][3] = 0; m[0][1] = f(); return m[0][1]; }'
         diffcase A6 'let g: i32 = 7;
-fn main() -> i32 { let m: i32[2][2][2] = 0; m[0][1][1] = g; return m[0][1][1]; }'
+fn main() : i32 { let m: i32[2][2][2] = 0; m[0][1][1] = g; return m[0][1][1]; }'
         diffcase B2 'struct S { xs: i32[4] }
 let gi: i32 = 2;
-fn main() -> i32 { let s: S; s.xs[2] = 12; return s.xs[gi]; }'
+fn main() : i32 { let s: S; s.xs[2] = 12; return s.xs[gi]; }'
         diffcase B5 'struct S { xs: i32[4] }
 let gi: i32 = 2;
-fn main() -> i32 { let s: S; s.xs[gi] = 42; return s.xs[2]; }'
+fn main() : i32 { let s: S; s.xs[gi] = 42; return s.xs[2]; }'
         diffcase C1 'let q: i64 = 0;
-fn main() -> i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
+fn main() : i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
         diffcase C3 'let q: i64 = 0;
-fn main() -> i32 { let p: ptr<i64> = &q; *p = 300; return i32(q); }'
-        diffcase D2 'fn main() -> i32 { let a: u64 = 4294967296; if (bool(a)) { return 1; } return 0; }'
-        diffcase D4 'fn main() -> i32 { let a: u64 = 0; if (bool(a)) { return 1; } return 0; }'
+fn main() : i32 { let p: ptr<i64> = &q; *p = 300; return i32(q); }'
+        diffcase D2 'fn main() : i32 { let a: u64 = 4294967296; if (bool(a)) { return 1; } return 0; }'
+        diffcase D4 'fn main() : i32 { let a: u64 = 0; if (bool(a)) { return 1; } return 0; }'
         printf '%s\n' 'PASS: 9 differential cases agree with C'
     else
         printf '  SKIP: the C twin does not build with %s\n' "$HOSTCC"
@@ -187,15 +187,15 @@ must_refuse() {   # must_refuse <name> <source>
     printf '  %-44s refused\n' "$1"
 }
 must_refuse '2d store, constant subscript past the row' \
-    'fn main() -> i32 { let m: i32[2][3] = 0; m[5][0] = 1; return 0; }'
+    'fn main() : i32 { let m: i32[2][3] = 0; m[5][0] = 1; return 0; }'
 must_refuse '2d store, constant subscript past the column' \
-    'fn main() -> i32 { let m: i32[2][3] = 0; m[0][9] = 1; return 0; }'
+    'fn main() : i32 { let m: i32[2][3] = 0; m[0][9] = 1; return 0; }'
 must_refuse 'struct field subscript past the field' \
     'struct S { xs: i32[4] }
-fn main() -> i32 { let s: S; s.xs[9] = 1; return 0; }'
+fn main() : i32 { let s: S; s.xs[9] = 1; return 0; }'
 must_refuse 'struct field read past the field' \
     'struct S { xs: i32[4] }
-fn main() -> i32 { let s: S; return s.xs[9]; }'
+fn main() : i32 { let s: S; return s.xs[9]; }'
 printf '%s\n' 'PASS: the bounds checks survived the reordering'
 
 # ---------------------------------------------------------------------------
@@ -263,22 +263,22 @@ else
 mutate 'm1: 2d store addresses before the value' \
     's/( {20}int v=gen\(\*s\.expr,elem\);\n)( {20}emitIndexAddr\(\*s\.idx\);\n)/$2$1/' \
     must_differ '2d store <- global' 'let g: i32 = 42;
-fn main() -> i32 { let m: i32[2][3] = 0; m[0][1] = g; return m[0][1]; }' 42
+fn main() : i32 { let m: i32[2][3] = 0; m[0][1] = g; return m[0][1]; }' 42
 # m2: the struct array field takes its base address before its subscript.
 mutate 'm2: struct field bases before the subscript' \
     's/( {8}int r=gen\(index\);\n)( {8}emitStructAddr\(fbase\);[^\n]*\n)/$2$1/' \
     must_differ 'struct field [global]' 'struct S { xs: i32[4] }
 let gi: i32 = 2;
-fn main() -> i32 { let s: S; s.xs[2] = 12; return s.xs[gi]; }' 12
+fn main() : i32 { let s: S; s.xs[2] = 12; return s.xs[gi]; }' 12
 # m3: a dereference store generates its value at the default width again.
 mutate 'm3: deref store at the default width' \
     's/int address=gen\(\*s\.idx\);int value=gen\(\*s\.expr,elem\);/int address=gen(*s.idx);int value=gen(*s.expr);/' \
     must_differ 'ptr<i64> store of -5' 'let q: i64 = 0;
-fn main() -> i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }' 1
+fn main() : i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }' 1
 # m4: `(bool)` compares 32 bits whatever the operand is.
 mutate 'm4: (bool) always compares 32 bits' \
     's/emit\(tyIs64\(from\)\?cmpZeroX\(a\):cmpZero\(a\)\);/emit(cmpZero(a));/' \
-    must_differ '(bool) u64 bit 32' 'fn main() -> i32 { let a: u64 = 4294967296; if (bool(a)) { return 1; } return 0; }' 1
+    must_differ '(bool) u64 bit 32' 'fn main() : i32 { let a: u64 = 4294967296; if (bool(a)) { return 1; } return 0; }' 1
 printf '%s\n' 'PASS: four mutated compilers each lose exactly one fix, and the matrix notices'
 fi
 
@@ -333,11 +333,11 @@ shape() {   # shape <name> <source>
     printf '  %-44s elf+so+pic\n' "$1"
 }
 shape '2d store <- global' 'let g: i32 = 42;
-fn main() -> i32 { let m: i32[2][3] = 0; m[0][1] = g; return m[0][1]; }'
+fn main() : i32 { let m: i32[2][3] = 0; m[0][1] = g; return m[0][1]; }'
 shape 'struct field [global]' 'struct S { xs: i32[4] }
 let gi: i32 = 2;
-fn main() -> i32 { let s: S; s.xs[2] = 12; return s.xs[gi]; }'
+fn main() : i32 { let s: S; s.xs[2] = 12; return s.xs[gi]; }'
 shape 'ptr<i64> store' 'let q: i64 = 0;
-fn main() -> i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
-shape '(bool) u64 bit 32' 'fn main() -> i32 { let a: u64 = 4294967296; if (bool(a)) { return 1; } return 0; }'
+fn main() : i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
+shape '(bool) u64 bit 32' 'fn main() : i32 { let a: u64 = 4294967296; if (bool(a)) { return 1; } return 0; }'
 printf '%s\n' 'PASS: all v0.23.62-dev evaluation-order and width checks'

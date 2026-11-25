@@ -151,46 +151,46 @@ check() {
 }
 A=$OUT/aster
 # --- the type spelling ---
-check "$A" 'sizeof(i32) is 4'               4 'fn main() -> i32 { return sizeof(i32); }'
-check "$A" 'sizeof(i64) is 8'               8 'fn main() -> i32 { return sizeof(i64); }'
-check "$A" 'sizeof(i32[4]) is 16'          16 'fn main() -> i32 { return sizeof(i32[4]); }'
-check "$A" 'len(i32[4]) is 4'               4 'fn main() -> i32 { return len(i32[4]); }'
-check "$A" 'sizeof(i64[2][3]) is 48'       48 'fn main() -> i32 { return sizeof(i64[2][3]); }'
-check "$A" 'len(i64[2][3]) is 6'            6 'fn main() -> i32 { return len(i64[2][3]); }'
-check "$A" 'sizeof(ptr) is 8'               8 'fn main() -> i32 { return sizeof(ptr); }'
-check "$A" 'sizeof(u8[10]) is 10'          10 'fn main() -> i32 { return sizeof(u8[10]); }'
+check "$A" 'sizeof(i32) is 4'               4 'fn main() : i32 { return sizeof(i32); }'
+check "$A" 'sizeof(i64) is 8'               8 'fn main() : i32 { return sizeof(i64); }'
+check "$A" 'sizeof(i32[4]) is 16'          16 'fn main() : i32 { return sizeof(i32[4]); }'
+check "$A" 'len(i32[4]) is 4'               4 'fn main() : i32 { return len(i32[4]); }'
+check "$A" 'sizeof(i64[2][3]) is 48'       48 'fn main() : i32 { return sizeof(i64[2][3]); }'
+check "$A" 'len(i64[2][3]) is 6'            6 'fn main() : i32 { return len(i64[2][3]); }'
+check "$A" 'sizeof(ptr) is 8'               8 'fn main() : i32 { return sizeof(ptr); }'
+check "$A" 'sizeof(u8[10]) is 10'          10 'fn main() : i32 { return sizeof(u8[10]); }'
 # --- the expression spelling on a local ---
-check "$A" 'sizeof(local i32[4])'          16 'fn main() -> i32 { let w: i32[4] = 0; return sizeof(w); }'
-check "$A" 'len(local i32[4])'              4 'fn main() -> i32 { let w: i32[4] = 0; return len(w); }'
-check "$A" 'sizeof(local i64[2][3])'       48 'fn main() -> i32 { let g: i64[2][3] = 0; return sizeof(g); }'
-check "$A" 'len(local i64[2][3]) is 6'      6 'fn main() -> i32 { let g: i64[2][3] = 0; return len(g); }'
-check "$A" 'sizeof(local ptr) is 8'         8 'fn main() -> i32 { let p: ptr = 0; return sizeof(p); }'
+check "$A" 'sizeof(local i32[4])'          16 'fn main() : i32 { let w: i32[4] = 0; return sizeof(w); }'
+check "$A" 'len(local i32[4])'              4 'fn main() : i32 { let w: i32[4] = 0; return len(w); }'
+check "$A" 'sizeof(local i64[2][3])'       48 'fn main() : i32 { let g: i64[2][3] = 0; return sizeof(g); }'
+check "$A" 'len(local i64[2][3]) is 6'      6 'fn main() : i32 { let g: i64[2][3] = 0; return len(g); }'
+check "$A" 'sizeof(local ptr) is 8'         8 'fn main() : i32 { let p: ptr = 0; return sizeof(p); }'
 # --- an array parameter carries its length ---
-check "$A" 'sizeof(param i32[4]) is 16'    16 'fn f(a: i32[4]) -> i32 { return sizeof(a); }
-fn main() -> i32 { return f(0); }'
-check "$A" 'len(param i32[4]) is 4'         4 'fn f(a: i32[4]) -> i32 { return len(a); }
-fn main() -> i32 { return f(0); }'
-check "$A" 'sizeof(param i64[2][3]) is 48' 48 'fn f(a: i64[2][3]) -> i32 { return sizeof(a); }
-fn main() -> i32 { return f(0); }'
-check "$A" 'len(param i64[2][3]) is 6'      6 'fn f(a: i64[2][3]) -> i32 { return len(a); }
-fn main() -> i32 { return f(0); }'
+check "$A" 'sizeof(param i32[4]) is 16'    16 'fn f(a: i32[4]) : i32 { return sizeof(a); }
+fn main() : i32 { return f(0); }'
+check "$A" 'len(param i32[4]) is 4'         4 'fn f(a: i32[4]) : i32 { return len(a); }
+fn main() : i32 { return f(0); }'
+check "$A" 'sizeof(param i64[2][3]) is 48' 48 'fn f(a: i64[2][3]) : i32 { return sizeof(a); }
+fn main() : i32 { return f(0); }'
+check "$A" 'len(param i64[2][3]) is 6'      6 'fn f(a: i64[2][3]) : i32 { return len(a); }
+fn main() : i32 { return f(0); }'
 # --- a global array ---
 check "$A" 'sizeof(global i32[10]) is 40'  40 'let g: i32[10] = 0;
-fn main() -> i32 { return sizeof(g); }'
+fn main() : i32 { return sizeof(g); }'
 check "$A" 'len(global i32[10]) is 10'     10 'let g: i32[10] = 0;
-fn main() -> i32 { return len(g); }'
+fn main() : i32 { return len(g); }'
 # --- structs and their array fields ---
 check "$A" 'sizeof(struct P) is 8'          8 'struct P { x: i32, y: i32 }
-fn main() -> i32 { return sizeof(P); }'
+fn main() : i32 { return sizeof(P); }'
 check "$A" 'sizeof(struct instance) is 8'   8 'struct P { x: i32, y: i32 }
-fn main() -> i32 { let p: P; p.x = 1; p.y = 2; return sizeof(p); }'
+fn main() : i32 { let p: P; p.x = 1; p.y = 2; return sizeof(p); }'
 check "$A" 'sizeof(array field) is 16'     16 'struct B { xs: i32[4] }
-fn main() -> i32 { let b: B; return sizeof(b.xs); }'
+fn main() : i32 { let b: B; return sizeof(b.xs); }'
 check "$A" 'len(array field) is 4'          4 'struct B { xs: i32[4] }
-fn main() -> i32 { let b: B; return len(b.xs); }'
+fn main() : i32 { let b: B; return len(b.xs); }'
 # --- sizeof/len composed with ordinary arithmetic ---
-check "$A" 'len + sizeof compose'          20 'fn main() -> i32 { let a: i32[4] = 0; return len(a) + sizeof(a); }'
-check "$A" 'sizeof in a bound'              6 'fn main() -> i32 { let a: i32[3] = 0; return len(a) * 2; }'
+check "$A" 'len + sizeof compose'          20 'fn main() : i32 { let a: i32[4] = 0; return len(a) + sizeof(a); }'
+check "$A" 'sizeof in a bound'              6 'fn main() : i32 { let a: i32[3] = 0; return len(a) * 2; }'
 else
     printf '%s\n' '  SKIP: the behavioural cases need qemu to run'
 fi
@@ -219,9 +219,9 @@ if [ "$have_qemu" = yes ] && [ "$have_cc" = yes ]; then
     # type (the storage Aster describes) rather than sizeof on the decayed
     # parameter, which C would answer as 8.
     diff_case 'sizeof/len of arrays, local and param' \
-        'fn nbytes(a: i32[4]) -> i32 { return sizeof(a); }
-fn nelem(a: i32[4]) -> i32 { return len(a); }
-fn main() -> i32 {
+        'fn nbytes(a: i32[4]) : i32 { return sizeof(a); }
+fn nelem(a: i32[4]) : i32 { return len(a); }
+fn main() : i32 {
     let w: i32[4] = 0;
     let g: i64[2][3] = 0;
     if (sizeof(w) == 16 && len(w) == 4) { if (sizeof(g) == 48 && len(g) == 6) { if (nbytes(w) == 16 && nelem(w) == 4) { return 27; } } }
@@ -238,7 +238,7 @@ int main(void) {
     return 0; }'
     diff_case 'struct and array field, scalar widths' \
         'struct Row { cells: i32[4] }
-fn main() -> i32 {
+fn main() : i32 {
     let row: Row;
     if (sizeof(Row) == 16 && sizeof(row) == 16) { if (sizeof(row.cells) == 16 && len(row.cells) == 4) { if (sizeof(i64) == 8 && sizeof(u8[3]) == 3) { return 44; } } }
     return 0; }' \
@@ -274,29 +274,29 @@ reject() {
 }
 A=$OUT/aster
 reject 'len of a scalar local'      "len() requires an array, not a scalar or pointer" \
-    'fn main() -> i32 { let x: i32 = 1; return len(x); }'
+    'fn main() : i32 { let x: i32 = 1; return len(x); }'
 reject 'len of a ptr local'         "len() requires an array, not a scalar or pointer" \
-    'fn main() -> i32 { let p: ptr = 0; return len(p); }'
+    'fn main() : i32 { let p: ptr = 0; return len(p); }'
 reject 'len of a ptr parameter'     "len() requires an array, not a scalar or pointer" \
-    'fn f(p: ptr) -> i32 { return len(p); }
-fn main() -> i32 { return f(0); }'
+    'fn f(p: ptr) : i32 { return len(p); }
+fn main() : i32 { return f(0); }'
 reject 'len of a scalar type'       "len() requires an array type, e.g. len(i32[4])" \
-    'fn main() -> i32 { return len(i32); }'
+    'fn main() : i32 { return len(i32); }'
 reject 'len of a struct type'       "len() requires an array type, e.g. len(i32[4])" \
     'struct P { x: i32 }
-fn main() -> i32 { return len(P); }'
+fn main() : i32 { return len(P); }'
 reject 'sizeof missing open paren'  "expected '(' after sizeof" \
-    'fn main() -> i32 { return sizeof i32; }'
+    'fn main() : i32 { return sizeof i32; }'
 reject 'sizeof missing close paren' "expected ')' after sizeof expression" \
-    'fn main() -> i32 { let w: i32[4] = 0; return sizeof(w; }'
+    'fn main() : i32 { let w: i32[4] = 0; return sizeof(w; }'
 reject 'sizeof missing close paren (type)' "expected ')' after sizeof type" \
-    'fn main() -> i32 { return sizeof(i32[4]; }'
+    'fn main() : i32 { return sizeof(i32[4]; }'
 reject 'zero-length array type'     "array length out of range" \
-    'fn main() -> i32 { return sizeof(i32[0]); }'
+    'fn main() : i32 { return sizeof(i32[0]); }'
 reject 'len read as a variable'     "expected '(' after len" \
-    'fn main() -> i32 { let len: i32 = 5; return len; }'
+    'fn main() : i32 { let len: i32 = 5; return len; }'
 reject 'len named, read inside sizeof' "expected '(' after len" \
-    'fn main() -> i32 { let len: i32 = 5; return sizeof(len); }'
+    'fn main() : i32 { let len: i32 = 5; return sizeof(len); }'
 printf '%s\n' 'PASS: the rejection matrix holds'
 
 # ---------------------------------------------------------------------------
@@ -367,28 +367,28 @@ else
 # accepts it (returning 4 in [3/9]), so the fill is what makes it legal.
 mutate 'm1: a parameter forgets its length' \
     's|scopes.back()\[f.params\[i\]\]=Binding{pty, plen, tyIsPtrToElem(pty)?ptrElemType(pty):Ty::I32, pd,|scopes.back()[f.params[i]]=Binding{pty, 0, tyIsPtrToElem(pty)?ptrElemType(pty):Ty::I32, {},|' \
-    must_not_compile 'len of a param i32[4]' 'fn f(a: i32[4]) -> i32 { return len(a); }
-fn main() -> i32 { return f(0); }'
+    must_not_compile 'len of a param i32[4]' 'fn f(a: i32[4]) : i32 { return len(a); }
+fn main() : i32 { return f(0); }'
 # m2: the expression-form no longer folds in sema, so e.n stays 0 and gen
 # materialises 0 instead of the array's size.
 mutate 'm2: the expression-form does not fold' \
     's|                if(e.a) const_cast<Expr\&>(e).n = foldSizeOfExpr(e);||' \
-    must_differ 'sizeof of a local i32[4]' 16 'fn main() -> i32 { let w: i32[4] = 0; return sizeof(w); }'
+    must_differ 'sizeof of a local i32[4]' 16 'fn main() : i32 { let w: i32[4] = 0; return sizeof(w); }'
 # m3: len no longer multiplies the dimensions, reporting only the outermost —
 # so a 2-D array answers 2 instead of 6.
 mutate 'm3: len reports the outermost dimension' \
     's|                elem=b->elem; count=dimsProduct(b->dims); return true;|                elem=b->elem; count=b->dims.empty()?1:b->dims[0]; return true;|' \
-    must_differ 'len of a 2-D local' 6 'fn main() -> i32 { let g: i64[2][3] = 0; return len(g); }'
+    must_differ 'len of a 2-D local' 6 'fn main() : i32 { let g: i64[2][3] = 0; return len(g); }'
 # m4: len of a scalar is no longer refused — the honest rejection this round
 # added. The mutant therefore *accepts* what the real compiler refuses.
 mutate 'm4: len of a scalar is not refused' \
     's|        if(isLen)throw Error(loc(e.line,e.col,"len() requires an array, not a scalar or pointer"));||' \
-    must_now_compile 'len of a scalar local' 'fn main() -> i32 { let x: i32 = 1; return len(x); }'
+    must_now_compile 'len of a scalar local' 'fn main() : i32 { let x: i32 = 1; return len(x); }'
 # m5: the type-form's array literal is ignored, so sizeof(i32[4]) answers the
 # scalar size (4) instead of the array size (16).
 mutate 'm5: the type-form ignores its array literal' \
     's|                } else x->n=sizeofTypeValue(t,dims);|                } else x->n=(uint64_t)tySize(t);|' \
-    must_differ 'sizeof(i32[4])' 16 'fn main() -> i32 { return sizeof(i32[4]); }'
+    must_differ 'sizeof(i32[4])' 16 'fn main() : i32 { return sizeof(i32[4]); }'
 printf '%s\n' 'PASS: five mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

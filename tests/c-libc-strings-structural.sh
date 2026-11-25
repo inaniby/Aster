@@ -19,8 +19,8 @@ printf '%s\n' '[4/5] Strictly compile C ABI harness'
 ${HOSTCC:-cc} -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror tests/c-libc-strings-host.c -ldl -o "$OUT/c-libc-strings-host"
 printf '%s\n' 'PASS: strict libc-string C harness compile'
 cat > "$OUT/bad-pointer-arg.ast" <<'AST'
-extern fn strlen(s: ptr) -> i32;
-fn bad(value: i32) -> i32 { return strlen(value); }
+extern fn strlen(s: ptr) : i32;
+fn bad(value: i32) : i32 { return strlen(value); }
 AST
 if "$OUT/aster" build-so "$OUT/bad-pointer-arg.ast" -o "$OUT/bad.so" >"$OUT/bad-pointer-arg.log" 2>&1; then
   echo 'FAIL: i32 passed to ptr parameter was accepted'; exit 10

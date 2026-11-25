@@ -68,7 +68,7 @@ let g_rt_cell: i32 = 48;
 
 // v2.15：设置当前 cell（夹到 [8, 64]）。aui_impl.ast 的
 // text_style_for_node 在每次排版/绘制前调它，跨编译单元传 cell。
-fn aui_rt_set_cell(cell: i32) -> i32 {
+fn aui_rt_set_cell(cell: i32) : i32 {
     if (cell < 8) { cell = 8; }
     if (cell > 64) { cell = 64; }
     g_rt_cell = cell;
@@ -109,19 +109,19 @@ let g_rt_src: i32 = 0;
 let g_rt_bm_ascii: u8[576] = 0;   // 24x24 fallback scratch
 let g_rt_bm_cjk: u8[2304] = 0;    // 48x48 fallback scratch
 
-fn aui_rt_pixel() -> i32 {
+fn aui_rt_pixel() : i32 {
     // v2.15：字形 em 尺寸跟当前 cell（默认 48，与 v2.14 恒等）。
     return g_rt_cell;
 }
 
-fn aui_rt_line_h() -> i32 {
+fn aui_rt_line_h() : i32 {
     // v2.15：行高按 cell 等比缩放（60 px @ 48 em；Title 64 em 时 80 px）。
     return AUI_RT_LINE_H * g_rt_cell / AUI_RT_PIXEL;
 }
 
 // 1 when a system font is loaded and usable, else 0. Does NOT
 // trigger a load by itself; call aui_rt_ensure() first.
-fn aui_rt_active() -> i32 {
+fn aui_rt_active() : i32 {
     if (g_rt_tt == 1) {
         return 1;
     } else {
@@ -129,41 +129,41 @@ fn aui_rt_active() -> i32 {
     return 0;
 }
 
-fn aui_rt_fallback_events() -> i32 {
+fn aui_rt_fallback_events() : i32 {
     return g_rt_fallback_events;
 }
 
-fn aui_rt_fallback_reason() -> i32 {
+fn aui_rt_fallback_reason() : i32 {
     return g_rt_fallback_reason;
 }
 
 // Code points that had no glyph in any source (TT, ASCII, CJK).
 // Incremented by aui_rt_glyph only, never by measurement.
-fn aui_rt_missing() -> i32 {
+fn aui_rt_missing() : i32 {
     return g_rt_missing;
 }
 
-fn aui_rt_bm() -> ptr {
+fn aui_rt_bm() : ptr {
     return g_rt_bm;
 }
 
-fn aui_rt_bw() -> i32 {
+fn aui_rt_bw() : i32 {
     return g_rt_bw;
 }
 
-fn aui_rt_bh() -> i32 {
+fn aui_rt_bh() : i32 {
     return g_rt_bh;
 }
 
-fn aui_rt_xo() -> i32 {
+fn aui_rt_xo() : i32 {
     return g_rt_xo;
 }
 
-fn aui_rt_yo() -> i32 {
+fn aui_rt_yo() : i32 {
     return g_rt_yo;
 }
 
-fn aui_rt_src() -> i32 {
+fn aui_rt_src() : i32 {
     return g_rt_src;
 }
 
@@ -172,7 +172,7 @@ fn aui_rt_src() -> i32 {
 // 3 = not a font, 4 = no usable cmap, 5 = no outline table,
 // 6 = CFF2 present but unparsable). On Android the backend logs
 // assert the counters.
-fn aui_rt_note_fallback() -> i32 {
+fn aui_rt_note_fallback() : i32 {
     g_rt_fallback_events = g_rt_fallback_events + 1;
     g_rt_fallback_reason = ui_sysfont_err();
     g_rt_tt = 0;
@@ -183,7 +183,7 @@ fn aui_rt_note_fallback() -> i32 {
 // (/system/fonts/NotoSansCJK-Regular.ttc, NotoSansSC-Regular.otf,
 // DroidSansFallback.ttf). Answers 1 when a system font is active,
 // 0 when we fell back. Runs at most once per explicit path set.
-fn aui_rt_ensure() -> i32 {
+fn aui_rt_ensure() : i32 {
     if (g_rt_tried == 1) {
         return g_rt_tt;
     } else {
@@ -204,7 +204,7 @@ fn aui_rt_ensure() -> i32 {
 // A nonexistent path answers 0 with reason 1 and switches to
 // fallback mode -- that is how the headless test simulates a
 // device with no system font. The device never calls this.
-fn aui_rt_set_font_path(path: ptr) -> i32 {
+fn aui_rt_set_font_path(path: ptr) : i32 {
     g_rt_tried = 1;
     let r: i32 = ui_sysfont_load_face(path, -1);
     if (r == 1) {
@@ -234,7 +234,7 @@ fn aui_rt_set_font_path(path: ptr) -> i32 {
 // A instead of the system font. Answers 1 when a snapshot was
 // taken. The path is COPIED: the engine's path pointer may alias
 // a shared join buffer that later loads overwrite.
-fn aui_rt_custom_snapshot() -> i32 {
+fn aui_rt_custom_snapshot() : i32 {
     if (g_rt_custom_active != 0) { return 0; }
     if (g_rt_tt != 1) { return 0; }
     let p: ptr = ui_sysfont_path();
@@ -258,7 +258,7 @@ fn aui_rt_custom_snapshot() -> i32 {
 // screen. Only when there was no face to restore (the app
 // started in bitmap-fallback mode) do we stay in fallback mode,
 // and that IS a fallback event.
-fn aui_rt_set_custom_font(path: ptr) -> i32 {
+fn aui_rt_set_custom_font(path: ptr) : i32 {
     g_rt_tried = 1;
     let t0: i64 = ui_tt_now_ms();
     let s: i32 = aui_rt_custom_snapshot();
@@ -299,7 +299,7 @@ fn aui_rt_set_custom_font(path: ptr) -> i32 {
 // (the system font on the device). Answers 1 when a system font
 // is active afterwards, 0 when the app ends up in bitmap-fallback
 // mode (no snapshot: there never was a system font).
-fn aui_rt_restore_system_font() -> i32 {
+fn aui_rt_restore_system_font() : i32 {
     if (g_rt_prev_has == 1) {
         let r: i32 = ui_sysfont_load_face(g_rt_prev_path, -1);
         if (r == 1) {
@@ -322,28 +322,28 @@ fn aui_rt_restore_system_font() -> i32 {
     return 0;
 }
 
-fn aui_rt_custom_active() -> i32 {
+fn aui_rt_custom_active() : i32 {
     return g_rt_custom_active;
 }
 
-fn aui_rt_custom_err() -> i32 {
+fn aui_rt_custom_err() : i32 {
     return g_rt_custom_err;
 }
 
-fn aui_rt_custom_load_ms() -> i32 {
+fn aui_rt_custom_load_ms() : i32 {
     return g_rt_custom_ms;
 }
 
 // Path of the active custom font, or 0 when no custom font is
 // active. The buffer is owned by the adapter; copy it out.
-fn aui_rt_custom_path() -> ptr {
+fn aui_rt_custom_path() : ptr {
     if (g_rt_custom_active == 0) { return 0; }
     return g_rt_custom_path;
 }
 
 // Path of the face restore goes back to, or 0 when no snapshot
 // exists (no system font was ever active).
-fn aui_rt_system_path() -> ptr {
+fn aui_rt_system_path() : ptr {
     if (g_rt_prev_has == 0) { return 0; }
     return g_rt_prev_path;
 }
@@ -351,7 +351,7 @@ fn aui_rt_system_path() -> ptr {
 // Weight of the active face: fvar wght when the font has one
 // (system CFF2: 400), else the family-name suffix (HYZhengYuan:
 // 300/400/500/700), else OS/2, else -1.
-fn aui_rt_font_weight() -> i32 {
+fn aui_rt_font_weight() : i32 {
     let w: i32 = ui_sysfont_fvar_wght();
     if (w >= 0) { return w; }
     return ui_sysfont_name_weight();
@@ -363,7 +363,7 @@ fn aui_rt_font_weight() -> i32 {
 // parses hhea but does not retain the hmtx offset, so the scan
 // lives here, next to its only use). numOfLongHorMetrics comes
 // from hhea+34; glyphs past it reuse the last advance, per spec.
-fn aui_rt_hmtx_adv(cp: i32) -> i32 {
+fn aui_rt_hmtx_adv(cp: i32) : i32 {
     let gid: i32 = ui_tt_cmap(cp);
     if (gid == 0) {
         return -1;
@@ -429,7 +429,7 @@ fn aui_rt_hmtx_adv(cp: i32) -> i32 {
 // A code point with no glyph anywhere still advances (wide 48,
 // narrow 24) so text never collapses onto itself; the miss is
 // counted by aui_rt_glyph, not here.
-fn aui_rt_advance(cp: i32) -> i32 {
+fn aui_rt_advance(cp: i32) : i32 {
     let e: i32 = aui_rt_ensure();
     // 先按 48 em 算基准 advance（与 v2.14 完全一致），再按当前
     // cell 等比缩放；cell=48 时恒等。回退路径的 24/48 同样缩放。
@@ -464,7 +464,7 @@ fn aui_rt_advance(cp: i32) -> i32 {
 
 // Expand one 8x8 ASCII row set into the 24x24 scratch (3x nearest
 // neighbour, 255 = ink). Only called for 32 <= cp <= 126.
-fn aui_rt_expand_ascii(cp: i32) -> i32 {
+fn aui_rt_expand_ascii(cp: i32) : i32 {
     let z: i32 = memset(g_rt_bm_ascii, 0, 576);
     let row: i32 = 0;
     while (row < 8) {
@@ -493,7 +493,7 @@ fn aui_rt_expand_ascii(cp: i32) -> i32 {
 // Expand one 16x16 hand-drawn CJK glyph into the 48x48 scratch
 // (3x nearest neighbour, 255 = ink). Only called when
 // ui_cjk_find(cp) >= 0.
-fn aui_rt_expand_cjk(cp: i32) -> i32 {
+fn aui_rt_expand_cjk(cp: i32) : i32 {
     let z: i32 = memset(g_rt_bm_cjk, 0, 2304);
     let row: i32 = 0;
     while (row < 16) {
@@ -528,7 +528,7 @@ fn aui_rt_expand_cjk(cp: i32) -> i32 {
 // lives in the engine's 32-entry cache and stays valid until
 // the next rasterize call, so callers must blit before asking
 // for the next glyph (draw_text_run does exactly that).
-fn aui_rt_glyph(cp: i32) -> i32 {
+fn aui_rt_glyph(cp: i32) : i32 {
     let e: i32 = aui_rt_ensure();
     if (g_rt_tt == 1) {
         if (ui_tt_has_glyph(cp) == 1) {

@@ -74,45 +74,45 @@ printf '%s\n' 'PASS: bool type, And/Or/Not, short-circuiting, CSET encoding and 
 
 printf '%s\n' '[3/8] Rejection matrix: bool is not interchangeable with i32'
 cat > "$OUT/bool-init-i32.ast" <<'AST'
-fn main() -> i32 { let b: bool = 5; return 0; }
+fn main() : i32 { let b: bool = 5; return 0; }
 AST
 cat > "$OUT/i32-init-bool.ast" <<'AST'
-fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let x: i32 = a < b; return 0; }
+fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let x: i32 = a < b; return 0; }
 AST
 cat > "$OUT/ptr-condition.ast" <<'AST'
-fn f(p: ptr) -> i32 { if (p) { return 0; } else { return 1; } }
-fn main() -> i32 { return 0; }
+fn f(p: ptr) : i32 { if (p) { return 0; } else { return 1; } }
+fn main() : i32 { return 0; }
 AST
 cat > "$OUT/chained.ast" <<'AST'
-fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 3; if (a < b < c) { return 0; } else { return 1; } }
+fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 3; if (a < b < c) { return 0; } else { return 1; } }
 AST
 cat > "$OUT/and-i32.ast" <<'AST'
-fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let y: bool = a && b; return 0; }
+fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let y: bool = a && b; return 0; }
 AST
 cat > "$OUT/not-i32.ast" <<'AST'
-fn main() -> i32 { let a: i32 = 1; let y: bool = !a; return 0; }
+fn main() : i32 { let a: i32 = 1; let y: bool = !a; return 0; }
 AST
 cat > "$OUT/i32-return-bool.ast" <<'AST'
-fn f(a: i32) -> i32 { return a < 10; }
-fn main() -> i32 { return f(1); }
+fn f(a: i32) : i32 { return a < 10; }
+fn main() : i32 { return f(1); }
 AST
 cat > "$OUT/bool-return-i32.ast" <<'AST'
-fn f(a: i32) -> bool { return a; }
-fn main() -> i32 { if (f(1)) { return 0; } else { return 1; } }
+fn f(a: i32) : bool { return a; }
+fn main() : i32 { if (f(1)) { return 0; } else { return 1; } }
 AST
 cat > "$OUT/bool-arg-i32.ast" <<'AST'
-fn f(c: bool) -> i32 { if (c) { return 1; } else { return 0; } }
-fn main() -> i32 { let a: i32 = 1; return f(a); }
+fn f(c: bool) : i32 { if (c) { return 1; } else { return 0; } }
+fn main() : i32 { let a: i32 = 1; return f(a); }
 AST
 cat > "$OUT/bool-global-init.ast" <<'AST'
 let flag: bool = 2;
-fn main() -> i32 { return 0; }
+fn main() : i32 { return 0; }
 AST
 cat > "$OUT/bool-assign-i32.ast" <<'AST'
-fn main() -> i32 { let b: bool = 1; b = 7; return 0; }
+fn main() : i32 { let b: bool = 1; b = 7; return 0; }
 AST
 cat > "$OUT/main-bool.ast" <<'AST'
-fn main() -> bool { return 1; }
+fn main() : bool { return 1; }
 AST
 "$OUT/aster" build-elf "$OUT/bool-init-i32.ast" -o "$OUT/x" 2>&1 | grep -qF "type mismatch initializing 'b': expected bool" \
     || { echo 'FAIL: bool variable initialized from an i32 not rejected' >&2; exit 1; }
@@ -146,7 +146,7 @@ printf '%s\n' 'PASS: 13 bool/else-if misuse cases rejected with actionable diagn
 
 printf '%s\n' '[4/8] Acceptance: bool variables, comparison results and && (qemu self-check)'
 cat > "$OUT/and.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = 3;
     let b: i32 = 5;
     let both: bool = a < b && b > a;
@@ -172,8 +172,8 @@ printf '%s\n' 'PASS: a bool variable holds a comparison && comparison (10 + 20 =
 printf '%s\n' '[5/8] Acceptance: ! and || , and short-circuit evaluation (qemu self-check)'
 cat > "$OUT/short.ast" <<'AST'
 let calls: i32 = 0;
-fn bump() -> bool { calls = calls + 1; return 1; }
-fn main() -> i32 {
+fn bump() : bool { calls = calls + 1; return 1; }
+fn main() : i32 {
     let a: i32 = 1;
     let b: i32 = 2;
     let lf: bool = a < b;
@@ -199,9 +199,9 @@ printf '%s\n' 'PASS: ! and || evaluate correctly; bump() runs once (1+2+4+8+16+3
 printf '%s\n' '[6/8] Acceptance: bool returns, bool parameters and bool globals (qemu self-check)'
 cat > "$OUT/signature.ast" <<'AST'
 let flag: bool = 1;
-fn isBig(x: i32) -> bool { return x > 10; }
-fn pick(c: bool, t: i32, f: i32) -> i32 { if (c) { return t; } else { return f; } }
-fn main() -> i32 {
+fn isBig(x: i32) : bool { return x > 10; }
+fn pick(c: bool, t: i32, f: i32) : i32 { if (c) { return t; } else { return f; } }
+fn main() : i32 {
     let a: i32 = pick(isBig(20), 5, 9);
     let b: i32 = pick(isBig(3), 5, 9);
     let c: i32 = 0;
@@ -223,7 +223,7 @@ printf '%s\n' '[7/8] Acceptance: else-if chains, and the else-less if (qemu self
 # then-only return with no way out) lives in tests/syntax-relief-checks.sh
 # [6/7], together with the rest of the optional-else contract.
 cat > "$OUT/guard.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = 1;
     if (a == 1) { return 0; }
     return 1;
@@ -233,7 +233,7 @@ AST
 "$PWD/tests/run-aarch64.sh" "$OUT/guard"
 printf '%s\n' 'PASS: an if without an else is a legal early-return guard (a == 1, exit 0)'
 cat > "$OUT/chain.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = 3;
     let r: i32 = 0;
     if (n == 1) { r = 1; }

@@ -23,12 +23,12 @@
 
 let blob: u8[24] = 0;
 
-fn round_u16(hi: i32, lo: i32) -> i32 {
+fn round_u16(hi: i32, lo: i32) : i32 {
     let r: i32 = store_u16(blob, (hi * 256) + lo);
     return load_u16(blob) + (r % 251);
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     // A halfword round trip, and truncation: 0x1BEEF keeps only its low
     // 16 bits on the way to memory, so both halves read back as 0xBEEF.
     let a: i32 = store_u16(blob, 0xBEEF);

@@ -103,23 +103,23 @@ reject(){ # $1 = description, $2 = source, $3 = expected message fragment
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "extern memcpy declared with a bare ptr parameter, called with &arr" \
-    'extern fn memcpy(dst: ptr, src: ptr<u8>, n: i32) -> i32;
-fn main() -> i32 {
+    'extern fn memcpy(dst: ptr, src: ptr<u8>, n: i32) : i32;
+fn main() : i32 {
     let b: u8[8] = 0;
     memcpy(&b, "x", 1);
     return 0;
 }' \
     "argument type mismatch calling memcpy at argument 1: expected ptr"
 reject "extern memcpy called with two arguments" \
-    'extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
-fn main() -> i32 {
+    'extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32;
+fn main() : i32 {
     let b: u8[8] = 0;
     memcpy(b, "x");
     return 0;
 }' \
     "wrong argument count calling memcpy: expected 3, got 2"
 reject "calling a stdlib routine without declaring it extern" \
-    'fn main() -> i32 {
+    'fn main() : i32 {
     return strlen("x");
 }' \
     "call to undeclared function: strlen"
@@ -143,7 +143,7 @@ printf 'PASS: std.o — 1 UND entry (the null symbol), 13 functions, 2 globals d
 # memcpy must be refused, not silently picked. The consumer's extern
 # declaration resolves against exactly one provider.
 printf '%s\n' '[6/8] Duplicate definitions are refused by link-obj'
-printf 'fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 { return n; }\n' > "$W/dup_helper.ast"
+printf 'fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 { return n; }\n' > "$W/dup_helper.ast"
 "$OUT/aster" build-obj "$W/dup_helper.ast" -o "$W/dup_helper.o" >/dev/null 2>&1
 if "$OUT/aster" link-obj "$W/demo.o" "$W/std.o" "$W/dup_helper.o" -o "$W/dup" >"$W/dup.log" 2>&1; then
     echo "FAIL: link-obj accepted two definitions of memcpy" >&2; exit 1
@@ -203,8 +203,8 @@ PYEOF
 # v0.23.77-dev: memmove has two more loops with the same store line, so the
 # mutation addresses memcpy's by naming the function it lives in.
 mutate_and_check m_memcpy_off '
-src = sub("fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {\n    let i: i32 = 0;\n    while (i < n) {\n        store_u8(dst + i, load_u8(src + i));",
-          "fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {\n    let i: i32 = 0;\n    while (i < n) {\n        store_u8(dst + i + 1, load_u8(src + i));", 1)
+src = sub("fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {\n    let i: i32 = 0;\n    while (i < n) {\n        store_u8(dst + i, load_u8(src + i));",
+          "fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {\n    let i: i32 = 0;\n    while (i < n) {\n        store_u8(dst + i + 1, load_u8(src + i));", 1)
 '
 # m_memset_zero: fill with the constant zero instead of c. MS collapses to 0.
 # (The anchor is memset's loop head — strncpy has the same store line one row

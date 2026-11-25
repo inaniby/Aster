@@ -1,25 +1,25 @@
 // page_nav.ast — Gallery Nav tab (APP): push Page 2 / BACK pop.
 // Text goes through ptr("..."); see app.ast for why (B2).
-extern fn aui_column(key: i32) -> i32;
-extern fn aui_row(key: i32) -> i32;
-extern fn aui_pad(dp: i32) -> i32;
-extern fn aui_gap(dp: i32) -> i32;
-extern fn aui_label(key: i32, text: ptr) -> i32;
-extern fn aui_text_i32(key: i32, value: i32) -> i32;
-extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
-extern fn aui_route() -> i32;
-extern fn aui_nav_depth() -> i32;
-extern fn aui_nav_push(route: i32) -> i32;
-extern fn aui_nav_pop() -> i32;
-extern fn aui_end() -> i32;
+extern fn aui_column(key: i32) : i32;
+extern fn aui_row(key: i32) : i32;
+extern fn aui_pad(dp: i32) : i32;
+extern fn aui_gap(dp: i32) : i32;
+extern fn aui_label(key: i32, text: ptr) : i32;
+extern fn aui_text_i32(key: i32, value: i32) : i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) : i32;
+extern fn aui_route() : i32;
+extern fn aui_nav_depth() : i32;
+extern fn aui_nav_push(route: i32) : i32;
+extern fn aui_nav_pop() : i32;
+extern fn aui_end() : i32;
 
-fn on_push2(user: ptr) -> i32 {
+fn on_push2(user: ptr) : i32 {
     return aui_nav_push(2);
 }
-fn on_pop(user: ptr) -> i32 {
+fn on_pop(user: ptr) : i32 {
     return aui_nav_pop();
 }
-fn info_row(key: i32, title: ptr, value: i32) -> i32 {
+fn info_row(key: i32, title: ptr, value: i32) : i32 {
     aui_row(key);
     aui_gap(8);
     aui_label(key + 1, title);
@@ -28,7 +28,7 @@ fn info_row(key: i32, title: ptr, value: i32) -> i32 {
     return 0;
 }
 
-fn page_nav(s: ptr<App>, user: ptr) -> i32 {
+fn page_nav(s: ptr<App>, user: ptr) : i32 {
     aui_column(1001);
     aui_pad(20);
     aui_gap(12);

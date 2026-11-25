@@ -31,7 +31,7 @@
 // asterui/backend/android.ast. The window/input slots 56..96 are NOT
 // installed here; they belong to native_render.ast / native_touch.ast.
 
-extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32;
+extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) : i32;
 
 // Cross-callback state: one counter per installed slot.
 let g_started: i32 = 0;
@@ -46,16 +46,16 @@ let g_config: i32 = 0;
 let g_lowmem: i32 = 0;
 
 // Diagnostics: fixed strings only (Aster cannot format numbers).
-fn llog(msg: ptr) -> i32 {
+fn llog(msg: ptr) : i32 {
     return __android_log_print(4, "AsterLifecycle", msg);
 }
 
-fn on_start(activity: ptr) -> i32 {
+fn on_start(activity: ptr) : i32 {
     g_started = g_started + 1;
     return llog("onStart");
 }
 
-fn on_resume(activity: ptr) -> i32 {
+fn on_resume(activity: ptr) : i32 {
     g_resumed = g_resumed + 1;
     return llog("onResume");
 }
@@ -64,7 +64,7 @@ fn on_resume(activity: ptr) -> i32 {
 // saveable state, so answer NULL with *outSize = 0: nothing to persist,
 // nothing for the framework to free. Signature per the header:
 // void *(*onSaveInstanceState)(ANativeActivity *, size_t *outSize).
-fn on_save_instance_state(activity: ptr, outSize: ptr<u8>) -> ptr {
+fn on_save_instance_state(activity: ptr, outSize: ptr<u8>) : ptr {
     g_saved = g_saved + 1;
     if (outSize != 0) {
         // Zero all 8 bytes of the size_t with byte stores (no libc import:
@@ -81,17 +81,17 @@ fn on_save_instance_state(activity: ptr, outSize: ptr<u8>) -> ptr {
     return 0;
 }
 
-fn on_pause(activity: ptr) -> i32 {
+fn on_pause(activity: ptr) : i32 {
     g_paused = g_paused + 1;
     return llog("onPause");
 }
 
-fn on_stop(activity: ptr) -> i32 {
+fn on_stop(activity: ptr) : i32 {
     g_stopped = g_stopped + 1;
     return llog("onStop");
 }
 
-fn on_destroy(activity: ptr) -> i32 {
+fn on_destroy(activity: ptr) : i32 {
     g_destroyed = g_destroyed + 1;
     return llog("onDestroy");
 }
@@ -100,7 +100,7 @@ fn on_destroy(activity: ptr) -> i32 {
 // behaviour belongs to onPause alone). M3.6: the previous version installed
 // on_low_memory at this slot (48), so every focus gain logged a phantom
 // onLowMemory.
-fn on_window_focus_changed(activity: ptr, hasFocus: i32) -> i32 {
+fn on_window_focus_changed(activity: ptr, hasFocus: i32) : i32 {
     g_focus = g_focus + 1;
     if (hasFocus == 1) {
         return llog("onWindowFocusChanged 1");
@@ -111,17 +111,17 @@ fn on_window_focus_changed(activity: ptr, hasFocus: i32) -> i32 {
 
 // The content rect changed (e.g. the soft keyboard appeared and shrank the
 // area content should use). Log-only here: the example draws nothing.
-fn on_content_rect_changed(activity: ptr, rect: ptr) -> i32 {
+fn on_content_rect_changed(activity: ptr, rect: ptr) : i32 {
     g_rect = g_rect + 1;
     return llog("onContentRectChanged");
 }
 
-fn on_configuration_changed(activity: ptr) -> i32 {
+fn on_configuration_changed(activity: ptr) : i32 {
     g_config = g_config + 1;
     return llog("onConfigurationChanged");
 }
 
-fn on_low_memory(activity: ptr) -> i32 {
+fn on_low_memory(activity: ptr) : i32 {
     g_lowmem = g_lowmem + 1;
     return llog("onLowMemory");
 }
@@ -134,7 +134,7 @@ fn on_low_memory(activity: ptr) -> i32 {
 // because the previous version encoded the wrong table; the index now
 // follows the slot order, so a slot and its counter can never drift apart
 // again without the harness noticing.
-fn aster_lifecycle_count(which: i32) -> i32 {
+fn aster_lifecycle_count(which: i32) : i32 {
     if (which == 0) { return g_started; }
     if (which == 1) { return g_resumed; }
     if (which == 2) { return g_saved; }
@@ -148,7 +148,7 @@ fn aster_lifecycle_count(which: i32) -> i32 {
     return -1;
 }
 
-fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) : i32 {
     // ANativeActivity.callbacks is the first pointer of the struct.
     let cb: ptr = load_ptr(activity);
     *(cb + 0) = on_start;

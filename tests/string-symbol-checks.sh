@@ -38,14 +38,14 @@ ok 'compiler built'
 
 printf '%s\n' '[2/4] two objects with literals, linked'
 cat > "$OUT/lib.ast" <<'AST'
-fn lib_line() -> i32 {
+fn lib_line() : i32 {
     write(1, "lib says\n", 9);
     return 0;
 }
 AST
 cat > "$OUT/main.ast" <<'AST'
-extern fn lib_line() -> i32;
-fn main() -> i32 {
+extern fn lib_line() : i32;
+fn main() : i32 {
     write(1, "main says\n", 10);
     return lib_line();
 }
@@ -62,7 +62,7 @@ ok 'A-25: two objects, two literals, one image'
 
 printf '%s\n' '[3/4] the .so path keeps its own remap'
 cat > "$OUT/so.ast" <<'AST'
-fn so_line() -> i32 {
+fn so_line() : i32 {
     write(1, "so says\n", 8);
     return 0;
 }

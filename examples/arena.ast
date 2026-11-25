@@ -18,18 +18,18 @@
 let heap: ptr = 0;
 let cursor: i32 = 0;
 
-fn alloc(n: i32) -> ptr {
+fn alloc(n: i32) : ptr {
     let p: ptr = heap + cursor;
     cursor = cursor + n;
     return p;
 }
 
-fn reclaim() -> i32 {
+fn reclaim() : i32 {
     cursor = 0;
     return 0;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let z: ptr = 0;
     heap = mmap(z, 65536, 3, 34, -1, 0);
     if (heap == z) { write(1, "MAP-FAIL\n", 10); return 1; }

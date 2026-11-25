@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/function-type-checks.sh — typed function pointers, differentially.
 #
-# v0.23.37-dev gives a function pointer a *signature*. `fn(P1,..,Pn) -> R` is a
+# v0.23.37-dev gives a function pointer a *signature*. `fn(P1,..,Pn) : R` is a
 # new type spelling that rides beside a ptr variable, so an indirect call
 # `fp(x)` is now checked and code-generated like the direct call it stands for:
 #
@@ -163,9 +163,9 @@ emit_case(){
     n="$1"
     case "$n" in
     ft_local)
-        ast='fn inc(x: i32) -> i32 { return x + 1; }
-fn main() -> i32 {
-    let fp: fn(i32) -> i32 = inc;
+        ast='fn inc(x: i32) : i32 { return x + 1; }
+fn main() : i32 {
+    let fp: fn(i32) : i32 = inc;
     let a: i32 = fp(41);
     let b: i32 = inc(a);
     return (a + b) % 251;
@@ -178,10 +178,10 @@ int main(void){
     return (a+b)%251;
 }' ;;
     ft_reassign)
-        ast='fn inc(x: i32) -> i32 { return x + 1; }
-fn dec(x: i32) -> i32 { return x - 1; }
-fn main() -> i32 {
-    let fp: fn(i32) -> i32 = inc;
+        ast='fn inc(x: i32) : i32 { return x + 1; }
+fn dec(x: i32) : i32 { return x - 1; }
+fn main() : i32 {
+    let fp: fn(i32) : i32 = inc;
     let a: i32 = fp(10);
     fp = dec;
     let b: i32 = fp(10);
@@ -200,11 +200,11 @@ int main(void){
         # The centrepiece. A 64-bit argument must ride at full width, or the
         # callee's >> 32 reads a zero upper half. The twin's `long` is what the
         # platform ABI does; Aster's typed stage must match it.
-        ast='fn high32(a: i64) -> i64 { return a >> 32; }
-fn main() -> i32 {
+        ast='fn high32(a: i64) : i64 { return a >> 32; }
+fn main() : i32 {
     let big: i64 = 0;
     big = big + 4294967296;
-    let fp: fn(i64) -> i64 = high32;
+    let fp: fn(i64) : i64 = high32;
     let hi: i64 = fp(big);
     return hi - 1;
 }'
@@ -222,9 +222,9 @@ int main(void){
         # move to run at the signature's width (with the result alone in
         # register 0 the width is moot) — the high half carries the only
         # nonzero bit, so a 32-bit read answers 0.
-        ast='fn dbl(a: i64) -> i64 { return a + a; }
-fn main() -> i32 {
-    let fp: fn(i64) -> i64 = dbl;
+        ast='fn dbl(a: i64) : i64 { return a + a; }
+fn main() : i32 {
+    let fp: fn(i64) : i64 = dbl;
     let big: i64 = 0;
     big = big + 2147483648;
     let seed: i64 = 0;
@@ -244,9 +244,9 @@ int main(void){
 }' ;;
     ft_neg64)
         # A negative i64 argument, staged at full width (sign-extended).
-        ast='fn sq(a: i64) -> i64 { return a * a; }
-fn main() -> i32 {
-    let fp: fn(i64) -> i64 = sq;
+        ast='fn sq(a: i64) : i64 { return a * a; }
+fn main() : i32 {
+    let fp: fn(i64) : i64 = sq;
     let r: i64 = fp(-3);
     return r - 9;
 }'
@@ -257,9 +257,9 @@ int main(void){
     return (int)(r - 9);
 }' ;;
     ft_bool_ret)
-        ast='fn isodd(x: i32) -> bool { return (x & 1) == 1; }
-fn main() -> i32 {
-    let fp: fn(i32) -> bool = isodd;
+        ast='fn isodd(x: i32) : bool { return (x & 1) == 1; }
+fn main() : i32 {
+    let fp: fn(i32) : bool = isodd;
     let a: bool = fp(3);
     let b: bool = fp(4);
     if (a) { if (b) { return 2; } return 0; }
@@ -274,9 +274,9 @@ int main(void){
     return 1;
 }' ;;
     ft_global)
-        ast='fn dbl(x: i32) -> i32 { return x + x; }
-let gfp: fn(i32) -> i32;
-fn main() -> i32 {
+        ast='fn dbl(x: i32) : i32 { return x + x; }
+let gfp: fn(i32) : i32;
+fn main() : i32 {
     gfp = dbl;
     let a: i32 = gfp(21);
     return a - 42;
@@ -293,13 +293,13 @@ int main(void){
         # the call, so an i64 return is read at full width here too. Nested in
         # an addition for the same reason ft_i64_ret is — the high half carries
         # the only nonzero bit.
-        ast='fn setbit() -> i64 {
+        ast='fn setbit() : i64 {
     let r: i64 = 0;
     r = r + 4294967296;
     return r;
 }
-let gfp: fn() -> i64;
-fn main() -> i32 {
+let gfp: fn() : i64;
+fn main() : i32 {
     gfp = setbit;
     let seed: i64 = 0;
     let r: i64 = seed + gfp();
@@ -322,11 +322,11 @@ int main(void){
     ft_param)
         # A fn-pointer parameter: its signature travels with it and is used by
         # the indirect call inside apply.
-        ast='fn dbl(x: i32) -> i32 { return x + x; }
-fn apply(op: fn(i32) -> i32, x: i32) -> i32 { return op(x); }
-fn main() -> i32 {
+        ast='fn dbl(x: i32) : i32 { return x + x; }
+fn apply(op: fn(i32) : i32, x: i32) : i32 { return op(x); }
+fn main() : i32 {
     let a: i32 = apply(dbl, 5);
-    let fp: fn(i32) -> i32 = dbl;
+    let fp: fn(i32) : i32 = dbl;
     let b: i32 = apply(fp, 5);
     return a + b - 20;
 }'
@@ -339,9 +339,9 @@ int main(void){
     return a + b - 20;
 }' ;;
     ft_zero_args)
-        ast='fn answer() -> i32 { return 42; }
-fn main() -> i32 {
-    let fp: fn() -> i32 = answer;
+        ast='fn answer() : i32 { return 42; }
+fn main() : i32 {
+    let fp: fn() : i32 = answer;
     let a: i32 = fp();
     return a - 42;
 }'
@@ -352,12 +352,12 @@ int main(void){
     return a - 42;
 }' ;;
     ft_multi)
-        ast='fn mix(a: i32, p: ptr, b: bool) -> u32 {
+        ast='fn mix(a: i32, p: ptr, b: bool) : u32 {
     if (b) { return a + 1; }
     return a;
 }
-fn main() -> i32 {
-    let fp: fn(i32, ptr, bool) -> u32 = mix;
+fn main() : i32 {
+    let fp: fn(i32, ptr, bool) : u32 = mix;
     let a: u32 = fp(41, 0, true);
     let b: u32 = fp(100, 0, false);
     return a + b - 142;
@@ -373,11 +373,11 @@ int main(void){
     return (int)(a + b - 142);
 }' ;;
     ft_stack_args)
-        ast='fn add10(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) -> i32 {
+        ast='fn add10(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) : i32 {
     return a + b + c + d + e + f + g + h + i + j;
 }
-fn main() -> i32 {
-    let fp: fn(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 = add10;
+fn main() : i32 {
+    let fp: fn(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) : i32 = add10;
     let r: i32 = fp(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
     return r - 55;
 }'
@@ -396,9 +396,9 @@ int main(void){
         # ptr still refuses a struct argument, and a signature-blind stage
         # would pass only the first register and lose the third field.
         ast='struct Tri { a: i32, b: i32, c: i32 }
-fn sum(t: Tri) -> i32 { return t.a + t.b + t.c; }
-fn main() -> i32 {
-    let fp: fn(Tri) -> i32 = sum;
+fn sum(t: Tri) : i32 { return t.a + t.b + t.c; }
+fn main() : i32 {
+    let fp: fn(Tri) : i32 = sum;
     let t: Tri = Tri { 10, 20, 30 };
     let r: i32 = fp(t);
     return r - 60;
@@ -412,9 +412,9 @@ int main(void){
     return r - 60;
 }' ;;
     ft_loop)
-        ast='fn dbl(x: i32) -> i32 { return x + x; }
-fn main() -> i32 {
-    let fp: fn(i32) -> i32 = dbl;
+        ast='fn dbl(x: i32) : i32 { return x + x; }
+fn main() : i32 {
+    let fp: fn(i32) : i32 = dbl;
     let s: i32 = 0;
     for (let k: i32 = 0; k < 5; k = k + 1) {
         s = s + fp(k);
@@ -429,11 +429,11 @@ int main(void){
     return s - 20;
 }' ;;
     ft_nested)
-        ast='fn inc(x: i32) -> i32 { return x + 1; }
-fn dbl(x: i32) -> i32 { return x + x; }
-fn main() -> i32 {
-    let a: fn(i32) -> i32 = inc;
-    let b: fn(i32) -> i32 = dbl;
+        ast='fn inc(x: i32) : i32 { return x + 1; }
+fn dbl(x: i32) : i32 { return x + x; }
+fn main() : i32 {
+    let a: fn(i32) : i32 = inc;
+    let b: fn(i32) : i32 = dbl;
     let r: i32 = a(b(20));
     return r - 41;
 }'
@@ -512,40 +512,40 @@ reject(){ # reject <name> <source> <expected message fragment>
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "the wrong argument count (a local)" \
-    'fn f(x: i32) -> i32 { return x; }
-fn main() -> i32 { let fp: fn(i32) -> i32 = f; return fp(1, 2); }' \
+    'fn f(x: i32) : i32 { return x; }
+fn main() : i32 { let fp: fn(i32) : i32 = f; return fp(1, 2); }' \
     "wrong argument count calling fp: expected 1, got 2"
 reject "the wrong argument count (a global)" \
-    'fn f(x: i32) -> i32 { return x; }
-let gfp: fn(i32) -> i32;
-fn main() -> i32 { gfp = f; return gfp(); }' \
+    'fn f(x: i32) : i32 { return x; }
+let gfp: fn(i32) : i32;
+fn main() : i32 { gfp = f; return gfp(); }' \
     "wrong argument count calling gfp: expected 1, got 0"
 reject "a ptr argument to an i32 parameter" \
-    'fn f(x: i32) -> i32 { return x; }
-fn main() -> i32 { let fp: fn(i32) -> i32 = f; let p: ptr = 0; return fp(p); }' \
+    'fn f(x: i32) : i32 { return x; }
+fn main() : i32 { let fp: fn(i32) : i32 = f; let p: ptr = 0; return fp(p); }' \
     "argument type mismatch calling fp at argument 1"
 reject "a bool argument to an i32 parameter" \
-    'fn f(x: i32) -> i32 { return x; }
-fn main() -> i32 { let fp: fn(i32) -> i32 = f; return fp(true); }' \
+    'fn f(x: i32) : i32 { return x; }
+fn main() : i32 { let fp: fn(i32) : i32 = f; return fp(true); }' \
     "argument type mismatch calling fp at argument 1"
 reject "a non-bool argument to a bool parameter" \
-    'fn f(b: bool) -> i32 { return 0; }
-fn main() -> i32 { let fp: fn(bool) -> i32 = f; return fp(5); }' \
+    'fn f(b: bool) : i32 { return 0; }
+fn main() : i32 { let fp: fn(bool) : i32 = f; return fp(5); }' \
     "argument type mismatch calling fp at argument 1"
-reject "a fn type without its arrow" \
-    'fn main() -> i32 { let fp: fn(i32) i32 = 0; return 0; }' \
-    "expected '->' in a function type"
+reject "a fn type without its colon" \
+    'fn main() : i32 { let fp: fn(i32) i32 = 0; return 0; }' \
+    "expected ':' in a function type"
 reject "a fn type without its parentheses" \
-    'fn main() -> i32 { let fp: fn i32 -> i32 = 0; return 0; }' \
+    'fn main() : i32 { let fp: fn i32 : i32 = 0; return 0; }' \
     "expected '(' after fn"
 reject "a returned fn-pointer whose signature is not the return type's" \
-    'fn wide(x: i64) -> i64 { return x; }
-fn f() -> fn(i32) -> i32 { return wide; }
-fn main() -> i32 { return 0; }' \
+    'fn wide(x: i64) : i64 { return x; }
+fn f() : fn(i32) : i32 { return wide; }
+fn main() : i32 { return 0; }' \
     "return type mismatch in function f"
 reject "an array of fn-pointers as a struct field" \
-    'struct S { f: fn(i32) -> i32[2] }
-fn main() -> i32 { return 0; }' \
+    'struct S { f: fn(i32) : i32[2] }
+fn main() : i32 { return 0; }' \
     "an array of function pointers is not supported: S.f"
 
 # ---------------------------------------------------------------------------
@@ -621,11 +621,11 @@ must_accept(){ # must_accept <tag> <probe> — the mutation took the check away,
 # and not a missing file. v0.23.38-dev turned both positions into *legal* ones,
 # so what is refused at each is now the signature contract inside them: a
 # returned fn-pointer of the wrong shape, and an array of fn-pointers.
-printf '%s\n' 'fn wide(x: i64) -> i64 { return x; }
-fn f() -> fn(i32) -> i32 { return wide; }
-fn main() -> i32 { return 0; }' > "$W/rej_ret.ast"
-printf '%s\n' 'struct S { f: fn(i32) -> i32[2] }
-fn main() -> i32 { return 0; }' > "$W/rej_field.ast"
+printf '%s\n' 'fn wide(x: i64) : i64 { return x; }
+fn f() : fn(i32) : i32 { return wide; }
+fn main() : i32 { return 0; }' > "$W/rej_ret.ast"
+printf '%s\n' 'struct S { f: fn(i32) : i32[2] }
+fn main() : i32 { return 0; }' > "$W/rej_field.ast"
 
 # m1: sema's resolver never returns a local/parameter signature → the call is
 # treated as a bare ptr, whose path refuses a struct argument. The struct-by-
@@ -654,7 +654,7 @@ must_not_compile m5 ft_local
 build_mutant m6 's/if(g.isFunc)globalFuncSigMap\[g.name\]=g.funcSig;/if(false)globalFuncSigMap[g.name]=g.funcSig;/'
 must_diverge m6 ft_global_wide
 # m7: the return slot stops checking by signature — a function that promises
-# `-> fn(i32) -> i32` may then return any pointer at all, and the mismatch is
+# `: fn(i32) : i32` may then return any pointer at all, and the mismatch is
 # discovered at the first call instead of where it is written.
 build_mutant m7 's/if(retIsFunc&&actual==Ty::Ptr)/if(false)/'
 must_accept m7 rej_ret

@@ -1,7 +1,7 @@
 let o: u8[32] = 0;
 let g: u64 = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     let x: u64 = 0 - 1;            // all ones: 2^64-1 (a literal that wide is D0b)
     let y: u64 = x >> 60;          // LSR gives 15; a signed shift keeps the sign bits
     if (y == 15) { store_u8(o, 49); } else { store_u8(o, 48); }

@@ -7,7 +7,7 @@
 // for byte instead of against a hand-written expectation.
 include "aiolib.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     let ok: i32 = 0;
 
     // 1. write a file through the wrappers, then measure and read it back

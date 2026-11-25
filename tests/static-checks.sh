@@ -58,41 +58,41 @@ $CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -o "$ASTER" src/aster.cpp
 ok 'compiler built'
 
 printf '%s\n' '[2/9] a counter that survives a call'
-build_run counter 'fn f() -> i32 { static let n: i32 = 0; n = n + 1; return n; }
-fn main() -> i32 { return f() * 10 + f(); }' 12
-build_run twon 'fn a() -> i32 { static let n: i32 = 100; n = n + 1; return n; }
-fn b() -> i32 { static let n: i32 = 0; n = n + 1; return n; }
-fn main() -> i32 { let x: i32 = a(); let y: i32 = b(); return x - 100 + y; }' 2
+build_run counter 'fn f() : i32 { static let n: i32 = 0; n = n + 1; return n; }
+fn main() : i32 { return f() * 10 + f(); }' 12
+build_run twon 'fn a() : i32 { static let n: i32 = 100; n = n + 1; return n; }
+fn b() : i32 { static let n: i32 = 0; n = n + 1; return n; }
+fn main() : i32 { let x: i32 = a(); let y: i32 = b(); return x - 100 + y; }' 2
 ok 'one counter counts; two functions keep their own'
 
 printf '%s\n' '[3/9] widths and shapes'
-build_run swidth 'fn f() -> i32 { static let b: u8 = 250; b = b + 10; return i32(b); }
-fn main() -> i32 { return f(); }' 4
-build_run slong 'fn f() -> i32 { static let x: i64 = 1000000000; x = x * 3; return i32(x / 1000000000); }
-fn main() -> i32 { return f(); }' 3
-build_run sfloat 'fn f() -> i32 { static let x: f64 = 1.5; x = x + 1.0; return i32(x * 2.0); }
-fn main() -> i32 { return f() + f() - 5; }' 7
-build_run sarr 'fn bump(i: i32) -> i32 { static let a: i32[4] = 0; a[i] = a[i] + 1; return a[i]; }
-fn main() -> i32 { bump(0); bump(0); return bump(0) * 5; }' 15
-build_run saddr 'fn f() -> i32 { static let n: i32 = 0; let p: ptr = &n; store_i64(p, 33); return n; }
-fn main() -> i32 { return f(); }' 33
-build_run sloop 'fn main() -> i32 { let i: i32 = 0; let s: i32 = 0;
+build_run swidth 'fn f() : i32 { static let b: u8 = 250; b = b + 10; return i32(b); }
+fn main() : i32 { return f(); }' 4
+build_run slong 'fn f() : i32 { static let x: i64 = 1000000000; x = x * 3; return i32(x / 1000000000); }
+fn main() : i32 { return f(); }' 3
+build_run sfloat 'fn f() : i32 { static let x: f64 = 1.5; x = x + 1.0; return i32(x * 2.0); }
+fn main() : i32 { return f() + f() - 5; }' 7
+build_run sarr 'fn bump(i: i32) : i32 { static let a: i32[4] = 0; a[i] = a[i] + 1; return a[i]; }
+fn main() : i32 { bump(0); bump(0); return bump(0) * 5; }' 15
+build_run saddr 'fn f() : i32 { static let n: i32 = 0; let p: ptr = &n; store_i64(p, 33); return n; }
+fn main() : i32 { return f(); }' 33
+build_run sloop 'fn main() : i32 { let i: i32 = 0; let s: i32 = 0;
     while (i < 3) { static let k: i32 = 5; s = s + k; i = i + 1; }
     return s; }' 15
 ok 'u8, i64, f64, an array element, an address, a loop body'
 
 printf '%s\n' '[4/9] a static shadows a file-scope global'
 build_run shadow 'let n: i32 = 7;
-fn f() -> i32 { static let n: i32 = 40; n = n + 1; return n; }
-fn main() -> i32 { let fv: i32 = f(); return fv - 40 + n; }' 8
+fn f() : i32 { static let n: i32 = 40; n = n + 1; return n; }
+fn main() : i32 { let fv: i32 = f(); return fv - 40 + n; }' 8
 ok 'the file-scope n stays 7 while the function counts from 40'
 
 printf '%s\n' '[5/9] the initializer runs once, before main'
-build_run once 'fn g() -> i32 { return 3; }
-fn f() -> i32 { static let n: i32 = g(); n = n + 1; return n; }
-fn main() -> i32 { return f() * 10 + f(); }' 45
-build_run folded 'fn f() -> i32 { static let n: i32 = 6 * 7; n = n + 1; return n; }
-fn main() -> i32 { return f() - 42; }' 1
+build_run once 'fn g() : i32 { return 3; }
+fn f() : i32 { static let n: i32 = g(); n = n + 1; return n; }
+fn main() : i32 { return f() * 10 + f(); }' 45
+build_run folded 'fn f() : i32 { static let n: i32 = 6 * 7; n = n + 1; return n; }
+fn main() : i32 { return f() - 42; }' 1
 ok "a call initializer runs once (4 then 5), a constant folds"
 
 printf '%s\n' '[6/9] storage, not a frame slot'
@@ -111,10 +111,10 @@ llvm-objdump -d --no-show-raw-insn "$OUT/probe.elf" 2>/dev/null | grep -q 'adrp'
 ok "$syms in .data/.bss, addressed through the global base"
 
 printf '%s\n' '[7/9] refusals'
-build_reject dup 'fn f() -> i32 { static let n: i32 = 0; static let n: i32 = 1; return n; }
-fn main() -> i32 { return f(); }' 'duplicate static local'
-build_reject whole 'fn f() -> i32 { static let a: i32[4] = 0; a = 0; return 0; }
-fn main() -> i32 { return f(); }' 'cannot assign to an array as a whole'
+build_reject dup 'fn f() : i32 { static let n: i32 = 0; static let n: i32 = 1; return n; }
+fn main() : i32 { return f(); }' 'duplicate static local'
+build_reject whole 'fn f() : i32 { static let a: i32[4] = 0; a = 0; return 0; }
+fn main() : i32 { return f(); }' 'cannot assign to an array as a whole'
 ok 'two diagnostics, each naming the rule'
 
 printf '%s\n' '[8/9] no compiler change: the baseline reproduces'

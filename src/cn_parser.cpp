@@ -494,12 +494,11 @@ private:
             }
         }
         expect("RParen", "expected ')' after closure parameter types");
-        // #8 (divergence): closure types accept both `->` (design §2.14
-        // canonical: `闭包(P) -> R` / `closure(P) -> R`) and `:` (compat,
-        // same dual-accept as `fn` types in parseFunctionType, C-1 P9).
+        // #8 (closed 2026-11-25): closure types take `:` only
+        // (`闭包(P) : R` / `closure(P) : R`); the `->` dual-accept is gone.
         // The internal type string stays `closure(…):…` either way.
-        if (!eat("Colon") && !eat("Arrow"))
-            fail("expected ':' or '->' after closure parameter types");
+        if (!eat("Colon"))
+            fail("expected ':' after closure parameter types");
         const std::string result = parseType();
         std::string type = "closure(";
         for (size_t i = 0; i < parameters.size(); ++i) {
@@ -523,12 +522,10 @@ private:
             }
         }
         expect("RParen", "expected ')' after function type parameters");
-        // C-1 (P9): English function types accept the mainline `->`
-        // (`fn(i32) -> i32`) as well as the colon form (`fn(i32): i32`).
+        // Return types take `:` only (`fn(i32): i32`); the old `->`
+        // acceptance (C-1 P9) is gone (2026-11-25).
         std::string result;
         if (eat("Colon")) {
-            result = parseType();
-        } else if (language_ == Language::En && eat("Arrow")) {
             result = parseType();
         } else {
             fail("expected ':' after function type parameters");
@@ -631,7 +628,7 @@ private:
         return next.kind == "Identifier" || next.kind == "Main" || next.kind == "Comma";
     }
     // D-2a (W-1): `布局 名(参数): 视图 { ... }` /
-    // `layout name(params) -> View { ... }`. The body uses braces in both
+    // `layout name(params) : View { ... }`. The body uses braces in both
     // languages (W-O1); the `如果` inside still closes with `结束 如果`.
     // `视图`/`View` needs no keyword: parseType() accepts any identifier
     // as a type name, and the lowering treats it as i32.
@@ -658,8 +655,7 @@ private:
         }
         expect("RParen", "expected ')' after layout parameters");
         if (eat("Colon")) layout.returnType = parseType();
-        else if (language_ == Language::En && eat("Arrow")) layout.returnType = parseType();
-        else fail("expected ':' (or '->' in English) and a return type after layout parameters");
+        else fail("expected ':' and a return type after layout parameters");
         skipNewlines();
         expect("LBrace", "expected '{' to open the layout body");
         ++layoutDepth_;
@@ -812,12 +808,9 @@ private:
             }
         }
         expect("RParen", "expected ')' after method parameters");
-        // C-1 (P9): an English file in a bilingual project must accept the
-        // mainline English spelling `fn f(...) -> T` as well as the colon
-        // form `fn f(...): T` the bilingual design settled on (D-16). The
-        // arrow is only accepted in En mode; zh keeps the colon alone.
+        // Return types take `:` only (`fn f(...): T`, D-16); the old
+        // English `->` acceptance (C-1 P9) is gone (2026-11-25).
         if (eat("Colon")) method.returnType = parseType();
-        else if (language_ == Language::En && eat("Arrow")) method.returnType = parseType();
         else method.returnType = "void";
         if (external) {
             if (method.externalName.empty()) method.externalName = method.name;
@@ -942,9 +935,6 @@ private:
         }
         expect("RParen", "expected ')' after closure parameters");
         if (eat("Colon")) closure->returnType = parseType();
-        // C-1 (P9): English closures accept `->` for the return type, as
-        // English method declarations do (`fn[x](...) -> T`).
-        else if (language_ == Language::En && eat("Arrow")) closure->returnType = parseType();
         else closure->returnType = "void";
         closure->body = parseBlock("Method");
         Expression expression;
@@ -1139,10 +1129,8 @@ private:
             }
         }
         expect("RParen", "expected ')' after method parameters");
-        // C-1 (P9): same `->` acceptance as parseMethod, for English
-        // interface method signatures (`fn f(...) -> T;`).
+        // Return types take `:` only (`fn f(...): T;`).
         if (eat("Colon")) method.returnType = parseType();
-        else if (language_ == Language::En && eat("Arrow")) method.returnType = parseType();
         else method.returnType = "void";
         requireTerminator();
         return method;

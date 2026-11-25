@@ -129,7 +129,7 @@ cat > "$OUT/ok.ast" <<'AST'
 tls let counter: i32 = 7;
 tls let table: i32[4] = 0;
 tls let flag: i32 = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let tls: i32 = 5;      // `tls` is a context keyword: still an ordinary name here
     counter = counter + tls;
     table[3] = counter;
@@ -161,7 +161,7 @@ cat > "$OUT/split.ast" <<'AST'
 tls let a: i32 = 10;
 tls let b: i32 = 20;
 tls let zero: i32 = 0;
-fn main() -> i32 {
+fn main() : i32 {
     a = a + 5;
     b = b * 2;
     return a + b + zero;
@@ -212,7 +212,7 @@ PY
 cat > "$OUT/tlsbss.ast" <<'AST'
 tls let t: i32 = 3;
 let big: i32[1000] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     big[123] = 7;
     return t + big[123] - 7;
 }
@@ -374,7 +374,7 @@ printf '%s\n' '[7/9] Rejection matrix: extern tls still refused; a large block b
 # thread-local, so it is still refused (a plain `tls let` is not).
 cat > "$OUT/ext.ast" <<'AST'
 tls extern let other: i32;
-fn use() -> i32 { return other; }
+fn use() : i32 { return other; }
 AST
 if "$A" build-so "$OUT/ext.ast" -o "$OUT/ext.so" >"$OUT/rej1.txt" 2>&1; then
     fail "build-so accepted an external tls global; it must reject it"
@@ -387,7 +387,7 @@ grep -q 'external thread-local (`extern tls let`) is not supported in a shared o
 # (.tdata + .tbss). 500 i32 = 2000 bytes is the writer-exercise case.
 cat > "$OUT/big.ast" <<'AST'
 tls let big: i32[500] = 0;
-fn bump() -> i32 { big[0] = big[0] + 1; return big[0]; }
+fn bump() : i32 { big[0] = big[0] + 1; return big[0]; }
 AST
 "$A" build-so "$OUT/big.ast" -o "$OUT/big.so" >/dev/null \
     || fail "a 2000-byte TLS block must still build (no compile-time surplus cap)"
@@ -404,7 +404,7 @@ PY
 # A plain (non-tls) program is unaffected and still builds as a .so.
 cat > "$OUT/plain.ast" <<'AST'
 let g: i32 = 3;
-fn bump() -> i32 { g = g + 1; return g; }
+fn bump() : i32 { g = g + 1; return g; }
 AST
 "$A" build-so "$OUT/plain.ast" -o "$OUT/plain.so" >/dev/null \
     || fail "a non-tls program must still build as a shared object"
@@ -472,11 +472,11 @@ fi
 printf '%s\n' '[8b/9] TLS merge keeps each input aligned, in both link orders'
 cat > "$OUT/al_i32.ast" <<'AST'
 tls let small: i32 = 0;
-fn fs() -> i32 { small = small + 2; return small; }
+fn fs() : i32 { small = small + 2; return small; }
 AST
 cat > "$OUT/al_u64.ast" <<'AST'
 tls let big: u64 = 0;
-fn fb() -> i32 { big = big + 1; return i32(big & 255); }
+fn fb() : i32 { big = big + 1; return i32(big & 255); }
 AST
 "$A" build-obj --pic "$OUT/al_i32.ast" -o "$OUT/al_i32.o" >/dev/null
 "$A" build-obj --pic "$OUT/al_u64.ast" -o "$OUT/al_u64.o" >/dev/null

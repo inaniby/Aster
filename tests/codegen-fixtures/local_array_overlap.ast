@@ -5,7 +5,7 @@
 // bootstrap must return 5; the buggy one returns 3. This fixture is also
 // executed by bootstrap-loop-checks.sh [6/7] (run_product), not only
 // byte-compared by codegen-checks.sh.
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32[4] = 5;
     let b: u8[8] = 0;
     b[0] = 3;

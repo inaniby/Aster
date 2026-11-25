@@ -20,21 +20,21 @@
 // Its C twin is tests/callback-table-twin.c; the two agree on the exit status.
 
 struct Handlers {
-    onClick: fn(i32) -> i32,
-    onMove: fn(i32, i32) -> i32
+    onClick: fn(i32) : i32,
+    onMove: fn(i32, i32) : i32
 }
 
-fn click(x: i32) -> i32 { return x + 1; }
-fn dbl(x: i32) -> i32 { return x + x; }
-fn move2(a: i32, b: i32) -> i32 { return a * 10 + b; }
+fn click(x: i32) : i32 { return x + 1; }
+fn dbl(x: i32) : i32 { return x + x; }
+fn move2(a: i32, b: i32) : i32 { return a * 10 + b; }
 
 // A callback table handed to a helper: the calls inside it read their
 // signature from the field, not from anything in scope here.
-fn run(h: ptr<Handlers>) -> i32 {
+fn run(h: ptr<Handlers>) : i32 {
     return h.onClick(41) + h.onMove(2, 3);      // 42 + 23 = 65
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let h: Handlers = Handlers { click, move2 };
     let a: i32 = run(&h);                       // 65
 
@@ -44,7 +44,7 @@ fn main() -> i32 {
 
     // A field's value is a fn-pointer like any other: it can be read out and
     // handed to something that asks for one.
-    let f: fn(i32) -> i32 = h.onClick;
+    let f: fn(i32) : i32 = h.onClick;
     let c: i32 = f(1);                          // 2
 
     return (a + b + c) % 251;                   // 87

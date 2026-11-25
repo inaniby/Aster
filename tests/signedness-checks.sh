@@ -134,7 +134,7 @@ def tag(prefix, ta, tb, va, vb, opname):
 for ta, tb, va, vb in CMP_PAIRS:
     for op, opname in CMP_OPS:
         n = tag("c", ta, tb, va, vb, opname)
-        src = ("fn main()->i32 {\n"
+        src = ("fn main():i32 {\n"
                "    let a: %s = %d;\n    let b: %s = %d;\n"
                "    if (a %s b) { return 1; }\n    return 0;\n}\n"
                % (ta, va, tb, vb, op))
@@ -149,7 +149,7 @@ for ta, tb, va, vb in DIV_PAIRS:
     for op, opname in (("/", "div"), ("%", "mod")):
         n = tag("d", ta, tb, va, vb, opname)
         exp = expect_divmod(ta, tb, va, vb, op)
-        src = ("fn main()->i32 {\n"
+        src = ("fn main():i32 {\n"
                "    let a: %s = %d;\n    let b: %s = %d;\n"
                "    let q: %s = a %s b;\n"
                "    if (q == %d) { return 1; }\n    return 0;\n}\n"
@@ -163,7 +163,7 @@ for ta, tb, va, vb in DIV_PAIRS:
 # of emitCondition's conditional branch. Both must agree on signedness.
 n = "v_cmp_value"
 (w / (n + ".ast")).write_text(
-    "fn main()->i32 {\n"
+    "fn main():i32 {\n"
     "    let a: i64 = -84;\n"
     "    let b: u32 = 5;\n"
     "    let t: bool = (a < b);\n"

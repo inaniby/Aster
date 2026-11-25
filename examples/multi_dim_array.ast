@@ -16,7 +16,7 @@ let gscores: i32[2][3] = 0;               // a global two-dimensional grid
 
 // A row is a ptr, so it travels to a function exactly as `&buf` did last
 // round: by address, with the element count spelled out.
-fn rowSum(p: ptr, n: i32) -> i32 {
+fn rowSum(p: ptr, n: i32) : i32 {
     let t: i32 = 0;
     let i: i32 = 0;
     while (i < n) {
@@ -26,7 +26,7 @@ fn rowSum(p: ptr, n: i32) -> i32 {
     return t;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = 0;
 
     // 1: a local 2x3 grid, written and read through two subscripts with

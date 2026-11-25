@@ -391,7 +391,7 @@ fi
 # ---------------------------------------------------------------- 7. static images
 printf '%s\n' '[7/9] Static images are untouched: no .dynamic, no version sections'
 cat > "$OUT/static.ast" <<'AST'
-fn main() -> i32 { return 3; }
+fn main() : i32 { return 3; }
 AST
 for m in build-elf build-obj build-pie; do
     "$A" $m "$OUT/static.ast" -o "$OUT/static.$m" >/dev/null

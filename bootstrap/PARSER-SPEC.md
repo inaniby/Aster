@@ -509,7 +509,7 @@ Every line ends with 0x0A; fields are separated by one space.
 Source (`ex1.ast`):
 
 ```
-fn main() -> i32 { let x: i32 = 1 + 2 * 3; return x; }
+fn main() : i32 { let x: i32 = 1 + 2 * 3; return x; }
 ```
 
 Dump:
@@ -537,8 +537,8 @@ Source:
 
 ```
 let g: i32 = 0;
-fn add(a: i32, b: i32) -> i32 { return a + b; }
-fn main() -> i32 { if (g == 0) { return add(1, 2); } else { return 0; } }
+fn add(a: i32, b: i32) : i32 { return a + b; }
+fn main() : i32 { if (g == 0) { return add(1, 2); } else { return 0; } }
 ```
 
 Dump:
@@ -579,9 +579,9 @@ element count there.
 Source:
 
 ```
-extern fn write(fd: i32, buf: ptr<u8>, n: i32) -> i32;
+extern fn write(fd: i32, buf: ptr<u8>, n: i32) : i32;
 let tab: i32[4] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let i: i32 = 0;
     let s: ptr = "a\tb";
     while (i < 4) {
@@ -656,7 +656,7 @@ Program 1:1
 Source:
 
 ```
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32 = 0x1F;
     if (x == 31) { return 1; }
     else if (x == 32) { return 2; }
@@ -759,7 +759,7 @@ its binary. `<X>` is a name, type spelling or folded value filled in.
 | P6 | `duplicate parameter name in function <F>: <p>` | — |
 | P7 | `functions support at most 32 parameters: <F>` | — |
 | P8 | `expected ')' after parameters` | current token |
-| P9 | `expected ->` | current token |
+| P9 | `expected ':'` | current token |
 | P10 | `expected i32, i64, u8, u16, u32, ptr, ptr<S>, bool, or a struct name` | current token |
 | P11 | `a function cannot return an array: return ptr<T>, or take the array as a parameter and let the caller's storage be written through` | the `[` |
 | P12 | `main must return i32` | — |

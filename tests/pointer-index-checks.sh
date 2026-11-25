@@ -27,8 +27,8 @@ printf '%s\n' 'PASS: both index paths recognize ptr-typed bases and use the 4-by
 
 printf '%s\n' '[3/5] Rejection matrix'
 cat > "$OUT/ptr-index.ast" <<'AST'
-fn f(p: ptr, i: ptr) -> i32 { return p[i]; }
-fn main() -> i32 { return 0; }
+fn f(p: ptr, i: ptr) : i32 { return p[i]; }
+fn main() : i32 { return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/ptr-index.ast" -o "$OUT/ptr-index" 2>&1); then
     echo 'FAIL: compiler accepted a ptr-typed index' >&2; exit 1
@@ -37,8 +37,8 @@ printf '%s\n' "$out" | grep -qF "pointer indexing is not supported yet" \
     || { echo "FAIL: wrong diagnostic for ptr index: $out" >&2; exit 1; }
 
 cat > "$OUT/ptr-value.ast" <<'AST'
-fn f(p: ptr, q: ptr) -> i32 { p[0] = q; return 0; }
-fn main() -> i32 { return 0; }
+fn f(p: ptr, q: ptr) : i32 { p[0] = q; return 0; }
+fn main() : i32 { return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/ptr-value.ast" -o "$OUT/ptr-value" 2>&1); then
     echo 'FAIL: compiler accepted storing a ptr through p[i]' >&2; exit 1
@@ -50,7 +50,7 @@ printf '%s\n' "$out" | grep -qF "type mismatch assigning array element of 'p': e
     || { echo "FAIL: wrong diagnostic for ptr value store: $out" >&2; exit 1; }
 
 cat > "$OUT/scalar.ast" <<'AST'
-fn main() -> i32 { let x: i32 = 0; return x[0]; }
+fn main() : i32 { let x: i32 = 0; return x[0]; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/scalar.ast" -o "$OUT/scalar" 2>&1); then
     echo 'FAIL: compiler accepted indexing a scalar local' >&2; exit 1
@@ -61,9 +61,9 @@ printf '%s\n' 'PASS: ptr index / ptr value store / scalar index all rejected'
 
 printf '%s\n' '[4/5] Acceptance: read and write through parameter and alias pointers (qemu self-check)'
 cat > "$OUT/rw.ast" <<'AST'
-fn aster_read(p: ptr, i: i32) -> i32 { return p[i]; }
-fn aster_write(p: ptr, i: i32, v: i32) -> i32 { p[i] = v; return v; }
-fn main() -> i32 {
+fn aster_read(p: ptr, i: i32) : i32 { return p[i]; }
+fn aster_write(p: ptr, i: i32, v: i32) : i32 { p[i] = v; return v; }
+fn main() : i32 {
     let a: i32[4] = 0;
     a[0] = 100;
     a[1] = 200;
@@ -88,7 +88,7 @@ printf '%s\n' 'PASS: p[i] reads and p[i] = v writes through params and aliases (
 printf '%s\n' '[5/5] Acceptance: a pointer views a global array and a dynamic index (qemu self-check)'
 cat > "$OUT/global.ast" <<'AST'
 let g: i32[4] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     g[0] = 5;
     g[1] = 6;
     g[2] = 7;

@@ -86,7 +86,7 @@ for k in 0 1 2 3 4 5 6 7 8 9 10 11 12; do
     dim=$(python3 -c "print(2**$k)")
     cat > "$W/s$k.ast" <<AST
 let g: u8[2][$dim] = 0;
-fn main()->i32 {
+fn main():i32 {
     let i: i32 = 1;
     g[i][0] = 42;
     if (g[0][0] == 0 && g[i][0] == 42) { return 0; }
@@ -100,7 +100,7 @@ done
 # A stride past 16 bits exercises the MOVK half of the multiplier.
 cat > "$W/big.ast" <<'AST'
 let g: u8[2][100000] = 0;
-fn main()->i32 {
+fn main():i32 {
     let i: i32 = 1;
     g[i][0] = 42;
     // 100000 = 0x186A0 needs MOVZ #0x86A0 plus MOVK #1. Dropping the high
@@ -165,7 +165,7 @@ cases=$((cases + 1)); bump
 # elements of 32 / 64 / 128 bytes — the emitElemIndex half of the rule.
 cat > "$W/nonpow2.ast" <<'AST'
 let g: u8[2][7] = 0;
-fn main()->i32 {
+fn main():i32 {
     let i: i32 = 1;
     g[i][0] = 42;
     // The third read is deliberately asymmetric: a wrong stride of 8 would
@@ -178,7 +178,7 @@ AST
 cat > "$W/elem32.ast" <<'AST'
 struct E { a:i32,b:i32,c:i32,d:i32,e:i32,f:i32,g:i32,h:i32 }
 let g: E[2] = E{1,2,3,4,5,6,7,8};
-fn main()->i32 {
+fn main():i32 {
     let i: i32 = 1;
     g[i].a = 42;
     if (g[0].a == 1 && g[i].a == 42) { return 0; }
@@ -189,7 +189,7 @@ cat > "$W/elem64.ast" <<'AST'
 struct E { a:i32,b:i32,c:i32,d:i32,e:i32,f:i32,g:i32,h:i32,
            i:i32,j:i32,k:i32,l:i32,m:i32,n:i32,o:i32,p:i32 }
 let g: E[2] = E{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
-fn main()->i32 {
+fn main():i32 {
     let i: i32 = 1;
     g[i].a = 42;
     if (g[0].a == 1 && g[i].a == 42) { return 0; }
@@ -252,7 +252,7 @@ fi
 # ---------------------------------------------------------------------------
 printf '%s\n' '[6/9] Every addressing path that shares emitScaledAdd'
 cat > "$W/local.ast" <<'AST'
-fn main()->i32 {
+fn main():i32 {
     let a: i32[2][64] = 0;
     let i: i32 = 1;
     a[i][0] = 42;
@@ -262,7 +262,7 @@ fn main()->i32 {
 AST
 cat > "$W/field.ast" <<'AST'
 struct Grid { cells: u8[2][64] }
-fn main()->i32 {
+fn main():i32 {
     let g: Grid;
     let i: i32 = 1;
     g.cells[0][0] = 7;                 // a local is not zero-initialised
@@ -273,7 +273,7 @@ fn main()->i32 {
 AST
 cat > "$W/three.ast" <<'AST'
 let g: i32[2][2][64] = 0;
-fn main()->i32 {
+fn main():i32 {
     let i: i32 = 1;
     let j: i32 = 1;
     g[i][j][0] = 42;
@@ -282,11 +282,11 @@ fn main()->i32 {
 }
 AST
 cat > "$W/param.ast" <<'AST'
-fn row(p: ptr)->i32 {
+fn row(p: ptr):i32 {
     let i: i32 = 1;
     return p[i];
 }
-fn main()->i32 {
+fn main():i32 {
     let a: i32[2][8] = 0;
     a[1][1] = 9;
     if (row(a[1]) == 9) { return 0; }
@@ -296,7 +296,7 @@ AST
 cat > "$W/typedptr.ast" <<'AST'
 struct E { a:i32,b:i32,c:i32,d:i32,e:i32,f:i32,g:i32,h:i32 }
 let g: E[4] = E{1,2,3,4,5,6,7,8};
-fn main()->i32 {
+fn main():i32 {
     let p: ptr<E> = &g[0];
     let i: i32 = 1;
     p[i].a = 42;                          // 32-byte element stride through a pointer

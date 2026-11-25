@@ -44,7 +44,7 @@ mkdir -p "$ASSETS"
 cat > "$ASSETS/sum.ast" <<'AST'
 let blob: ptr = @embed("bin.bin");
 let n: i32 = @embed_len("bin.bin");
-fn main() -> i32 {
+fn main() : i32 {
     let i: i32 = 0;
     let s: i32 = 0;
     while (i < n) {
@@ -99,7 +99,7 @@ printf 'hello world' > "$ASSETS/text.txt"       # 11 bytes
 mkdir -p "$ASSETS/adir"
 # A source file that lives next to its assets, so the default base resolves.
 cat > "$ASSETS/probe.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed("two.bin");
     return load_u8(p) + load_u8(p + 1);
 }
@@ -121,37 +121,37 @@ expect_fail() {   # $1 = label, $2 = source, $3 = expected substring
     printf '%s\n' "PASS: $1 -- $3"
 }
 expect_fail 'missing file' \
-    'fn main() -> i32 { let p: ptr = @embed("does-not-exist.bin"); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("does-not-exist.bin"); return load_u8(p); }' \
     'cannot open embedded file'
 expect_fail 'a directory' \
-    'fn main() -> i32 { let p: ptr = @embed("adir"); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("adir"); return load_u8(p); }' \
     'embedded file is a directory'
 expect_fail 'an empty file' \
-    'fn main() -> i32 { let p: ptr = @embed("empty.bin"); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("empty.bin"); return load_u8(p); }' \
     'embedded file is empty'
 expect_fail 'unknown @attribute' \
-    'fn main() -> i32 { let p: ptr = @nope("two.bin"); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @nope("two.bin"); return load_u8(p); }' \
     "unknown attribute '@nope'"
 expect_fail 'embed into an i32' \
-    'fn main() -> i32 { let k: i32 = @embed("two.bin"); return k; }' \
+    'fn main() : i32 { let k: i32 = @embed("two.bin"); return k; }' \
     'type mismatch'
 expect_fail 'non-string argument' \
-    'fn main() -> i32 { let p: ptr = @embed(7); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed(7); return load_u8(p); }' \
     'expected a file path after'
 expect_fail 'missing parenthesis' \
-    'fn main() -> i32 { let p: ptr = @embed "two.bin"; return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed "two.bin"; return load_u8(p); }' \
     "expected '(' after '@embed'"
 expect_fail 'unterminated call' \
-    'fn main() -> i32 { let p: ptr = @embed("two.bin"; return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("two.bin"; return load_u8(p); }' \
     "expected ')' after the file path"
 expect_fail 'embed_len into a ptr' \
-    'fn main() -> i32 { let p: ptr = @embed_len("two.bin"); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed_len("two.bin"); return load_u8(p); }' \
     'type mismatch'
 # An i64 global must not silently take the low 32 bits of an address: the
 # relaxation is for ptr globals only.
 expect_fail 'embed into an i64 global' \
     'let g: i64 = @embed("two.bin");
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
     'type mismatch initializing global'
 
 printf '%s\n' '[4/6] Structural: rodata bytes, dedup, --embed-dir, .so and PIC object'
@@ -192,7 +192,7 @@ def build(src, args, name='probe.ast'):
     return r.stdout + r.stderr
 
 # 1. the file's bytes appear in rodata exactly once, verbatim
-src = 'fn main() -> i32 { let p: ptr = @embed("bin.bin"); return load_u8(p); }\n'
+src = 'fn main() : i32 { let p: ptr = @embed("bin.bin"); return load_u8(p); }\n'
 build(src, ['build-elf'])
 want = open(os.path.join(assets, 'bin.bin'), 'rb').read()
 rd = rodata(os.path.join(out, 'probe'))
@@ -202,7 +202,7 @@ assert not want.endswith(b'\0'), 'the test asset itself ends in NUL; use another
 sys.stderr.write('   rodata holds %d bytes, the asset %d, matched verbatim\n' % (len(rd), len(want)))
 
 # 2. deduplication: the same file named three times is still one copy
-src = ('fn main() -> i32 {\n'
+src = ('fn main() : i32 {\n'
        '    let a: ptr = @embed("text.txt");\n'
        '    let b: ptr = @embed("text.txt");\n'
        '    let c: ptr = @embed("bin.bin");\n'
@@ -277,7 +277,7 @@ print(s)")
 
     # The same bytes through a function-local embed must agree exactly.
     cat > "$ASSETS/sum2.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let blob: ptr = @embed("bin.bin");
     let n: i32 = @embed_len("bin.bin");
     let i: i32 = 0;
@@ -302,7 +302,7 @@ AST
     cat > "$ASSETS/len.ast" <<'AST'
 let n: i32 = @embed_len("text.txt");
 let m: i32 = @embed_len("bin.bin");
-fn main() -> i32 {
+fn main() : i32 {
     return n * 10 + m;
 }
 AST
@@ -314,7 +314,7 @@ AST
     # A binary asset: the NUL and the 0xFF are the bytes a text-based check
     # would never notice missing.
     cat > "$ASSETS/bytes.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed("bin.bin");
     return load_u8(p + 1) * 1000000 + load_u8(p + 2);
 }
@@ -328,10 +328,10 @@ AST
     # The whole point: a resource carried inside the .so, with no resources.arsc
     # involved, still reaches the running program.
     cat > "$ASSETS/so.ast" <<'AST'
-fn asset_len() -> i32 {
+fn asset_len() : i32 {
     return @embed_len("text.txt");
 }
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed("text.txt");
     return load_u8(p) + asset_len();
 }
@@ -424,7 +424,7 @@ printf '%s\n' 'PASS: mutation len-off-by-one changes the checksum'
 # 2. no-dedup: rodata grows
 # The two-file probe: without deduplication rodata is 11 + 11 + 4.
 cat > "$OUT/dedup.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: ptr = @embed("text.txt");
     let b: ptr = @embed("text.txt");
     let c: ptr = @embed("bin.bin");

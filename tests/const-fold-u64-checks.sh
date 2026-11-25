@@ -75,58 +75,58 @@ import pathlib, sys
 w = pathlib.Path(sys.argv[1])
 C = {}
 C['u64_sub'] = '''let g: u64 = 0 - 1;
-fn main()->i32 { if (g == 18446744073709551615) { return 1; } return 0; }
+fn main():i32 { if (g == 18446744073709551615) { return 1; } return 0; }
 '''
 C['u64_neg'] = '''let g: u64 = -1;
-fn main()->i32 { if (g == 18446744073709551615) { return 1; } return 0; }
+fn main():i32 { if (g == 18446744073709551615) { return 1; } return 0; }
 '''
 C['u64_bitnot'] = '''let g: u64 = ~0;
-fn main()->i32 { if (g == 18446744073709551615) { return 1; } return 0; }
+fn main():i32 { if (g == 18446744073709551615) { return 1; } return 0; }
 '''
 C['u64_cast'] = '''let g: u64 = u64(9223372036854775807 + 1);
-fn main()->i32 { if (g == 9223372036854775808) { return 1; } return 0; }
+fn main():i32 { if (g == 9223372036854775808) { return 1; } return 0; }
 '''
 C['u64_nested'] = '''let g: u64 = (9223372036854775807 + 1) + (9223372036854775807 + 2);
-fn main()->i32 { if (g == 1) { return 1; } return 0; }
+fn main():i32 { if (g == 1) { return 1; } return 0; }
 '''
 C['i32_ovf'] = '''let g: i32 = 9223372036854775807 + 1;
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['i64_shl'] = '''let g: i64 = 3 << 62;
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['u32_ovf'] = '''let g: u32 = 9223372036854775807 + 1;
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['idx_ok'] = '''let a: i32[4] = 0;
-fn main()->i32 { a[2]=33; return a[1+1]; }
+fn main():i32 { a[2]=33; return a[1+1]; }
 '''
 C['idx_dynamic'] = '''let a: i32[4] = 0;
-fn main()->i32 { let i: i32 = 2; a[2]=33; return a[i]; }
+fn main():i32 { let i: i32 = 2; a[2]=33; return a[i]; }
 '''
 C['idx_oob_const'] = '''let a: i32[4] = 0;
-fn main()->i32 { return a[4]; }
+fn main():i32 { return a[4]; }
 '''
 C['idx_ovf_add'] = '''let a: i32[4] = 0;
-fn main()->i32 { return a[9223372036854775807 + 1]; }
+fn main():i32 { return a[9223372036854775807 + 1]; }
 '''
 C['idx_ovf_mul'] = '''let a: i32[4] = 0;
-fn main()->i32 { return a[9223372036854775807 * 2]; }
+fn main():i32 { return a[9223372036854775807 * 2]; }
 '''
 C['idx_ovf_shl'] = '''let a: i32[4] = 0;
-fn main()->i32 { return a[1 << 64]; }
+fn main():i32 { return a[1 << 64]; }
 '''
 C['idx_div0'] = '''let a: i32[4] = 0;
-fn main()->i32 { return a[1 / 0]; }
+fn main():i32 { return a[1 / 0]; }
 '''
 C['idx_ovf_sub'] = '''let a: i32[4] = 0;
-fn main()->i32 { return a[-9223372036854775807 - 2]; }
+fn main():i32 { return a[-9223372036854775807 - 2]; }
 '''
 C['idx_write_ovf'] = '''let a: i32[4] = 0;
-fn main()->i32 { a[9223372036854775807 + 1] = 9; return 0; }
+fn main():i32 { a[9223372036854775807 + 1] = 9; return 0; }
 '''
 C['idx_two_dim_ovf'] = '''let a: i32[2][4] = 0;
-fn main()->i32 { return a[0][9223372036854775807 + 1]; }
+fn main():i32 { return a[0][9223372036854775807 + 1]; }
 '''
 for n, src in C.items():
     (w / (n + '.ast')).write_text(src)

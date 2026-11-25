@@ -9,7 +9,7 @@
 // enum at a type annotation (the `: Color` in `let c: Color = ...`).
 enum Byte { A=1, B=2, C=4, D=8, E=16, F=32, G=64, H=128 }
 
-fn main() -> i32 {
+fn main() : i32 {
     // `H` folds to the literal 128; `: Byte` makes the binding a Byte, not an
     // i32. The nominal type only constrains where the value may flow, never
     // how it is computed.

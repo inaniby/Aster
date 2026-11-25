@@ -4,7 +4,7 @@
 let out: u8[8] = 0;
 let g: i32 = 10;
 
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32 = 5;
     x++;                 // 6
     ++x;                 // 7

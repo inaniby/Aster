@@ -177,13 +177,13 @@ PY
 python3 - <<'PY'
 import os, pathlib
 W = pathlib.Path(os.environ.get('OUT', 'tmp-frame-slot-contract-checks')) / 'work'
-D01 = """fn g(n:i32)->i32 {{ return n; }}
-fn f(a:i32,b:i32,c:i32,d:i32,e:i32,g:i32,h:i32,i:i32,j:i32)->i32 {{
+D01 = """fn g(n:i32):i32 {{ return n; }}
+fn f(a:i32,b:i32,c:i32,d:i32,e:i32,g:i32,h:i32,i:i32,j:i32):i32 {{
     let pad: i64[{pad}] = 0;
     let t: i32 = g(g(0));
     return j - a + t;
 }}
-fn main()->i32 {{ return f(1,2,3,4,5,6,7,8,9); }}
+fn main():i32 {{ return f(1,2,3,4,5,6,7,8,9); }}
 """
 for pad in (100, 450, 465, 466, 467, 469, 480, 490):
     (W / ('d01_p%d.ast' % pad)).write_text(D01.format(pad=pad))
@@ -191,7 +191,7 @@ for pad in (100, 450, 465, 466, 467, 469, 480, 490):
 def decls(prefix, n):
     return '\n'.join('    let %s%d: i32 = 0;' % (prefix, i) for i in range(n))
 
-(W/'d02_slot1.ast').write_text("""fn main() -> i32 {
+(W/'d02_slot1.ast').write_text("""fn main() : i32 {
     let lead: i32 = 1;
     let x: f64 = 2.5;
     let p1: i32=0; let p2: i32=0; let p3: i32=0; let p4: i32=0;
@@ -201,14 +201,14 @@ def decls(prefix, n):
     return 1;
 }
 """)
-(W/'d02_slot0.ast').write_text("""fn main() -> i32 {
+(W/'d02_slot0.ast').write_text("""fn main() : i32 {
     let x: f64 = 2.5;
     if (x == 2.5) { return 0; }
     return 1;
 }
 """)
 # slot 7: the old eightfold store landed at slot 56 == t48.
-(W/'d02_slot7.ast').write_text("""fn main() -> i32 {
+(W/'d02_slot7.ast').write_text("""fn main() : i32 {
 %s
     let x: f64 = 2.5;
 %s
@@ -217,25 +217,25 @@ def decls(prefix, n):
     return 1;
 }
 """ % (decls('l', 7), decls('t', 56)))
-(W/'d02_guard128.ast').write_text("""fn probe() -> i32 {
+(W/'d02_guard128.ast').write_text("""fn probe() : i32 {
 %s
     let x: f64 = 2.5;
     return 0;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let guard: i32 = 12345;
     let r: i32 = probe();
     if (guard == 12345) { return 0; }
     return 20;
 }
 """ % decls('v', 128))
-(W/'d02_nine.ast').write_text("""fn f(a:f64,b:f64,c:f64,d:f64,e:f64,g:f64,h:f64,i:f64,j:f64)->f64 {
+(W/'d02_nine.ast').write_text("""fn f(a:f64,b:f64,c:f64,d:f64,e:f64,g:f64,h:f64,i:f64,j:f64):f64 {
     let pad: i64[480] = 0;
     return j - a;
 }
-fn main()->i32 { return i32(f(1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0)); }
+fn main():i32 { return i32(f(1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0)); }
 """)
-(W/'d02_f32_ctl.ast').write_text("""fn main() -> i32 {
+(W/'d02_f32_ctl.ast').write_text("""fn main() : i32 {
     let lead: i32 = 1;
     let x: f32 = f32(2.5);
     let p1: i32=0; let p2: i32=0; let p3: i32=0; let p4: i32=0;
@@ -245,7 +245,7 @@ fn main()->i32 { return i32(f(1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0)); }
     return 1;
 }
 """)
-(W/'d02_i32_ctl.ast').write_text("""fn main() -> i32 {
+(W/'d02_i32_ctl.ast').write_text("""fn main() : i32 {
     let lead: i32 = 1;
     let x: i32 = 7;
     let p1: i32=0; let p2: i32=0; let p3: i32=0; let p4: i32=0;
@@ -260,7 +260,7 @@ insn(){ python3 "$W/insn.py" "$@"; }
 # D-09: two malformed literals and four legal controls.
 for spec in 'twodot 1.5.2' 'twoexp 1e2e3' 'frac 1.5' 'exp 1e2' 'fracexp 1.5e2' 'expneg 1.5e-2'; do
     set -- $spec; n=$1; lit=$2
-    printf 'fn main() -> i32 { let x: f64 = %s; return 0; }\n' "$lit" > "$W/d09_$n.ast"
+    printf 'fn main() : i32 { let x: f64 = %s; return 0; }\n' "$lit" > "$W/d09_$n.ast"
 done
 for pad in 100 450 465 466 467 469 480 490; do
     "$A" build-elf --compact-frames "$W/d01_p$pad.ast" -o "$W/c_p$pad" >/dev/null

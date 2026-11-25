@@ -19,17 +19,17 @@
 // keywords, num renders ELF fields and diagnostics, hash is the symbol and
 // label table.
 
-extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
-extern fn memset(dst: ptr<u8>, c: i32, n: i32) -> i32;
-extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
-extern fn strlen(s: ptr<u8>) -> i32;
-extern fn strcmp(a: ptr<u8>, b: ptr<u8>) -> i32;
-extern fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
-extern fn utoa(v: i64, buf: ptr<u8>) -> i32;
-extern fn itoa(v: i64, buf: ptr<u8>) -> i32;
-extern fn utohex(v: i64, buf: ptr<u8>) -> i32;
-extern fn hash_put(key: ptr<u8>, val: i64) -> i32;
-extern fn hash_get(key: ptr<u8>) -> i64;
+extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32;
+extern fn memset(dst: ptr<u8>, c: i32, n: i32) : i32;
+extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32;
+extern fn strlen(s: ptr<u8>) : i32;
+extern fn strcmp(a: ptr<u8>, b: ptr<u8>) : i32;
+extern fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32;
+extern fn utoa(v: i64, buf: ptr<u8>) : i32;
+extern fn itoa(v: i64, buf: ptr<u8>) : i32;
+extern fn utohex(v: i64, buf: ptr<u8>) : i32;
+extern fn hash_put(key: ptr<u8>, val: i64) : i32;
+extern fn hash_get(key: ptr<u8>) : i64;
 
 let ob: u8[32] = 0;      // the one scratch buffer every print helper shares
 let a: u8[16] = 0;
@@ -38,35 +38,35 @@ let pad: u8[8] = 63;     // '?' — the untouched bytes must stay visible
 let hi: u8[2] = 128;     // 0x80, for the unsigned memcmp reading
 let lo: u8[2] = 127;     // 0x7F
 
-fn out_s(s: ptr<u8>) -> i32 {
+fn out_s(s: ptr<u8>) : i32 {
     write(1, s, strlen(s));
     return 0;
 }
 
-fn out_i64(v: i64) -> i32 {
+fn out_i64(v: i64) : i32 {
     let n: i32 = itoa(v, ob);
     write(1, ob, n);
     return 0;
 }
 
-fn out_sp() -> i32 { write(1, " ", 1); return 0; }
-fn out_nl() -> i32 { write(1, "\n", 1); return 0; }
+fn out_sp() : i32 { write(1, " ", 1); return 0; }
+fn out_nl() : i32 { write(1, "\n", 1); return 0; }
 
 // The num cases print their converters' raw bytes with nothing in between —
 // a reformat here would launder the very routine under test.
-fn out_utoa(v: i64) -> i32 {
+fn out_utoa(v: i64) : i32 {
     let n: i32 = utoa(v, ob);
     write(1, ob, n);
     return 0;
 }
 
-fn out_itoa(v: i64) -> i32 {
+fn out_itoa(v: i64) : i32 {
     let n: i32 = itoa(v, ob);
     write(1, ob, n);
     return 0;
 }
 
-fn out_utohex(v: i64) -> i32 {
+fn out_utohex(v: i64) : i32 {
     let n: i32 = utohex(v, ob);
     write(1, ob, n);
     return 0;
@@ -74,7 +74,7 @@ fn out_utohex(v: i64) -> i32 {
 
 // Eight bytes, a NUL shown as '.', no separators — the strncpy cases share
 // this shape with the twin so a missed pad byte or a stray write shows up.
-fn dump8(p: ptr<u8>) -> i32 {
+fn dump8(p: ptr<u8>) : i32 {
     let i: i32 = 0;
     while (i < 8) {
         let c: i32 = load_u8(p + i);
@@ -86,7 +86,7 @@ fn dump8(p: ptr<u8>) -> i32 {
     return 0;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     // ---- mem: a[i] = i*7+3 for i in 0..11, copied and summed ----
     let i: i32 = 0;
     while (i < 12) {

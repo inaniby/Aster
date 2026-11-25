@@ -29,19 +29,19 @@ enum Color { Red = 0, Green = 1, Blue = 2 }
 type Coord = i32;             // a scalar
 type Ptr = ptr<Point>;        // a pointer that knows what struct it points at
 type Shade = Color;           // an enum
-type BinOp = fn(Coord, Coord) -> Coord;   // a function type
+type BinOp = fn(Coord, Coord) : Coord;   // a function type
 type W = u16;                 // a narrow scalar
 
 struct Pair { a: Coord, b: W }        // an alias as a field type
 
 let gp: Coord = 4;                    // an alias as a global's type
 
-fn add(x: Coord, y: Coord) -> Coord { return x + y; }
-fn mul(x: Coord, y: Coord) -> Coord { return x * y; }
-fn use(q: Ptr) -> Coord { return q.x * 10 + q.y; }
-fn via(op: BinOp, x: Coord, y: Coord) -> Coord { return op(x, y); }
+fn add(x: Coord, y: Coord) : Coord { return x + y; }
+fn mul(x: Coord, y: Coord) : Coord { return x * y; }
+fn use(q: Ptr) : Coord { return q.x * 10 + q.y; }
+fn via(op: BinOp, x: Coord, y: Coord) : Coord { return op(x, y); }
 
-fn main() -> i32 {
+fn main() : i32 {
     let p: Point = Point { 3, 7 };
     let q: Ptr = &p;                  // 3*10+7   = 37
     let c: Shade = Blue;              // 2

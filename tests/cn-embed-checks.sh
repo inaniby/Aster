@@ -95,10 +95,10 @@ SRC
 cat > "$TMP/parse-en.ast" <<'SRC'
 // aster:language=en
 const g_data_len: i32 = @embed_len("data.bin");
-fn data_ptr() -> ptr {
+fn data_ptr() : ptr {
     return @embed("data.bin", 16);
 }
-fn main() -> i32 {
+fn main() : i32 {
     return g_data_len;
 }
 SRC
@@ -113,7 +113,7 @@ grep -q '(Embed "\\"data.bin\\"" (IntegerLiteral "16"))' "$TMP/zh.ast.out" || {
     echo 'FAIL: @embed with alignment did not dump as Embed + IntegerLiteral' >&2; exit 1; }
 cat > "$TMP/parse-foo.ast" <<'SRC'
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     return @foo("data.bin");
 }
 SRC
@@ -121,7 +121,7 @@ expect_fail '@unknown in expression position' "expected 'embed' or 'embed_len'" 
     "$TMP/aster-cn-parse" "$TMP/parse-foo.ast"
 cat > "$TMP/parse-bad.ast" <<'SRC'
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     return @embed("data.bin";
 }
 SRC
@@ -153,13 +153,13 @@ SRC
 cat > "$TMP/probe.ast" <<'SRC'
 // aster:language=en
 const g_data_len: i32 = @embed_len("data.bin");
-fn data_ptr() -> ptr {
+fn data_ptr() : ptr {
     return @embed("data.bin");
 }
-fn data_len() -> i32 {
+fn data_len() : i32 {
     return g_data_len;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = data_ptr();
     return load_u8(p) + data_len();
 }
@@ -180,13 +180,13 @@ printf '%s\n' '[3/8] dedup: one path is one blob'
 cat > "$TMP/dedup.ast" <<'SRC'
 // aster:language=en
 const g_len: i32 = @embed_len("data.bin");
-fn first() -> ptr {
+fn first() : ptr {
     return @embed("data.bin");
 }
-fn second() -> ptr {
+fn second() : ptr {
     return @embed("data.bin");
 }
-fn main() -> i32 {
+fn main() : i32 {
     return load_u8(first()) + load_u8(second()) + g_len;
 }
 SRC
@@ -202,13 +202,13 @@ printf 'A' > "$TMP/a.bin"
 printf 'BC' > "$TMP/b.bin"
 cat > "$TMP/align.ast" <<'SRC'
 // aster:language=en
-fn a_ptr() -> ptr {
+fn a_ptr() : ptr {
     return @embed("a.bin", 1);
 }
-fn b_ptr() -> ptr {
+fn b_ptr() : ptr {
     return @embed("b.bin", 64);
 }
-fn main() -> i32 {
+fn main() : i32 {
     return load_u8(a_ptr()) + load_u8(b_ptr());
 }
 SRC
@@ -221,13 +221,13 @@ printf '  %-40s %s\n' '64-aligned blob at offset 0x'"$b_off" 'ok'
 # Same file twice, 8 then 64: one blob, and the section carries the maximum.
 cat > "$TMP/align-max.ast" <<'SRC'
 // aster:language=en
-fn lo() -> ptr {
+fn lo() : ptr {
     return @embed("b.bin", 8);
 }
-fn hi() -> ptr {
+fn hi() : ptr {
     return @embed("b.bin", 64);
 }
-fn main() -> i32 {
+fn main() : i32 {
     return load_u8(lo()) + load_u8(hi());
 }
 SRC
@@ -239,7 +239,7 @@ ro_align=$(readelf -SW "$TMP/align-max.o" | awk '/\.rodata/ {print $NF}')
     echo "FAIL: .rodata alignment is $ro_align, expected 64" >&2; exit 1; }
 cat > "$TMP/align-bad3.ast" <<'SRC'
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed("a.bin", 3);
     return load_u8(p);
 }
@@ -248,7 +248,7 @@ expect_fail '@embed alignment 3' 'embedded alignment must be a power of two' \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/align-bad3.ast" -o "$TMP/align-bad3.o"
 cat > "$TMP/align-bad8192.ast" <<'SRC'
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed("a.bin", 8192);
     return load_u8(p);
 }
@@ -257,7 +257,7 @@ expect_fail '@embed alignment 8192' 'embedded alignment must not exceed 4096 byt
     "$ASTER_BIN" build-cn-obj --language en "$TMP/align-bad8192.ast" -o "$TMP/align-bad8192.o"
 cat > "$TMP/align-len.ast" <<'SRC'
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     return @embed_len("a.bin", 8);
 }
 SRC
@@ -268,7 +268,7 @@ expect_fail '@embed_len with alignment' 'embed_len takes no alignment argument' 
 printf '%s\n' '[5/8] error paths: missing, empty, directory, non-string path'
 cat > "$TMP/err-missing.ast" <<'SRC'
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed("nope.bin");
     return load_u8(p);
 }
@@ -278,7 +278,7 @@ expect_fail 'missing asset' 'cannot open embedded file' \
 : > "$TMP/empty.bin"
 cat > "$TMP/err-empty.ast" <<'SRC'
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed("empty.bin");
     return load_u8(p);
 }
@@ -288,7 +288,7 @@ expect_fail 'empty asset' 'embedded file is empty' \
 mkdir -p "$TMP/adir"
 cat > "$TMP/err-dir.ast" <<'SRC'
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed("adir");
     return load_u8(p);
 }
@@ -297,7 +297,7 @@ expect_fail 'directory asset' 'embedded file is a directory' \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/err-dir.ast" -o "$TMP/err-dir.o"
 cat > "$TMP/err-num.ast" <<'SRC'
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed(42);
     return load_u8(p);
 }
@@ -312,7 +312,7 @@ printf 'Z' > "$TMP/import/sub/helper.bin"
 printf 'A' > "$TMP/import/helper.bin"
 cat > "$TMP/import/sub/helper.ast" <<'SRC'
 // aster:language=en
-fn helper_first() -> i32 {
+fn helper_first() : i32 {
     let p: ptr = @embed("helper.bin");
     return load_u8(p);
 }
@@ -320,7 +320,7 @@ SRC
 cat > "$TMP/import/main.ast" <<'SRC'
 // aster:language=en
 include "sub/helper.ast";
-fn main() -> i32 {
+fn main() : i32 {
     return helper_first();
 }
 SRC
@@ -341,19 +341,19 @@ printf '%s\n' '[7/8] project cache: an asset edit recompiles only its TU'
 mkdir -p "$TMP/cache/src"
 printf 'kind exe\n[language]\ndefault = "en"\nsrc/main.ast\nsrc/data.ast\n' > "$TMP/cache/aster.proj"
 cat > "$TMP/cache/src/main.ast" <<'SRC'
-extern fn data_ptr() -> ptr;
-extern fn data_len() -> i32;
-fn main() -> i32 {
+extern fn data_ptr() : ptr;
+extern fn data_len() : i32;
+fn main() : i32 {
     let p: ptr = data_ptr();
     return load_u8(p) + data_len();
 }
 SRC
 cat > "$TMP/cache/src/data.ast" <<'SRC'
 const g_data_len: i32 = @embed_len("data.bin");
-fn data_ptr() -> ptr {
+fn data_ptr() : ptr {
     return @embed("data.bin");
 }
-fn data_len() -> i32 {
+fn data_len() : i32 {
     return g_data_len;
 }
 SRC
@@ -388,16 +388,16 @@ cat > "$TMP/multi.ast" <<'SRC'
 const g_a_len: i32 = @embed_len("multi-a.bin");
 const g_b_len: i32 = @embed_len("multi-b.bin");
 const g_c_len: i32 = @embed_len("multi-c.bin");
-fn a_ptr() -> ptr {
+fn a_ptr() : ptr {
     return @embed("multi-a.bin");
 }
-fn b_ptr() -> ptr {
+fn b_ptr() : ptr {
     return @embed("multi-b.bin");
 }
-fn c_ptr() -> ptr {
+fn c_ptr() : ptr {
     return @embed("multi-c.bin");
 }
-fn main() -> i32 {
+fn main() : i32 {
     return load_u8(a_ptr()) + g_a_len + load_u8(b_ptr()) + g_b_len + load_u8(c_ptr()) + g_c_len;
 }
 SRC

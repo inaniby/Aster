@@ -27,17 +27,17 @@ tls let total: i32 = 20;
 tls let spare: i32 = 0;
 tls let acc: i32[2] = 5;
 tls let zeros: i32[3] = 0;
-fn bump() -> i32 {
+fn bump() : i32 {
     hits = hits + 1;
     total = total + 2;
     return hits + total + spare;
 }
-fn accsum() -> i32 {
+fn accsum() : i32 {
     acc[0] = acc[0] + 1;
     acc[1] = acc[1] + 2;
     return acc[0] + acc[1];
 }
-fn zerosum() -> i32 {
+fn zerosum() : i32 {
     zeros[0] = zeros[0] + 1;
     return zeros[0] + zeros[1] + zeros[2];
 }

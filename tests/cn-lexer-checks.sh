@@ -50,14 +50,14 @@ grep -q 'Lt "小于"' "$TMP/yu-compare.tokens"
 grep -q 'Gt "大于"' "$TMP/yu-compare.tokens"
 printf '%s\n' 'foreach item in items {}' | "$TMP/aster-cn-lex" --language=en - > "$TMP/foreach-en.tokens"
 grep -q 'InKw "in"' "$TMP/foreach-en.tokens"
-printf '%s\n' '// aster:language=en' 'fn main() -> i32 { return 0; }' | "$TMP/aster-cn-lex" - > "$TMP/directive.tokens"
+printf '%s\n' '// aster:language=en' 'fn main() : i32 { return 0; }' | "$TMP/aster-cn-lex" - > "$TMP/directive.tokens"
 grep -q 'Method "fn"' "$TMP/directive.tokens"
 cat > "$TMP/aster.proj" <<'PROJ'
 [language]
 default = "en"
 allowed = ["zh", "en"]
 PROJ
-printf '%s\n' 'fn main() -> i32 { return 0; }' | "$TMP/aster-cn-lex" --project "$TMP/aster.proj" - > "$TMP/project.tokens"
+printf '%s\n' 'fn main() : i32 { return 0; }' | "$TMP/aster-cn-lex" --project "$TMP/aster.proj" - > "$TMP/project.tokens"
 grep -q 'Method "fn"' "$TMP/project.tokens"
 printf '%s\n' '// aster:language=zh' '变量 a: 整数 = 1' | "$TMP/aster-cn-lex" --project "$TMP/aster.proj" - > "$TMP/project-directive.tokens"
 grep -q 'VarDecl "变量"' "$TMP/project-directive.tokens"
@@ -72,7 +72,7 @@ if printf '%s\n' '// aster:language=zh' '变量 a: 整数 = 1' | "$TMP/aster-cn-
     echo 'FAIL: project allowed language accepted' >&2; exit 1
 fi
 grep -q 'not allowed by project configuration' "$TMP/project-disallowed"
-if printf '%s\n' '// aster:language=en' 'fn main() -> i32 { return 0; }' | "$TMP/aster-cn-lex" --language=zh - > /dev/null 2> "$TMP/conflict"; then
+if printf '%s\n' '// aster:language=en' 'fn main() : i32 { return 0; }' | "$TMP/aster-cn-lex" --language=zh - > /dev/null 2> "$TMP/conflict"; then
     echo 'FAIL: conflicting language directive accepted' >&2; exit 1
 fi
 grep -q 'conflicts with file directive' "$TMP/conflict"

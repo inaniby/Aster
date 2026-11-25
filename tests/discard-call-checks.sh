@@ -125,8 +125,8 @@ emit_case(){
     dc_direct)
         # The simplest form: a direct call, result dropped, side effect counted.
         ast='let fired: i32 = 0;
-fn bump(x: i32) -> i32 { fired = fired + 1; return x; }
-fn main() -> i32 {
+fn bump(x: i32) : i32 { fired = fired + 1; return x; }
+fn main() : i32 {
     bump(7);
     bump(3);
     bump(9);
@@ -142,10 +142,10 @@ int main(void){
         # A discarded call through a struct field, side effect counted. The same
         # Handlers shape the callback-table round introduced, but called only
         # for the increment it performs.
-        ast='struct H { cb: fn(i32) -> i32, tag: i32 }
+        ast='struct H { cb: fn(i32) : i32, tag: i32 }
 let fired: i32 = 0;
-fn handler(x: i32) -> i32 { fired = fired + 1; return x; }
-fn main() -> i32 {
+fn handler(x: i32) : i32 { fired = fired + 1; return x; }
+fn main() : i32 {
     let h: H = H { handler, 0 };
     h.cb(41);
     h.cb(2);
@@ -164,8 +164,8 @@ int main(void){
         # An i64 result discarded: the call is still staged and its side effect
         # (writing a global i64) still runs; only the 64-bit answer is dropped.
         ast='let fired: i64 = 0;
-fn setbig(x: i64) -> i64 { fired = x; return x; }
-fn main() -> i32 {
+fn setbig(x: i64) : i64 { fired = x; return x; }
+fn main() : i32 {
     setbig(9000000000);
     let r: i64 = fired;
     return (r - 9000000000) % 251;
@@ -180,8 +180,8 @@ int main(void){
     dc_zero)
         # The empty parameter list as a discarded call.
         ast='let fired: i32 = 0;
-fn tick() -> i32 { fired = fired + 5; return 0; }
-fn main() -> i32 {
+fn tick() : i32 { fired = fired + 5; return 0; }
+fn main() : i32 {
     tick();
     return fired % 251;
 }'
@@ -195,8 +195,8 @@ int main(void){
         # A bool result discarded: the call runs, its side effect (a guarded
         # increment) is what the exit depends on.
         ast='let fired: i32 = 0;
-fn setf(b: bool) -> bool { if (b) { fired = 1; } return b; }
-fn main() -> i32 {
+fn setf(b: bool) : bool { if (b) { fired = 1; } return b; }
+fn main() : i32 {
     setf(true);
     setf(false);
     return fired % 251;
@@ -210,8 +210,8 @@ int main(void){
     dc_ptr)
         # A ptr result discarded: eight bytes not read back, but the call ran.
         ast='let fired: i32 = 0;
-fn setp(x: i32) -> ptr { fired = x; return 0; }
-fn main() -> i32 {
+fn setp(x: i32) : ptr { fired = x; return 0; }
+fn main() : i32 {
     setp(13);
     return fired % 251;
 }'
@@ -226,11 +226,11 @@ int main(void){
         # the stack, and the side effect (summing them into a global) still
         # lands.
         ast='let fired: i32 = 0;
-fn rec(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) -> i32 {
+fn rec(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) : i32 {
     fired = a + b + c + d + e + f + g + h + i + j;
     return fired;
 }
-fn main() -> i32 {
+fn main() : i32 {
     rec(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
     return fired % 251;
 }'
@@ -247,8 +247,8 @@ int main(void){
         # A discarded call taken fresh each iteration, its side effect the loop
         # body's only purpose.
         ast='let fired: i32 = 0;
-fn tick(x: i32) -> i32 { fired = fired + x; return x; }
-fn main() -> i32 {
+fn tick(x: i32) : i32 { fired = fired + x; return x; }
+fn main() : i32 {
     let i: i32 = 0;
     while (i < 5) {
         tick(i);
@@ -268,8 +268,8 @@ int main(void){
         # registers around it: a nearby computation that does not touch the
         # discarded call's result must come out exactly as if the call had been
         # written as a value.
-        ast='fn noop(x: i32) -> i32 { return x; }
-fn main() -> i32 {
+        ast='fn noop(x: i32) : i32 { return x; }
+fn main() : i32 {
     let a: i32 = 10;
     let b: i32 = 20;
     noop(a + b);
@@ -349,19 +349,19 @@ reject(){ # reject <name> <source> <expected message fragment>
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "a bare variable is still not a statement" \
-    'fn main() -> i32 { let x: i32 = 3; x; return 0; }' \
+    'fn main() : i32 { let x: i32 = 3; x; return 0; }' \
     "expected let, assignment, return, if, while, for, break, continue, or switch"
 reject "an arithmetic expression is still not a statement" \
-    'fn main() -> i32 { let x: i32 = 3; let y: i32 = 4; x + y; return 0; }' \
+    'fn main() : i32 { let x: i32 = 3; let y: i32 = 4; x + y; return 0; }' \
     "expected let, assignment, return, if, while, for, break, continue, or switch"
 reject "a discarded direct call is still checked for argument count" \
-    'fn f(a: i32) -> i32 { return a; }
-fn main() -> i32 { f(1, 2); return 0; }' \
+    'fn f(a: i32) : i32 { return a; }
+fn main() : i32 { f(1, 2); return 0; }' \
     "wrong argument count calling f: expected 1, got 2"
 reject "a discarded field call is still checked for argument count" \
-    'struct H { cb: fn(i32) -> i32 }
-fn impl(a: i32) -> i32 { return a; }
-fn main() -> i32 { let h: H = H { impl }; h.cb(1, 2); return 0; }' \
+    'struct H { cb: fn(i32) : i32 }
+fn impl(a: i32) : i32 { return a; }
+fn main() : i32 { let h: H = H { impl }; h.cb(1, 2); return 0; }' \
     "wrong argument count calling field 'cb': expected 1, got 2"
 
 # ---------------------------------------------------------------------------
@@ -424,11 +424,11 @@ must_diverge(){ # must_diverge <tag> <probe> — the mutation stopped emitting t
 
 # Probes the mutation layer reuses, written here so each check really tests its
 # mutation and not a missing file.
-printf '%s\n' 'struct H { cb: fn(i32) -> i32 }
-fn impl(x: i32) -> i32 { return x; }
-fn main() -> i32 { let h: H = H { impl }; h.cb(1); return 0; }' > "$W/m_probe.ast"
+printf '%s\n' 'struct H { cb: fn(i32) : i32 }
+fn impl(x: i32) : i32 { return x; }
+fn main() : i32 { let h: H = H { impl }; h.cb(1); return 0; }' > "$W/m_probe.ast"
 printf '%s\n' 'struct S { tag: i32 }
-fn main() -> i32 { let s: S = S { 7 }; s.tag(1); return 0; }' > "$W/rej_notfunc.ast"
+fn main() : i32 { let s: S = S { 7 }; s.tag(1); return 0; }' > "$W/rej_notfunc.ast"
 
 # m1: the parser branch is gone, so a discarded field call falls through to the
 # field-assign dispatch and fails to parse.

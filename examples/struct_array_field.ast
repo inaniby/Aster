@@ -24,7 +24,7 @@ struct Buffers {
 
 let gb: Buffers;     // global with array fields: zero-filled in .bss
 
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = 0;
     let b: Buffers;  // local with array fields: zero-filled frame
 

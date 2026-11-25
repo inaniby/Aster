@@ -8,10 +8,10 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 
 # Duplicate exports must be rejected by link-so with a stable, actionable diagnostic.
 cat >"$WORK/duplicate-a.ast" <<'AST'
-fn aster_duplicate_probe(value: i32) -> i32 { return value + 1; }
+fn aster_duplicate_probe(value: i32) : i32 { return value + 1; }
 AST
 cat >"$WORK/duplicate-b.ast" <<'AST'
-fn aster_duplicate_probe(value: i32) -> i32 { return value + 2; }
+fn aster_duplicate_probe(value: i32) : i32 { return value + 2; }
 AST
 ./aster build-obj --pic "$WORK/duplicate-a.ast" -o "$WORK/duplicate-a.o"
 ./aster build-obj --pic "$WORK/duplicate-b.ast" -o "$WORK/duplicate-b.o"

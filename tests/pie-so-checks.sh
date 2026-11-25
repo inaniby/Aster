@@ -192,16 +192,16 @@ check_error() {
 # number of assertions below is unchanged (3); only what they assert changed, because keeping the
 # old diagnostics would mean v0.18.0 could not support cross-.so imports at all.
 cat > tmp-so-extern-call.ast <<'AST'
-extern fn helper(x: i32) -> i32;
-fn exported(x: i32) -> i32 { return helper(x); }
+extern fn helper(x: i32) : i32;
+fn exported(x: i32) : i32 { return helper(x); }
 AST
 cat > tmp-so-extern-read.ast <<'AST'
 extern let shared: i32;
-fn exported() -> i32 { return shared; }
+fn exported() : i32 { return shared; }
 AST
 cat > tmp-so-extern-write.ast <<'AST'
 extern let shared: i32;
-fn exported() -> i32 { shared = 1; return shared; }
+fn exported() : i32 { shared = 1; return shared; }
 AST
 ./aster build-so tmp-so-extern-call.ast  -o tmp-x-import-call.so >/dev/null
 ./aster build-so tmp-so-extern-read.ast  -o tmp-x-import-read.so >/dev/null
@@ -264,12 +264,12 @@ let lonely: i32 = 1;
 AST
 check_error build-so tmp-so-no-functions.ast 'shared object must define at least one function' tmp-x.so
 cat > tmp-pie-unresolved.ast <<'AST'
-extern fn helper(x: i32) -> i32;
-fn main() -> i32 { return helper(1); }
+extern fn helper(x: i32) : i32;
+fn main() : i32 { return helper(1); }
 AST
 check_error build-pie tmp-pie-unresolved.ast "undefined function symbol 'helper'" tmp-x
 cat > tmp-main-args.ast <<'AST'
-fn main(a: i32) -> i32 { return a; }
+fn main(a: i32) : i32 { return a; }
 AST
 check_error build-pie tmp-main-args.ast 'main must take no parameters' tmp-x
 check_error build-elf tmp-main-args.ast 'main must take no parameters' tmp-x

@@ -117,26 +117,26 @@ check() {
 }
 A=$OUT/aster
 # --- auto-increment (C semantics: Red=0, Green=1, Blue=2) ---
-check "$A" 'auto-increment: Blue == 2'         2 'enum Color { Red, Green, Blue } fn main() -> i32 { let c: Color = Blue; let x: i32 = c; return x; }'
+check "$A" 'auto-increment: Blue == 2'         2 'enum Color { Red, Green, Blue } fn main() : i32 { let c: Color = Blue; let x: i32 = c; return x; }'
 # --- explicit values are honoured; the next enumerator carries on from them ---
-check "$A" 'explicit values: South == 20'      20 'enum Dir { North = 10, South = 20 } fn main() -> i32 { let d: Dir = South; let x: i32 = d; return x; }'
+check "$A" 'explicit values: South == 20'      20 'enum Dir { North = 10, South = 20 } fn main() : i32 { let d: Dir = South; let x: i32 = d; return x; }'
 # --- a negative enumerator initialiser folds to its negative value ---
-check "$A" 'negative: -West == 1'               1 'enum Dir { West = -1, East = -2 } fn main() -> i32 { let d: Dir = West; let x: i32 = d; return -x; }'
+check "$A" 'negative: -West == 1'               1 'enum Dir { West = -1, East = -2 } fn main() : i32 { let d: Dir = West; let x: i32 = d; return -x; }'
 # --- enum -> i32 is free (the underlying storage is i32) ---
-check "$A" 'enum -> i32 is free'               2 'enum C { A, B, Cc } fn main() -> i32 { let x: i32 = Cc; let y: i32 = A; return x + y; }'
+check "$A" 'enum -> i32 is free'               2 'enum C { A, B, Cc } fn main() : i32 { let x: i32 = Cc; let y: i32 = A; return x + y; }'
 # --- an i32 constant initialises an enum (any constant fits the i32 range) ---
-check "$A" 'i32 constant -> enum'              5 'enum C { A = 5 } fn main() -> i32 { let c: C = 5; let x: i32 = c; return x; }'
+check "$A" 'i32 constant -> enum'              5 'enum C { A = 5 } fn main() : i32 { let c: C = 5; let x: i32 = c; return x; }'
 # --- enumerators are i32 literals: arithmetic over them is i32 arithmetic ---
-check "$A" 'enum arithmetic'                    5 'enum C { A = 2, B = 3 } fn main() -> i32 { let s: i32 = A + B; return s; }'
+check "$A" 'enum arithmetic'                    5 'enum C { A = 2, B = 3 } fn main() : i32 { let s: i32 = A + B; return s; }'
 # --- sizeof(enum) is the i32 width, four bytes ---
-check "$A" 'sizeof(enum) == 4'                 4 'enum C { A } fn main() -> i32 { return sizeof(C); }'
+check "$A" 'sizeof(enum) == 4'                 4 'enum C { A } fn main() : i32 { return sizeof(C); }'
 # --- an enum value compares against an enumerator (both are i32 under the hood) ---
-check "$A" 'enum comparison'                   7 'enum C { A, B } fn main() -> i32 { let c: C = B; if (c == B) { return 7; } return 0; }'
+check "$A" 'enum comparison'                   7 'enum C { A, B } fn main() : i32 { let c: C = B; if (c == B) { return 7; } return 0; }'
 # --- an enum value compares against an i32: the underlying storage is i32 ---
 # v0.23.63-dev: the case that used to sit here — two distinct enums that happen
 # to share a value comparing equal — was the P1-2 defect written down as an
 # expectation. It is a refusal now, and lives in [5/9].
-check "$A" 'enum vs i32 constant'            7 'enum C { A, B } fn main() -> i32 { let c: C = B; if (c == 1) { return 7; } return 0; }'
+check "$A" 'enum vs i32 constant'            7 'enum C { A, B } fn main() : i32 { let c: C = B; if (c == 1) { return 7; } return 0; }'
 else
     printf '%s\n' '  SKIP: the behavioural cases need qemu to run'
 fi
@@ -186,30 +186,30 @@ reject() {
 }
 A=$OUT/aster
 reject 'cross-enum initialization' "type mismatch initializing 'b': expected B, got A" \
-    'enum A { X } enum B { Y } fn main() -> i32 { let a: A = X; let b: B = a; return 0; }'
+    'enum A { X } enum B { Y } fn main() : i32 { let a: A = X; let b: B = a; return 0; }'
 reject 'i32 variable -> enum' "type mismatch initializing 'a': expected A, got i32" \
-    'enum A { X } fn main() -> i32 { let v: i32 = 5; let a: A = v; return 0; }'
+    'enum A { X } fn main() : i32 { let v: i32 = 5; let a: A = v; return 0; }'
 reject 'enumerator out of i32 range' "enumerator value out of i32 range: X" \
-    'enum A { X = 3000000000 } fn main() -> i32 { return 0; }'
+    'enum A { X = 3000000000 } fn main() : i32 { return 0; }'
 reject 'duplicate enum name' "duplicate enum declaration: A" \
-    'enum A { X } enum A { Y } fn main() -> i32 { return 0; }'
+    'enum A { X } enum A { Y } fn main() : i32 { return 0; }'
 reject 'duplicate enumerator' "duplicate enumerator: X" \
-    'enum A { X, X } fn main() -> i32 { return 0; }'
+    'enum A { X, X } fn main() : i32 { return 0; }'
 # v0.23.63-dev: a comparison is a place where two types meet, so it is a place
 # nominal isolation has to hold. Two enums that share a value are still two
 # enums — the case this suite once asserted as legal, and the audit's P1-2.
 reject 'cross-enum comparison' "cannot compare two different enum types" \
-    'enum A { X = 1 } enum B { Y = 1 } fn main() -> i32 { let a: A = X; let b: B = Y; if (a == b) { return 1; } return 0; }'
+    'enum A { X = 1 } enum B { Y = 1 } fn main() : i32 { let a: A = X; let b: B = Y; if (a == b) { return 1; } return 0; }'
 reject 'cross-enum comparison, !=' "cannot compare two different enum types" \
-    'enum A { X = 1 } enum B { Y = 1 } fn main() -> i32 { let a: A = X; let b: B = Y; if (a != b) { return 1; } return 0; }'
+    'enum A { X = 1 } enum B { Y = 1 } fn main() : i32 { let a: A = X; let b: B = Y; if (a != b) { return 1; } return 0; }'
 reject 'enum compared against an i64' "an enum may only be compared with the same enum or with an i32" \
-    'enum A { X } fn main() -> i32 { let a: A = X; let v: i64 = 1; if (a == v) { return 1; } return 0; }'
+    'enum A { X } fn main() : i32 { let a: A = X; let v: i64 = 1; if (a == v) { return 1; } return 0; }'
 # v0.23.63-dev: the auto-increment is range-checked, not just the `= value`.
 reject 'enumerator auto-increment out of i32' "enumerator value out of i32 range: Y" \
-    'enum A { X = 2147483647, Y } fn main() -> i32 { return 0; }'
+    'enum A { X = 2147483647, Y } fn main() : i32 { return 0; }'
 # v0.23.63-dev: an enum slot is an i32, so a constant past i32 does not fit it.
 reject 'enum from a constant past i32' "type mismatch initializing 'c'" \
-    'enum A { X } fn main() -> i32 { let c: A = 4294967296; return 0; }'
+    'enum A { X } fn main() : i32 { let c: A = 4294967296; return 0; }'
 printf '%s\n' 'PASS: the rejection matrix holds'
 
 # ---------------------------------------------------------------------------
@@ -261,12 +261,12 @@ else
 # `while` condition stops being "an integer", so checkCondition refuses it.
 mutate 'm1: enum not an integer type' \
     's# || t.k == Ty::Enum##' \
-    must_reject 'enum-as-condition under tyIsInteger' 'enum C { A, B } fn main() -> i32 { let c: C = A; if(c) { return 1; } return 0; }'
+    must_reject 'enum-as-condition under tyIsInteger' 'enum C { A, B } fn main() : i32 { let c: C = A; if(c) { return 1; } return 0; }'
 # m2: enum -> i32 is no longer free — assigning an enum value into an i32 is
 # refused again.
 mutate 'm2: enum not implicitly convertible to i32' \
     's#return from.k==Ty::Enum&&to.k==Ty::I32;#return false;#' \
-    must_reject 'enum -> i32' 'enum C { A } fn main() -> i32 { let c: C = A; let x: i32 = c; return x; }'
+    must_reject 'enum -> i32' 'enum C { A } fn main() : i32 { let c: C = A; let x: i32 = c; return x; }'
 printf '%s\n' 'PASS: two mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

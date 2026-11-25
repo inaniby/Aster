@@ -149,66 +149,66 @@ A=$OUT/aster
 if [ "$have_qemu" = yes ]; then
 printf '%s\n' '[3/9] qemu: every shape an array address takes'
 # --- a local array, read through a reference.
-check "$A" 'local array by reference'   28 'fn sum4(p: ptr) -> i32 {
+check "$A" 'local array by reference'   28 'fn sum4(p: ptr) : i32 {
     let t: i32 = 0; let i: i32 = 0;
     while (i < 4) { t = t + p[i]; i = i + 1; }
     return t; }
-fn main() -> i32 { let buf: i32[4] = 7; return sum4(&buf); }'
+fn main() : i32 { let buf: i32[4] = 7; return sum4(&buf); }'
 # --- written through the reference: the caller must see it, not a copy.
-check "$A" 'written through a reference' 5 'fn fill(p: ptr, v: i32) -> i32 {
+check "$A" 'written through a reference' 5 'fn fill(p: ptr, v: i32) : i32 {
     let i: i32 = 0;
     while (i < 4) { p[i] = v; i = i + 1; }
     return p[0]; }
-fn main() -> i32 { let buf: i32[4] = 0; if (fill(&buf, 5) == 5) { return buf[3]; } return 0; }'
+fn main() : i32 { let buf: i32[4] = 0; if (fill(&buf, 5) == 5) { return buf[3]; } return 0; }'
 # --- a global array, by reference.
 check "$A" 'global array by reference'  44 'let g: i32[4] = 11;
-fn sum4(p: ptr) -> i32 { let t: i32 = 0; let i: i32 = 0;
+fn sum4(p: ptr) : i32 { let t: i32 = 0; let i: i32 = 0;
     while (i < 4) { t = t + p[i]; i = i + 1; }
     return t; }
-fn main() -> i32 { return sum4(&g); }'
+fn main() : i32 { return sum4(&g); }'
 # --- a bool[3] stores a 4-byte slot an element, so it travels too.
-check "$A" 'bool array by reference'     3 'fn count(p: ptr) -> i32 {
+check "$A" 'bool array by reference'     3 'fn count(p: ptr) : i32 {
     let n: i32 = 0;
     if (p[0] != 0) { n = n + 1; }
     if (p[1] != 0) { n = n + 1; }
     if (p[2] != 0) { n = n + 1; }
     return n; }
-fn main() -> i32 { let f: bool[3] = true; return count(&f); }'
+fn main() : i32 { let f: bool[3] = true; return count(&f); }'
 # --- a u32[4]: the other 4-byte integer width.
-check "$A" 'u32 array by reference'    100 'fn sum4(p: ptr) -> i32 { let t: i32 = 0; let i: i32 = 0;
+check "$A" 'u32 array by reference'    100 'fn sum4(p: ptr) : i32 { let t: i32 = 0; let i: i32 = 0;
     while (i < 4) { t = t + p[i]; i = i + 1; }
     return t; }
-fn main() -> i32 { let a: u32[4] = 25; return sum4(&a); }'
+fn main() : i32 { let a: u32[4] = 25; return sum4(&a); }'
 # --- a struct whose size is 4 bytes is a 4-byte element, so S[N] travels.
 check "$A" '4-byte struct array by ref' 10 'struct Q { x: i32 }
-fn sum2(p: ptr) -> i32 { return p[0] + p[1]; }
-fn main() -> i32 { let a: Q[2] = Q { 5 }; return sum2(&a); }'
+fn sum2(p: ptr) : i32 { return p[0] + p[1]; }
+fn main() : i32 { let a: Q[2] = Q { 5 }; return sum2(&a); }'
 # --- a struct's array field: field base + offset, then the ptr as a value.
 check "$A" 'array field by reference'   10 'struct Row { cells: i32[4] }
-fn sum4(p: ptr) -> i32 { let t: i32 = 0; let i: i32 = 0;
+fn sum4(p: ptr) : i32 { let t: i32 = 0; let i: i32 = 0;
     while (i < 4) { t = t + p[i]; i = i + 1; }
     return t; }
-fn main() -> i32 { let r: Row; r.cells[0] = 1; r.cells[1] = 2; r.cells[2] = 3; r.cells[3] = 4;
+fn main() : i32 { let r: Row; r.cells[0] = 1; r.cells[1] = 2; r.cells[2] = 3; r.cells[3] = 4;
     return sum4(&r.cells); }'
 # --- the same field reached through a ptr<S>, where the base is a value.
 check "$A" 'array field behind ptr<S>'   9 'struct Row { cells: i32[4] }
-fn peek(pr: ptr<Row>) -> i32 { let p: ptr = &pr.cells; return p[1]; }
-fn main() -> i32 { let r: Row; r.cells[1] = 9; return peek(&r); }'
+fn peek(pr: ptr<Row>) : i32 { let p: ptr = &pr.cells; return p[1]; }
+fn main() : i32 { let r: Row; r.cells[1] = 9; return peek(&r); }'
 # --- the address itself, kept in a variable and indexed at a computed offset.
-check "$A" 'address in a variable'      12 'fn main() -> i32 {
+check "$A" 'address in a variable'      12 'fn main() : i32 {
     let a: i32[4] = 0; let p: ptr = &a; let i: i32 = 3;
     p[0] = 5; p[i] = 7;
     return p[0] + a[3]; }'
 # --- two arrays, two addresses: writing through one must not touch the other.
-check "$A" 'two arrays, two addresses'   3 'fn set(p: ptr, i: i32, v: i32) -> i32 { p[i] = v; return p[i]; }
-fn main() -> i32 { let a: i32[4] = 0; let b: i32[4] = 0;
+check "$A" 'two arrays, two addresses'   3 'fn set(p: ptr, i: i32, v: i32) : i32 { p[i] = v; return p[i]; }
+fn main() : i32 { let a: i32[4] = 0; let b: i32[4] = 0;
     if (set(&a, 2, 9) == 9 && b[2] == 0) { return 3; } return 0; }'
 # --- a reference passed onward to a second callee.
-check "$A" 'reference passed onward'    18 'fn addup(p: ptr) -> i32 { return p[0] + p[1] + p[2]; }
-fn twice(p: ptr) -> i32 { return addup(p) + addup(p); }
-fn main() -> i32 { let a: i32[3] = 3; return twice(&a); }'
+check "$A" 'reference passed onward'    18 'fn addup(p: ptr) : i32 { return p[0] + p[1] + p[2]; }
+fn twice(p: ptr) : i32 { return addup(p) + addup(p); }
+fn main() : i32 { let a: i32[3] = 3; return twice(&a); }'
 # --- `&buf` and the decayed array name are the same address.
-check "$A" '&buf and buf agree'          7 'fn main() -> i32 {
+check "$A" '&buf and buf agree'          7 'fn main() : i32 {
     let a: i32[2] = 0; let p: ptr = &a;
     if (p == a && p[0] == 0) { return 7; } return 0; }'
 # --------------------------------------------------------------------------
@@ -218,17 +218,17 @@ check "$A" '&buf and buf agree'          7 'fn main() -> i32 {
 # proves the store landed at the right offset rather than four bytes along.
 # --------------------------------------------------------------------------
 # --- an 8-byte element, through a ptr<i64> variable.
-check "$A" 'i64 array through ptr<i64>'  24 'fn main() -> i32 {
+check "$A" 'i64 array through ptr<i64>'  24 'fn main() : i32 {
     let w: i64[4] = 0; let p: ptr<i64> = &w;
     p[0] = 3; p[1] = 5; p[2] = 7; p[3] = 9;
     return w[0] + w[1] + w[2] + w[3]; }'
 # --- a 1-byte element: the stride is one, not four.
-check "$A" 'u8 array through ptr<u8>'    24 'fn main() -> i32 {
+check "$A" 'u8 array through ptr<u8>'    24 'fn main() : i32 {
     let b: u8[4] = 0; let p: ptr<u8> = &b;
     p[0] = 3; p[1] = 5; p[2] = 7; p[3] = 9;
     return b[0] + b[1] + b[2] + b[3]; }'
 # --- a 2-byte element.
-check "$A" 'u16 array through ptr<u16>'  24 'fn main() -> i32 {
+check "$A" 'u16 array through ptr<u16>'  24 'fn main() : i32 {
     let h: u16[4] = 0; let p: ptr<u16> = &h;
     p[0] = 3; p[1] = 5; p[2] = 7; p[3] = 9;
     return h[0] + h[1] + h[2] + h[3]; }'
@@ -237,26 +237,26 @@ check "$A" 'u16 array through ptr<u16>'  24 'fn main() -> i32 {
 # v0.23.63-dev: `return fill(w);` narrowed i64 -> i32 implicitly, which is now
 # refused, so the cast is spelled out. The array still travels by address and is
 # still indexed at eight bytes; the cast is after the call, not around `a`.
-check "$A" 'i64 array parameter'         24 'fn fill(a: i64[4]) -> i64 {
+check "$A" 'i64 array parameter'         24 'fn fill(a: i64[4]) : i64 {
     a[0] = 3; a[1] = 5; a[2] = 7; a[3] = 9;
     return a[0] + a[1] + a[2] + a[3]; }
-fn main() -> i32 { let w: i64[4] = 0; return i32(fill(w)); }'
+fn main() : i32 { let w: i64[4] = 0; return i32(fill(w)); }'
 # --- the same parameter shape for a 1-byte element.
-check "$A" 'u8 array parameter'          24 'fn fill(a: u8[4]) -> i32 {
+check "$A" 'u8 array parameter'          24 'fn fill(a: u8[4]) : i32 {
     a[0] = 3; a[1] = 5; a[2] = 7; a[3] = 9;
     return a[0] + a[1] + a[2] + a[3]; }
-fn main() -> i32 { let b: u8[4] = 0; return fill(b); }'
+fn main() : i32 { let b: u8[4] = 0; return fill(b); }'
 # --- the same stride on the way *in*: write through the array, read through
 #     the pointer. (The case above proves the store lands at the right offset;
 #     this one proves the load looks in the right place, which is a different
 #     code path and the one the m8 mutant below withdraws.)
-check "$A" 'i64 array read via ptr<i64>' 24 'fn main() -> i32 {
+check "$A" 'i64 array read via ptr<i64>' 24 'fn main() : i32 {
     let w: i64[4] = 0; let p: ptr<i64> = &w;
     w[0] = 3; w[1] = 5; w[2] = 7; w[3] = 9;
     return p[0] + p[1] + p[2] + p[3]; }'
 # --- a strided pointer survives a return and a second binding.
-check "$A" 'ptr<i64> returned and kept'  15 'fn get(w: ptr<i64>) -> ptr<i64> { return w; }
-fn main() -> i32 {
+check "$A" 'ptr<i64> returned and kept'  15 'fn get(w: ptr<i64>) : ptr<i64> { return w; }
+fn main() : i32 {
     let w: i64[3] = 0; w[0] = 4; w[1] = 5; w[2] = 6;
     let q: ptr<i64> = get(&w);
     return q[0] + q[1] + q[2]; }'
@@ -287,13 +287,13 @@ else
     }
     diff_case 'local + global + write-through' \
         'let g: i32[4] = 11;
-fn sum4(p: ptr) -> i32 { let t: i32 = 0; let i: i32 = 0;
+fn sum4(p: ptr) : i32 { let t: i32 = 0; let i: i32 = 0;
     while (i < 4) { t = t + p[i]; i = i + 1; }
     return t; }
-fn fill(p: ptr, v: i32) -> i32 { let i: i32 = 0;
+fn fill(p: ptr, v: i32) : i32 { let i: i32 = 0;
     while (i < 4) { p[i] = v; i = i + 1; }
     return p[0]; }
-fn main() -> i32 {
+fn main() : i32 {
     let buf: i32[4] = 7;
     let r: i32 = 0;
     if (sum4(&buf) == 28) { r = r + 1; }
@@ -313,11 +313,11 @@ int main(void) {
     return r; }'
     diff_case 'array field, behind a ptr<S>' \
         'struct Row { cells: i32[4] }
-fn sum4(p: ptr) -> i32 { let t: i32 = 0; let i: i32 = 0;
+fn sum4(p: ptr) : i32 { let t: i32 = 0; let i: i32 = 0;
     while (i < 4) { t = t + p[i]; i = i + 1; }
     return t; }
-fn rowSum(pr: ptr<Row>) -> i32 { let p: ptr = &pr.cells; return sum4(p); }
-fn main() -> i32 {
+fn rowSum(pr: ptr<Row>) : i32 { let p: ptr = &pr.cells; return sum4(p); }
+fn main() : i32 {
     let r: Row;
     r.cells[0] = 1; r.cells[1] = 2; r.cells[2] = 3; r.cells[3] = 4;
     return rowSum(&r) + sum4(&r.cells); }' \
@@ -355,54 +355,54 @@ reject() {
 GATE='cannot store a pointer to '
 # An 8-byte element: an untyped ptr would index it at half the right distance.
 reject '& of an i64[2] into a ptr'    "$GATE"'i64 elements in ptr' \
-    'fn main() -> i32 { let a: i64[2] = 0; let p: ptr = &a; return 0; }'
+    'fn main() : i32 { let a: i64[2] = 0; let p: ptr = &a; return 0; }'
 # A 1-byte element: four times the right distance.
 reject '& of a u8[2] into a ptr'      "$GATE"'u8 elements in ptr' \
-    'fn main() -> i32 { let a: u8[2] = 0; let p: ptr = &a; return 0; }'
+    'fn main() : i32 { let a: u8[2] = 0; let p: ptr = &a; return 0; }'
 # A 2-byte element: twice.
 reject '& of a u16[2] into a ptr'     "$GATE"'u16 elements in ptr' \
-    'fn main() -> i32 { let a: u16[2] = 0; let p: ptr = &a; return 0; }'
+    'fn main() : i32 { let a: u16[2] = 0; let p: ptr = &a; return 0; }'
 reject '& of a ptr[2] into a ptr'     "$GATE"'ptr elements in ptr' \
-    'fn main() -> i32 { let a: ptr[2] = 0; let p: ptr = &a; return 0; }'
+    'fn main() : i32 { let a: ptr[2] = 0; let p: ptr = &a; return 0; }'
 # A 12-byte struct element: the size is not even a power of two.
 reject '& of a 12-byte struct array'  "$GATE"'V3 elements in ptr' \
     'struct V3 { a: i32, b: i32, c: i32 }
-fn main() -> i32 { let a: V3[2] = V3 { 1, 2, 3 }; let p: ptr = &a; return 0; }'
+fn main() : i32 { let a: V3[2] = V3 { 1, 2, 3 }; let p: ptr = &a; return 0; }'
 # The same rule at file scope, and for a struct's array field.
 reject '& of a global i64[2]'         "$GATE"'i64 elements in ptr' \
     'let g: i64[2] = 0;
-fn main() -> i32 { let p: ptr = &g; return 0; }'
+fn main() : i32 { let p: ptr = &g; return 0; }'
 reject '& of an i64 array field'      "$GATE"'i64 elements in ptr' \
     'struct B { w: i64[2] }
-fn main() -> i32 { let b: B; let p: ptr = &b.w; return 0; }'
+fn main() : i32 { let b: B; let p: ptr = &b.w; return 0; }'
 # A strided pointer of one element type does not go into a slot that strides
 # over another: `p[i]` would disagree with the array the pointer came from.
 reject 'ptr<i64> from a ptr<u8> slot' 'cannot store a pointer to u8 elements in' \
-    'fn main() -> i32 { let a: u8[2] = 0; let p: ptr<i64> = &a; return 0; }'
+    'fn main() : i32 { let a: u8[2] = 0; let p: ptr<i64> = &a; return 0; }'
 # A ptr<S> names its own stride too: a pointer to V3 elements does not go into
 # a ptr<Q>, which strides at sizeof(Q) and not at sizeof(V3).
 reject 'ptr<V3> from a ptr<Q> slot'   "$GATE"'V3 elements in ptr<Q>' \
     'struct Q { x: i32 }
 struct V3 { a: i32, b: i32, c: i32 }
-fn main() -> i32 { let a: V3[2] = V3 { 1, 2, 3 }; let p: ptr<Q> = &a; return 0; }'
+fn main() : i32 { let a: V3[2] = V3 { 1, 2, 3 }; let p: ptr<Q> = &a; return 0; }'
 # Passing an array's address where an i32 is expected.
 reject '&buf into an i32 parameter'     'argument type mismatch calling takes at argument 1: expected i32' \
-    'fn takes(n: i32) -> i32 { return n; }
-fn main() -> i32 { let a: i32[2] = 0; return takes(&a); }'
+    'fn takes(n: i32) : i32 { return n; }
+fn main() : i32 { let a: i32[2] = 0; return takes(&a); }'
 # v0.23.58-dev relaxed `&`: a scalar, bool, pointer or struct lvalue now answers
 # a typed ptr<T>, so the old "struct-only" refusals for a scalar/bool/field/
 # element are gone — those cases now compile into a matching typed slot. Only a
 # size mismatch still refuses (a ptr<ptr> has no place in an untyped ptr), and
 # `&` still requires an lvalue.
-check "$A" '& of an i32 variable compiles' 0 'fn main() -> i32 { let x: i32 = 1; let q: ptr<i32> = &x; return 0; }'
-check "$A" '& of a bool variable compiles' 0 'fn main() -> i32 { let x: bool = true; let q: ptr<bool> = &x; return 0; }'
-check "$A" '& of a scalar struct field compiles' 0 'struct P { x: i32 } fn main() -> i32 { let s: P = P { 1 }; let q: ptr<i32> = &s.x; return 0; }'
-check "$A" '& of an i32 array element compiles' 0 'fn main() -> i32 { let a: i32[2] = 0; let q: ptr<i32> = &a[0]; return 0; }'
+check "$A" '& of an i32 variable compiles' 0 'fn main() : i32 { let x: i32 = 1; let q: ptr<i32> = &x; return 0; }'
+check "$A" '& of a bool variable compiles' 0 'fn main() : i32 { let x: bool = true; let q: ptr<bool> = &x; return 0; }'
+check "$A" '& of a scalar struct field compiles' 0 'struct P { x: i32 } fn main() : i32 { let s: P = P { 1 }; let q: ptr<i32> = &s.x; return 0; }'
+check "$A" '& of an i32 array element compiles' 0 'fn main() : i32 { let a: i32[2] = 0; let q: ptr<i32> = &a[0]; return 0; }'
 reject '& of a ptr variable'           'cannot store a pointer to ptr elements in ptr' \
-    'fn main() -> i32 { let p: ptr = 0; let q: ptr = &p; return 0; }'
+    'fn main() : i32 { let p: ptr = 0; let q: ptr = &p; return 0; }'
 reject '& of a call result'            "'&' requires a variable, a field, or a dereferenced ptr<S>" \
-    'fn f() -> i32 { return 1; }
-fn main() -> i32 { let q: ptr = &f(); return 0; }'
+    'fn f() : i32 { return 1; }
+fn main() : i32 { let q: ptr = &f(); return 0; }'
 
 # ---------------------------------------------------------------------------
 # [6/9] Coverage map. Every accepted row above has to name the rule it
@@ -492,9 +492,9 @@ mutate() {   # mutate <name> <sed-script> <expectation...>
 if [ "$have_qemu" = no ]; then
     printf '  SKIP: the mutation layer needs qemu to observe a changed answer\n'
 else
-LOCALREF='fn main() -> i32 { let a: i32[4] = 7; let p: ptr = &a; return p[0]; }'
+LOCALREF='fn main() : i32 { let a: i32[4] = 7; let p: ptr = &a; return p[0]; }'
 GLOBALREF='let g: i32[4] = 11;
-fn main() -> i32 { let p: ptr = &g; return p[0]; }'
+fn main() : i32 { let p: ptr = &g; return p[0]; }'
 # m1: the predicate is gone, so `&` never sees an array — every array address
 # falls through to the struct-only rule and is refused.
 mutate 'm1: arrayOperandOf is gone' \
@@ -518,7 +518,7 @@ mutate 'm3: global arm is gone' \
 # is accepted into an untyped ptr — where it would be indexed at four bytes.
 mutate 'm5: the stride guard is gone' \
     's/return ptrElemWidth(from)==4u;/return true;/' \
-    must_now_compile '& of a local i64 array' 'fn main() -> i32 { let a: i64[2] = 0; let p: ptr = &a; return 0; }'
+    must_now_compile '& of a local i64 array' 'fn main() : i32 { let a: i64[2] = 0; let p: ptr = &a; return 0; }'
 # m6: `&arr` answers the element type instead of a pointer, so it cannot be
 # stored in a ptr or passed to one.
 mutate 'm6: &arr answers the element type' \
@@ -529,7 +529,7 @@ mutate 'm6: &arr answers the element type' \
 # round exists to prevent. The i64 case must notice it.
 mutate 'm8: the stride is always four' \
     's/if(tyIsPtrToElem(st))pe=ptrElemType(st);/if(tyIsPtrToElem(st))pe=Ty::I32;/' \
-    must_differ 'i64 array read via ptr<i64>' 24 'fn main() -> i32 {
+    must_differ 'i64 array read via ptr<i64>' 24 'fn main() : i32 {
     let w: i64[4] = 0; let p: ptr<i64> = &w;
     w[0] = 3; w[1] = 5; w[2] = 7; w[3] = 9;
     return p[0] + p[1] + p[2] + p[3]; }'
@@ -538,7 +538,7 @@ mutate 'm8: the stride is always four' \
 # v0.22.50-dev frame-base encoding bug, with the same kind of invisibility.
 mutate 'm7: frame address not scaled' \
     's/if(slot>=0){emit(addImm(kGlobalBase,31,(uint32_t)slot\*8));return;}/if(slot>=0){emit(addImm(kGlobalBase,31,(uint32_t)slot));return;}/' \
-    must_differ '& of a second-slot array' 7 'fn main() -> i32 {
+    must_differ '& of a second-slot array' 7 'fn main() : i32 {
     let pad: i32 = 1;
     let a: i32[4] = 7;
     let p: ptr = &a;

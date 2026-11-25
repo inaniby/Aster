@@ -1,7 +1,7 @@
 const g_data_len: i32 = @embed_len("data.bin");
-fn data_ptr() -> ptr {
+fn data_ptr() : ptr {
     return @embed("data.bin");
 }
-fn data_len() -> i32 {
+fn data_len() : i32 {
     return g_data_len;
 }

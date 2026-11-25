@@ -5,11 +5,11 @@
 // exit status as tests/char-return-twin.c under qemu. Returns 0.
 struct S { c: char, n: i32 }
 
-fn toUpper(c: char) -> char { return char(c - 32); }   // 'a' -> 'A' (97-32=65)
+fn toUpper(c: char) : char { return char(c - 32); }   // 'a' -> 'A' (97-32=65)
 
 let g: char = 'm';   // 'm' = 109
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: char = 'A';
     let b: char = 'B';
     let s: char = a + b;          // 65 + 66 = 131

@@ -3,8 +3,8 @@
 #
 # The defect: a u8 parameter never arrived.
 #
-#     fn g(a: u8) -> u8 { return a; }
-#     fn main() -> i32 { return g(200); }        ->  0   (correct: 200)
+#     fn g(a: u8) : u8 { return a; }
+#     fn main() : i32 { return g(200); }        ->  0   (correct: 200)
 #
 # It was never an ABI problem, which is what made it hard to see: u8 locals,
 # u8 globals, u8 array elements and u8 struct fields were all correct. The
@@ -115,8 +115,8 @@ printf '%s\n' 'PASS: per-width ranges, both fallbacks, and no raw encoding at a 
 # ---------------------------------------------------------------------------
 printf '%s\n' '[3/7] Rejection: narrow parameters keep their typing'
 cat > "$W/u8-from-i64.ast" <<'AST'
-fn g(a: u8) -> u8 { return a; }
-fn main() -> i32 { let x: i64 = 5; return g(x); }
+fn g(a: u8) : u8 { return a; }
+fn main() : i32 { let x: i64 = 5; return g(x); }
 AST
 if out=$("$OUT/aster" build-elf "$W/u8-from-i64.ast" -o "$W/u8-from-i64" 2>&1); then
     echo 'FAIL: compiler accepted an i64 argument for a u8 parameter' >&2; exit 1
@@ -125,8 +125,8 @@ printf '%s\n' "$out" | grep -qF "argument type mismatch calling g at argument 1:
     || { echo "FAIL: wrong diagnostic for i64->u8 argument: $out" >&2; exit 1; }
 
 cat > "$W/u16-from-i64.ast" <<'AST'
-fn g(a: u16) -> u16 { return a; }
-fn main() -> i32 { let x: i64 = 5; return g(x); }
+fn g(a: u16) : u16 { return a; }
+fn main() : i32 { let x: i64 = 5; return g(x); }
 AST
 if out=$("$OUT/aster" build-elf "$W/u16-from-i64.ast" -o "$W/u16-from-i64" 2>&1); then
     echo 'FAIL: compiler accepted an i64 argument for a u16 parameter' >&2; exit 1
@@ -140,99 +140,99 @@ printf '%s\n' 'PASS: i64 into a u8/u16 parameter still rejected, with the parame
 # ---------------------------------------------------------------------------
 cat > "$CASES" <<'CASES_EOF'
 11~11
-fn g(a: u8) -> u8 { return a; }
-fn main() -> i32 { return g(200) == 200 ? 11 : 0; }
+fn g(a: u8) : u8 { return a; }
+fn main() : i32 { return g(200) == 200 ? 11 : 0; }
 @@@
 12~12
-fn g(a: u8) -> u8 { return a; }
-fn main() -> i32 { return g(255) == 255 ? 12 : 0; }
+fn g(a: u8) : u8 { return a; }
+fn main() : i32 { return g(255) == 255 ? 12 : 0; }
 @@@
 13~13
-fn g(a: u8) -> u8 { return a; }
-fn main() -> i32 { return g(0) == 0 ? 13 : 0; }
+fn g(a: u8) : u8 { return a; }
+fn main() : i32 { return g(0) == 0 ? 13 : 0; }
 @@@
 14~14
-fn g(a: u16) -> u16 { return a; }
-fn main() -> i32 { return g(40000) == 40000 ? 14 : 0; }
+fn g(a: u16) : u16 { return a; }
+fn main() : i32 { return g(40000) == 40000 ? 14 : 0; }
 @@@
 15~15
-fn g(a: u16) -> u16 { return a; }
-fn main() -> i32 { return g(65535) == 65535 ? 15 : 0; }
+fn g(a: u16) : u16 { return a; }
+fn main() : i32 { return g(65535) == 65535 ? 15 : 0; }
 @@@
 16~16
-fn g(a: u32) -> u32 { return a; }
-fn main() -> i32 { return g(4000000000) == 4000000000 ? 16 : 0; }
+fn g(a: u32) : u32 { return a; }
+fn main() : i32 { return g(4000000000) == 4000000000 ? 16 : 0; }
 @@@
 17~17
-fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, k: u8) -> i32 { return k; }
-fn main() -> i32 { return g(0, 0, 0, 0, 0, 0, 0, 200) == 200 ? 17 : 0; }
+fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, k: u8) : i32 { return k; }
+fn main() : i32 { return g(0, 0, 0, 0, 0, 0, 0, 200) == 200 ? 17 : 0; }
 @@@
 21~21
-fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, i: i32, j: u8) -> i32 { return j; }
-fn main() -> i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 200) == 200 ? 21 : 0; }
+fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, i: i32, j: u8) : i32 { return j; }
+fn main() : i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 200) == 200 ? 21 : 0; }
 @@@
 22~22
-fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, i: i32, j: u16) -> i32 { return j; }
-fn main() -> i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 40000) == 40000 ? 22 : 0; }
+fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, i: i32, j: u16) : i32 { return j; }
+fn main() : i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 40000) == 40000 ? 22 : 0; }
 @@@
 23~23
-fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, i: i32, j: u8, k: u8) -> i32 { return j + k; }
-fn main() -> i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 100, 50) == 150 ? 23 : 0; }
+fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, i: i32, j: u8, k: u8) : i32 { return j + k; }
+fn main() : i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 100, 50) == 150 ? 23 : 0; }
 @@@
 24~24
-fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, i: i32, j: i32, k: i32, l: u8) -> i32 { return l; }
-fn main() -> i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255) == 255 ? 24 : 0; }
+fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, h: i32, i: i32, j: i32, k: i32, l: u8) : i32 { return l; }
+fn main() : i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255) == 255 ? 24 : 0; }
 @@@
 31~31
-fn g(a: i64, b: u8) -> i32 { return b; }
-fn main() -> i32 { return g(4294967297, 200) == 200 ? 31 : 0; }
+fn g(a: i64, b: u8) : i32 { return b; }
+fn main() : i32 { return g(4294967297, 200) == 200 ? 31 : 0; }
 @@@
 32~32
-fn g(a: u8) -> u8 { return a; }
-fn h(a: i32) -> i32 { return g(200) + a * 0; }
-fn main() -> i32 { return h(0) == 200 ? 32 : 0; }
+fn g(a: u8) : u8 { return a; }
+fn h(a: i32) : i32 { return g(200) + a * 0; }
+fn main() : i32 { return h(0) == 200 ? 32 : 0; }
 @@@
 33~33
-fn sum(a: u8, n: i32) -> i32 { if (n == 0) { return a; } else { return a + sum(a, n - 1); } }
-fn main() -> i32 { return sum(50, 3) == 200 ? 33 : 0; }
+fn sum(a: u8, n: i32) : i32 { if (n == 0) { return a; } else { return a + sum(a, n - 1); } }
+fn main() : i32 { return sum(50, 3) == 200 ? 33 : 0; }
 @@@
 34~34
-fn g(a: u8) -> i32 { return a + 1; }
-fn main() -> i32 { return g(199) == 200 ? 34 : 0; }
+fn g(a: u8) : i32 { return a + 1; }
+fn main() : i32 { return g(199) == 200 ? 34 : 0; }
 @@@
 35~35
-fn g(a: u8, b: u8) -> i32 { return a + b; }
-fn main() -> i32 { return g(100, 50) == 150 ? 35 : 0; }
+fn g(a: u8, b: u8) : i32 { return a + b; }
+fn main() : i32 { return g(100, 50) == 150 ? 35 : 0; }
 @@@
 41~41
-fn main() -> i32 { let a: u8 = 200; return a == 200 ? 41 : 0; }
+fn main() : i32 { let a: u8 = 200; return a == 200 ? 41 : 0; }
 @@@
 42~42
 let g: u8[700] = 0;
-fn main() -> i32 { g[600] = 200; return g[600] == 200 ? 42 : 0; }
+fn main() : i32 { g[600] = 200; return g[600] == 200 ? 42 : 0; }
 @@@
 43~43
-fn main() -> i32 { let a: u8[700] = 0; a[600] = 200; return a[600] == 200 ? 43 : 0; }
+fn main() : i32 { let a: u8[700] = 0; a[600] = 200; return a[600] == 200 ? 43 : 0; }
 @@@
 44~44
 struct S { a: i32, b: u8 }
-fn main() -> i32 { let s: S = S { 1, 200 }; return s.b == 200 ? 44 : 0; }
+fn main() : i32 { let s: S = S { 1, 200 }; return s.b == 200 ? 44 : 0; }
 @@@
 45~45
-fn g(a: u8) -> u8 { return a; }
-fn main() -> i32 { let v: u8 = 200; return g(v) == 200 ? 45 : 0; }
+fn g(a: u8) : u8 { return a; }
+fn main() : i32 { let v: u8 = 200; return g(v) == 200 ? 45 : 0; }
 @@@
 51~51
-extern fn c_add_u8(a: u8, b: u8) -> i32;
-fn main() -> i32 { return c_add_u8(100, 50) == 150 ? 51 : 0; }
+extern fn c_add_u8(a: u8, b: u8) : i32;
+fn main() : i32 { return c_add_u8(100, 50) == 150 ? 51 : 0; }
 @@@
 52~52
-extern fn c_ninth_u8(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: u8) -> i32;
-fn main() -> i32 { return c_ninth_u8(0, 0, 0, 0, 0, 0, 0, 0, 200) == 200 ? 52 : 0; }
+extern fn c_ninth_u8(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: u8) : i32;
+fn main() : i32 { return c_ninth_u8(0, 0, 0, 0, 0, 0, 0, 0, 200) == 200 ? 52 : 0; }
 @@@
 53~53
-extern fn c_add_u16(a: u16, b: u16) -> i32;
-fn main() -> i32 { return c_add_u16(40000, 25535) == 65535 ? 53 : 0; }
+extern fn c_add_u16(a: u16, b: u16) : i32;
+fn main() : i32 { return c_add_u16(40000, 25535) == 65535 ? 53 : 0; }
 @@@
 CASES_EOF
 

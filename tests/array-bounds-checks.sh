@@ -24,7 +24,7 @@ printf '%s\n' 'PASS: both index paths route through the constant-folding bounds 
 printf '%s\n' '[3/6] Rejection: constant out-of-bounds READ on a fixed-size global array'
 cat > "$OUT/oob-read.ast" <<'AST'
 let values: i32[4] = 0;
-fn main() -> i32 { return values[2 + 2]; }
+fn main() : i32 { return values[2 + 2]; }
 AST
 if out=$("$OUT/aster" build-obj "$OUT/oob-read.ast" -o "$OUT/oob-read.o" 2>&1); then
     echo 'FAIL: compiler accepted an out-of-bounds constant read values[2+2] on i32[4]' >&2
@@ -38,7 +38,7 @@ printf '%s\n' 'PASS: values[2+2] on i32[4] rejected with name/index/length diagn
 printf '%s\n' '[4/6] Rejection: constant out-of-bounds WRITE and negative index'
 cat > "$OUT/oob-write.ast" <<'AST'
 let values: i32[4] = 0;
-fn main() -> i32 { values[-1] = 7; return 0; }
+fn main() : i32 { values[-1] = 7; return 0; }
 AST
 if out=$("$OUT/aster" build-obj "$OUT/oob-write.ast" -o "$OUT/oob-write.o" 2>&1); then
     echo 'FAIL: compiler accepted an out-of-bounds constant write values[-1] on i32[4]' >&2
@@ -50,9 +50,9 @@ printf '%s\n' 'PASS: values[-1] = 7 on i32[4] rejected (negative index caught)'
 
 printf '%s\n' '[5/6] Rejection: pointer-typed global runtime initializer'
 cat > "$OUT/ptr-global-init.ast" <<'AST'
-fn get_ptr() -> ptr { return "x"; }
+fn get_ptr() : ptr { return "x"; }
 let value: i32 = get_ptr();
-fn main() -> i32 { return value; }
+fn main() : i32 { return value; }
 AST
 if out=$("$OUT/aster" build-obj "$OUT/ptr-global-init.ast" -o "$OUT/ptr-global-init.o" 2>&1); then
     echo 'FAIL: compiler accepted a ptr-typed initializer for an i32 global' >&2
@@ -65,7 +65,7 @@ printf '%s\n' "PASS: global 'let value: i32 = get_ptr()' rejected (would truncat
 printf '%s\n' '[6/6] Acceptance: in-bounds constant index still compiles and runs'
 cat > "$OUT/valid.ast" <<'AST'
 let values: i32[4] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     values[1 + 2] = 9;
     let i: i32 = 2;
     values[i + 1] = values[3];

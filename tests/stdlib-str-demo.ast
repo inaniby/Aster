@@ -6,7 +6,7 @@
 // byte for byte.
 include "ailib.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     let ok: i32 = 0;
     let b: u8[64] = 0;
 

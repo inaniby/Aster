@@ -153,8 +153,8 @@ if [ "$have_qemu" != yes ]; then
 else
 cat > "$W/aster_unionfn.ast" <<'AST'
 union U { w: i32, q: i64, lo: u8, c: char }
-fn pack(v: i32) -> U { return U { v }; }
-fn widen(u: U) -> i64 { return u.q; }
+fn pack(v: i32) : U { return U { v }; }
+fn widen(u: U) : i64 { return u.q; }
 AST
 "$A" build-obj --pic "$W/aster_unionfn.ast" -o "$W/aster_unionfn.o" >"$W/aster_unionfn.log" 2>&1 \
     || { echo 'FAIL: Aster union functions do not build to an object:' >&2; cat "$W/aster_unionfn.log" >&2; exit 1; }
@@ -210,7 +210,7 @@ if [ "$have_qemu" != yes ]; then
 else
 cat > "$W/union_zerofill.ast" <<'AST'
 union U { w: i32, q: i64 }
-fn main() -> i32 {
+fn main() : i32 {
     let u: U = U { 5 };
     if (u.q != 5) { return 1; }
     return 0;
@@ -227,7 +227,7 @@ int main(void){
 C
 cat > "$W/union_overlap.ast" <<'AST'
 union U { w: i32, q: i64, lo: u8, c: char }
-fn main() -> i32 {
+fn main() : i32 {
     let u: U = U { 0x11223344 };
     if (i32(u.lo) != 0x44) { return 1; }
     if (i32(u.c) != 0x44) { return 2; }
@@ -246,7 +246,7 @@ int main(void){
 C
 cat > "$W/union_punning.ast" <<'AST'
 union U { w: i32, q: i64, lo: u8, c: char }
-fn main() -> i32 {
+fn main() : i32 {
     let u: U = U { 0 };
     u.q = 0x1122334455667788;
     if (u.w != 0x55667788) { return 1; }
@@ -268,7 +268,7 @@ C
 cat > "$W/union_size_align.ast" <<'AST'
 union U { w: i32, q: i64, lo: u8, c: char }
 struct Box { tag: i32, u: U }
-fn main() -> i32 {
+fn main() : i32 {
     if (sizeof(U) != 8) { return 1; }
     if (sizeof(Box) != 16) { return 2; }
     return 0;
@@ -287,7 +287,7 @@ C
 cat > "$W/union_struct_field.ast" <<'AST'
 union U { w: i32, q: i64 }
 struct Box { tag: i32, u: U }
-fn main() -> i32 {
+fn main() : i32 {
     let b: Box = Box { 7, U { 9 } };
     if (b.tag != 7) { return 1; }
     if (b.u.w != 9) { return 2; }
@@ -307,9 +307,9 @@ int main(void){
 C
 cat > "$W/union_param_ret.ast" <<'AST'
 union U { w: i32, q: i64 }
-fn make(v: i32) -> U { return U { v }; }
-fn id(u: U) -> U { return u; }
-fn main() -> i32 {
+fn make(v: i32) : U { return U { v }; }
+fn id(u: U) : U { return u; }
+fn main() : i32 {
     let a: U = make(11);
     if (a.w != 11) { return 1; }
     let b: U = id(U { 5 });
@@ -372,66 +372,66 @@ rej_n=0
 r(){ reject "$@" && rej_n=$((rej_n + 1)) || failed=1; }
 r 'union: zero values' \
 "union U { w: i32, q: i64 }
-fn main() -> i32 { let u: U = U { }; return 0; }" \
+fn main() : i32 { let u: U = U { }; return 0; }" \
 "union literal for 'U' has 0 values but a union takes exactly 1"
 r 'union: four values' \
 "union U { w: i32, q: i64, lo: u8, c: char }
-fn main() -> i32 { let u: U = U { 1, 2, 3, 4 }; return 0; }" \
+fn main() : i32 { let u: U = U { 1, 2, 3, 4 }; return 0; }" \
 "union literal for 'U' has 4 values but a union takes exactly 1"
 r 'union: field type mismatch' \
 "union U { w: i32, q: i64 }
-fn main() -> i32 { let u: U = U { true }; return 0; }" \
+fn main() : i32 { let u: U = U { true }; return 0; }" \
 "type mismatch in union literal for 'U' field 'w': expected i32, got bool"
 r 'union: empty declaration' \
 "union U { }
-fn main() -> i32 { return 0; }" \
+fn main() : i32 { return 0; }" \
 'union U must declare at least one field'
 r 'union: duplicate field' \
 "union U { w: i32, w: i32 }
-fn main() -> i32 { return 0; }" \
+fn main() : i32 { return 0; }" \
 'duplicate field in union U: w'
 r 'union: self containment' \
 "union U { w: i32, u: U }
-fn main() -> i32 { return 0; }" \
+fn main() : i32 { return 0; }" \
 'union U cannot contain itself'
 r 'union: duplicate declaration' \
 "union U { w: i32 }
 union U { q: i64 }
-fn main() -> i32 { return 0; }" \
+fn main() : i32 { return 0; }" \
 'duplicate union declaration: U'
 r 'union: conflicts with global' \
 "let U: i32 = 0;
 union U { w: i32 }
-fn main() -> i32 { return 0; }" \
+fn main() : i32 { return 0; }" \
 'union name conflicts with a global variable: U'
 r 'union: conflicts with function' \
-"fn U() -> i32 { return 0; }
+"fn U() : i32 { return 0; }
 union U { w: i32 }
-fn main() -> i32 { return 0; }" \
+fn main() : i32 { return 0; }" \
 'union name conflicts with a function: U'
 r 'union: first field is an array' \
 "union U { a: i32[4], w: i32 }
-fn main() -> i32 { let u: U = U { 1 }; return 0; }" \
+fn main() : i32 { let u: U = U { 1 }; return 0; }" \
 "union 'U' contains an array field and cannot be initialized by a literal"
 r 'union: too large' \
 "union U { a: i32[300], w: i32 }
-fn main() -> i32 { return 0; }" \
+fn main() : i32 { return 0; }" \
 "union U is too large: field 'a' reaches offset 1200"
 r 'union: non-literal global init' \
 "union U { w: i32, q: i64 }
 let g: U = 5;
-fn main() -> i32 { return 0; }" \
+fn main() : i32 { return 0; }" \
 'global struct initializer must be a struct literal: g'
 r 'union: literal in an i32 slot' \
 "union U { w: i32, q: i64 }
-fn main() -> i32 { let x: i32 = U { 5 }; return 0; }" \
+fn main() : i32 { let x: i32 = U { 5 }; return 0; }" \
 "type mismatch initializing 'x': expected i32, got U"
 [ "$failed" = 0 ] || exit 1
 printf '  %-30s %s\n' "refusals held" "$rej_n"
 # The positive counterpart: an array in a NON-first member must not block a
 # literal, because a union literal only writes the first member.
 printf '%s\n' 'union U { w: i32, a: i32[4] }
-fn main() -> i32 { let u: U = U { 5 }; return 0; }' > "$W/nonfirst.ast"
+fn main() : i32 { let u: U = U { 5 }; return 0; }' > "$W/nonfirst.ast"
 "$A" build-elf "$W/nonfirst.ast" -o "$W/nonfirst" >"$W/nonfirst.log" 2>&1 \
     || { echo 'FAIL: a non-first array member wrongly blocks a union literal' >&2; cat "$W/nonfirst.log" >&2; exit 1; }
 printf 'PASS: %-30s %s\n' 'non-first array allowed' 'literal accepted'
@@ -493,7 +493,7 @@ mutate(){ # $1 = label, $2 = sed script
 # forced off, `U { 5 }` is checked as a struct and refused for having one value
 # instead of two.
 mutate m1 's/s.isUnion=isUnion;/s.isUnion=false;/'
-printf '%s\n' 'union U { w: i32, q: i64 } fn main() -> i32 { let u: U = U { 5 }; return 0; }' > "$W/m1.ast"
+printf '%s\n' 'union U { w: i32, q: i64 } fn main() : i32 { let u: U = U { 5 }; return 0; }' > "$W/m1.ast"
 "$A" build-elf "$W/m1.ast" -o "$W/m1.orig" >/dev/null 2>&1 \
     || { echo 'FAIL: m1 witness does not build with the shipping compiler' >&2; exit 1; }
 if "$OUT/m1" build-elf "$W/m1.ast" -o "$W/m1" >/dev/null 2>&1; then
@@ -503,7 +503,7 @@ printf '  %-40s %s\n' 'a) union bit lost -> literal refused' 'noticed'
 # (b) The one-value fork in checkStructLit. Without it a four-value union
 # literal is accepted (one value per field), which the original refuses.
 mutate m2 '/Ty checkStructLit/,/return Ty::ofStruct/ s/const size_t want=isU?1u:sd.fields.size();/const size_t want=sd.fields.size();/'
-printf '%s\n' 'union U { w: i32, q: i64 } fn main() -> i32 { let u: U = U { 1, 2 }; return 0; }' > "$W/m2.ast"
+printf '%s\n' 'union U { w: i32, q: i64 } fn main() : i32 { let u: U = U { 1, 2 }; return 0; }' > "$W/m2.ast"
 if "$A" build-elf "$W/m2.ast" -o "$W/m2.orig" >/dev/null 2>&1; then
     echo 'FAIL: m2 witness is accepted by the shipping compiler' >&2; exit 1
 fi
@@ -517,7 +517,7 @@ mutate m3 's/storeAtT(31,17,b,Ty::I64)/storeAtT(0,17,b,Ty::I64)/'
 # (d) The union branch of structHasArrayField only looks at the first member.
 # With it disabled, an array in a later member wrongly blocks the literal.
 mutate m4 '/static bool structHasArrayField/,/^}/ s/    if(s.isUnion){/    if(false){/'
-printf '%s\n' 'union U { w: i32, a: i32[4] } fn main() -> i32 { let u: U = U { 5 }; return 0; }' > "$W/m4.ast"
+printf '%s\n' 'union U { w: i32, a: i32[4] } fn main() : i32 { let u: U = U { 5 }; return 0; }' > "$W/m4.ast"
 "$A" build-elf "$W/m4.ast" -o "$W/m4.orig" >/dev/null 2>&1 \
     || { echo 'FAIL: m4 witness does not build with the shipping compiler' >&2; exit 1; }
 if "$OUT/m4" build-elf "$W/m4.ast" -o "$W/m4" >/dev/null 2>&1; then

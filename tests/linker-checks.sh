@@ -162,7 +162,7 @@ rm -f tmp-arguments.o tmp-nested_calls.o tmp-recursion.o tmp-eight_args.o tmp-li
 # initializer in the non-_start object runs. Exit 7 below would mean it
 # never ran (pa stayed zero); exit 22 means it ran (pa points at ga).
 cat > "$TMPD/init-a.ast" <<'AST'
-fn fz() -> i32 { return 1; }
+fn fz() : i32 { return 1; }
 let ga: i32 = 22;
 let pa: ptr = &ga;
 AST
@@ -170,11 +170,11 @@ cat > "$TMPD/init-b.ast" <<'AST'
 extern let ga: i32;
 extern let pa: ptr;
 let pb: ptr = pa;
-fn main() -> i32 { if (pb == 0) { return 9; } return *pb; }
+fn main() : i32 { if (pb == 0) { return 9; } return *pb; }
 AST
 cat > "$TMPD/init-m.ast" <<'AST'
 extern let pa: ptr;
-fn main() -> i32 { if (pa == 0) { return 7; } return *pa; }
+fn main() : i32 { if (pa == 0) { return 7; } return *pa; }
 AST
 ./aster build-obj "$TMPD/init-a.ast" -o "$TMPD/init-a.o"
 ./aster build-obj "$TMPD/init-b.ast" -o "$TMPD/init-b.o"
@@ -204,12 +204,12 @@ rm -f "$TMPD/init-a.o" "$TMPD/init-b.o" "$TMPD/init-m.o" "$TMPD/init-ok" "$TMPD/
 # objects). The link order is the argument order, and a source is compiled to a
 # temporary object next to the output and removed again.
 cat > "$TMPD/ms-defs.ast" <<'AST'
-fn add2(x: i32) -> i32 { return x + 1; }
+fn add2(x: i32) : i32 { return x + 1; }
 let total: i32 = 5;
 AST
 cat > "$TMPD/ms-main.ast" <<'AST'
 include "ms-defs.ast";
-fn main() -> i32 { return add2(total); }
+fn main() : i32 { return add2(total); }
 AST
 ./aster build-elf "$TMPD/ms-main.ast" "$TMPD/ms-defs.ast" -o "$TMPD/ms.elf" >/dev/null
 set +e
@@ -278,7 +278,7 @@ if ./aster build-so "$TMPD/ms-main.ast" "$TMPD/ms-defs.ast" --soname libms.so -o
 fi
 grep -qF 'failed writing output: /dev/full' "$TMPD/full-dyn.log" \
     || { echo 'FAIL: build-so (dynamic path) to /dev/full did not report the write failure:' >&2; cat "$TMPD/full-dyn.log" >&2; exit 1; }
-awk 'BEGIN{for(i=0;i<3000;i++)printf "fn f%d() -> i32 { return %d; }\n",i,i; print "fn main() -> i32 { return f2999(); }"}' > "$TMPD/big.ast"
+awk 'BEGIN{for(i=0;i<3000;i++)printf "fn f%d() : i32 { return %d; }\n",i,i; print "fn main() : i32 { return f2999(); }"}' > "$TMPD/big.ast"
 if ./aster build-obj "$TMPD/big.ast" -o /dev/full 2>"$TMPD/full-bigobj.log"; then
     echo 'FAIL: build-obj of a large source to /dev/full exited 0' >&2; exit 1
 fi
@@ -307,12 +307,12 @@ printf 'WXYZ1234' > "$TMPD/embed-b/b.bin"
 cat > "$TMPD/embed-a/probe.ast" <<'AST'
 let g_a: ptr = @embed("a.bin");
 let g_a_len: i32 = @embed_len("a.bin");
-fn main() -> i32 { return g_a_len; }
+fn main() : i32 { return g_a_len; }
 AST
 cat > "$TMPD/embed-b/probe.ast" <<'AST'
 let g_b: ptr = @embed("b.bin");
 let g_b_len: i32 = @embed_len("b.bin");
-fn probe_b() -> i32 { return g_b_len; }
+fn probe_b() : i32 { return g_b_len; }
 AST
 ./aster build-obj "$TMPD/embed-a/probe.ast" -o "$TMPD/embed-a.o"
 ./aster build-obj "$TMPD/embed-b/probe.ast" -o "$TMPD/embed-b.o"
@@ -364,7 +364,7 @@ tls let b: i32 = 20;
 tls let z: i32 = 0;
 tls let w: i64 = 0;
 let g_bss: i32 = 0;
-fn main() -> i32 {
+fn main() : i32 {
     a = a + 5;
     b = b * 2;
     return a + b + g_bss;
@@ -457,7 +457,7 @@ echo 'PASS: TLS globals in the linked executable .symtab (ELF-P2-3); .so writers
 # that is the invariant, not "any alignment above the page size is refused".
 cat > "$TMPD/rodata-align.ast" <<'AST'
 let g_factor: i32 = 6;
-fn main() -> i32 {
+fn main() : i32 {
   let x: i32 = 7;
   let label: ptr = "pg-size-rodata";
   let _u: i32 = label[0];
@@ -496,8 +496,8 @@ grep -qF 'not aligned to its declared alignment' "$TMPD/rodata-align16k-so.log" 
 python3 - > "$TMPD/rodata-big.ast" <<'PY'
 print('let g_factor: i32 = 6;')
 for i in range(200):
-    print(f'fn f{i}() -> i32 {{ return {i}; }}')
-print('fn main() -> i32 { let label: ptr = "big-rodata"; let _u: i32 = label[0]; return f199() * g_factor; }')
+    print(f'fn f{i}() : i32 {{ return {i}; }}')
+print('fn main() : i32 { let label: ptr = "big-rodata"; let _u: i32 = label[0]; return f199() * g_factor; }')
 PY
 ./aster build-obj "$TMPD/rodata-big.ast" -o "$TMPD/rodata-big.o" >/dev/null
 python3 - "$TMPD/rodata-big.o" "$TMPD/rodata-big8k.o" 8192 <<'PY'

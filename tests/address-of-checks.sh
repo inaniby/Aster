@@ -85,31 +85,31 @@ A=$OUT/aster
 if [ "$have_qemu" = yes ]; then
 printf '%s\n' '[3/5] qemu: every lvalue kind & now addresses'
 # scalar local: &x is ptr<i32>, loaded back through it
-check "$A" 'scalar local &x'        7 'fn main() -> i32 { let x: i32 = 7; let p: ptr<i32> = &x; return *p; }'
+check "$A" 'scalar local &x'        7 'fn main() : i32 { let x: i32 = 7; let p: ptr<i32> = &x; return *p; }'
 # global scalar: &g is ptr<i32>, store through it, global sees the write
-check "$A" 'global scalar &g store' 9 'let g: i32 = 1; fn main() -> i32 { let p: ptr<i32> = &g; *p = 9; return g; }'
+check "$A" 'global scalar &g store' 9 'let g: i32 = 1; fn main() : i32 { let p: ptr<i32> = &g; *p = 9; return g; }'
 # scalar struct field: &s.a is ptr<i32>
-check "$A" 'scalar field &s.a'      11 'struct S { a: i32 } fn main() -> i32 { let s: S; s.a = 11; let p: ptr<i32> = &s.a; return *p; }'
+check "$A" 'scalar field &s.a'      11 'struct S { a: i32 } fn main() : i32 { let s: S; s.a = 11; let p: ptr<i32> = &s.a; return *p; }'
 # array element with DISTINCT values: &arr[2] must stride at 4 bytes
-check "$A" 'i32 element &arr[2]'    3 'fn main() -> i32 { let a: i32[4] = 0; let k: i32 = 0; while (k < 4) { a[k] = k + 1; k = k + 1; } let p: ptr<i32> = &a[2]; return *p; }'
+check "$A" 'i32 element &arr[2]'    3 'fn main() : i32 { let a: i32[4] = 0; let k: i32 = 0; while (k < 4) { a[k] = k + 1; k = k + 1; } let p: ptr<i32> = &a[2]; return *p; }'
 # i64 element with DISTINCT values: &w[1] must stride at 8 bytes (lands on 20, not 10)
-check "$A" 'i64 element &w[1]'     20 'fn main() -> i32 { let w: i64[3] = 0; w[0] = 10; w[1] = 20; w[2] = 30; let p: ptr<i64> = &w[1]; return i32(*p); }'
+check "$A" 'i64 element &w[1]'     20 'fn main() : i32 { let w: i64[3] = 0; w[0] = 10; w[1] = 20; w[2] = 30; let p: ptr<i64> = &w[1]; return i32(*p); }'
 # through a typed pointer with DISTINCT values: &p[1] (p is ptr<i32>) lands on arr[1]
-check "$A" 'through ptr &p[1]'      2 'fn main() -> i32 { let a: i32[4] = 0; let k: i32 = 0; while (k < 4) { a[k] = k + 1; k = k + 1; } let base: ptr<i32> = &a[0]; let p: ptr<i32> = &base[1]; return *p; }'
+check "$A" 'through ptr &p[1]'      2 'fn main() : i32 { let a: i32[4] = 0; let k: i32 = 0; while (k < 4) { a[k] = k + 1; k = k + 1; } let base: ptr<i32> = &a[0]; let p: ptr<i32> = &base[1]; return *p; }'
 # chain through a typed pointer with DISTINCT values: (&arr)[2] is arr[2]
-check "$A" 'chain (&arr)[2]'        3 'fn main() -> i32 { let a: i32[4] = 0; let k: i32 = 0; while (k < 4) { a[k] = k + 1; k = k + 1; } let base: ptr<i32> = &a[0]; let p: ptr<i32> = &base[2]; return *p; }'
+check "$A" 'chain (&arr)[2]'        3 'fn main() : i32 { let a: i32[4] = 0; let k: i32 = 0; while (k < 4) { a[k] = k + 1; k = k + 1; } let base: ptr<i32> = &a[0]; let p: ptr<i32> = &base[2]; return *p; }'
 # regression: struct address is still ptr<S>
-check "$A" 'struct &s regression'   4 'struct S { a: i32 } fn main() -> i32 { let s: S; s.a = 4; let p: ptr<S> = &s; return p.a; }'
+check "$A" 'struct &s regression'   4 'struct S { a: i32 } fn main() : i32 { let s: S; s.a = 4; let p: ptr<S> = &s; return p.a; }'
 # regression: whole-array address still decays to ptr<T>, distinct element
-check "$A" 'whole-array &arr regr.' 4 'fn main() -> i32 { let a: i32[4] = 0; let k: i32 = 0; while (k < 4) { a[k] = k + 1; k = k + 1; } let p: ptr<i32> = &a; return p[3]; }'
+check "$A" 'whole-array &arr regr.' 4 'fn main() : i32 { let a: i32[4] = 0; let k: i32 = 0; while (k < 4) { a[k] = k + 1; k = k + 1; } let p: ptr<i32> = &a; return p[3]; }'
 fi
 
 # ---------------------------------------------------------------------------
 # [4/5] Refusals that must stand: & still requires an lvalue.
 # ---------------------------------------------------------------------------
 printf '%s\n' '[4/5] & still requires a real lvalue'
-reject 'non-lvalue operand' "'&' requires a variable, a field, or a dereferenced ptr<S>" 'fn main() -> i32 { let x: i32 = 1; let p: ptr<i32> = &(x+1); return 0; }'
-reject 'literal operand'      "'&' requires a variable, a field, or a dereferenced ptr<S>" 'fn main() -> i32 { let p: ptr<i32> = &5; return 0; }'
+reject 'non-lvalue operand' "'&' requires a variable, a field, or a dereferenced ptr<S>" 'fn main() : i32 { let x: i32 = 1; let p: ptr<i32> = &(x+1); return 0; }'
+reject 'literal operand'      "'&' requires a variable, a field, or a dereferenced ptr<S>" 'fn main() : i32 { let p: ptr<i32> = &5; return 0; }'
 
 # ---------------------------------------------------------------------------
 # [5/5] The feature example, with its checksum, end to end.

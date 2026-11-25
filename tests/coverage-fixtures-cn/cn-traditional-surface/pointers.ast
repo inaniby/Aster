@@ -1,5 +1,5 @@
 // aster:language=en
-fn bump(p: ptr<i32>) -> i32 { p[0] = p[0] + 1; return p[0]; }
+fn bump(p: ptr<i32>) : i32 { p[0] = p[0] + 1; return p[0]; }
 fn main(): i32 {
 let a: i32[2] = [40, 0];
 let p: ptr<i32> = a;

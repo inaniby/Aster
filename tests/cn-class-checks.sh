@@ -114,7 +114,7 @@ src/main.ast
 PROJ
 cat > "$TMP/b26/src/std.ast" <<'SRC'
 // aster:language=en
-fn alloc(n: i32) -> ptr {
+fn alloc(n: i32) : ptr {
 return 0;
 }
 SRC
@@ -179,7 +179,7 @@ cp "$TMP/b26/aster.proj" "$TMP/b26-mismatch/aster.proj"
 cp "$TMP/b26/src/widget.ast" "$TMP/b26/src/main.ast" "$TMP/b26-mismatch/src/"
 cat > "$TMP/b26-mismatch/src/std.ast" <<'SRC'
 // aster:language=en
-fn alloc(n: i32) -> i32 {
+fn alloc(n: i32) : i32 {
 return 0;
 }
 SRC

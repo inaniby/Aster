@@ -232,7 +232,7 @@ grep -q '(1 compiled, 1 reused)' mut.log || {
 # bytes were replaced after the build must be caught on reuse and recompiled,
 # never silently linked. The poisoned object returns 99, the real program 0.
 # The poison object is built with `build-cn-obj --language en`: `build-obj`
-# cannot parse bilingual `:` sources (`expected ->`), while the standalone
+# cannot parse bilingual `:` sources (`expected ':'`), while the standalone
 # single-file bilingual path works (probe B2) -- the poison source calls no
 # foreign function, so it stays on that verified path.
 "$ASTER" build > mutclean.log 2>&1

@@ -1,6 +1,6 @@
 // aster:language=en
 fn pick(x: i32,
-        y: i32) -> i32 {
+        y: i32) : i32 {
 let r: i32 = 0;
 if (x == 1) { r = 1; }
 else if (x == 2) { r = 2; }

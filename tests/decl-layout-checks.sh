@@ -369,32 +369,32 @@ let endn: i32 = 0;
 let padn: i32 = 0;
 let gapn: i32 = 0;
 let statev: i32 = 0;
-let savedDec: fn(ptr) -> i32 = null;
-let savedInc: fn(ptr) -> i32 = null;
-let savedReset: fn(ptr) -> i32 = null;
+let savedDec: fn(ptr) : i32 = null;
+let savedInc: fn(ptr) : i32 = null;
+let savedReset: fn(ptr) : i32 = null;
 let savedUser: ptr = null;
-fn logKey(key: i32) -> i32 {
+fn logKey(key: i32) : i32 {
     keylog[logn] = key;
     logn = logn + 1;
     return 0;
 }
-fn aui_column(key: i32) -> i32 {
+fn aui_column(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_row(key: i32) -> i32 {
+fn aui_row(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_label(key: i32, text: ptr) -> i32 {
+fn aui_label(key: i32, text: ptr) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_text_i32(key: i32, value: i32) -> i32 {
+fn aui_text_i32(key: i32, value: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_button(key: i32, text: ptr, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     if (key == 1786076415) {
         savedDec = cb;
@@ -406,28 +406,28 @@ fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
     savedUser = user;
     return 0;
 }
-fn aui_pad(dp: i32) -> i32 {
+fn aui_pad(dp: i32) : i32 {
     padn = padn + 1;
     return 0;
 }
-fn aui_gap(dp: i32) -> i32 {
+fn aui_gap(dp: i32) : i32 {
     gapn = gapn + 1;
     return 0;
 }
-fn aui_state_set(key: i32, value: i32) -> i32 {
+fn aui_state_set(key: i32, value: i32) : i32 {
     if (key == 1) {
         statev = value;
     }
     return 0;
 }
-fn aui_invalidate() -> i32 {
+fn aui_invalidate() : i32 {
     return 0;
 }
-fn aui_end() -> i32 {
+fn aui_end() : i32 {
     endn = endn + 1;
     return 0;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr<App> = &g_app;
     let r: i32 = page_counter(p, p);
     if (r != 0) {
@@ -811,57 +811,57 @@ let clearn: i32 = 0;
 let focusn: i32 = 0;
 let openv: i32 = 0;
 let reasonn: i32 = 0;
-let savedClear: fn(ptr) -> i32 = null;
-let savedFocus: fn(ptr) -> i32 = null;
-let savedNotify: fn(ptr) -> i32 = null;
-let savedPromo: fn(ptr) -> i32 = null;
-let savedVolume: fn(ptr) -> i32 = null;
-let savedLanguage: fn(ptr) -> i32 = null;
+let savedClear: fn(ptr) : i32 = null;
+let savedFocus: fn(ptr) : i32 = null;
+let savedNotify: fn(ptr) : i32 = null;
+let savedPromo: fn(ptr) : i32 = null;
+let savedVolume: fn(ptr) : i32 = null;
+let savedLanguage: fn(ptr) : i32 = null;
 let savedUser: ptr = null;
-fn logKey(key: i32) -> i32 {
+fn logKey(key: i32) : i32 {
     keylog[logn] = key;
     logn = logn + 1;
     return 0;
 }
-fn aui_scroll(key: i32) -> i32 {
+fn aui_scroll(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_weight(w: i32) -> i32 {
+fn aui_weight(w: i32) : i32 {
     weightn = weightn + 1;
     return 0;
 }
-fn aui_column(key: i32) -> i32 {
+fn aui_column(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_row(key: i32) -> i32 {
+fn aui_row(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_pad(dp: i32) -> i32 {
+fn aui_pad(dp: i32) : i32 {
     padn = padn + 1;
     return 0;
 }
-fn aui_gap(dp: i32) -> i32 {
+fn aui_gap(dp: i32) : i32 {
     gapn = gapn + 1;
     return 0;
 }
-fn aui_label(key: i32, text: ptr) -> i32 {
+fn aui_label(key: i32, text: ptr) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_text_field(key: i32, hint: ptr) -> i32 {
+fn aui_text_field(key: i32, hint: ptr) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_text_value(key: i32) -> ptr {
+fn aui_text_value(key: i32) : ptr {
     return null;
 }
-fn aui_focus_get() -> i32 {
+fn aui_focus_get() : i32 {
     return 0;
 }
-fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_button(key: i32, text: ptr, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     if (key == -1171597166) {
         savedClear = cb;
@@ -871,72 +871,72 @@ fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
     savedUser = user;
     return 0;
 }
-fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     openv = open;
     savedLanguage = cb;
     savedUser = user;
     return 0;
 }
-fn aui_option(key: i32, text: ptr) -> i32 {
+fn aui_option(key: i32, text: ptr) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_select_value(key: i32) -> i32 {
+fn aui_select_value(key: i32) : i32 {
     return 2;
 }
-fn aui_select_reason() -> i32 {
+fn aui_select_reason() : i32 {
     reasonn = reasonn + 1;
     if (reasonn == 1) {
         return 0;
     }
     return 1;
 }
-fn aui_switch(key: i32, on: i32, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_switch(key: i32, on: i32, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     savedNotify = cb;
     savedUser = user;
     return 0;
 }
-fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     savedPromo = cb;
     savedUser = user;
     return 0;
 }
-fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     savedVolume = cb;
     savedUser = user;
     return 0;
 }
-fn aui_slider_value(key: i32) -> i32 {
+fn aui_slider_value(key: i32) : i32 {
     return 42;
 }
-fn aui_progress(key: i32, value: i32) -> i32 {
+fn aui_progress(key: i32, value: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_keyboard(target_key: i32) -> i32 {
+fn aui_keyboard(target_key: i32) : i32 {
     kbn = kbn + 1;
     return 0;
 }
-fn aui_text_clear(key: i32) -> i32 {
+fn aui_text_clear(key: i32) : i32 {
     clearn = clearn + 1;
     return 0;
 }
-fn aui_focus(key: i32) -> i32 {
+fn aui_focus(key: i32) : i32 {
     focusn = focusn + 1;
     return 0;
 }
-fn aui_invalidate() -> i32 {
+fn aui_invalidate() : i32 {
     return 0;
 }
-fn aui_end() -> i32 {
+fn aui_end() : i32 {
     endn = endn + 1;
     return 0;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr<App> = &g_app;
     g_app.sel_open = -1104391733;
     let r: i32 = page_input(p, p);
@@ -1747,18 +1747,18 @@ struct App {
     sel_open: i32
 }
 let g_app: App = App { 0, 0, 0, 1, 0, 500, 0 };
-extern fn aui_column(key: i32) -> i32;
-extern fn aui_row(key: i32) -> i32;
-extern fn aui_label(key: i32, text: ptr) -> i32;
-extern fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_text_i32(key: i32, value: i32) -> i32;
-extern fn aui_pad(dp: i32) -> i32;
-extern fn aui_gap(dp: i32) -> i32;
-extern fn aui_weight(w: i32) -> i32;
-extern fn aui_size(w: i32, h: i32) -> i32;
-extern fn aui_end() -> i32;
-extern fn aui_invalidate() -> i32;
-fn main() -> i32 {
+extern fn aui_column(key: i32) : i32;
+extern fn aui_row(key: i32) : i32;
+extern fn aui_label(key: i32, text: ptr) : i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_text_i32(key: i32, value: i32) : i32;
+extern fn aui_pad(dp: i32) : i32;
+extern fn aui_gap(dp: i32) : i32;
+extern fn aui_weight(w: i32) : i32;
+extern fn aui_size(w: i32, h: i32) : i32;
+extern fn aui_end() : i32;
+extern fn aui_invalidate() : i32;
+fn main() : i32 {
     return 0;
 }
 SRC
@@ -1769,7 +1769,7 @@ probe_file_en() { # reads the probe body on stdin after the shared en fixture
 }
 
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         NoSuchKind Title, ptr("x")
     }
@@ -1778,7 +1778,7 @@ SRC
 expect_fail 'en unknown node kind' "layout 'PageOne' node 'Title': unknown node kind 'NoSuchKind'" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Label Title, ptr("x")
         Label Title, ptr("y")
@@ -1788,7 +1788,7 @@ SRC
 expect_fail 'en duplicate node name' "duplicate node name 'Title' in layout 'PageOne'" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol, key = 5 {
         Label Title, key = 5, ptr("x")
     }
@@ -1797,7 +1797,7 @@ SRC
 expect_fail 'en explicit key collision' "node key collision: node 'MainCol' of layout 'PageOne'" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Number Count, key(Add)
     }
@@ -1806,17 +1806,17 @@ SRC
 expect_fail 'en key() to a nonexistent node' "node referenced by key('Add') does not exist" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageA(s: ptr<App>, user: ptr) -> View {
+layout PageA(s: ptr<App>, user: ptr) : View {
     Column A {
         Label Same, ptr("x")
     }
 }
-layout PageB(s: ptr<App>, user: ptr) -> View {
+layout PageB(s: ptr<App>, user: ptr) : View {
     Column A {
         Label Same, ptr("x")
     }
 }
-fn getKey() -> i32 {
+fn getKey() : i32 {
     return key(Same);
 }
 SRC
@@ -1827,7 +1827,7 @@ event Inc:tap() {
     let x: i32 = s.count;
     aui_invalidate();
 }
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Button Inc, ptr("Inc")
     }
@@ -1842,7 +1842,7 @@ event Inc:tap() {
     };
     aui_invalidate();
 }
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         let open: i32 = 0;
         Button Inc, ptr("Inc")
@@ -1852,7 +1852,7 @@ SRC
 expect_fail 'en event captures a layout-local' "event block 'Inc:tap' captures layout-local 'open'" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol, Grow(1) {
         Label Title, ptr("x")
     }
@@ -1861,7 +1861,7 @@ SRC
 expect_fail 'en grow has no framework call' "modifier 'Grow' has no framework target" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol, Padding(24), Padding(16) {
         Label Title, ptr("x")
     }
@@ -1870,7 +1870,7 @@ SRC
 expect_fail 'en duplicate modifier' "duplicate modifier 'Padding' of node 'MainCol'" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol, Padding("16dp") {
         Label Title, ptr("x")
     }
@@ -1879,7 +1879,7 @@ SRC
 expect_fail 'en string dimension' "modifier 'Padding' arguments take integers only; string dimensions are not accepted" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol, Size(Fill, 100) {
         Label Title, ptr("x")
     }
@@ -1888,7 +1888,7 @@ SRC
 expect_fail 'en size fill has no encoding' "Size 'Fill' has no framework encoding: use Weight(1) instead" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout main(s: ptr<App>, user: ptr) -> View {
+layout main(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Label Title, ptr("x")
     }
@@ -1897,12 +1897,12 @@ SRC
 expect_fail 'en layout named main' "a layout cannot be named 'main' (entry method)" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Label Title, ptr("x")
     }
 }
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Label Title, ptr("x")
     }
@@ -1911,7 +1911,7 @@ SRC
 expect_fail 'en duplicate layout declaration' "duplicate layout declaration 'PageOne'" \
     "$ASTER_BIN" build-cn-obj --language en "$TMP/probe-en.ast" -o "$TMP/probe-en.o"
 probe_file_en <<'SRC' > /dev/null
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
 }
 SRC
 expect_fail 'en empty layout body' "layout 'PageOne' has no node rows" \
@@ -1920,7 +1920,7 @@ probe_file_en <<'SRC' > /dev/null
 event NoSuch:tap() {
     aui_invalidate();
 }
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Label Title, ptr("x")
     }
@@ -1932,7 +1932,7 @@ probe_file_en <<'SRC' > /dev/null
 event Inc:longpress() {
     aui_invalidate();
 }
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Button Inc, ptr("Inc")
     }
@@ -1944,7 +1944,7 @@ probe_file_en <<'SRC' > /dev/null
 event Inc:NoSuchEvent() {
     aui_invalidate();
 }
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Button Inc, ptr("Inc")
     }
@@ -1956,7 +1956,7 @@ probe_file_en <<'SRC' > /dev/null
 event Inc:change() {
     aui_invalidate();
 }
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Button Inc, ptr("Inc")
     }
@@ -1968,7 +1968,7 @@ probe_file_en <<'SRC' > /dev/null
 event Title:tap() {
     aui_invalidate();
 }
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Label Title, ptr("x")
     }
@@ -1983,7 +1983,7 @@ event Inc:tap() {
 event Inc:tap() {
     aui_invalidate();
 }
-layout PageOne(s: ptr<App>, user: ptr) -> View {
+layout PageOne(s: ptr<App>, user: ptr) : View {
     Column MainCol {
         Button Inc, ptr("Inc")
     }

@@ -4,13 +4,13 @@
 # C-1: `aster build` supports bilingual APK projects end to end.
 #
 #   [1] P9 (bilingual project mode): an English file accepts the mainline
-#       `->` return type, and an `extern fn` declaration of a function
+#       `:` return type, and an `extern fn` declaration of a function
 #       defined in another source is the same symbol, not a duplicate.
 #   [2] a Chinese Counter (compiler default zh, no [language] config)
 #       builds to a signed APK via `aster build`; the rebuild reuses both
 #       per-source objects; a counter-source change recompiles both, a
 #       main-source change recompiles one.
-#   [3] an English Counter (explicit en, arrow returns, extern fn) builds
+#   [3] an English Counter (explicit en, colon returns, extern fn) builds
 #       to a signed APK the same way.
 #   [4] both APKs verify: `aster verify-apk` plus tests/validate_apk.py
 #       (v1 + v2 + v3 signatures, structure, digests).
@@ -56,17 +56,17 @@ fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
-printf '%s\n' '[1/6] P9: English `->` return type + extern fn of a defined function'
+printf '%s\n' '[1/6] P9: English `:` return type + extern fn of a defined function'
 mkdir -p "$TMP/p9exe/src"
 printf 'kind exe\n[language]\ndefault = "en"\nsrc/main.ast\nsrc/util.ast\n' > "$TMP/p9exe/aster.proj"
 cat > "$TMP/p9exe/src/main.ast" <<'SRC'
-extern fn add(a: i32, b: i32) -> i32;
-fn main() -> i32 {
+extern fn add(a: i32, b: i32) : i32;
+fn main() : i32 {
     return add(40, 2) - 42;
 }
 SRC
 cat > "$TMP/p9exe/src/util.ast" <<'SRC'
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: i32, b: i32) : i32 {
     return a + b;
 }
 SRC
@@ -77,17 +77,17 @@ grep -q '(2 compiled, 0 reused)' "$TMP/p9exe/build.log" || {
 if [ "$CAN_RUN" -eq 1 ]; then
     "$RUNNER" "$TMP/p9exe/build/p9exe" || {
         echo 'FAIL: the P9 executable did not exit 0' >&2; exit 1; }
-    printf '  %-40s %s\n' 'arrow returns + extern fn build and run' 'ok'
+    printf '  %-40s %s\n' 'colon returns + extern fn build and run' 'ok'
 else
     printf '  SKIP: P9 run needs qemu-aarch64 or AArch64 Linux\n'
 fi
 # Two definitions of one name are still a duplicate: the P9 allowance is
 # only declaration-vs-definition (and declaration-vs-declaration).
 cat > "$TMP/p9exe/src/main.ast" <<'SRC'
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: i32, b: i32) : i32 {
     return a + b;
 }
-fn main() -> i32 {
+fn main() : i32 {
     return add(40, 2) - 42;
 }
 SRC
@@ -122,14 +122,14 @@ SRC
             "${dir##*/}" > "$dir/aster.proj"
         cat > "$dir/src/counter.ast" <<'SRC'
 let count: i32 = 41;
-fn increment(step: i32) -> i32 {
+fn increment(step: i32) : i32 {
     count = count + step;
     return count;
 }
 SRC
         cat > "$dir/src/main.ast" <<'SRC'
-extern fn increment(step: i32) -> i32;
-fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+extern fn increment(step: i32) : i32;
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) : i32 {
     return increment(1);
 }
 SRC
@@ -160,7 +160,7 @@ grep -q '(1 compiled, 1 reused)' "$TMP/zhcounter/build4.log" || {
     echo 'FAIL: a main-source change did not recompile exactly one object:' >&2; cat "$TMP/zhcounter/build4.log" >&2; exit 1; }
 printf '  %-40s %s\n' 'zh Counter builds; per-source cache counts hold' 'ok'
 
-printf '%s\n' '[3/6] English Counter APK (explicit en, arrow + extern fn)'
+printf '%s\n' '[3/6] English Counter APK (explicit en, colon returns + extern fn)'
 build_counter "$TMP/encounter" en
 (cd "$TMP/encounter" && "$ASTER_BIN" build > build1.log 2>&1) || {
     echo 'FAIL: the English Counter did not build:' >&2; cat "$TMP/encounter/build1.log" >&2; exit 1; }

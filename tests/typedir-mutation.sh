@@ -44,7 +44,7 @@ grep -q 'TypedIR MISMATCH' "$SRC" \
 #                        would be accidentally right for the i32 field below.
 cat >"$OUT/probe.ast" <<'AST'
 struct P { big: i64, small: i32 }
-fn main() -> i32 {
+fn main() : i32 {
     let p: P;
     let a: i32 = 1;
     let v: i64 = p.big;

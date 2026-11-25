@@ -4,22 +4,22 @@
 #
 # v0.23.38-dev lets the *return type* be a function type:
 #
-#     fn pick(which: i32) -> fn(i32) -> i32 { ... }
+#     fn pick(which: i32) : fn(i32) : i32 { ... }
 #
 # What comes back is still an address — there is no first-class function value
 # — but the signature travels with it, in the return slot, the same way it
 # travels beside a ptr variable. Two things follow, and the round is worth
 # exactly as much as they are:
 #
-#   - `return inc;` inside pick is checked. inc has to *be* `fn(i32) -> i32`,
-#     so a `fn(i64) -> i64` there is a compile error at the return statement
+#   - `return inc;` inside pick is checked. inc has to *be* `fn(i32) : i32`,
+#     so a `fn(i64) : i64` there is a compile error at the return statement
 #     rather than a silent mismatch discovered at the first call;
 #   - the value a call hands back carries that signature into whatever it
 #     lands in, so `apply(pick(1), 20)` is checked against apply's parameter —
 #     the return slot and the parameter slot agreeing, or not, is one check
 #     spanning two functions.
 #
-# What the return slot does *not* do is change codegen: `let f: fn(i32) -> i32
+# What the return slot does *not* do is change codegen: `let f: fn(i32) : i32
 # = pick(0);` gets its staging and result widths from f's own declared type,
 # which is the same signature. The return slot's signature is a contract, and
 # a contract's worth is measured in the mistakes it refuses — so this suite's
@@ -140,15 +140,15 @@ emit_case(){
     fr_basic)
         # The feature itself: a getter whose return type is a function type,
         # and a call through what it handed back.
-        ast='fn inc(x: i32) -> i32 { return x + 1; }
-fn dbl(x: i32) -> i32 { return x + x; }
-fn pick(which: i32) -> fn(i32) -> i32 {
+        ast='fn inc(x: i32) : i32 { return x + 1; }
+fn dbl(x: i32) : i32 { return x + x; }
+fn pick(which: i32) : fn(i32) : i32 {
     if (which == 0) { return inc; }
     return dbl;
 }
-fn main() -> i32 {
-    let f: fn(i32) -> i32 = pick(0);
-    let g: fn(i32) -> i32 = pick(1);
+fn main() : i32 {
+    let f: fn(i32) : i32 = pick(0);
+    let g: fn(i32) : i32 = pick(1);
     return (f(20) + g(20)) % 251;
 }'
         c='static int inc(int x){ return x+1; }
@@ -167,14 +167,14 @@ int main(void){
         # Why the return slot carries a signature at all: the value never
         # touches a named variable, so the only signature in play is the one
         # the getter declared and the one the callee asked for.
-        ast='fn inc(x: i32) -> i32 { return x + 1; }
-fn dbl(x: i32) -> i32 { return x + x; }
-fn pick(which: i32) -> fn(i32) -> i32 {
+        ast='fn inc(x: i32) : i32 { return x + 1; }
+fn dbl(x: i32) : i32 { return x + x; }
+fn pick(which: i32) : fn(i32) : i32 {
     if (which == 0) { return inc; }
     return dbl;
 }
-fn apply(op: fn(i32) -> i32, v: i32) -> i32 { return op(v); }
-fn main() -> i32 {
+fn apply(op: fn(i32) : i32, v: i32) : i32 { return op(v); }
+fn main() : i32 {
     return apply(pick(1), 12) % 251;
 }'
         c='static int inc(int x){ return x+1; }
@@ -192,10 +192,10 @@ int main(void){
         # The width the returned signature is for. `a << 32` leaves the whole
         # answer in the upper half and zeroes the lower half, so a read at the
         # declared return width answers 7 and a read at i32 answers 0.
-        ast='fn shift32(a: i64) -> i64 { return a << 32; }
-fn getter() -> fn(i64) -> i64 { return shift32; }
-fn main() -> i32 {
-    let h: fn(i64) -> i64 = getter();
+        ast='fn shift32(a: i64) : i64 { return a << 32; }
+fn getter() : fn(i64) : i64 { return shift32; }
+fn main() : i32 {
+    let h: fn(i64) : i64 = getter();
     let big: i64 = 7;
     let r: i64 = 0 + h(big);
     return (r >> 32) % 251;
@@ -211,12 +211,12 @@ int main(void){
 }' ;;
     fr_zero_args)
         # The empty parameter list is a signature too — and the reason a
-        # per-parameter record exists: `fn() -> i32` has to be distinguishable
+        # per-parameter record exists: `fn() : i32` has to be distinguishable
         # from "no signature was declared".
-        ast='fn answer() -> i32 { return 7; }
-fn getz() -> fn() -> i32 { return answer; }
-fn main() -> i32 {
-    let z: fn() -> i32 = getz();
+        ast='fn answer() : i32 { return 7; }
+fn getz() : fn() : i32 { return answer; }
+fn main() : i32 {
+    let z: fn() : i32 = getz();
     return z() % 251;
 }'
         c='static int answer(void){ return 7; }
@@ -228,10 +228,10 @@ int main(void){
 }' ;;
     fr_bool_ret)
         # A bool return, read and branched on at the declared width.
-        ast='fn isBig(x: i32) -> bool { return x > 10; }
-fn getb() -> fn(i32) -> bool { return isBig; }
-fn main() -> i32 {
-    let b: fn(i32) -> bool = getb();
+        ast='fn isBig(x: i32) : bool { return x > 10; }
+fn getb() : fn(i32) : bool { return isBig; }
+fn main() : i32 {
+    let b: fn(i32) : bool = getb();
     if (b(20)) { return 3; }
     return 8;
 }'
@@ -245,10 +245,10 @@ int main(void){
 }' ;;
     fr_ptr_ret)
         # A ptr return: eight bytes that are not an i32, read as eight bytes.
-        ast='fn nothing(x: i32) -> ptr { return 0; }
-fn getp() -> fn(i32) -> ptr { return nothing; }
-fn main() -> i32 {
-    let h: fn(i32) -> ptr = getp();
+        ast='fn nothing(x: i32) : ptr { return 0; }
+fn getp() : fn(i32) : ptr { return nothing; }
+fn main() : i32 {
+    let h: fn(i32) : ptr = getp();
     let p: ptr = h(3);
     if (p == 0) { return 5; }
     return 9;
@@ -266,13 +266,13 @@ int main(void){
         # Two getters whose return slots declare different signatures: each
         # value is staged and read by its own, not by whichever was parsed
         # last.
-        ast='fn inc(x: i32) -> i32 { return x + 1; }
-fn shift32(a: i64) -> i64 { return a << 32; }
-fn geti() -> fn(i32) -> i32 { return inc; }
-fn getl() -> fn(i64) -> i64 { return shift32; }
-fn main() -> i32 {
-    let f: fn(i32) -> i32 = geti();
-    let g: fn(i64) -> i64 = getl();
+        ast='fn inc(x: i32) : i32 { return x + 1; }
+fn shift32(a: i64) : i64 { return a << 32; }
+fn geti() : fn(i32) : i32 { return inc; }
+fn getl() : fn(i64) : i64 { return shift32; }
+fn main() : i32 {
+    let f: fn(i32) : i32 = geti();
+    let g: fn(i64) : i64 = getl();
     let big: i64 = 7;
     let r: i64 = 0 + g(big);
     return (f(1) + (r >> 32)) % 251;
@@ -293,12 +293,12 @@ int main(void){
     fr_reassign)
         # A returned fn-pointer is an ordinary value: the variable holding it
         # can be filled again from another getter.
-        ast='fn inc(x: i32) -> i32 { return x + 1; }
-fn dbl(x: i32) -> i32 { return x + x; }
-fn geti() -> fn(i32) -> i32 { return inc; }
-fn getd() -> fn(i32) -> i32 { return dbl; }
-fn main() -> i32 {
-    let f: fn(i32) -> i32 = geti();
+        ast='fn inc(x: i32) : i32 { return x + 1; }
+fn dbl(x: i32) : i32 { return x + x; }
+fn geti() : fn(i32) : i32 { return inc; }
+fn getd() : fn(i32) : i32 { return dbl; }
+fn main() : i32 {
+    let f: fn(i32) : i32 = geti();
     let a: i32 = f(10);
     f = getd();
     let b: i32 = f(10);
@@ -318,13 +318,13 @@ int main(void){
 }' ;;
     fr_loop)
         # Taken fresh each iteration, which is what a table lookup is.
-        ast='fn inc(x: i32) -> i32 { return x + 1; }
-fn geti() -> fn(i32) -> i32 { return inc; }
-fn main() -> i32 {
+        ast='fn inc(x: i32) : i32 { return x + 1; }
+fn geti() : fn(i32) : i32 { return inc; }
+fn main() : i32 {
     let s: i32 = 0;
     let i: i32 = 0;
     while (i < 5) {
-        let f: fn(i32) -> i32 = geti();
+        let f: fn(i32) : i32 = geti();
         s = s + f(i);
         i = i + 1;
     }
@@ -346,12 +346,12 @@ int main(void){
     fr_stack_args)
         # Ten parameters: the ninth and tenth travel on the stack, staged by
         # a signature that came from a return slot.
-        ast='fn sum10(a: i32, b: i32, c: i32, d: i32, e: i32, ff: i32, gg: i32, hh: i32, ii: i32, jj: i32) -> i32 {
+        ast='fn sum10(a: i32, b: i32, c: i32, d: i32, e: i32, ff: i32, gg: i32, hh: i32, ii: i32, jj: i32) : i32 {
     return a + b + c + d + e + ff + gg + hh + ii + jj;
 }
-fn get10() -> fn(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 { return sum10; }
-fn main() -> i32 {
-    let s: fn(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 = get10();
+fn get10() : fn(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) : i32 { return sum10; }
+fn main() : i32 {
+    let s: fn(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) : i32 = get10();
     return s(1, 2, 3, 4, 5, 6, 7, 8, 9, 10) % 251;
 }'
         c='static int sum10(int a, int b, int c, int d, int e, int ff, int gg, int hh, int ii, int jj){
@@ -365,10 +365,10 @@ int main(void){
 }' ;;
     fr_global_slot)
         # A global fn slot filled from a getter, then called through.
-        ast='fn dbl(x: i32) -> i32 { return x + x; }
-let gslot: fn(i32) -> i32;
-fn getd() -> fn(i32) -> i32 { return dbl; }
-fn main() -> i32 {
+        ast='fn dbl(x: i32) : i32 { return x + x; }
+let gslot: fn(i32) : i32;
+fn getd() : fn(i32) : i32 { return dbl; }
+fn main() : i32 {
     gslot = getd();
     return gslot(41) % 251;
 }'
@@ -383,10 +383,10 @@ int main(void){
     fr_struct_field)
         # Both halves of the round in one line: the return slot's signature
         # has to satisfy the field's, and the field's then stages the call.
-        ast='struct H { cb: fn(i32) -> i32 }
-fn dbl(x: i32) -> i32 { return x + x; }
-fn getd() -> fn(i32) -> i32 { return dbl; }
-fn main() -> i32 {
+        ast='struct H { cb: fn(i32) : i32 }
+fn dbl(x: i32) : i32 { return x + x; }
+fn getd() : fn(i32) : i32 { return dbl; }
+fn main() : i32 {
     let h: H = H { getd() };
     return h.cb(20) % 251;
 }'
@@ -463,41 +463,41 @@ reject(){ # reject <name> <source> <expected message fragment>
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "a returned fn-pointer whose signature is not the return type's" \
-    'fn wide(x: i64) -> i64 { return x; }
-fn get() -> fn(i32) -> i32 { return wide; }
-fn main() -> i32 { return 0; }' \
-    "return type mismatch in function get: expected fn(i32) -> i32, got fn(i64) -> i64"
+    'fn wide(x: i64) : i64 { return x; }
+fn get() : fn(i32) : i32 { return wide; }
+fn main() : i32 { return 0; }' \
+    "return type mismatch in function get: expected fn(i32) : i32, got fn(i64) : i64"
 reject "a returned fn-pointer with the wrong argument count" \
-    'fn pair(a: i32, b: i32) -> i32 { return a + b; }
-fn get() -> fn(i32) -> i32 { return pair; }
-fn main() -> i32 { return 0; }' \
-    "return type mismatch in function get: expected fn(i32) -> i32, got fn(i32, i32) -> i32"
+    'fn pair(a: i32, b: i32) : i32 { return a + b; }
+fn get() : fn(i32) : i32 { return pair; }
+fn main() : i32 { return 0; }' \
+    "return type mismatch in function get: expected fn(i32) : i32, got fn(i32, i32) : i32"
 reject "a returned fn-pointer with the wrong return type only" \
-    'fn shift32(a: i32) -> i64 { return 0; }
-fn get() -> fn(i32) -> i32 { return shift32; }
-fn main() -> i32 { return 0; }' \
-    "return type mismatch in function get: expected fn(i32) -> i32, got fn(i32) -> i64"
+    'fn shift32(a: i32) : i64 { return 0; }
+fn get() : fn(i32) : i32 { return shift32; }
+fn main() : i32 { return 0; }' \
+    "return type mismatch in function get: expected fn(i32) : i32, got fn(i32) : i64"
 # The contract spanning two functions: what the getter promised is what the
 # callee is asked for, and they disagree.
 reject "a returned fn-pointer handed to a parameter wanting another signature" \
-    'fn wide(x: i64) -> i64 { return x; }
-fn getw() -> fn(i64) -> i64 { return wide; }
-fn apply(op: fn(i32) -> i32, v: i32) -> i32 { return op(v); }
-fn main() -> i32 { return apply(getw(), 1); }' \
-    "argument type mismatch calling apply at argument 1: expected fn(i32) -> i32, got fn(i64) -> i64"
+    'fn wide(x: i64) : i64 { return x; }
+fn getw() : fn(i64) : i64 { return wide; }
+fn apply(op: fn(i32) : i32, v: i32) : i32 { return op(v); }
+fn main() : i32 { return apply(getw(), 1); }' \
+    "argument type mismatch calling apply at argument 1: expected fn(i32) : i32, got fn(i64) : i64"
 reject "a returned fn-pointer stored into a field wanting another signature" \
-    'struct H { cb: fn(i32) -> i32 }
-fn wide(x: i64) -> i64 { return x; }
-fn getw() -> fn(i64) -> i64 { return wide; }
-fn main() -> i32 {
+    'struct H { cb: fn(i32) : i32 }
+fn wide(x: i64) : i64 { return x; }
+fn getw() : fn(i64) : i64 { return wide; }
+fn main() : i32 {
     let h: H = H { getw() };
     return 0;
 }' \
-    "expected fn(i32) -> i32, got fn(i64) -> i64"
+    "expected fn(i32) : i32, got fn(i64) : i64"
 reject "calling the address a call handed back, on the spot" \
-    'fn inc(x: i32) -> i32 { return x + 1; }
-fn pick(which: i32) -> fn(i32) -> i32 { return inc; }
-fn main() -> i32 {
+    'fn inc(x: i32) : i32 { return x + 1; }
+fn pick(which: i32) : fn(i32) : i32 { return inc; }
+fn main() : i32 {
     return pick(0)(20);
 }' \
     "cannot call the result of this expression"
@@ -549,16 +549,16 @@ must_lose_diagnostic(){ # must_lose_diagnostic <tag> <probe> <fragment>
 
 # Probes the mutation layer reuses, written here so each check really tests
 # its mutation and not a missing file.
-printf '%s\n' 'fn wide(x: i64) -> i64 { return x; }
-fn get() -> fn(i32) -> i32 { return wide; }
-fn main() -> i32 { return 0; }' > "$W/rej_retslot.ast"
-printf '%s\n' 'fn wide(x: i64) -> i64 { return x; }
-fn getw() -> fn(i64) -> i64 { return wide; }
-fn apply(op: fn(i32) -> i32, v: i32) -> i32 { return op(v); }
-fn main() -> i32 { return apply(getw(), 1); }' > "$W/rej_handoff.ast"
-printf '%s\n' 'fn inc(x: i32) -> i32 { return x + 1; }
-fn pick(which: i32) -> fn(i32) -> i32 { return inc; }
-fn main() -> i32 {
+printf '%s\n' 'fn wide(x: i64) : i64 { return x; }
+fn get() : fn(i32) : i32 { return wide; }
+fn main() : i32 { return 0; }' > "$W/rej_retslot.ast"
+printf '%s\n' 'fn wide(x: i64) : i64 { return x; }
+fn getw() : fn(i64) : i64 { return wide; }
+fn apply(op: fn(i32) : i32, v: i32) : i32 { return op(v); }
+fn main() : i32 { return apply(getw(), 1); }' > "$W/rej_handoff.ast"
+printf '%s\n' 'fn inc(x: i32) : i32 { return x + 1; }
+fn pick(which: i32) : fn(i32) : i32 { return inc; }
+fn main() : i32 {
     return pick(0)(20);
 }' > "$W/rej_onthespot.ast"
 

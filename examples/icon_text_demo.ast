@@ -14,10 +14,10 @@
 // Every path below is relative to THIS file's directory, which is what @embed
 // resolves against (C #include rules), so the demo builds from any cwd.
 
-extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32;
-extern fn ANativeWindow_setBuffersGeometry(window: ptr, width: i32, height: i32, format: i32) -> i32;
-extern fn ANativeWindow_lock(window: ptr, outBuffer: ptr, inOutDirty: ptr) -> i32;
-extern fn ANativeWindow_unlockAndPost(window: ptr) -> i32;
+extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) : i32;
+extern fn ANativeWindow_setBuffersGeometry(window: ptr, width: i32, height: i32, format: i32) : i32;
+extern fn ANativeWindow_lock(window: ptr, outBuffer: ptr, inOutDirty: ptr) : i32;
+extern fn ANativeWindow_unlockAndPost(window: ptr) : i32;
 
 let g_winbuf: i32[32] = 0;
 let g_dirty: i32[4] = 0;
@@ -44,7 +44,7 @@ let g_line3_len: i32 = @embed_len("demo_assets/line3.txt");
 // and no bitwise operators, so "is bit col set" is done with division:
 // p = 128 / 2^col, then (byte / p) mod 2.
 // ---------------------------------------------------------------------------
-fn glyph_bit(byte: i32, col: i32) -> i32 {
+fn glyph_bit(byte: i32, col: i32) : i32 {
     let p: i32 = 128;
     let k: i32 = 0;
     while (k < col) {
@@ -58,7 +58,7 @@ fn glyph_bit(byte: i32, col: i32) -> i32 {
 // Draw n characters of txt, 8x8 cells scaled by ts, left edge at x0, top at y0.
 // colour is packed as r*65536 + g*256 + b, because a helper cannot take nine
 // arguments.
-fn draw_text(pixels: ptr, stride: i32, txt: ptr, n: i32, x0: i32, y0: i32, ts: i32, colour: i32) -> i32 {
+fn draw_text(pixels: ptr, stride: i32, txt: ptr, n: i32, x0: i32, y0: i32, ts: i32, colour: i32) : i32 {
     let b: i32 = colour - (colour / 256) * 256;
     let q: i32 = colour / 256;
     let g: i32 = q - (q / 256) * 256;
@@ -112,7 +112,7 @@ fn draw_text(pixels: ptr, stride: i32, txt: ptr, n: i32, x0: i32, y0: i32, ts: i
 // preview harness calls directly: the pixels below are the pixels the app
 // draws on a phone, with no Android involved.
 // ---------------------------------------------------------------------------
-fn render_rgba(pixels: ptr, w: i32, h: i32, stride: i32) -> i32 {
+fn render_rgba(pixels: ptr, w: i32, h: i32, stride: i32) : i32 {
     if (w < 8) {
         return 0;
     } else {
@@ -230,7 +230,7 @@ fn render_rgba(pixels: ptr, w: i32, h: i32, stride: i32) -> i32 {
 // ---------------------------------------------------------------------------
 // Android glue: ask for RGBA_8888 up front, lock, draw, post.
 // ---------------------------------------------------------------------------
-fn draw_frame(window: ptr) -> i32 {
+fn draw_frame(window: ptr) : i32 {
     let geom: i32 = ANativeWindow_setBuffersGeometry(window, 0, 0, 1);
     let locked: i32 = ANativeWindow_lock(window, g_winbuf, g_dirty);
     if (locked != 0) {
@@ -258,20 +258,20 @@ fn draw_frame(window: ptr) -> i32 {
     }
 }
 
-fn on_native_window_created(activity: ptr, window: ptr) -> i32 {
+fn on_native_window_created(activity: ptr, window: ptr) : i32 {
     let logged: i32 = __android_log_print(3, "Aster", "window created");
     return draw_frame(window);
 }
 
-fn on_native_window_resized(activity: ptr, window: ptr) -> i32 {
+fn on_native_window_resized(activity: ptr, window: ptr) : i32 {
     return draw_frame(window);
 }
 
-fn on_native_window_redraw_needed(activity: ptr, window: ptr) -> i32 {
+fn on_native_window_redraw_needed(activity: ptr, window: ptr) : i32 {
     return draw_frame(window);
 }
 
-fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) : i32 {
     // ANativeActivity layout: callbacks@0 — offset 48 is sdkVersion, not a
     // pointer, and reading it as callbacks crashes on the first store.
     let cb: ptr = load_ptr(activity);

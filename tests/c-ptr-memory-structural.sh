@@ -17,7 +17,7 @@ else echo 'SKIP: readelf unavailable'; fi
 $HOSTCC -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -c tests/c-ptr-memory-host.c -o "$WORK/harness.o"
 echo 'PASS: strict pointer memory C harness compile'
 cat > "$WORK/bad-deref.ast" <<'AST'
-fn bad(x: i32) -> i32 { return *x; }
+fn bad(x: i32) : i32 { return *x; }
 AST
 if "$WORK/aster" build-so "$WORK/bad-deref.ast" -o "$WORK/bad.so" >"$WORK/bad.log" 2>&1; then echo 'FAIL: non-pointer dereference accepted'; exit 10; fi
 grep -F 'dereference requires a ptr expression' "$WORK/bad.log" >/dev/null

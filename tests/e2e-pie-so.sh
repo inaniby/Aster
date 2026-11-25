@@ -61,15 +61,15 @@ EOF
 cat > tmp-so-multi-a.ast <<'EOF'
 include "tmp-so-shared.ast";
 let accumulator: i32 = 7;
-fn add(a: i32, b: i32) -> i32 { return a + b; }
-fn mul(a: i32, b: i32) -> i32 { return a * b; }
-fn accumulate(delta: i32) -> i32 { accumulator = accumulator + delta; return accumulator; }
-fn current() -> i32 { return accumulator; }
+fn add(a: i32, b: i32) : i32 { return a + b; }
+fn mul(a: i32, b: i32) : i32 { return a * b; }
+fn accumulate(delta: i32) : i32 { accumulator = accumulator + delta; return accumulator; }
+fn current() : i32 { return accumulator; }
 EOF
 cat > tmp-so-multi-b.ast <<'EOF'
 include "tmp-so-shared.ast";
 let untouched: i32 = 0;
-fn untouched_value() -> i32 { let s: Acc = Acc { 0 }; return untouched + s.v; }
+fn untouched_value() : i32 { let s: Acc = Acc { 0 }; return untouched + s.v; }
 EOF
 ./aster build-so tmp-so-multi-a.ast tmp-so-multi-b.ast -o tmp-so-multi.so
 echo "PASS: multi-TU build-so sharing a struct include compiles"

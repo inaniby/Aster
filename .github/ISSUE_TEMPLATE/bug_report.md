@@ -10,7 +10,7 @@ labels: bug
 A minimal `.ast` program (or ELF/APK input) and the exact command line:
 
 ```aster
-fn main() -> i32 { return 42; }
+fn main() : i32 { return 42; }
 ```
 
 ```sh

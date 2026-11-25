@@ -220,7 +220,7 @@ def aster_region():
     lines.append("// Byte-wise equality of n bytes at id against the")
     lines.append("// NUL-terminated literal lit; the terminator must sit")
     lines.append("// exactly at n, so unequal lengths answer 0 as well.")
-    lines.append("fn ident_is(lit: ptr<u8>, id: ptr<u8>, n: i32) -> i32 {")
+    lines.append("fn ident_is(lit: ptr<u8>, id: ptr<u8>, n: i32) : i32 {")
     lines.append("    let i: i32 = 0;")
     lines.append("    while (i < n) {")
     lines.append("        if (load_u8(lit + i) != load_u8(id + i)) { return 0; }")
@@ -234,7 +234,7 @@ def aster_region():
                  % KEYWORD_COUNT)
     lines.append("// each, from the same list as the C twin's table")
     lines.append("// (tests/lexer_names.h). No match is K_Ident.")
-    lines.append("fn keyword_kind(id: ptr<u8>, n: i32) -> i32 {")
+    lines.append("fn keyword_kind(id: ptr<u8>, n: i32) : i32 {")
     for spelling, kind in KEYWORDS:
         lines.append('    if (ident_is("%s", id, n)) { return K_%s; }'
                      % (spelling, kind))

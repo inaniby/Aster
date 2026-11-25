@@ -144,15 +144,15 @@ A=$OUT/aster
 if [ "$have_qemu" = yes ]; then
 printf '%s\n' '[3/9] qemu: the condition decision table, one rule at a time'
 # The literals, in every branch shape.
-check "$A" 'if (true)'          7 'fn main() -> i32 { if (true) { return 7; } return 9; }'
-check "$A" 'if (false)'         9 'fn main() -> i32 { if (false) { return 7; } return 9; }'
-check "$A" 'else-if chain'      2 'fn main() -> i32 { if (false) { return 1; } else if (true) { return 2; } else { return 3; } }'
+check "$A" 'if (true)'          7 'fn main() : i32 { if (true) { return 7; } return 9; }'
+check "$A" 'if (false)'         9 'fn main() : i32 { if (false) { return 7; } return 9; }'
+check "$A" 'else-if chain'      2 'fn main() : i32 { if (false) { return 1; } else if (true) { return 2; } else { return 3; } }'
 # Integer truthiness: the shape the language refused before this round.
-check "$A" 'while counts down'  5 'fn main() -> i32 { let n: i32 = 5; let c: i32 = 0; while (n) { c = c + 1; n = n - 1; } return c; }'
-check "$A" 'while (0) never runs' 0 'fn main() -> i32 { let c: i32 = 0; while (0) { c = c + 1; } return c; }'
-check "$A" 'negative is true'   3 'fn main() -> i32 { let n: i32 = -3; let c: i32 = 0; while (n) { c = c + 1; n = n + 1; } return c; }'
-check "$A" 'for integer cond'   6 'fn main() -> i32 { let s: i32 = 0; for (let i: i32 = 0; i < 4; i = i + 1) { s = s + i; } return s; }'
-check "$A" 'while (true) + return' 3 'fn main() -> i32 { let c: i32 = 0; while (true) { c = c + 1; if (c == 3) { return c; } } return 0; }'
+check "$A" 'while counts down'  5 'fn main() : i32 { let n: i32 = 5; let c: i32 = 0; while (n) { c = c + 1; n = n - 1; } return c; }'
+check "$A" 'while (0) never runs' 0 'fn main() : i32 { let c: i32 = 0; while (0) { c = c + 1; } return c; }'
+check "$A" 'negative is true'   3 'fn main() : i32 { let n: i32 = -3; let c: i32 = 0; while (n) { c = c + 1; n = n + 1; } return c; }'
+check "$A" 'for integer cond'   6 'fn main() : i32 { let s: i32 = 0; for (let i: i32 = 0; i < 4; i = i + 1) { s = s + i; } return s; }'
+check "$A" 'while (true) + return' 3 'fn main() : i32 { let c: i32 = 0; while (true) { c = c + 1; if (c == 3) { return c; } } return 0; }'
 # v0.23.64-dev: the unlabeled `break;` and `continue;` inside a `while`. Every
 # resident suite that touched them used the *labeled* form (`break outer;`,
 # from the switch round) or put `continue;` inside a `switch` — so the plain
@@ -160,15 +160,15 @@ check "$A" 'while (true) + return' 3 'fn main() -> i32 { let c: i32 = 0; while (
 # tests/smoke.sh, had no executed witness anywhere. The third case is the one
 # that distinguishes them: an unlabeled break leaves only the innermost loop,
 # so the outer counter must still reach 3.
-check "$A" 'while + unlabeled break'    5 'fn main() -> i32 { let c: i32 = 0; while (true) { c = c + 1; if (c == 5) { break; } } return c; }'
-check "$A" 'while + continue'          18 'fn main() -> i32 { let s: i32 = 0; let i: i32 = 0; while (i < 6) { i = i + 1; if (i == 3) { continue; } s = s + i; } return s; }'
-check "$A" 'unlabeled break: inner only' 33 'fn main() -> i32 { let s: i32 = 0; let i: i32 = 0; while (i < 3) { i = i + 1; let j: i32 = 0; while (j < 10) { j = j + 1; if (j == 2) { break; } s = s + 1; } } return s * 10 + i; }'
+check "$A" 'while + unlabeled break'    5 'fn main() : i32 { let c: i32 = 0; while (true) { c = c + 1; if (c == 5) { break; } } return c; }'
+check "$A" 'while + continue'          18 'fn main() : i32 { let s: i32 = 0; let i: i32 = 0; while (i < 6) { i = i + 1; if (i == 3) { continue; } s = s + i; } return s; }'
+check "$A" 'unlabeled break: inner only' 33 'fn main() : i32 { let s: i32 = 0; let i: i32 = 0; while (i < 3) { i = i + 1; let j: i32 = 0; while (j < 10) { j = j + 1; if (j == 2) { break; } s = s + 1; } } return s * 10 + i; }'
 # The 64-bit zero test: a value whose low half is zero is still non-zero. A
 # 32-bit compare here would read 4294967296 as false.
-check "$A" 'i64 wide zero-test' 1 'fn main() -> i32 { let big: i64 = 4294967296; if (big) { return 1; } return 0; }'
-check "$A" 'i64 while'          3 'fn main() -> i32 { let n: i64 = 3; let c: i32 = 0; while (n) { c = c + 1; n = n - 1; } return c; }'
+check "$A" 'i64 wide zero-test' 1 'fn main() : i32 { let big: i64 = 4294967296; if (big) { return 1; } return 0; }'
+check "$A" 'i64 while'          3 'fn main() : i32 { let n: i64 = 3; let c: i32 = 0; while (n) { c = c + 1; n = n - 1; } return c; }'
 # The narrow widths, including the ones whose high bit is set.
-check "$A" 'u8/u16/u32 truthiness' 108 'fn main() -> i32 {
+check "$A" 'u8/u16/u32 truthiness' 108 'fn main() : i32 {
     let a: u8 = 0; let b: u8 = 200;
     let c: u16 = 0; let d: u16 = 65535;
     let e: u32 = 0; let f: u32 = 4294967295;
@@ -183,7 +183,7 @@ check "$A" 'u8/u16/u32 truthiness' 108 'fn main() -> i32 {
 }'
 # Bool expressions that are not bare variables: a bool variable, a call, a
 # struct field, a ?: selection, and the logical operators.
-check "$A" 'bool var + literals + loop' 6 'fn main() -> i32 {
+check "$A" 'bool var + literals + loop' 6 'fn main() : i32 {
     let on: bool = true;
     let off: bool = false;
     let n: i32 = 2;
@@ -193,21 +193,21 @@ check "$A" 'bool var + literals + loop' 6 'fn main() -> i32 {
     while (n) { r = r + n; n = n - 1; }
     return r;
 }'
-check "$A" 'i32 call condition'  7 'fn f() -> i32 { return 3; }
-fn main() -> i32 { if (f()) { return 7; } return 0; }'
-check "$A" 'bool call condition' 7 'fn p() -> bool { return true; }
-fn main() -> i32 { if (p()) { return 7; } return 0; }'
-check "$A" 'zero call condition' 8 'fn z() -> i32 { return 0; }
-fn main() -> i32 { if (z()) { return 7; } return 8; }'
+check "$A" 'i32 call condition'  7 'fn f() : i32 { return 3; }
+fn main() : i32 { if (f()) { return 7; } return 0; }'
+check "$A" 'bool call condition' 7 'fn p() : bool { return true; }
+fn main() : i32 { if (p()) { return 7; } return 0; }'
+check "$A" 'zero call condition' 8 'fn z() : i32 { return 0; }
+fn main() : i32 { if (z()) { return 7; } return 8; }'
 check "$A" 'bool field condition' 5 'struct S { b: bool }
-fn main() -> i32 { let s: S = S { true }; if (s.b) { return 5; } return 6; }'
-check "$A" '?: arms as condition' 3 'fn main() -> i32 { let c: bool = true; if (c ? true : false) { return 3; } return 4; }'
-check "$A" '&& with literals'    2 'fn main() -> i32 { if (true && false) { return 1; } return 2; }'
-check "$A" '|| with literals'    3 'fn main() -> i32 { if (true || false) { return 3; } return 4; }'
-check "$A" '!false'              5 'fn main() -> i32 { if (!false) { return 5; } return 6; }'
+fn main() : i32 { let s: S = S { true }; if (s.b) { return 5; } return 6; }'
+check "$A" '?: arms as condition' 3 'fn main() : i32 { let c: bool = true; if (c ? true : false) { return 3; } return 4; }'
+check "$A" '&& with literals'    2 'fn main() : i32 { if (true && false) { return 1; } return 2; }'
+check "$A" '|| with literals'    3 'fn main() : i32 { if (true || false) { return 3; } return 4; }'
+check "$A" '!false'              5 'fn main() : i32 { if (!false) { return 5; } return 6; }'
 # The aggregate: one program whose value is the sum of eleven independent
 # sub-results, so a wrong rule cannot be masked by another rule's accident.
-check "$A" 'aggregate'          14 'fn main() -> i32 {
+check "$A" 'aggregate'          14 'fn main() : i32 {
     let r: i32 = 0;
     if (true) { r = r + 1; }
     if (false) { r = r + 100; } else { r = r + 2; }
@@ -252,19 +252,19 @@ else
     # The 64-bit zero test against C's long long, and the high-bit unsigned
     # case against C's unsigned — the two places a width mistake hides.
     diff_case 'i64 wide zero-test' \
-        'fn main() -> i32 { let big: i64 = 4294967296; if (big) { return 1; } return 0; }' \
+        'fn main() : i32 { let big: i64 = 4294967296; if (big) { return 1; } return 0; }' \
         'int main(void) { long long big = 4294967296; if (big) { return 1; } return 0; }'
     diff_case 'u32 high bit' \
-        'fn main() -> i32 { let f: u32 = 4294967295; if (f) { return 1; } return 0; }' \
+        'fn main() : i32 { let f: u32 = 4294967295; if (f) { return 1; } return 0; }' \
         'int main(void) { unsigned f = 4294967295u; if (f) { return 1; } return 0; }'
     # The literals against C's 0/1, in the same branch shapes.
     diff_case 'literals in branches' \
-        'fn main() -> i32 { let r: i32 = 0; if (true) { r = r + 1; } if (false) { r = r + 100; } else { r = r + 2; } return r; }' \
+        'fn main() : i32 { let r: i32 = 0; if (true) { r = r + 1; } if (false) { r = r + 100; } else { r = r + 2; } return r; }' \
         'int main(void) { int r = 0; if (1) { r = r + 1; } if (0) { r = r + 100; } else { r = r + 2; } return r; }'
     # A whole program: nested loops whose conditions are the integers
     # themselves, plus a ?: selection as a condition.
     diff_case 'loops + ?: condition' \
-        'fn main() -> i32 {
+        'fn main() : i32 {
     let r: i32 = 0;
     let n: i32 = 4;
     while (n) { let m: i32 = 2; while (m) { r = r + 1; m = m - 1; } n = n - 1; }
@@ -298,73 +298,73 @@ reject() {
 }
 # Conditions that are not a comparison, a bool or an integer.
 reject 'a ptr condition'      'condition must be a comparison, a bool expression, or an integer' \
-    'fn f(p: ptr) -> i32 { if (p) { return 1; } return 0; }
-fn main() -> i32 { return 0; }'
+    'fn f(p: ptr) : i32 { if (p) { return 1; } return 0; }
+fn main() : i32 { return 0; }'
 reject 'a struct condition'   'condition must be a comparison, a bool expression, or an integer' \
     'struct S { x: i32 }
-fn main() -> i32 { let s: S = S { 1 }; if (s) { return 1; } return 0; }'
+fn main() : i32 { let s: S = S { 1 }; if (s) { return 1; } return 0; }'
 # The literals are bool, not the integers 0 and 1.
 reject 'bool literal to i32'  "type mismatch initializing 'x': expected i32, got bool" \
-    'fn main() -> i32 { let x: i32 = true; return x; }'
+    'fn main() : i32 { let x: i32 = true; return x; }'
 reject 'bool literal to u8'   "type mismatch initializing 'x': expected i32, got bool" \
-    'fn main() -> i32 { let x: u8 = true; return x; }'
+    'fn main() : i32 { let x: u8 = true; return x; }'
 reject 'bool literal assign'  'type mismatch assigning variable: x' \
-    'fn main() -> i32 { let x: i32 = 5; x = true; return x; }'
+    'fn main() : i32 { let x: i32 = 5; x = true; return x; }'
 reject 'bool literal arg'     'argument type mismatch calling f at argument 1: expected i32' \
-    'fn f(a: i32) -> i32 { return a; }
-fn main() -> i32 { return f(true); }'
+    'fn f(a: i32) : i32 { return a; }
+fn main() : i32 { return f(true); }'
 reject 'bool literal return'  'return type mismatch in function main: expected i32, got bool' \
-    'fn main() -> i32 { return true; }'
+    'fn main() : i32 { return true; }'
 # Arithmetic and bitwise operators take integer operands.
-reject 'true + 1'             'cannot use a bool value in +'  'fn main() -> i32 { return 1 + true; }'
-reject 'true - 1'             'cannot use a bool value in -'  'fn main() -> i32 { return true - 1; }'
-reject 'true * 2'             'cannot use a bool value in *'  'fn main() -> i32 { return true * 2; }'
-reject 'true / 2'             'cannot use a bool value in /'  'fn main() -> i32 { return true / 2; }'
-reject 'true % 2'             'cannot use a bool value in %'  'fn main() -> i32 { return true % 2; }'
-reject '1 << true'            'cannot use a bool value in <<' 'fn main() -> i32 { return 1 << true; }'
-reject 'true >> 1'            'cannot use a bool value in >>' 'fn main() -> i32 { return true >> 1; }'
-reject 'true & 1'             'cannot use a bool value in &'  'fn main() -> i32 { return true & 1; }'
-reject 'true | 1'             'cannot use a bool value in |'  'fn main() -> i32 { return true | 1; }'
-reject 'true ^ 1'             'cannot use a bool value in ^'  'fn main() -> i32 { return true ^ 1; }'
-reject '~true'                'cannot use a bool value in ~'  'fn main() -> i32 { return ~true; }'
-reject '-true'                'cannot use a bool value in -'  'fn main() -> i32 { return -true; }'
+reject 'true + 1'             'cannot use a bool value in +'  'fn main() : i32 { return 1 + true; }'
+reject 'true - 1'             'cannot use a bool value in -'  'fn main() : i32 { return true - 1; }'
+reject 'true * 2'             'cannot use a bool value in *'  'fn main() : i32 { return true * 2; }'
+reject 'true / 2'             'cannot use a bool value in /'  'fn main() : i32 { return true / 2; }'
+reject 'true % 2'             'cannot use a bool value in %'  'fn main() : i32 { return true % 2; }'
+reject '1 << true'            'cannot use a bool value in <<' 'fn main() : i32 { return 1 << true; }'
+reject 'true >> 1'            'cannot use a bool value in >>' 'fn main() : i32 { return true >> 1; }'
+reject 'true & 1'             'cannot use a bool value in &'  'fn main() : i32 { return true & 1; }'
+reject 'true | 1'             'cannot use a bool value in |'  'fn main() : i32 { return true | 1; }'
+reject 'true ^ 1'             'cannot use a bool value in ^'  'fn main() : i32 { return true ^ 1; }'
+reject '~true'                'cannot use a bool value in ~'  'fn main() : i32 { return ~true; }'
+reject '-true'                'cannot use a bool value in -'  'fn main() : i32 { return -true; }'
 reject 'a[true]'              'cannot use a bool value in an array index' \
-    'fn main() -> i32 { let a: i32[4] = 0; return a[true]; }'
+    'fn main() : i32 { let a: i32[4] = 0; return a[true]; }'
 reject 'array init = true'    'array initializer type mismatch: expected i32, got bool' \
-    'fn main() -> i32 { let a: i32[4] = true; return a[0]; }'
+    'fn main() : i32 { let a: i32[4] = true; return a[0]; }'
 # The literals are reserved words now.
 reject 'let true'             'expected variable name' \
-    'fn main() -> i32 { let true = 5; return 0; }'
+    'fn main() : i32 { let true = 5; return 0; }'
 reject 'fn true'              'expected function name' \
-    'fn true() -> i32 { return 1; }
-fn main() -> i32 { return 0; }'
+    'fn true() : i32 { return 1; }
+fn main() : i32 { return 0; }'
 # Global and struct-field initializers, where a constant folder would
 # otherwise store the literal as the value 1.
 reject 'global i32 = true'    'global initializer type mismatch: expected i32, got bool' \
     'let g: i32 = true;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 reject 'global u8 = true'     'global initializer type mismatch: expected u8, got bool' \
     'let g: u8 = true;
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 reject 'struct i32 field = true' "global struct initializer type mismatch: field 'S.x' is i32, got bool: g" \
     'struct S { x: i32 }
 let g: S = S { true };
-fn main() -> i32 { return g.x; }'
+fn main() : i32 { return g.x; }'
 # The truthiness coercion lives at conditions only: ?:, && and ! keep their
 # strict bool rule, and the old bool/i32 matrix keeps its refusals.
 reject '?: with an integer'   "the condition of '?:' must be a bool expression" \
-    'fn main() -> i32 { let x: i32 = 5; return x ? 1 : 2; }'
+    'fn main() : i32 { let x: i32 = 5; return x ? 1 : 2; }'
 reject '&& with an integer'   '&& and || require bool operands (&&)' \
-    'fn main() -> i32 { let x: i32 = 5; return x && true; }'
+    'fn main() : i32 { let x: i32 = 5; return x && true; }'
 reject '|| with an integer'   '&& and || require bool operands (||)' \
-    'fn main() -> i32 { if (true || 5) { return 1; } return 0; }'
+    'fn main() : i32 { if (true || 5) { return 1; } return 0; }'
 reject '! with an integer'    "'!' requires a bool operand" \
-    'fn main() -> i32 { let x: i32 = 5; return !x; }'
+    'fn main() : i32 { let x: i32 = 5; return !x; }'
 reject 'bool from 5'          "type mismatch initializing 'b': expected bool" \
-    'fn main() -> i32 { let b: bool = 5; return 0; }'
+    'fn main() : i32 { let b: bool = 5; return 0; }'
 reject 'bool global from 2'   'bool global initializer must be 0 or 1: flag' \
     'let flag: bool = 2;
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 printf '%s\n' 'PASS: every misuse refused with the message that names the rule'
 
 # ---------------------------------------------------------------------------
@@ -483,24 +483,24 @@ build_mutant m5 's/rejectBool(a,"+");rejectBool(b,"+");//'
 build_mutant m6 's/if(init->k==Expr::Num&&init->boolLit)/if(init->k==Expr::Num\&\&init->boolLit\&\&false)/;s/if(e.k==Expr::Num&&e.boolLit)return t==Ty::Bool;/if(false)return false;/'
 build_mutant m7 's/v=(int64_t)e.n;/v=0;/'
 must_not_compile  m1 'an integer condition' \
-    'fn main() -> i32 { let x: i32 = 5; if (x) { return 1; } return 0; }' \
+    'fn main() : i32 { let x: i32 = 5; if (x) { return 1; } return 0; }' \
     'condition must be a comparison, a bool expression, or an integer'
 must_diverge      m2 'i64 wide zero-test' \
-    'fn main() -> i32 { let big: i64 = 4294967296; if (big) { return 1; } return 0; }' 1
+    'fn main() : i32 { let big: i64 = 4294967296; if (big) { return 1; } return 0; }' 1
 must_diverge      m3 'if (true)' \
-    'fn main() -> i32 { if (true) { return 7; } return 9; }' 7
+    'fn main() : i32 { if (true) { return 7; } return 9; }' 7
 must_not_compile  m4 'bool slot = 1' \
-    'fn main() -> i32 { let b: bool = 1; return 0; }' \
+    'fn main() : i32 { let b: bool = 1; return 0; }' \
     "type mismatch initializing 'b': expected bool"
 must_now_compile  m5 '1 + true' \
-    'fn main() -> i32 { return 1 + true; }'
+    'fn main() : i32 { return 1 + true; }'
 must_now_compile  m6 'global i32 = true' \
     'let g: i32 = true;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 must_diverge      m7 'struct bool field = true' \
     'struct S { b: bool }
 let g: S = S { true };
-fn main() -> i32 { if (g.b) { return 5; } return 6; }' 5
+fn main() : i32 { if (g.b) { return 5; } return 6; }' 5
 printf '%s\n' 'PASS: seven mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

@@ -63,10 +63,10 @@ dedicated diagnostic.
   `(kind, index)` pair with no room for a spelling, so the name is gone before
   layout, Sema or codegen run — two names for `i32` are `i32`, and a value of
   one is a value of the other. Only the function-signature half cannot live in a
-  `Ty`: when the alias is a `fn(…) -> …`, `parseType` sets
+  `Ty`: when the alias is a `fn(…) : …`, `parseType` sets
   `pendingFuncType`/`pendingFuncSig` and the caller (a variable, parameter or
   return slot) adopts the signature the way a spelled-out `fn(…)` would, so
-  `type Op = fn(i32) -> i64;` is a real signature at every declaration that
+  `type Op = fn(i32) : i64;` is a real signature at every declaration that
   names it. An alias is refused when its right-hand side is not a type, when its
   name collides with another alias / a struct / a global, and when used before
   declared. It cannot stand for an array (`i32[4]` is a declaration form, not a
@@ -86,7 +86,7 @@ dedicated diagnostic.
 - **`void` as a return type** (v0.23.68-dev) — `void` is a `Ty::Void`, but it is
   a *return-slot property only*. `parseType()` accepts the `void` keyword solely
   behind `needType()`'s `allowVoid` gate, which the two return-parsers (a
-  function's `->` and a `fn` type's `->`) pass `true` to and every value position
+  function's `:` and a `fn` type's `:`) pass `true` to and every value position
   passes `false`. So `void` can never be a parameter, a local, a field, an alias
   or an array element — each is refused (`void is only a function return type`,
   or `a type alias cannot be void` for the alias case). A `void` function is just
@@ -155,7 +155,7 @@ replaced the older scattered `isPtr`/`isBool` booleans in v0.23.2-dev / P3.2):
   frame address, exactly as codegen treats the base slot);
 - a non-`extern` function name in a value position is its address (`Ptr`);
 - `ptr ± i32` stays `Ptr`, `ptr + ptr` and `i32 - ptr` are rejected;
-- comparisons, `&&`/`||`/`!`, bool variables/globals and `-> bool` calls are
+- comparisons, `&&`/`||`/`!`, bool variables/globals and `: bool` calls are
   `Bool`; everything else is `I32`.
 
 The pass owns the type rules — declarations, assignments, indexing (including
@@ -180,7 +180,7 @@ contract, v0.23.53-dev) with an **exemption list** for that family, and
 v0.23.63-dev named the predicate (`semaTypeIsPlaceholder`) instead of leaving
 eleven anonymous cases. The disagreement is load-bearing in one more place: a
 store rule that trusted Sema would refuse
-`fn add_u8(a: u8, b: u8) -> u8 { return a + b; }`, so the narrow-type story and
+`fn add_u8(a: u8, b: u8) : u8 { return a + b; }`, so the narrow-type story and
 the exemption are the same story. Unifying the resolvers is a semantic decision
 and is deliberately still open.
 
@@ -523,7 +523,7 @@ so the framework called a window handler as the input handler, and its drain
 loop exited on the success code; on a device the app drew its gradient and
 ignored every finger. The one place the language surface is stretched is the
 coordinate: `AMotionEvent_getX`/`getY` return `float`, which arrives in **s0** —
-and an `extern fn … -> i32` return is read from **w0**, a *different physical
+and an `extern fn … : i32` return is read from **w0**, a *different physical
 register file* (no aliasing exists; v0.23.14-dev's decode captured garbage).
 v0.23.15-dev captures it with a bridge: Aster emits no SIMD instruction and the
 PLT is eagerly bound, so the `s0` the call leaves behind survives to the next

@@ -64,7 +64,7 @@ ok 'demo output == the C oracle'
 printf '%s\n' '[5/8] the map: growth, replacement, absence'
 cat > "$OUT/map.ast" <<'AST'
 include "ailib.ast";
-fn main() -> i32 {
+fn main() : i32 {
     let m: Map = Map { 0, 0, 0 };
     let cell: i64[4] = 0;
     // an uninitialised map grows on first put
@@ -125,14 +125,14 @@ printf '%s\n' '[6/8] the sort: degenerate sizes, a refused width, reverse input'
 cat > "$OUT/sorts.ast" <<'AST'
 include "ailib.ast";
 // A comparator defined here: an extern function's address cannot be taken.
-fn cmp_asc(a: ptr, b: ptr) -> i32 {
+fn cmp_asc(a: ptr, b: ptr) : i32 {
     let x: i32 = *(a);
     let y: i32 = *(b);
     if (x < y) { return 0 - 1; }
     if (x > y) { return 1; }
     return 0;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let one: i32[1] = 0;
     one[0] = 7;
     if (sort_i32(ptr(&one), 1) != 1) { return 1; }        // count 1: nothing to do
@@ -175,7 +175,7 @@ rows=$(wc -l < "$base")
 ok '393 baseline rows unchanged'
 
 printf '%s\n' '[8/8] mutation: the comparator direction is load-bearing'
-sed 's|fn cmp_i32_asc(a: ptr, b: ptr) -> i32 {\n.*||' /dev/null >/dev/null 2>&1 || true
+sed 's|fn cmp_i32_asc(a: ptr, b: ptr) : i32 {\n.*||' /dev/null >/dev/null 2>&1 || true
 sed 's|    if (x < y) { return 0 - 1; }|    if (x > y) { return 0 - 1; }|' \
     stdlib/aster_std.ast > "$OUT/mutant_lib.ast"
 cmp -s stdlib/aster_std.ast "$OUT/mutant_lib.ast" && fail 'the direction mutation stopped applying'

@@ -21,7 +21,7 @@ trap 'rm -rf "$WORK"' EXIT
 # A parse error with a deterministic location. The oversized literal lands at
 # column 27 of line 1 (verified by aster's own "file:1:27:" prefix below).
 cat > "$WORK/huge.ast" <<'AST'
-fn main() -> i32 { return 999999999999999999999999999; }
+fn main() : i32 { return 999999999999999999999999999; }
 AST
 
 out=$(./aster build-elf "$WORK/huge.ast" -o "$WORK/x" 2>&1 || true)
@@ -33,7 +33,7 @@ printf '%s\n' "$out" | grep -qF 'integer literal is too large at 1:27' \
     || { echo "FAIL: original diagnostic message missing"; exit 1; }
 
 # 2) The source line is echoed.
-printf '%s\n' "$out" | grep -qF 'fn main() -> i32 { return 999999999999999999999999999; }' \
+printf '%s\n' "$out" | grep -qF 'fn main() : i32 { return 999999999999999999999999999; }' \
     || { echo "FAIL: offending source line not echoed"; exit 1; }
 
 # 3) Parse the column aster reports, then verify the caret is aligned there.
@@ -41,7 +41,7 @@ col=$(printf '%s\n' "$out" | sed -n 's/.*:1:\([0-9][0-9]*\): error:.*/\1/p' | he
 [ -n "$col" ] || { echo "FAIL: could not read column from diagnostic"; exit 1; }
 
 # The caret line is the line immediately after the echoed source line.
-src_line='fn main() -> i32 { return 999999999999999999999999999; }'
+src_line='fn main() : i32 { return 999999999999999999999999999; }'
 caret_line=$(printf '%s\n' "$out" | awk -v src="$src_line" '
     found && !seen { print; seen=1; next }
     index($0, src) > 0 { found=1 }
@@ -62,17 +62,17 @@ esac
 # 4) A located error on a non-first line also works: the caret lands on the
 #    right physical line, and realigns to whatever column aster reports there.
 cat > "$WORK/ml.ast" <<'AST'
-fn f() -> i32 { return 1; }
-fn g() -> i32 { return 999999999999999999999999999; }
-fn main() -> i32 { return 0; }
+fn f() : i32 { return 1; }
+fn g() : i32 { return 999999999999999999999999999; }
+fn main() : i32 { return 0; }
 AST
 out2=$(./aster build-elf "$WORK/ml.ast" -o "$WORK/x" 2>&1 || true)
 line2=$(printf '%s\n' "$out2" | sed -n 's/.*:\([0-9][0-9]*\):\([0-9][0-9]*\): error:.*/\1/p' | head -1)
 col2=$(printf '%s\n' "$out2" | sed -n 's/.*:\([0-9][0-9]*\):\([0-9][0-9]*\): error:.*/\2/p' | head -1)
 [ "$line2" = "2" ] || { echo "FAIL: multi-line error should report line 2 (got $line2)"; exit 1; }
-printf '%s\n' "$out2" | grep -qF 'fn g() -> i32 { return 999999999999999999999999999; }' \
+printf '%s\n' "$out2" | grep -qF 'fn g() : i32 { return 999999999999999999999999999; }' \
     || { echo "FAIL: multi-line offending source line not echoed"; exit 1; }
-src_line2='fn g() -> i32 { return 999999999999999999999999999; }'
+src_line2='fn g() : i32 { return 999999999999999999999999999; }'
 caret_line2=$(printf '%s\n' "$out2" | awk -v src="$src_line2" '
     found && !seen { print; seen=1; next }
     index($0, src) > 0 { found=1 }
@@ -89,7 +89,7 @@ esac
 #    the substring `grep -F` assertions in sema-checks/bool-checks/struct-checks
 #    keep matching unchanged.
 cat > "$WORK/sem.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let ok: bool = 5;
     return 0;
 }
@@ -119,7 +119,7 @@ esac
 #    function-level fall-through check names no single source token, so it must
 #    NOT echo a source line or a caret.
 cat > "$WORK/ft.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32 = 1;
 }
 AST

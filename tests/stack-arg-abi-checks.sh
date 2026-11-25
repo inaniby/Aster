@@ -102,56 +102,56 @@ printf '%s\n' '[4/9] Behavioural matrix: register/stack boundaries'
 # by the low eight bits of the process exit status (1041 & 0xff == 17).
 cat > "$W/p1.ast" <<'AST'
 struct S { a: i32 }
-fn f(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:S,x:i32)->i32 {
+fn f(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:S,x:i32):i32 {
     return w.a + x + p;
 }
-fn main()->i32 { if (f(1,2,3,4,5,6,7,S{10},8) == 19) { return 0; } return 1; }
+fn main():i32 { if (f(1,2,3,4,5,6,7,S{10},8) == 19) { return 0; } return 1; }
 AST
 cat > "$W/p2.ast" <<'AST'
 struct Q { a:i32, b:i32, c:i32, d:i32 }
-fn f(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:Q,x:i32,y:i32)->i32 {
+fn f(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:Q,x:i32,y:i32):i32 {
     return w.a+w.b+w.c+w.d+x+y+p;
 }
-fn main()->i32 { if (f(1,2,3,4,5,6,7,Q{10,20,30,40},8,9) == 118) { return 0; } return 1; }
+fn main():i32 { if (f(1,2,3,4,5,6,7,Q{10,20,30,40},8,9) == 118) { return 0; } return 1; }
 AST
 cat > "$W/p3.ast" <<'AST'
 struct T { a:i32, b:i32, c:i32 }
-fn f(a:i32,b:i32,c:i32,d:i32,e:i32,w:T,x:i32,y:i32)->i32 {
+fn f(a:i32,b:i32,c:i32,d:i32,e:i32,w:T,x:i32,y:i32):i32 {
     return w.a+w.b+w.c+x+y+a;
 }
-fn main()->i32 { if (f(1,2,3,4,5,T{10,20,30},8,9) == 78) { return 0; } return 1; }
+fn main():i32 { if (f(1,2,3,4,5,T{10,20,30},8,9) == 78) { return 0; } return 1; }
 AST
 cat > "$W/p4.ast" <<'AST'
 struct T { a:i32, b:i32, c:i32 }
-fn f(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x1:i32,x2:i32,x3:i32,x4:i32,x5:i32)->i32 {
+fn f(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x1:i32,x2:i32,x3:i32,x4:i32,x5:i32):i32 {
     return w.a+w.b+w.c+x1+x2+x3+x4+x5+p;
 }
-fn main()->i32 { if (f(1,2,3,4,5,6,7,T{10,20,30},1,2,3,4,5) == 76) { return 0; } return 1; }
+fn main():i32 { if (f(1,2,3,4,5,6,7,T{10,20,30},1,2,3,4,5) == 76) { return 0; } return 1; }
 AST
 cat > "$W/p5.ast" <<'AST'
 struct T { a:i32, b:i32, c:i32 }
-fn f(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,z:T)->i32 {
+fn f(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,z:T):i32 {
     return w.a+w.b+w.c+z.a+z.b+z.c+p;
 }
-fn main()->i32 { if (f(1,2,3,4,5,6,7,T{10,20,30},T{1,2,3}) == 67) { return 0; } return 1; }
+fn main():i32 { if (f(1,2,3,4,5,6,7,T{10,20,30},T{1,2,3}) == 67) { return 0; } return 1; }
 AST
 cat > "$W/p6.ast" <<'AST'
 fn f(a0:i32,a1:i32,a2:i32,a3:i32,a4:i32,a5:i32,a6:i32,a7:i32,
-     a8:i32,a9:i32,a10:i32,a11:i32,a12:i32,a13:i32,a14:i32,a15:i32)->i32 {
+     a8:i32,a9:i32,a10:i32,a11:i32,a12:i32,a13:i32,a14:i32,a15:i32):i32 {
     return a0+a1+a2+a3+a4+a5+a6+a7+a8+a9+a10+a11+a12+a13+a14+a15;
 }
-fn main()->i32 {
+fn main():i32 {
     if (f(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1) == 16) { return 0; }
     return 1;
 }
 AST
 cat > "$W/p7.ast" <<'AST'
 struct T { a:i32, b:i32, c:i32 }
-fn inner(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x:i32)->i32 {
+fn inner(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x:i32):i32 {
     return w.a+w.b+w.c+x+p;
 }
-fn outer(a:i32)->i32 { return inner(1,2,3,4,5,6,7,T{10,20,30},8) + a; }
-fn main()->i32 { if (outer(5) == 74) { return 0; } return 1; }
+fn outer(a:i32):i32 { return inner(1,2,3,4,5,6,7,T{10,20,30},8) + a; }
+fn main():i32 { if (outer(5) == 74) { return 0; } return 1; }
 AST
 cases=0
 for probe in "$W"/p*.ast; do
@@ -186,9 +186,9 @@ int c_plain(int a0,int a1,int a2,int a3,int a4,int a5,int a6,int a7,int a8) {
 C
 cat > "$W/caller.ast" <<'AST'
 struct T { a:i32, b:i32, c:i32 }
-extern fn c_agg(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x:i32,y:i32)->i32;
-extern fn c_plain(a0:i32,a1:i32,a2:i32,a3:i32,a4:i32,a5:i32,a6:i32,a7:i32,a8:i32)->i32;
-fn main()->i32 {
+extern fn c_agg(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x:i32,y:i32):i32;
+extern fn c_plain(a0:i32,a1:i32,a2:i32,a3:i32,a4:i32,a5:i32,a6:i32,a7:i32,a8:i32):i32;
+fn main():i32 {
     let r: i32 = 0;
     if (c_agg(1,2,3,4,5,6,7,T{10,20,30},8,9) == 1041) { r = r + 1; }
     if (c_plain(1,2,3,4,5,6,7,8,9) == 45) { r = r + 2; }
@@ -237,14 +237,14 @@ fi
 printf '%s\n' '[6/9] Other writers and cross-object links'
 cat > "$W/callee.ast" <<'AST'
 struct T { a:i32, b:i32, c:i32 }
-fn ast_agg(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x:i32,y:i32)->i32 {
+fn ast_agg(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x:i32,y:i32):i32 {
     return w.a+w.b+w.c+x*10+y*100+p;
 }
 AST
 cat > "$W/caller2.ast" <<'AST'
 struct T { a:i32, b:i32, c:i32 }
-extern fn ast_agg(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x:i32,y:i32)->i32;
-fn main()->i32 {
+extern fn ast_agg(p:i32,q:i32,r:i32,s:i32,t:i32,u:i32,v:i32,w:T,x:i32,y:i32):i32;
+fn main():i32 {
     if (ast_agg(1,2,3,4,5,6,7,T{10,20,30},8,9) == 1041) { return 0; }
     return 1;
 }

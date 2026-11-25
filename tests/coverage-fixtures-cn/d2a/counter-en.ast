@@ -5,16 +5,16 @@
 // Note: the if/else branches shared key 108; under name-uniqueness they are
 // named Zero / NonZero, so the key forks (labels are stateless, no behavior change; see work order W-O4).
 
-extern fn aui_column(key: i32) -> i32;
-extern fn aui_row(key: i32) -> i32;
-extern fn aui_pad(dp: i32) -> i32;
-extern fn aui_gap(dp: i32) -> i32;
-extern fn aui_label(key: i32, text: ptr) -> i32;
-extern fn aui_text_i32(key: i32, value: i32) -> i32;
-extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
-extern fn aui_state_set(key: i32, value: i32) -> i32;
-extern fn aui_invalidate() -> i32;
-extern fn aui_end() -> i32;
+extern fn aui_column(key: i32) : i32;
+extern fn aui_row(key: i32) : i32;
+extern fn aui_pad(dp: i32) : i32;
+extern fn aui_gap(dp: i32) : i32;
+extern fn aui_label(key: i32, text: ptr) : i32;
+extern fn aui_text_i32(key: i32, value: i32) : i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) : i32;
+extern fn aui_state_set(key: i32, value: i32) : i32;
+extern fn aui_invalidate() : i32;
+extern fn aui_end() : i32;
 
 // on_add: +1.
 event Inc:tap() {
@@ -39,7 +39,7 @@ event Reset:tap() {
 
 // page_counter: the tab body. The row holds - / value / +; Reset sits
 // below it, and the status line reads the live count, not a copy.
-layout page_counter(s: ptr<App>, user: ptr) -> View {
+layout page_counter(s: ptr<App>, user: ptr) : View {
     Column MainCol, Padding(20), Gap(16) {
         Label Title, ptr("Counter")
         Row ButtonRow, Gap(12) {

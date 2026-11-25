@@ -8,17 +8,17 @@ struct App {
     sel_open: i32
 }
 let g_app: App = App { 0, 0, 0, 1, 0, 500, 0 };
-extern fn aui_column(key: i32) -> i32;
-extern fn aui_row(key: i32) -> i32;
-extern fn aui_label(key: i32, text: ptr) -> i32;
-extern fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_text_i32(key: i32, value: i32) -> i32;
-extern fn aui_pad(dp: i32) -> i32;
-extern fn aui_gap(dp: i32) -> i32;
-extern fn aui_weight(w: i32) -> i32;
-extern fn aui_size(w: i32, h: i32) -> i32;
-extern fn aui_end() -> i32;
-extern fn aui_invalidate() -> i32;
-fn main() -> i32 {
+extern fn aui_column(key: i32) : i32;
+extern fn aui_row(key: i32) : i32;
+extern fn aui_label(key: i32, text: ptr) : i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_text_i32(key: i32, value: i32) : i32;
+extern fn aui_pad(dp: i32) : i32;
+extern fn aui_gap(dp: i32) : i32;
+extern fn aui_weight(w: i32) : i32;
+extern fn aui_size(w: i32, h: i32) : i32;
+extern fn aui_end() : i32;
+extern fn aui_invalidate() : i32;
+fn main() : i32 {
     return 0;
 }

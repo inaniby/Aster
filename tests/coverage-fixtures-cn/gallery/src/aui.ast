@@ -9,8 +9,8 @@
 
 // ---- 会话 ----
 extern fn aui_android_attach(activity: ptr, saved: ptr, saved_size: i64,
-                             build: fn(ptr) -> i32, user: ptr,
-                             init: fn(ptr) -> i32, flags: i32) -> i32;
+                             build: fn(ptr) : i32, user: ptr,
+                             init: fn(ptr) : i32, flags: i32) : i32;
 // v2.20.0: Linux fbdev attach -- aui_android_attach 的 Linux 对应物。
 // build/user 事先由应用的 *_headless_init() 注册（extern 调用），
 // app_init 由应用入口直接调；这里只做平台一半：日志、时钟、字体探测、
@@ -18,25 +18,25 @@ extern fn aui_android_attach(activity: ptr, saved: ptr, saved_size: i64,
 // 适配器在调它之前经公开 setter 定好。win/queue 是适配器的会话指针
 // （非空即可，present/input 路径只把它当句柄传回适配器）；logdir
 // 是 trace.txt/aui.log 所在的目录（0 = 不写文件日志）。
-extern fn aui_fbdev_attach(win: ptr, queue: ptr, logdir: ptr) -> i32;
+extern fn aui_fbdev_attach(win: ptr, queue: ptr, logdir: ptr) : i32;
 // v2.20.0: Linux runner 的空闲判断——1 = 近期有帧要出（动效/脏区/待定
 // 计时），0 = 可阻塞等输入。读 g_aui_pump_need，与泵线程同一标志。
-extern fn aui_pump_need() -> i32;
-extern fn aui_frame(now_ns: i64) -> i32;
-extern fn aui_invalidate() -> i32;
-extern fn aui_invalidate_layout() -> i32;
-extern fn aui_shutdown() -> i32;
-extern fn aui_set_font(font: ptr, scale: i32) -> i32;
+extern fn aui_pump_need() : i32;
+extern fn aui_frame(now_ns: i64) : i32;
+extern fn aui_invalidate() : i32;
+extern fn aui_invalidate_layout() : i32;
+extern fn aui_shutdown() : i32;
+extern fn aui_set_font(font: ptr, scale: i32) : i32;
 // v1.16：回退字体（通常是 16x16 CJK 图集）。主字体找不到的码点查这里；
 // 传 font=0 关闭。拉丁 8x8 字体常用 scale=2，汉字 16x16 常用 scale=1。
-extern fn aui_set_fallback_font(font: ptr, scale: i32) -> i32;
-extern fn aui_version() -> i32;
+extern fn aui_set_fallback_font(font: ptr, scale: i32) : i32;
+extern fn aui_version() : i32;
 // v2.19.2：应用版本（APK 的版本名 + code，与框架版本区分）。应用在
 // build 里调 aui_set_app_version 一次登记；启动日志行与 Gallery
 // System 标签页都读这两个 getter，不再各写一份。
-extern fn aui_set_app_version(name: ptr, code: i32) -> i32;
-extern fn aui_app_version_name() -> ptr;
-extern fn aui_app_version_code() -> i32;
+extern fn aui_set_app_version(name: ptr, code: i32) : i32;
+extern fn aui_app_version_name() : ptr;
+extern fn aui_app_version_code() : i32;
 
 // ---- 文件日志（W3 合并，见 aui_impl.ast 的 aui_log_* 实现）----
 // trace.txt 只记里程碑字母；aui.log 记带 i64 时间戳的完整行为行，
@@ -44,12 +44,12 @@ extern fn aui_app_version_code() -> i32;
 // （<dir>/aui.log，128 KiB 轮转），同时镜像到 logcat（tag AsterUI）。
 // attach 时自动初始化；aui_log_set_file 供无宿主测试指定主文件。
 // aui_log_tail 回读主文件尾部（应用内日志查看器用）。
-extern fn aui_log(level: i32, msg: ptr) -> i32;
-extern fn aui_log1(level: i32, p0: ptr, v: i32, p1: ptr) -> i32;
-extern fn aui_log2(level: i32, p0: ptr, a: i32, p1: ptr, b: i32, p2: ptr) -> i32;
-extern fn aui_log_lines() -> i32;
-extern fn aui_log_tail(out: ptr, cap: i32) -> i32;
-extern fn aui_log_set_file(path: ptr) -> i32;
+extern fn aui_log(level: i32, msg: ptr) : i32;
+extern fn aui_log1(level: i32, p0: ptr, v: i32, p1: ptr) : i32;
+extern fn aui_log2(level: i32, p0: ptr, a: i32, p1: ptr, b: i32, p2: ptr) : i32;
+extern fn aui_log_lines() : i32;
+extern fn aui_log_tail(out: ptr, cap: i32) : i32;
+extern fn aui_log_set_file(path: ptr) : i32;
 
 // ---- Custom fonts (v2.5) ----
 // Load a font file from an arbitrary device path at runtime
@@ -63,90 +63,90 @@ extern fn aui_log_set_file(path: ptr) -> i32;
 // aui_ext_dir answers the app's external files dir (0 when no
 // Android attach, e.g. headless); the Gallery's default font
 // folder is <ext>/fonts.
-extern fn aui_ext_dir() -> ptr;
-extern fn aui_rt_set_custom_font(path: ptr) -> i32;
-extern fn aui_rt_restore_system_font() -> i32;
-extern fn aui_rt_custom_active() -> i32;
-extern fn aui_rt_custom_err() -> i32;
-extern fn aui_rt_custom_load_ms() -> i32;
-extern fn aui_rt_custom_path() -> ptr;
-extern fn aui_rt_system_path() -> ptr;
-extern fn aui_rt_font_weight() -> i32;
-extern fn ui_sysfont_path() -> ptr;
-extern fn ui_sysfont_face_name() -> ptr;
-extern fn ui_sysfont_name_weight() -> i32;
+extern fn aui_ext_dir() : ptr;
+extern fn aui_rt_set_custom_font(path: ptr) : i32;
+extern fn aui_rt_restore_system_font() : i32;
+extern fn aui_rt_custom_active() : i32;
+extern fn aui_rt_custom_err() : i32;
+extern fn aui_rt_custom_load_ms() : i32;
+extern fn aui_rt_custom_path() : ptr;
+extern fn aui_rt_system_path() : ptr;
+extern fn aui_rt_font_weight() : i32;
+extern fn ui_sysfont_path() : ptr;
+extern fn ui_sysfont_face_name() : ptr;
+extern fn ui_sysfont_name_weight() : i32;
 
 // ---- 构建（在 build 回调内按顺序调用）----
-extern fn aui_root() -> i32;
-extern fn aui_column(key: i32) -> i32;
-extern fn aui_row(key: i32) -> i32;
-extern fn aui_stack(key: i32) -> i32;
-extern fn aui_scroll(key: i32) -> i32;
-extern fn aui_pad(dp: i32) -> i32;
-extern fn aui_gap(dp: i32) -> i32;
-extern fn aui_weight(w: i32) -> i32;
-extern fn aui_align(a: i32) -> i32;
-extern fn aui_bg(color: u32) -> i32;
-extern fn aui_radius(dp: i32) -> i32;
+extern fn aui_root() : i32;
+extern fn aui_column(key: i32) : i32;
+extern fn aui_row(key: i32) : i32;
+extern fn aui_stack(key: i32) : i32;
+extern fn aui_scroll(key: i32) : i32;
+extern fn aui_pad(dp: i32) : i32;
+extern fn aui_gap(dp: i32) : i32;
+extern fn aui_weight(w: i32) : i32;
+extern fn aui_align(a: i32) : i32;
+extern fn aui_bg(color: u32) : i32;
+extern fn aui_radius(dp: i32) : i32;
 // v0.1-cn D-2a 前置（评估稿 §1.3 的 5 个缺失项，见 D2A-SCHEMA.md）：
 // 通用宽高 / 通用前景色 / 长按选中。修饰器，挂最近创建的节点，返回 i32；
 // 无目标返回 0（与 aui_pad/aui_gap 同款形态）。
 // aui_size：每维 i32 dp；−1 = 未指定（包内容/默认量出，现行行为），
 // 其它负值按 −1 归一。−1 在此只表示“未指定”，不是 Android 的
 // MATCH_PARENT/WRAP_CONTENT（评估稿 §8 第 4 条）；填满走既有 weight 机制。
-extern fn aui_size(w: i32, h: i32) -> i32;
+extern fn aui_size(w: i32, h: i32) : i32;
 // aui_fg：u32 ARGB，逐节点前景色覆盖；未设置时走主题。只覆盖文本前景
 // （适用节点种见 D2A-SCHEMA.md）；背景仍走 aui_bg。显式 0x00000000
 // 也是有效覆盖。状态色（选中/按下/禁用）不被覆盖。
-extern fn aui_fg(color: u32) -> i32;
+extern fn aui_fg(color: u32) : i32;
 // aui_selectable：flag != 0 = 可选中。标记接受任何节点；选中行为只对
 // 文本节点（label，含 aui_text_i32）生效：长按 500 ms 不动即选中其全文。
 // 有 aui_long_press 回调登记的节点走回调、不产生选区；选区状态读
 // aui_selection_key()（0 = 无选区）/ aui_debug_selection()。
-extern fn aui_selectable(flag: i32) -> i32;
-extern fn aui_label(key: i32, text: ptr) -> i32;
-extern fn aui_label_n(key: i32, text: ptr, len: i32) -> i32;
-extern fn aui_text_i32(key: i32, value: i32) -> i32;
-extern fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32;
+extern fn aui_selectable(flag: i32) : i32;
+extern fn aui_label(key: i32, text: ptr) : i32;
+extern fn aui_label_n(key: i32, text: ptr, len: i32) : i32;
+extern fn aui_text_i32(key: i32, value: i32) : i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr) : i32, user: ptr) : i32;
 // v1.17：开关。on != 0 为开；状态由应用持有，每次 build 传入。
 // 点按只调用 cb(user)，应用翻转状态后 aui_invalidate() 即可。
-extern fn aui_switch(key: i32, on: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
+extern fn aui_switch(key: i32, on: i32, cb: fn(ptr) : i32, user: ptr) : i32;
 // v1.17：进度条。value 是千分比 0..1000（越界夹紧），0 = 空、1000 = 满。
-extern fn aui_progress(key: i32, value: i32) -> i32;
+extern fn aui_progress(key: i32, value: i32) : i32;
 // v1.20：复选框 / 单选框。文字是内联标签；checked/selected != 0 为选中。
 // 状态由应用持有（同开关）；点按只调 cb(user)，应用改状态后 aui_invalidate()。
 // 单选组的互斥也由应用维护：回调里把同组其他项置 0，再置自己。
-extern fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_radio(key: i32, text: ptr, selected: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
+extern fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_radio(key: i32, text: ptr, selected: i32, cb: fn(ptr) : i32, user: ptr) : i32;
 // v1.31：标签片（Chip）。selected != 0 为主色填充 + on_primary 文字，
 // 否则 surface 底 + on_surface 24% 1 dp 边框。尺寸是固有宽（文字 + 32 dp），
 // 高至少 28 dp；放在行里并排，放在列里按固有宽左对齐。
-extern fn aui_chip(key: i32, text: ptr, selected: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
+extern fn aui_chip(key: i32, text: ptr, selected: i32, cb: fn(ptr) : i32, user: ptr) : i32;
 // v2.10：角标（Badge，对照 HuxerUI tree_view 例子里的 Badge 辅助函数：
 // 11 pt 半粗体文字、左右 9 dp 上下 4 dp 内边距、满圆角药丸形）。纯展示，
 // 不接收点击。aui_badge 传文字与前后景色；aui_badge_count 只传数量：
 // count <= 0 不画（零尺寸）、1..99 显示数字、>= 100 显示 "99+"，白字红底；
 // aui_badge_dot 是 8 dp 实心圆点（颜色自定），放在行尾或图标旁作未读提示。
-extern fn aui_badge(key: i32, text: ptr, fg: u32, bg: u32) -> i32;
-extern fn aui_badge_count(key: i32, count: i32) -> i32;
-extern fn aui_badge_dot(key: i32, color: u32) -> i32;
+extern fn aui_badge(key: i32, text: ptr, fg: u32, bg: u32) : i32;
+extern fn aui_badge_count(key: i32, count: i32) : i32;
+extern fn aui_badge_dot(key: i32, color: u32) : i32;
 // 仅测试：out = [x, y, w, h, visible]；找不到返回 -1。
 // 仅测试：D-2a 修饰值读回。out = [size_w_dp, size_h_dp, text_sp,
 // fg_bits, fg_set, selectable]（未设置项为 −1/0）；找不到 key 返回 −1。
-extern fn aui_debug_d2a(key: i32, out: ptr) -> i32;
+extern fn aui_debug_d2a(key: i32, out: ptr) : i32;
 // 仅测试：选区读回。out = [node_idx, key, start_cp, end_cp]；无选区返回 −1。
-extern fn aui_debug_selection(out: ptr) -> i32;
+extern fn aui_debug_selection(out: ptr) : i32;
 // 选中文本节点的 key；无选区返回 0。
-extern fn aui_selection_key() -> i32;
-extern fn aui_debug_badge(key: i32, out: ptr) -> i32;
+extern fn aui_selection_key() : i32;
+extern fn aui_debug_badge(key: i32, out: ptr) : i32;
 // v1.32：环形进度（对照 HuxerUI ProgressCircle）。直径 size dp（0 = 24 dp，
 // 夹在 8..240），描边 = max(1, size/8) dp。value 是千分比 0..1000，从
 // 12 点起顺时针铺弧；value < 0 为不确定进度：固定 28% 的弧、900 ms 转
 // 一圈，由帧泵自动驱动，应用不需要定时器。控件是固有正方形，不接收点击；
 // 列里用 aui_align(1/2) 居中/右对齐。
-extern fn aui_progress_circle(key: i32, value: i32, size: i32) -> i32;
+extern fn aui_progress_circle(key: i32, value: i32, size: i32) : i32;
 // 仅测试：环形进度状态，out 写 [value, size_dp]；找到返回 0。
-extern fn aui_debug_progress_circle(key: i32, out: ptr) -> i32;
+extern fn aui_debug_progress_circle(key: i32, out: ptr) : i32;
 // v1.33：树视图（对照 HuxerUI TreeView / TreeViewStyle）。容器 + 按
 // 可见顺序声明的 aui_tree_item 行。行高固定 32 dp，纵向滚动、惯性、
 // 滚动条、裁剪都与 aui_scroll 相同。受控组件：展开/选中状态由应用保存，
@@ -160,11 +160,11 @@ extern let AUI_TREE_BRANCH: i32;
 extern let AUI_TREE_EXPANDED: i32;
 extern let AUI_TREE_SELECTED: i32;
 extern let AUI_TREE_DISABLED: i32;
-extern fn aui_tree(key: i32) -> i32;
+extern fn aui_tree(key: i32) : i32;
 extern fn aui_tree_item(key: i32, text: ptr, depth: i32, flags: i32,
-                        cb: fn(ptr) -> i32, user: ptr) -> i32;
+                        cb: fn(ptr) : i32, user: ptr) : i32;
 // 仅测试：树行状态，out 写 [depth, flags]；找到返回 0。
-extern fn aui_debug_tree_item(key: i32, out: ptr) -> i32;
+extern fn aui_debug_tree_item(key: i32, out: ptr) : i32;
 // v1.45：虚拟列表（对照 HuxerUI VirtualList）。固定行高，只构建视口内
 // （上下各多一行）的行节点，适合上千条数据。count = 数据总数，item_dp =
 // 行高；on_bind 在构建时按 aui_vlist_first()..aui_vlist_last()（闭区间）
@@ -177,19 +177,19 @@ extern fn aui_debug_tree_item(key: i32, out: ptr) -> i32;
 // 行下标、aui_vlist_tap_key() 读容器 key。窗口校正可能晚一帧生效，
 // 应用无需关心；程序化滚动用 aui_vlist_scroll_to。
 extern fn aui_vlist(key: i32, count: i32, item_dp: i32,
-                    on_bind: fn(ptr) -> i32, on_tap: fn(ptr) -> i32,
-                    user: ptr) -> i32;
-extern fn aui_vlist_row(index: i32) -> i32;
-extern fn aui_vlist_first() -> i32;
-extern fn aui_vlist_last() -> i32;
-extern fn aui_vlist_tap_index() -> i32;
-extern fn aui_vlist_tap_key() -> i32;
-extern fn aui_vlist_scroll(key: i32) -> i32;
-extern fn aui_vlist_scroll_to(key: i32, px: i32) -> i32;
+                    on_bind: fn(ptr) : i32, on_tap: fn(ptr) : i32,
+                    user: ptr) : i32;
+extern fn aui_vlist_row(index: i32) : i32;
+extern fn aui_vlist_first() : i32;
+extern fn aui_vlist_last() : i32;
+extern fn aui_vlist_tap_index() : i32;
+extern fn aui_vlist_tap_key() : i32;
+extern fn aui_vlist_scroll(key: i32) : i32;
+extern fn aui_vlist_scroll_to(key: i32, px: i32) : i32;
 // 仅测试：out = [x,y,w,h,count,first,last,offset_px]；当前窗口不含该
 // 行下标时 aui_debug_vlist_row 返回 -1。
-extern fn aui_debug_vlist(key: i32, out: ptr) -> i32;
-extern fn aui_debug_vlist_row(key: i32, index: i32, out: ptr) -> i32;
+extern fn aui_debug_vlist(key: i32, out: ptr) : i32;
+extern fn aui_debug_vlist_row(key: i32, index: i32, out: ptr) : i32;
 // v2.10：不定高虚拟列表（对照 HuxerUI VirtualList.EstimatedItemExtent）。
 // 与 aui_vlist 的区别只有行高：固定列表每行等高（item_dp），不定高列表
 // 每行高度由内容量出、按下标缓存。est_dp 是未量过项的估计高（首帧窗口
@@ -211,21 +211,21 @@ extern fn aui_debug_vlist_row(key: i32, index: i32, out: ptr) -> i32;
 // 每表缓存上限 1024 项：超出上限的项永远用估计高（仍可渲染、仍可滚动，
 // 只是深处位置按估计算）；登记表共 16 槽（与固定列表共用）。
 extern fn aui_vlist_var(key: i32, count: i32, est_dp: i32,
-                       on_bind: fn(ptr) -> i32, on_tap: fn(ptr) -> i32,
-                       user: ptr) -> i32;
-extern fn aui_vlist_var_row(index: i32) -> i32;
-extern fn aui_vlist_var_scroll_to_item(key: i32, index: i32, align: i32) -> i32;
-extern fn aui_vlist_var_invalidate(key: i32, index: i32) -> i32;
-extern fn aui_vlist_var_invalidate_all(key: i32) -> i32;
-extern fn aui_vlist_var_insert(key: i32, index: i32) -> i32;
-extern fn aui_vlist_var_remove(key: i32, index: i32) -> i32;
+                       on_bind: fn(ptr) : i32, on_tap: fn(ptr) : i32,
+                       user: ptr) : i32;
+extern fn aui_vlist_var_row(index: i32) : i32;
+extern fn aui_vlist_var_scroll_to_item(key: i32, index: i32, align: i32) : i32;
+extern fn aui_vlist_var_invalidate(key: i32, index: i32) : i32;
+extern fn aui_vlist_var_invalidate_all(key: i32) : i32;
+extern fn aui_vlist_var_insert(key: i32, index: i32) : i32;
+extern fn aui_vlist_var_remove(key: i32, index: i32) : i32;
 // 仅测试：aui_debug_vlist_var 的 out 与 aui_debug_vlist 相同；
 // aui_debug_vlist_var_row 的 out = [x,y,w,h,cached_h_px,measured]；
 // aui_debug_vlist_var_stats 的 out = [total_px,measured_count,write_count,cap]
 // （write_count 是高度写回次数：无变化重布局不增长，证明量一次缓存有效）。
-extern fn aui_debug_vlist_var(key: i32, out: ptr) -> i32;
-extern fn aui_debug_vlist_var_row(key: i32, index: i32, out: ptr) -> i32;
-extern fn aui_debug_vlist_var_stats(key: i32, out: ptr) -> i32;
+extern fn aui_debug_vlist_var(key: i32, out: ptr) : i32;
+extern fn aui_debug_vlist_var_row(key: i32, index: i32, out: ptr) : i32;
+extern fn aui_debug_vlist_var_stats(key: i32, out: ptr) : i32;
 // v2.12：可调分栏（对照 HuxerUI SplitLayout，缺口 #5）。两个窗格、
 // 一条分隔条：horizontal != 0 时窗格左右排（分隔条竖直）、0 时上下排
 // （分隔条水平）。ratio 是首窗格的占比（千分比 0..1000），只作初值：
@@ -244,19 +244,19 @@ extern fn aui_debug_vlist_var_stats(key: i32, out: ptr) -> i32;
 // 用（窗格里再放一个 aui_split）。key 必须非 0 且全树唯一；登记表共
 // 16 槽，超出的分栏仍按传入 ratio 布局、但拖动不持久（与列表同规则）。
 extern fn aui_split(key: i32, horizontal: i32, ratio: i32,
-                    cb: fn(ptr) -> i32, user: ptr) -> i32;
+                    cb: fn(ptr) : i32, user: ptr) : i32;
 // 修饰器，紧跟 aui_split 调用（在第一个窗格之前）：设最小窗格 dp。
-extern fn aui_split_min(dp: i32) -> i32;
+extern fn aui_split_min(dp: i32) : i32;
 // 读当前比例（登记表值，拖动中读到的是实时值）；找不到返回 -1。
-extern fn aui_split_ratio(key: i32) -> i32;
+extern fn aui_split_ratio(key: i32) : i32;
 // 写比例（0..1000 夹取；拖动中的最小窗格边界同样适用）；找不到返回 -1。
 // 只写登记表，不调 cb；下次布局生效。
-extern fn aui_split_set_ratio(key: i32, ratio: i32) -> i32;
+extern fn aui_split_set_ratio(key: i32, ratio: i32) : i32;
 // 仅测试：out = [x,y,w,h,horizontal,ratio,min_dp,div_px]
 // （div_px 是分隔条中心沿主轴的绝对像素坐标）；找不到返回 -1。
-extern fn aui_debug_split(key: i32, out: ptr) -> i32;
+extern fn aui_debug_split(key: i32, out: ptr) : i32;
 // 仅测试：某窗格的矩形；out = [x,y,w,h]；index 只能是 0/1，否则 -1。
-extern fn aui_debug_split_pane(key: i32, index: i32, out: ptr) -> i32;
+extern fn aui_debug_split_pane(key: i32, index: i32, out: ptr) : i32;
 // v1.46：虚拟网格（对照 HuxerUI VirtualGrid）。固定行高，只构建视口内
 // （上下各多一行）的格子节点，适合上千项。cols > 0 表示固定列数；
 // cols <= 0 按 min_cell_dp 自适应：列数 = (内容宽 + 间距) / (最小格宽 +
@@ -267,19 +267,19 @@ extern fn aui_debug_split_pane(key: i32, index: i32, out: ptr) -> i32;
 // 点格时调用，回调里用 aui_vgrid_tap_index()/aui_vgrid_tap_key() 读取。
 // 列数/间距/视口高变化时窗口会晚一帧自动重建，应用无需关心。
 extern fn aui_vgrid(key: i32, count: i32, cols: i32, min_cell_dp: i32,
-                    row_dp: i32, on_bind: fn(ptr) -> i32,
-                    on_tap: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_vgrid_cell(index: i32) -> i32;
-extern fn aui_vgrid_first() -> i32;
-extern fn aui_vgrid_last() -> i32;
-extern fn aui_vgrid_tap_index() -> i32;
-extern fn aui_vgrid_tap_key() -> i32;
-extern fn aui_vgrid_scroll(key: i32) -> i32;
-extern fn aui_vgrid_scroll_to(key: i32, px: i32) -> i32;
+                    row_dp: i32, on_bind: fn(ptr) : i32,
+                    on_tap: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_vgrid_cell(index: i32) : i32;
+extern fn aui_vgrid_first() : i32;
+extern fn aui_vgrid_last() : i32;
+extern fn aui_vgrid_tap_index() : i32;
+extern fn aui_vgrid_tap_key() : i32;
+extern fn aui_vgrid_scroll(key: i32) : i32;
+extern fn aui_vgrid_scroll_to(key: i32, px: i32) : i32;
 // 仅测试：out = [x,y,w,h,count,cols,first,last,offset_px]；当前窗口不含
 // 该格子下标时 aui_debug_vgrid_cell 返回 -1。
-extern fn aui_debug_vgrid(key: i32, out: ptr) -> i32;
-extern fn aui_debug_vgrid_cell(key: i32, index: i32, out: ptr) -> i32;
+extern fn aui_debug_vgrid(key: i32, out: ptr) : i32;
+extern fn aui_debug_vgrid_cell(key: i32, index: i32, out: ptr) : i32;
 // v2.17：虚拟表格（对照 HuxerUI virtual_table）。行列都虚拟化：只构建
 // 视口内（上下各多一行、左右各多一列）的格子节点，适合上万行 × 上百列。
 // rows 行 × cols 列（列上限 512）；row_dp 行高，表头与行同高。on_bind 在
@@ -298,26 +298,26 @@ extern fn aui_debug_vgrid_cell(key: i32, index: i32, out: ptr) -> i32;
 // 对齐按“可见区”算：表头占一行高、首列占一列宽，目标格落在表头下 /
 // 首列右，不藏到固定部分下面。
 extern fn aui_vtable(key: i32, rows: i32, cols: i32, row_dp: i32,
-                     on_bind: fn(ptr) -> i32, on_tap: fn(ptr) -> i32,
-                     user: ptr) -> i32;
-extern fn aui_vtable_col(key: i32, col: i32, width_dp: i32) -> i32;
-extern fn aui_vtable_header(col: i32) -> i32;
-extern fn aui_vtable_cell(row: i32, col: i32) -> i32;
-extern fn aui_vtable_first_row() -> i32;
-extern fn aui_vtable_last_row() -> i32;
-extern fn aui_vtable_first_col() -> i32;
-extern fn aui_vtable_last_col() -> i32;
-extern fn aui_vtable_tap_row() -> i32;
-extern fn aui_vtable_tap_col() -> i32;
-extern fn aui_vtable_tap_key() -> i32;
-extern fn aui_vtable_scroll_to(key: i32, row: i32, col: i32, align: i32) -> i32;
+                     on_bind: fn(ptr) : i32, on_tap: fn(ptr) : i32,
+                     user: ptr) : i32;
+extern fn aui_vtable_col(key: i32, col: i32, width_dp: i32) : i32;
+extern fn aui_vtable_header(col: i32) : i32;
+extern fn aui_vtable_cell(row: i32, col: i32) : i32;
+extern fn aui_vtable_first_row() : i32;
+extern fn aui_vtable_last_row() : i32;
+extern fn aui_vtable_first_col() : i32;
+extern fn aui_vtable_last_col() : i32;
+extern fn aui_vtable_tap_row() : i32;
+extern fn aui_vtable_tap_col() : i32;
+extern fn aui_vtable_tap_key() : i32;
+extern fn aui_vtable_scroll_to(key: i32, row: i32, col: i32, align: i32) : i32;
 // 仅测试：out = [x,y,w,h,rows,cols,first_row,last_row,first_col,
 // last_col,off_y,off_x]（像素/整数）；当前窗口不含该格子时
 // aui_debug_vtable_cell 返回 -1。aui_debug_vtable_set_x 直接设横向
 // 偏移（像素，自动夹取），与 aui_debug_scroll_set（纵向）配对。
-extern fn aui_debug_vtable(key: i32, out: ptr) -> i32;
-extern fn aui_debug_vtable_cell(key: i32, row: i32, col: i32, out: ptr) -> i32;
-extern fn aui_debug_vtable_set_x(key: i32, px: i32) -> i32;
+extern fn aui_debug_vtable(key: i32, out: ptr) : i32;
+extern fn aui_debug_vtable_cell(key: i32, row: i32, col: i32, out: ptr) : i32;
+extern fn aui_debug_vtable_set_x(key: i32, px: i32) : i32;
 // v1.47：横向虚拟列表（对照 HuxerUI VirtualList.ScrollAxis(Horizontal)）。
 // 项宽固定 item_w_dp；item_h_dp > 0 时项高固定，否则撑满容器内容高。
 // 只构建视口附近（左右各多一项）的项节点，适合上千项卡片横滑。
@@ -327,19 +327,19 @@ extern fn aui_debug_vtable_set_x(key: i32, px: i32) -> i32;
 // aui_hlist_tap_index()/aui_hlist_tap_key() 读取。视口宽变化时窗口会晚
 // 一帧自动重建，应用无需关心。
 extern fn aui_hlist(key: i32, count: i32, item_w_dp: i32, item_h_dp: i32,
-                    on_bind: fn(ptr) -> i32, on_tap: fn(ptr) -> i32,
-                    user: ptr) -> i32;
-extern fn aui_hlist_item(index: i32) -> i32;
-extern fn aui_hlist_first() -> i32;
-extern fn aui_hlist_last() -> i32;
-extern fn aui_hlist_tap_index() -> i32;
-extern fn aui_hlist_tap_key() -> i32;
-extern fn aui_hlist_scroll(key: i32) -> i32;
-extern fn aui_hlist_scroll_to(key: i32, px: i32) -> i32;
+                    on_bind: fn(ptr) : i32, on_tap: fn(ptr) : i32,
+                    user: ptr) : i32;
+extern fn aui_hlist_item(index: i32) : i32;
+extern fn aui_hlist_first() : i32;
+extern fn aui_hlist_last() : i32;
+extern fn aui_hlist_tap_index() : i32;
+extern fn aui_hlist_tap_key() : i32;
+extern fn aui_hlist_scroll(key: i32) : i32;
+extern fn aui_hlist_scroll_to(key: i32, px: i32) : i32;
 // 仅测试：out = [x,y,w,h,count,first,last,offset_px]；当前窗口不含该项
 // 下标时 aui_debug_hlist_item 返回 -1。
-extern fn aui_debug_hlist(key: i32, out: ptr) -> i32;
-extern fn aui_debug_hlist_item(key: i32, index: i32, out: ptr) -> i32;
+extern fn aui_debug_hlist(key: i32, out: ptr) : i32;
+extern fn aui_debug_hlist_item(key: i32, index: i32, out: ptr) : i32;
 // ---- 按压水波纹（v1.48）----
 // 对照 HuxerUI indication.h：开启后按住走通用点击路径的控件时，从触点
 // 扩散一圈主题主色的状态层（12% alpha，320 ms 线性扩散），松手后 220 ms
@@ -358,17 +358,17 @@ extern fn aui_debug_hlist_item(key: i32, index: i32, out: ptr) -> i32;
 // 每帧 trace 增加 w（等窗口锁）/C（光栅）/t（提交）毫秒数，局部帧再加
 // X = 重画宽 << 12 | 高。接口与像素输出不变。
 // aui_ripple_active 返回 0 空闲 / 1 按住 / 2 淡出。
-extern fn aui_ripple(on: i32) -> i32;
-extern fn aui_ripple_active() -> i32;
+extern fn aui_ripple(on: i32) : i32;
+extern fn aui_ripple_active() : i32;
 // 仅测试：out = [key,x,y,rad_px,alpha,phase,max_r,elapsed_ms]。
-extern fn aui_debug_ripple(out: ptr) -> i32;
+extern fn aui_debug_ripple(out: ptr) : i32;
 // v2.8：DEBUG overlay 开关 + 状态（框架级内置，见 REPORT-v28.md）。
 // aui_debug_overlay(0/1)：显式开/关（关时面板一并收起），返回当前开关。
 // aui_debug_overlay_state：out = [on, expanded, 缎带 cx,cy,w,h,
 //   面板 x,y,w,h（收起为 -1）, fps 快照, 上一帧光栅 ms]。
-extern fn aui_debug_overlay(on: i32) -> i32;
-extern fn aui_debug_overlay_on() -> i32;
-extern fn aui_debug_overlay_state(out: ptr) -> i32;
+extern fn aui_debug_overlay(on: i32) : i32;
+extern fn aui_debug_overlay_on() : i32;
+extern fn aui_debug_overlay_state(out: ptr) : i32;
 // v1.34：Toast / SnackBar（对照 HuxerUI presentation.h）。二者都是不挂树
 // 的底部浮层，不参与页面/滚动/对话框布局。
 // Toast 是被动反馈：底部居中、最多同时 4 条（新的在下、旧的向上叠），
@@ -376,35 +376,35 @@ extern fn aui_debug_overlay_state(out: ptr) -> i32;
 // 触摸直接穿透到底层（HuxerUI pointer pass-through）。duration_ms：
 // >0 毫秒后自动收起，0 = 默认 2000 ms，<0 = 常驻直到手动收起。
 // 返回 >0 的句柄；文本指针需在显示期间有效（建议字面量）。
-extern fn aui_toast(text: ptr, duration_ms: i32) -> i32;
-extern fn aui_toast_dismiss(handle: i32) -> i32;
+extern fn aui_toast(text: ptr, duration_ms: i32) : i32;
+extern fn aui_toast_dismiss(handle: i32) : i32;
 // SnackBar 是窗口内唯一、可带一个动作按钮的内容浮层：新调用替换旧的；
 // 深色 #1F2328 底、白字、动作 #79C0FF，min 48 dp、最大 600 dp，底部留
 // 24 dp。duration_ms 同上（默认 4000 ms）；按住动作按钮时倒计时暂停。
 // 点动作按钮先收起提示再调 cb(user)；点提示表面会吞掉点击，不穿透。
 // action 传 0/空串或 cb 为 0 时退化为纯消息 SnackBar。
 extern fn aui_snackbar(key: i32, text: ptr, action: ptr, duration_ms: i32,
-                       cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_snackbar_dismiss() -> i32;
+                       cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_snackbar_dismiss() : i32;
 // 仅测试：Toast 几何（out = [x,y,w,h,id,active]）/ 当前数量。
-extern fn aui_debug_toast(handle: i32, out: ptr) -> i32;
-extern fn aui_debug_toast_count() -> i32;
+extern fn aui_debug_toast(handle: i32, out: ptr) : i32;
+extern fn aui_debug_toast_count() : i32;
 // 仅测试：SnackBar out = [x,y,w,h,ax,ay,aw,ah,id,rem_ms,state]；
 // state 0 无 / 1 可见 / 2 动作按下；没有时返回 -1。
-extern fn aui_debug_snackbar(out: ptr) -> i32;
+extern fn aui_debug_snackbar(out: ptr) : i32;
 // 仅测试：当前不确定进度相位（0..65535）。
-extern fn aui_debug_spin_phase() -> i32;
+extern fn aui_debug_spin_phase() : i32;
 // v1.20：滑块。value / step 都是千分比（0..1000），step 是吸附步长（<=1 不吸附）。
 // 按下即跳到触点，拖动持续回调 cb(user)；拖动期间用 aui_slider_value(key)
 // 读实时值。应用在回调里保存值并 aui_invalidate()，下一帧传入新值。
-extern fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_slider_value(key: i32) -> i32;
+extern fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_slider_value(key: i32) : i32;
 // v1.21：分段控件。容器 + aui_segment 子项，宽度均分；selected 是当前段下标。
 // 点按任意一段只调容器的 cb(user)，回调里用 aui_segmented_value(容器 key)
 // 读新下标，应用保存后 aui_invalidate()。段的 key 必须非 0（用于按压态）。
-extern fn aui_segmented(key: i32, selected: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_segment(key: i32, text: ptr) -> i32;
-extern fn aui_segmented_value(key: i32) -> i32;
+extern fn aui_segmented(key: i32, selected: i32, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_segment(key: i32, text: ptr) : i32;
+extern fn aui_segmented_value(key: i32) : i32;
 // v1.22：标签页。容器 + aui_tab 子项，宽度由文字决定（min 48 dp，左内边距
 // 12 dp），一行排开、不换行；selected 是当前页下标，底部 2 dp 主色指示条
 // 只盖住当前页。点按任意页只调容器的 cb(user)，回调里用
@@ -414,18 +414,18 @@ extern fn aui_segmented_value(key: i32) -> i32;
 // 与 ScrollView/hlist 同一套 keyed scroll 表；容器 key 必须非 0
 // 才能记偏移）。点按仍走通用 clickable 路径，拖动超过 slop 后
 // 取消按压、松手不触发点按；超出容器的部分由绘制裁剪裁掉。
-extern fn aui_tabs(key: i32, selected: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_tab(key: i32, text: ptr) -> i32;
-extern fn aui_tabs_value(key: i32) -> i32;
+extern fn aui_tabs(key: i32, selected: i32, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_tab(key: i32, text: ptr) : i32;
+extern fn aui_tabs_value(key: i32) : i32;
 // v1.24：横向分页。容器 + aui_page 子项；每页占满视口，页与页横向排开，
 // 只画当前页附近的可见部分。左右拖动超过 8 dp 且横向占优时接管手势，
 // 松手按位移（>= 35% 视口宽）或速度（>= 600 px/s）提议相邻页，只调
 // 容器的 cb(user)；回调里用 aui_pager_value(容器 key) 读提案，应用保存
 // 后 aui_invalidate()。selected 变化也会用 200 ms ease-out 吸到目标页。
 // 页的 key 必须非 0（用于命中与子控件），页内容由应用自行构建。
-extern fn aui_pager(key: i32, selected: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_page(key: i32) -> i32;
-extern fn aui_pager_value(key: i32) -> i32;
+extern fn aui_pager(key: i32, selected: i32, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_page(key: i32) : i32;
+extern fn aui_pager_value(key: i32) : i32;
 // v1.25：模态对话框（对照 HuxerUI Dialog）。只在 open != 0 时调用；
 // 后续子项都放进返回的卡片，用 aui_end() 关闭。遮罩覆盖整窗、卡片在
 // 内容区居中（最大 320 dp 宽、两侧各留 24 dp），卡片默认 surface 底、
@@ -433,8 +433,8 @@ extern fn aui_pager_value(key: i32) -> i32;
 // 点遮罩或按系统 BACK 会调 cb(user)，应用在回调里把 open 置 0；关闭
 // 原因用 aui_dialog_reason() 读（1 遮罩 / 2 BACK）。卡片空白不关闭。
 // 只支持同时一层；对话框内不要放文本框（输入焦点/键盘不支持）。
-extern fn aui_dialog(key: i32, open: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_dialog_reason() -> i32;
+extern fn aui_dialog(key: i32, open: i32, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_dialog_reason() : i32;
 // v1.26：下拉选择（对照 HuxerUI Select）。触发器是普通布局里的一个控件，
 // 选项用 aui_option 紧随其后声明，用 aui_end() 结束；选项始终存在，只有
 // open != 0 时才在锚定浮层里展开（宽度跟触发器，放不下时翻到上方）。
@@ -443,10 +443,10 @@ extern fn aui_dialog_reason() -> i32;
 // 外部 reason=2、BACK reason=3，应用关闭。浮层展开时是模态层，底层
 // 不接收点击。selected 越界时显示 placeholder。同时只支持一个展开。
 extern fn aui_select(key: i32, selected: i32, open: i32,
-                     placeholder: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_option(key: i32, text: ptr) -> i32;
-extern fn aui_select_value(key: i32) -> i32;
-extern fn aui_select_reason() -> i32;
+                     placeholder: ptr, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_option(key: i32, text: ptr) : i32;
+extern fn aui_select_value(key: i32) : i32;
+extern fn aui_select_reason() : i32;
 // v1.35：菜单（对照 HuxerUI Menu）。只在 open != 0 时调用；返回的节点
 // 后面用 aui_menu_item / aui_menu_separator 声明条目，aui_end() 结束。
 // 默认锚在 anchor_key 对应节点下方（放不下翻到上方），也可以 aui_menu_at
@@ -461,20 +461,20 @@ extern let AUI_MENU_REASON_ITEM: i32;
 extern let AUI_MENU_REASON_OUTSIDE: i32;
 extern let AUI_MENU_REASON_BACK: i32;
 extern fn aui_menu(key: i32, anchor_key: i32, open: i32,
-                   cb: fn(ptr) -> i32, user: ptr) -> i32;
+                   cb: fn(ptr) : i32, user: ptr) : i32;
 extern fn aui_menu_at(key: i32, px: i32, py: i32, open: i32,
-                      cb: fn(ptr) -> i32, user: ptr) -> i32;
+                      cb: fn(ptr) : i32, user: ptr) : i32;
 extern fn aui_menu_item(key: i32, text: ptr, flags: i32,
-                        cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_menu_separator(key: i32) -> i32;
-extern fn aui_menu_reason() -> i32;
-extern fn aui_menu_item_key() -> i32;
-extern fn aui_menu_dismiss() -> i32;
+                        cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_menu_separator(key: i32) : i32;
+extern fn aui_menu_reason() : i32;
+extern fn aui_menu_item_key() : i32;
+extern fn aui_menu_dismiss() : i32;
 // 仅测试：菜单 out = [x,y,w,h,key,reason,item_key,off,maxoff,items]；
 // 条目 out = [x,y,w,h,index,flags,checked,disabled]；没有时返回 -1。
-extern fn aui_debug_menu(out: ptr) -> i32;
-extern fn aui_debug_menu_item(key: i32, out: ptr) -> i32;
-extern fn aui_debug_menu_touch(out: ptr) -> i32;
+extern fn aui_debug_menu(out: ptr) : i32;
+extern fn aui_debug_menu_item(key: i32, out: ptr) : i32;
+extern fn aui_debug_menu_touch(out: ptr) : i32;
 // v1.36：图标按钮（对照 HuxerUI IconButton）。内置矢量图标，40 dp 触控
 // 方块、20 dp 图形、4 dp 圆角、32 dp 按下指示层；颜色取主题文字色，
 // 禁用时降到 38% 不透明度且不接收点击。icon 取 AUI_ICON_*；size_dp 传 0
@@ -506,11 +506,11 @@ extern let AUI_ICON_SETTINGS: i32;
 extern let AUI_ICON_CALENDAR: i32;
 extern let AUI_ICON_DOWNLOAD: i32;
 extern fn aui_icon_button(key: i32, icon: i32, size_dp: i32, flags: i32,
-                          cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_icon(key: i32, icon: i32, size_dp: i32) -> i32;
+                          cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_icon(key: i32, icon: i32, size_dp: i32) : i32;
 // 仅测试：按钮 out = [x,y,w,h,icon,disabled,size]；图标 out = [x,y,w,h,icon,size]。
-extern fn aui_debug_icon_button(key: i32, out: ptr) -> i32;
-extern fn aui_debug_icon(key: i32, out: ptr) -> i32;
+extern fn aui_debug_icon_button(key: i32, out: ptr) : i32;
+extern fn aui_debug_icon(key: i32, out: ptr) : i32;
 // v1.37：流式布局（对照 HuxerUI Flow）。子项按声明顺序从左到右排，
 // 放不下就换行；aui_gap 同时作为同行子项间距和行间距。子项 align 控制
 // 行内垂直对齐（0 顶 / 1 中 / 2 底 / 3 拉伸），aui_weight 让子项在
@@ -523,18 +523,18 @@ extern let AUI_FLOW_START: i32;
 extern let AUI_FLOW_CENTER: i32;
 extern let AUI_FLOW_END: i32;
 extern let AUI_FLOW_SPACE_BETWEEN: i32;
-extern fn aui_flow(key: i32) -> i32;
-extern fn aui_flow_align(a: i32) -> i32;
+extern fn aui_flow(key: i32) : i32;
+extern fn aui_flow_align(a: i32) : i32;
 // v1.37：分隔线（对照 HuxerUI Divider）。水平线 1 dp 粗、铺满可用宽度，
 // 竖直时 1 dp 宽、默认 align = 3（行里拉伸到行高）。颜色 = 当前主题
 // 文字色 12% 透明度；aui_bg 可覆盖（建议自带 alpha）。aui_pad 在水平线
 // 上表现为左右缩进，在竖直线上表现为上下缩进。
-extern fn aui_divider(key: i32) -> i32;
-extern fn aui_divider_v(key: i32) -> i32;
+extern fn aui_divider(key: i32) : i32;
+extern fn aui_divider_v(key: i32) : i32;
 // 仅测试：流式布局 out = [x,y,w,h,lines,justify]；
 // 分隔线 out = [x,y,w,h,axis,thickness]。
-extern fn aui_debug_flow(key: i32, out: ptr) -> i32;
-extern fn aui_debug_divider(key: i32, out: ptr) -> i32;
+extern fn aui_debug_flow(key: i32, out: ptr) : i32;
+extern fn aui_debug_divider(key: i32, out: ptr) : i32;
 // v1.40：顶部应用栏（对照 HuxerUI TopAppBar）。容器 + 标题 + 可选 leading
 // 图标按钮；后续声明的子项都是右侧动作（按声明顺序从左到右排，间距默认 0）。
 // 高度默认 48 dp（子项更高时随之增高），左右内边距 8 dp；标题单行、
@@ -547,12 +547,12 @@ extern fn aui_debug_divider(key: i32, out: ptr) -> i32;
 extern let AUI_TOP_BAR_START: i32;
 extern let AUI_TOP_BAR_CENTER: i32;
 extern fn aui_top_bar(key: i32, title: ptr, leading_icon: i32,
-                      cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_top_bar_align(a: i32) -> i32;
-extern fn aui_top_bar_divider(show: i32) -> i32;
+                      cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_top_bar_align(a: i32) : i32;
+extern fn aui_top_bar_divider(show: i32) : i32;
 // 仅测试：应用栏 out = [x,y,w,h,align,leading_key,actions,divider,
 // tx0,tx1,lx,lw,title_w,title_len,title_x,title_y]。
-extern fn aui_debug_top_bar(key: i32, out: ptr) -> i32;
+extern fn aui_debug_top_bar(key: i32, out: ptr) : i32;
 // v1.41：底部导航栏（对照 HuxerUI NavigationBar）。容器 + 等宽的 aui_nav_item
 // 子项；selected 是应用维护的当前下标（0 起，越界按无选中处理），每项内容
 // 是图标 + 单行文字。点未选中且启用的项时只调容器的 cb(user)，回调里用
@@ -563,14 +563,14 @@ extern fn aui_debug_top_bar(key: i32, out: ptr) -> i32;
 extern let AUI_NAV_HIDE_UNSELECTED: i32;
 extern let AUI_NAV_ITEM_DISABLED: i32;
 extern fn aui_nav_bar(key: i32, selected: i32,
-                      cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_nav_item(key: i32, icon: i32, label: ptr, flags: i32) -> i32;
-extern fn aui_nav_labels(show: i32) -> i32;
-extern fn aui_nav_value(key: i32) -> i32;
+                      cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_nav_item(key: i32, icon: i32, label: ptr, flags: i32) : i32;
+extern fn aui_nav_labels(show: i32) : i32;
+extern fn aui_nav_value(key: i32) : i32;
 // 仅测试：导航栏 out = [x,y,w,h,selected,count,show_labels,pad]；
 // 导航项 out = [x,y,w,h,index,flags,selected,disabled]。
-extern fn aui_debug_nav_bar(key: i32, out: ptr) -> i32;
-extern fn aui_debug_nav_item(key: i32, out: ptr) -> i32;
+extern fn aui_debug_nav_bar(key: i32, out: ptr) : i32;
+extern fn aui_debug_nav_item(key: i32, out: ptr) : i32;
 // v1.42：侧边导航栏（对照 HuxerUI NavigationPane）。容器 + aui_nav_pane_item
 // 子项；收缩态 72 dp 只画图标，展开态（AUI_NAV_PANE_EXPANDED）256 dp 画
 // 图标 + 单行文字。每项高 48 dp，选中项有 32 dp 高的指示胶囊：收缩态
@@ -582,12 +582,12 @@ extern fn aui_debug_nav_item(key: i32, out: ptr) -> i32;
 extern let AUI_NAV_PANE_COMPACT: i32;
 extern let AUI_NAV_PANE_EXPANDED: i32;
 extern fn aui_nav_pane(key: i32, selected: i32, expanded: i32,
-                       cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_nav_pane_item(key: i32, icon: i32, label: ptr, flags: i32) -> i32;
+                       cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_nav_pane_item(key: i32, icon: i32, label: ptr, flags: i32) : i32;
 // 仅测试：侧边栏 out = [x,y,w,h,selected,count,expanded,pad]；
 // 侧边项 out = [x,y,w,h,index,flags,selected,disabled]。
-extern fn aui_debug_nav_pane(key: i32, out: ptr) -> i32;
-extern fn aui_debug_nav_pane_item(key: i32, out: ptr) -> i32;
+extern fn aui_debug_nav_pane(key: i32, out: ptr) : i32;
+extern fn aui_debug_nav_pane_item(key: i32, out: ptr) : i32;
 // v1.44：可编辑组合框（对照 HuxerUI ComboBox）。aui_combo 创建单行输入
 // 触发器，hint 是空文本时的占位符；文本与 text_field 共用按键文本池，
 // 所以 aui_text_set / aui_text_append / aui_text_backspace / aui_text_value
@@ -609,17 +609,17 @@ extern let AUI_COMBO_REASON_PICK: i32;
 extern let AUI_COMBO_REASON_OUTSIDE: i32;
 extern let AUI_COMBO_REASON_BACK: i32;
 extern fn aui_combo(key: i32, hint: ptr, open: i32,
-                    cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_combo_suggestion(key: i32, text: ptr) -> i32;
-extern fn aui_combo_value(key: i32) -> i32;
-extern fn aui_combo_pick_key() -> i32;
-extern fn aui_combo_reason() -> i32;
+                    cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_combo_suggestion(key: i32, text: ptr) : i32;
+extern fn aui_combo_value(key: i32) : i32;
+extern fn aui_combo_pick_key() : i32;
+extern fn aui_combo_reason() : i32;
 // 仅测试：组合框 out = [x,y,w,h,open,count,pad,focused]；
 // 建议项 out = [x,y,w,h,index,visible,pressed,0]；
 // 浮层矩形 out = [x,y,w,h]（没有展开时返回 -1）。
-extern fn aui_debug_combo(key: i32, out: ptr) -> i32;
-extern fn aui_debug_combo_suggestion(key: i32, out: ptr) -> i32;
-extern fn aui_debug_combo_panel(out: ptr) -> i32;
+extern fn aui_debug_combo(key: i32, out: ptr) : i32;
+extern fn aui_debug_combo_suggestion(key: i32, out: ptr) : i32;
+extern fn aui_debug_combo_panel(out: ptr) : i32;
 // v1.38：底部弹出层（对照 HuxerUI BottomSheet）。只在 open != 0 时调用；
 // 后续子项放进返回的卡片，aui_end() 结束。遮罩为 42% 黑覆盖整窗，卡片
 // 贴底、左右各留 16 dp、最大 640 dp 宽、顶部 14 dp 圆角、20 dp 内边距、
@@ -631,11 +631,11 @@ extern fn aui_debug_combo_panel(out: ptr) -> i32;
 // 同时只支持一层，并与 aui_dialog 互斥（任一方打开时另一方返回 -1）。
 // 拖拽手柄默认显示（32×4 dp，居中）；紧跟 aui_sheet 调用
 // aui_sheet_handle(0) 可隐藏，传非 0 恢复。
-extern fn aui_sheet(key: i32, open: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_sheet_handle(show: i32) -> i32;
-extern fn aui_sheet_reason() -> i32;
+extern fn aui_sheet(key: i32, open: i32, cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_sheet_handle(show: i32) : i32;
+extern fn aui_sheet_reason() : i32;
 // 仅测试：底部弹出层 out = [x,y,w,h,drag_px,flags]（像素）；没有时返回 -1。
-extern fn aui_debug_sheet(out: ptr) -> i32;
+extern fn aui_debug_sheet(out: ptr) : i32;
 // v1.39：锚定浮层（对照 HuxerUI Popup）。任意内容挂在锚点旁边，不是条目
 // 列表。只在 open != 0 时调用；后续子项放进返回的浮层，aui_end() 结束。
 // 默认锚在 anchor_key 对应节点下方、左对齐（4 dp 间距），放不下自动翻到
@@ -655,15 +655,15 @@ extern let AUI_POPUP_ALIGN_START: i32;
 extern let AUI_POPUP_ALIGN_CENTER: i32;
 extern let AUI_POPUP_ALIGN_END: i32;
 extern fn aui_popup(key: i32, anchor_key: i32, open: i32,
-                    cb: fn(ptr) -> i32, user: ptr) -> i32;
+                    cb: fn(ptr) : i32, user: ptr) : i32;
 extern fn aui_popup_at(key: i32, px: i32, py: i32, open: i32,
-                       cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_popup_place(side: i32, align: i32) -> i32;
-extern fn aui_popup_width(dp: i32) -> i32;
-extern fn aui_popup_reason() -> i32;
-extern fn aui_popup_dismiss() -> i32;
+                       cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_popup_place(side: i32, align: i32) : i32;
+extern fn aui_popup_width(dp: i32) : i32;
+extern fn aui_popup_reason() : i32;
+extern fn aui_popup_dismiss() : i32;
 // 仅测试：锚定浮层 out = [x,y,w,h,side,align,reason]（像素）；没有时返回 -1。
-extern fn aui_debug_popup(out: ptr) -> i32;
+extern fn aui_debug_popup(out: ptr) : i32;
 // v1.27：工具提示（对照 HuxerUI Tooltip）。修饰器挂在“最近创建的节点”上；
 // 如果刚 aui_end() 关闭了容器，则挂到那个容器（容器提示要先 end 再声明）。
 // 气泡不进节点树、不影响布局与命中：触摸按住 500 ms 不动才显示（移动超过
@@ -680,7 +680,7 @@ extern let AUI_ANCHOR_LEFT: i32;
 extern let AUI_TIP_ALIGN_START: i32;
 extern let AUI_TIP_ALIGN_CENTER: i32;
 extern let AUI_TIP_ALIGN_END: i32;
-extern fn aui_tooltip(text: ptr, side: i32, align: i32) -> i32;
+extern fn aui_tooltip(text: ptr, side: i32, align: i32) : i32;
 // v2.7：长按手势（对照 HuxerUI LongPressGesture）。修饰器，挂在最近创建
 // 的节点上（刚 aui_end() 关闭容器则挂到容器）。DOWN 后 500 ms 内不动
 // 即触发一次 cb(user)，回调里用 aui_long_press_key() 读触发节点的 key；
@@ -688,8 +688,8 @@ extern fn aui_tooltip(text: ptr, side: i32, align: i32) -> i32;
 // 变成滚动拖拽、系统取消或 BACK 都取消待定。同一时刻只有一个待定。
 // 阈值 500 ms：Android ViewConfiguration.getLongPressTimeout() 与
 // HuxerUI LongPressGesture 默认一致。
-extern fn aui_long_press(cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_long_press_key() -> i32;
+extern fn aui_long_press(cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_long_press_key() : i32;
 
 // v2.18：捏合手势（对照 HuxerUI TransformGesture 的 scale + focal
 // point；rotation 不在本轮）。修饰器，挂在最近创建的节点上（刚 aui_end()
@@ -698,21 +698,21 @@ extern fn aui_long_press_key() -> i32;
 // 状态。接管时取消单指的点按/长按待定/滚动拖拽；结束后剩下的手指不恢复
 // 滚动、不补发点按、不起 fling。同一节点重复声明覆盖回调；登记表 8 项，
 // 满了返回 -1。两指起始间距 < 8 dp 不接管（防退化）。
-extern fn aui_pinch(cb: fn(ptr) -> i32, user: ptr) -> i32;
+extern fn aui_pinch(cb: fn(ptr) : i32, user: ptr) : i32;
 // 自手势开始的累计缩放，Q16.16（65536 = 1.00×）；结束后保持终值。
-extern fn aui_pinch_scale() -> i32;
+extern fn aui_pinch_scale() : i32;
 // 当前焦点（质心），px。
-extern fn aui_pinch_cx() -> i32;
-extern fn aui_pinch_cy() -> i32;
+extern fn aui_pinch_cx() : i32;
+extern fn aui_pinch_cy() : i32;
 // 质心相对上次更新的位移（平移），px，可正负。
-extern fn aui_pinch_dx() -> i32;
-extern fn aui_pinch_dy() -> i32;
+extern fn aui_pinch_dx() : i32;
+extern fn aui_pinch_dy() : i32;
 // 捏合进行中为 1，否则 0。
-extern fn aui_pinch_active() -> i32;
+extern fn aui_pinch_active() : i32;
 // 拥有本次/上次手势的节点 key。
-extern fn aui_pinch_key() -> i32;
+extern fn aui_pinch_key() : i32;
 // 已登记的捏合节点数。
-extern fn aui_pinch_n() -> i32;
+extern fn aui_pinch_n() : i32;
 
 // v2.19：语义树导出（对照 HuxerUI semantics.h；一期只做导出，不接系统）。
 // 角色常量（0 = 未设置，走 kind 默认角色）；aui_semantics 挂在最近创建
@@ -750,9 +750,9 @@ extern let AUI_SEM_SCROLLVIEW: i32;
 extern let AUI_SEM_TREE: i32;
 extern let AUI_SEM_TREEITEM: i32;
 extern let AUI_SEM_SEPARATOR: i32;
-extern fn aui_semantics(role: i32, label: ptr) -> i32;
-extern fn aui_sem_hide() -> i32;
-extern fn aui_sem_export(buf: ptr, cap: i32) -> i32;
+extern fn aui_semantics(role: i32, label: ptr) : i32;
+extern fn aui_sem_hide() : i32;
+extern fn aui_sem_export(buf: ptr, cap: i32) : i32;
 
 // v2.9：协作任务 / 延迟（对照 HuxerUI Task/Delay，docs/design/tasks.md）。
 // Delay(500ms) 在 UI 线程恢复、回调里可直接改 State；Aster 无闭包与
@@ -764,10 +764,10 @@ extern fn aui_sem_export(buf: ptr, cap: i32) -> i32;
 // 触发顺序：按 deadline 升序，同 deadline 按注册顺序；回调里再注册
 // 新任务或取消其他任务都安全（触发时先取最早到期者、槽位先释放再调
 // 回调，每拍最多触发 32 次）。任务触发后泵会标脏重画一帧。
-extern fn aui_delay(ms: i32, cb: fn(ptr) -> i32, user: ptr) -> i32;
+extern fn aui_delay(ms: i32, cb: fn(ptr) : i32, user: ptr) : i32;
 // 取消待定任务：1 = 取消了一个待定任务；0 = 句柄未知、已触发或已取消
 // （安全空操作，不报错）。
-extern fn aui_delay_cancel(handle: i32) -> i32;
+extern fn aui_delay_cancel(handle: i32) : i32;
 // v1.28：日期选择（对照 HuxerUI DatePicker）。单个叶子控件，内部自有
 // 日网格/年网格两种视图；y/m/d 为应用持有的当前值（任一项越界时按日历
 // 归一化，如 2024-02-31 → 2024-02-29），显示月份由库内维护，切换月份
@@ -781,11 +781,11 @@ extern fn aui_delay_cancel(handle: i32) -> i32;
 // 均分、上限 36 dp，7 行日网格 + 44 dp 页眉。日期回调里应重建页面并把
 // 新值传给 aui_date_picker。
 extern fn aui_date_picker(key: i32, y: i32, m: i32, d: i32,
-                          cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_date_min(y: i32, m: i32, d: i32) -> i32;
-extern fn aui_date_max(y: i32, m: i32, d: i32) -> i32;
-extern fn aui_date_week_start(wd: i32) -> i32;
-extern fn aui_date_selected(key: i32, out: ptr) -> i32;
+                          cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_date_min(y: i32, m: i32, d: i32) : i32;
+extern fn aui_date_max(y: i32, m: i32, d: i32) : i32;
+extern fn aui_date_week_start(wd: i32) : i32;
+extern fn aui_date_selected(key: i32, out: ptr) : i32;
 
 // ---- 时间选择（v1.29）----
 // 对照 HuxerUI TimePicker：52 dp 页眉（时/分两个字段 + 可选 AM/PM 组）+
@@ -800,10 +800,10 @@ extern fn aui_date_selected(key: i32, out: ptr) -> i32;
 // 一个标签，角度按步长量化。表盘按下即取值、拖动连续更新，选时态松手
 // 自动切到选分。
 extern fn aui_time_picker(key: i32, hour: i32, minute: i32,
-                          cb: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_time_step(minutes: i32) -> i32;
-extern fn aui_time_12h(on: i32) -> i32;
-extern fn aui_time_selected(key: i32, out: ptr) -> i32;
+                          cb: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_time_step(minutes: i32) : i32;
+extern fn aui_time_12h(on: i32) : i32;
+extern fn aui_time_selected(key: i32, out: ptr) : i32;
 
 // ---- 下拉刷新（v1.30）----
 // 纵向滚动容器，只有内容一个子节点。内容在顶部时继续下拖产生阻尼位移
@@ -813,17 +813,17 @@ extern fn aui_time_selected(key: i32, out: ptr) -> i32;
 // 定时器也不影响体验：回调触发后即使 refreshing 立刻回到 0，指示圈
 // 仍会转满 700 ms 再收起。key 必须 > 0，同时最多 16 个。
 extern fn aui_refresh_box(key: i32, refreshing: i32,
-                          cb: fn(ptr) -> i32, user: ptr) -> i32;
+                          cb: fn(ptr) : i32, user: ptr) : i32;
 // 仅测试：当前内容下移量（像素）、状态（0 空闲 / 1 下拉 / 2 旋转 /
 // 3 吸附）、旋转相位（0..65535）。
-extern fn aui_debug_refresh(key: i32) -> i32;
-extern fn aui_debug_refresh_state(key: i32) -> i32;
-extern fn aui_debug_refresh_phase(key: i32) -> i32;
-extern fn aui_text_field(key: i32, hint: ptr) -> i32;
-extern fn aui_keyboard(target_key: i32) -> i32;
-extern fn aui_key(key: i32, code: i32) -> i32;
-extern fn aui_spacer(key: i32, dp: i32) -> i32;
-extern fn aui_image(key: i32, rgba: ptr, w: i32, h: i32) -> i32;
+extern fn aui_debug_refresh(key: i32) : i32;
+extern fn aui_debug_refresh_state(key: i32) : i32;
+extern fn aui_debug_refresh_phase(key: i32) : i32;
+extern fn aui_text_field(key: i32, hint: ptr) : i32;
+extern fn aui_keyboard(target_key: i32) : i32;
+extern fn aui_key(key: i32, code: i32) : i32;
+extern fn aui_spacer(key: i32, dp: i32) : i32;
+extern fn aui_image(key: i32, rgba: ptr, w: i32, h: i32) : i32;
 
 // ---- Canvas 自定义绘图节点（v2.6；对照 HuxerUI Canvas，见 GAP.md §4）----
 // 应用给一个 draw_fn(ctx)，框架在场景构建时于节点矩形内调用它，回调
@@ -835,11 +835,11 @@ extern fn aui_image(key: i32, rgba: ptr, w: i32, h: i32) -> i32;
 // 节与 ADOPTION-NOTES.md：回调里只发绘制命令，不改状态、不建控件；
 // 越界行为未定义，不静默兜底。
 extern fn aui_canvas(key: i32, w_dp: i32, h_dp: i32,
-                     draw_fn: fn(ptr) -> i32, user: ptr) -> i32;
+                     draw_fn: fn(ptr) : i32, user: ptr) : i32;
 // 仅绘制回调内可用：当前 Canvas 的尺寸（dp）写进 out[0..1]，返回 0；
 // 回调外调用返回 -1（out 不动）。draw_fn 靠它居中构图（HuxerUI 的
 // PaintContext 收到的 Size 在此等价）。
-extern fn aui_cv_size(out: ptr) -> i32;
+extern fn aui_cv_size(out: ptr) : i32;
 // 绘制原语（仅绘制回调内可用；回调外调用返回 -1，不发命令）：
 // 坐标一律相对 Canvas 左上角（dp）；圆角/环厚/线半宽以 dp 计。
 // rect：radius_dp == 0 为直角矩形，> 0 为圆角矩形。text：单行，
@@ -850,16 +850,16 @@ extern fn aui_cv_size(out: ptr) -> i32;
 // half：半圆填充，dir 0 左 / 1 右 / 2 上 / 3 下（直径边含在内）。
 // arc：弧线描边，start_deg/span_deg 为度数（0 = 12 点，顺时针）。
 // dashring：虚线环（整圈），dash_deg/gap_deg 为度数。
-extern fn aui_cv_rect(x: i32, y: i32, w: i32, h: i32, color: i32, radius_dp: i32) -> i32;
-extern fn aui_cv_text(x: i32, y: i32, text: ptr, color: i32) -> i32;
-extern fn aui_cv_image(x: i32, y: i32, w: i32, h: i32, rgba: ptr, iw: i32, ih: i32) -> i32;
-extern fn aui_cv_ring(x: i32, y: i32, d: i32, color: i32, ring_dp: i32) -> i32;
-extern fn aui_cv_tri(x: i32, y: i32, w: i32, h: i32, color: i32, dir: i32) -> i32;
-extern fn aui_cv_line(x0: i32, y0: i32, x1: i32, y1: i32, color: i32, half_dp: i32) -> i32;
-extern fn aui_cv_half(x: i32, y: i32, d: i32, color: i32, dir: i32) -> i32;
-extern fn aui_cv_arc(x: i32, y: i32, d: i32, color: i32, thick_dp: i32, start_deg: i32, span_deg: i32) -> i32;
-extern fn aui_cv_dashring(x: i32, y: i32, d: i32, color: i32, thick_dp: i32, start_deg: i32, dash_deg: i32, gap_deg: i32) -> i32;
-extern fn aui_end() -> i32;
+extern fn aui_cv_rect(x: i32, y: i32, w: i32, h: i32, color: i32, radius_dp: i32) : i32;
+extern fn aui_cv_text(x: i32, y: i32, text: ptr, color: i32) : i32;
+extern fn aui_cv_image(x: i32, y: i32, w: i32, h: i32, rgba: ptr, iw: i32, ih: i32) : i32;
+extern fn aui_cv_ring(x: i32, y: i32, d: i32, color: i32, ring_dp: i32) : i32;
+extern fn aui_cv_tri(x: i32, y: i32, w: i32, h: i32, color: i32, dir: i32) : i32;
+extern fn aui_cv_line(x0: i32, y0: i32, x1: i32, y1: i32, color: i32, half_dp: i32) : i32;
+extern fn aui_cv_half(x: i32, y: i32, d: i32, color: i32, dir: i32) : i32;
+extern fn aui_cv_arc(x: i32, y: i32, d: i32, color: i32, thick_dp: i32, start_deg: i32, span_deg: i32) : i32;
+extern fn aui_cv_dashring(x: i32, y: i32, d: i32, color: i32, thick_dp: i32, start_deg: i32, dash_deg: i32, gap_deg: i32) : i32;
+extern fn aui_end() : i32;
 
 // ---- PNG 解码（v1.13）----
 // 纯原生解码 8 位、非隔行 PNG：灰度 / 真彩 / 调色板 / 灰度+alpha / RGBA，
@@ -870,73 +870,73 @@ extern fn aui_end() -> i32;
 // dims 由调用方提供（i32[2]），成功时写入宽高，失败写 0。
 // 返回：0 成功，-1 不是 PNG，-2 格式不支持，-3 缓冲不够，-4 数据损坏。
 // 行宽上限 32768 字节（RGBA 约 8192 像素）。
-extern fn aui_png_decode(data: ptr, len: i32, out: ptr, cap: i32, dims: ptr) -> i32;
+extern fn aui_png_decode(data: ptr, len: i32, out: ptr, cap: i32, dims: ptr) : i32;
 // 从库内固定 1 MiB 池分配并解码，失败返回 0；池用 aui_png_pool_reset 复位。
-extern fn aui_png_decode_pool(data: ptr, len: i32, dims: ptr) -> ptr;
-extern fn aui_png_pool_reset() -> i32;
+extern fn aui_png_decode_pool(data: ptr, len: i32, dims: ptr) : ptr;
+extern fn aui_png_pool_reset() : i32;
 
 // ---- 状态（256 槽，按 i32 key 寻址）----
-extern fn aui_state_get(key: i32) -> i32;
-extern fn aui_state_set(key: i32, value: i32) -> i32;
+extern fn aui_state_get(key: i32) : i32;
+extern fn aui_state_set(key: i32, value: i32) : i32;
 // Phase 0：显式释放一个 state 槽位（1 = 释放了一个，0 = key 不存在）。
-extern fn aui_state_release(key: i32) -> i32;
+extern fn aui_state_release(key: i32) : i32;
 
 // ---- 可诊断错误（Phase 0 真正回收）----
 // 最近一次错误码，0 = 无错误。A-10x 内存与容量，A-12x 线程与回调。
-extern fn aui_last_error() -> i32;
-extern fn aui_clear_error() -> i32;
+extern fn aui_last_error() : i32;
+extern fn aui_clear_error() : i32;
 // 标准库 arena 已用字节（只读，供回收探针读基线）。
-extern fn aui_arena_used() -> i32;
+extern fn aui_arena_used() : i32;
 
 // ---- 回调复用池（Phase 0 真正回收，固定 64 槽）----
 // 注册返句柄（(代数 << 8) | 槽下标）；满记 A-120 返 -1；Window 已退休记 A-122 返 -1。
-extern fn aui_cb_register(cb: fn(ptr) -> i32, user: ptr) -> i32;
+extern fn aui_cb_register(cb: fn(ptr) : i32, user: ptr) : i32;
 // 注册闭包回调：v 指向闭包值的 16 字节 {code, env}，只拷贝两个指针，
 // 不产生 thunk、不分配 arena。另有 aui_cb_register_closure_arg(v, arg)
 // 指定节点调用实参。
-extern fn aui_cb_register_closure_ptr(v: ptr) -> i32;
-extern fn aui_cb_register_closure_arg(v: ptr, arg: ptr) -> i32;
+extern fn aui_cb_register_closure_ptr(v: ptr) : i32;
+extern fn aui_cb_register_closure_arg(v: ptr, arg: ptr) : i32;
 // 按句柄调用（fn 形态调 fn1(arg)，闭包形态调 fn2(env, arg)）。
 // 句柄无效/已注销记 A-121 返 -1。
-extern fn aui_cb_invoke(handle: i32, arg: ptr) -> i32;
+extern fn aui_cb_invoke(handle: i32, arg: ptr) : i32;
 // 注销句柄（1 = 注销了一个，0 = 句柄无效/已注销，记 A-121）。
-extern fn aui_cb_release(handle: i32) -> i32;
+extern fn aui_cb_release(handle: i32) : i32;
 // Window 退休：禁新注册并注销全部在用槽，返注销的槽数。
-extern fn aui_cb_retire_all() -> i32;
+extern fn aui_cb_retire_all() : i32;
 // 节点回调分派 thunk：节点 cb 挂此函数、user 挂 ptr(handle)。
-extern fn aui_cb_node_thunk(user: ptr) -> i32;
+extern fn aui_cb_node_thunk(user: ptr) : i32;
 // 重置池子（测试用；也清 retired 标志）。
-extern fn aui_cb_init() -> i32;
+extern fn aui_cb_init() : i32;
 // 回调池与帧区度量（aui_debug_* 惯例）。
-extern fn aui_debug_cb_used() -> i32;
-extern fn aui_debug_cb_hwm() -> i32;
-extern fn aui_debug_cb_cycles() -> i32;
-extern fn aui_debug_cb_retired() -> i32;
-extern fn aui_debug_frame_seq() -> i32;
-extern fn aui_debug_frame_sealed() -> i32;
-extern fn aui_debug_frame_node_hwm() -> i32;
-extern fn aui_debug_frame_cmd_hwm() -> i32;
-extern fn aui_debug_frame_num_hwm() -> i32;
+extern fn aui_debug_cb_used() : i32;
+extern fn aui_debug_cb_hwm() : i32;
+extern fn aui_debug_cb_cycles() : i32;
+extern fn aui_debug_cb_retired() : i32;
+extern fn aui_debug_frame_seq() : i32;
+extern fn aui_debug_frame_sealed() : i32;
+extern fn aui_debug_frame_node_hwm() : i32;
+extern fn aui_debug_frame_cmd_hwm() : i32;
+extern fn aui_debug_frame_num_hwm() : i32;
 
 // ---- 焦点 / 文本（v1.7）----
-extern fn aui_focus(key: i32) -> i32;
-extern fn aui_focus_get() -> i32;
-extern fn aui_text_value(key: i32) -> ptr;
-extern fn aui_text_len(key: i32) -> i32;
-extern fn aui_text_append(key: i32, ch: i32) -> i32;   // ch = Unicode 码点
-extern fn aui_text_backspace(key: i32) -> i32;         // 删一个 UTF-8 码点
-extern fn aui_text_clear(key: i32) -> i32;
-extern fn aui_text_set(key: i32, text: ptr, len: i32) -> i32;
+extern fn aui_focus(key: i32) : i32;
+extern fn aui_focus_get() : i32;
+extern fn aui_text_value(key: i32) : ptr;
+extern fn aui_text_len(key: i32) : i32;
+extern fn aui_text_append(key: i32, ch: i32) : i32;   // ch = Unicode 码点
+extern fn aui_text_backspace(key: i32) : i32;         // 删一个 UTF-8 码点
+extern fn aui_text_clear(key: i32) : i32;
+extern fn aui_text_set(key: i32, text: ptr, len: i32) : i32;
 
 // ---- 页面栈 / 返回键（v1.8）----
 // 路由值由应用解释（建议 >0）；push/pop/reset 自动清焦点并重建。
 // KEYCODE_BACK：先收键盘，再逐级 pop，根页面调用 aui_finish。
-extern fn aui_route() -> i32;
-extern fn aui_nav_depth() -> i32;
-extern fn aui_nav_push(route: i32) -> i32;
-extern fn aui_nav_pop() -> i32;
-extern fn aui_nav_reset(route: i32) -> i32;
-extern fn aui_finish() -> i32;
+extern fn aui_route() : i32;
+extern fn aui_nav_depth() : i32;
+extern fn aui_nav_push(route: i32) : i32;
+extern fn aui_nav_pop() : i32;
+extern fn aui_nav_reset(route: i32) : i32;
+extern fn aui_finish() : i32;
 
 // ---- 主题 / 系统适配（v1.9）----
 // 调色板由系统深浅色模式自动切换；应用自定义背景时用 aui_theme_color
@@ -956,7 +956,7 @@ extern let AUI_COLOR_KEYBOARD_BG: i32;
 // 图标颜色由框架经 JNI 换（API 30+），与条带一起切换。API 30 以下
 // 或 JNI 失败时回落深色条带；应用可用 aui_set_system_bar 换成自己的颜色。
 extern let AUI_COLOR_SYSTEM_BAR: i32;
-extern fn aui_theme_color(role: i32) -> u32;
+extern fn aui_theme_color(role: i32) : u32;
 // v2.15：主题令牌（ThemeSpec）。颜色令牌 0-11 与旧数字角色一一对应
 // （0 background / 1 surface / 2 primary / 3 primary_dark /
 // 4 on_surface / 5 on_primary / 6 on_surface_variant / 7 pressed /
@@ -980,15 +980,15 @@ extern let AUI_TOK_SCRIM: i32;
 extern let AUI_TOK_ERROR: i32;
 extern let AUI_TOK_INVERSE_SURFACE: i32;
 extern let AUI_TOK_INVERSE_ON_SURFACE: i32;
-extern fn aui_token_color(token: i32) -> u32;
+extern fn aui_token_color(token: i32) : u32;
 // v2.15：局部主题容器。在子树内覆盖令牌（只影响子树，兄弟与树外
 // 不受影响；内层覆盖优先于外层）。用法见 aui_theme_begin 的实现注释。
 // aui_theme_set/aui_theme_shape 紧跟 aui_theme_begin 调用；子树以
 // aui_end() 结束。没有打开的 Theme 时两者返回 -1。
-extern fn aui_theme_begin(key: i32) -> i32;
-extern fn aui_theme_set(token: i32, color: u32) -> i32;
-extern fn aui_theme_shape(token: i32, dp: i32) -> i32;
-extern fn aui_debug_theme(out: ptr) -> i32;
+extern fn aui_theme_begin(key: i32) : i32;
+extern fn aui_theme_set(token: i32, color: u32) : i32;
+extern fn aui_theme_shape(token: i32, dp: i32) : i32;
+extern fn aui_debug_theme(out: ptr) : i32;
 // v2.15：形状令牌（默认值复现 v2.11 的 8 dp 外观）：extra_small 4 /
 // small 8 / medium 12 / large 16 / extra_large 28 / full 胶囊（h/2）。
 // aui_shape(token) 读 dp 值；aui_shape_radius(token) 是按令牌设半径的
@@ -999,51 +999,51 @@ extern let AUI_SHAPE_MEDIUM: i32;
 extern let AUI_SHAPE_LARGE: i32;
 extern let AUI_SHAPE_XL: i32;
 extern let AUI_SHAPE_FULL: i32;
-extern fn aui_shape(token: i32) -> i32;
-extern fn aui_shape_radius(token: i32) -> i32;
+extern fn aui_shape(token: i32) : i32;
+extern fn aui_shape_radius(token: i32) : i32;
 extern let AUI_SPACE_XS: i32;
 extern let AUI_SPACE_SM: i32;
 extern let AUI_SPACE_MD: i32;
 extern let AUI_SPACE_LG: i32;
 extern let AUI_SPACE_XL: i32;
-extern fn aui_space(token: i32) -> i32;
+extern fn aui_space(token: i32) : i32;
 // v2.15：排版角色（TextRole）。Body 48 px、Label 48 px + 仿粗、
 // Title 64 px（行高 80 px）；aui_text_role(role) 是修饰器，紧跟
 // aui_label/aui_button 调用，只对这两类节点有效。
 extern let AUI_ROLE_BODY: i32;
 extern let AUI_ROLE_LABEL: i32;
 extern let AUI_ROLE_TITLE: i32;
-extern fn aui_text_role(role: i32) -> i32;
-extern fn aui_debug_text_role(role: i32) -> i32;
+extern fn aui_text_role(role: i32) : i32;
+extern fn aui_debug_text_role(role: i32) : i32;
 // v0.1-cn D-2a 前置：任意字号。i32 sp；−1 = 默认（走现有角色制）。
 // 只对 label(5)/button(6) 有效（与 aui_text_role 同一适用范围），
 // 其它种返回 −1。sp → em 像素：cell = sp * 3（正文 16 sp = 48 px，
 // 与角色制同一口径），运行时 cell 钳在 8..64（sp > 21 按 21 sp 计）。
-extern fn aui_text_size(sp: i32) -> i32;
-extern fn aui_dark() -> i32;
-extern fn aui_set_dark(on: i32) -> i32;
-extern fn aui_safe_left() -> i32;
-extern fn aui_safe_top() -> i32;
-extern fn aui_safe_right() -> i32;
-extern fn aui_safe_bottom() -> i32;
+extern fn aui_text_size(sp: i32) : i32;
+extern fn aui_dark() : i32;
+extern fn aui_set_dark(on: i32) : i32;
+extern fn aui_safe_left() : i32;
+extern fn aui_safe_top() : i32;
+extern fn aui_safe_right() : i32;
+extern fn aui_safe_bottom() : i32;
 // v1.14：Android 15 edge-to-edge 适配。默认在 API 35+ 且内容区等于
 // 整窗时按 24dp 估算上下系统栏（NDK 没有 WindowInsets 查询接口）。
 // aui_edge_to_edge(1) 关闭估算，内容铺满整窗；aui_set_insets 指定
 // 最小安全区（dp），与系统/估算值取较大者，用于刘海等特殊设备。
-extern fn aui_edge_to_edge(on: i32) -> i32;
-extern fn aui_set_insets(left: i32, top: i32, right: i32, bottom: i32) -> i32;
+extern fn aui_edge_to_edge(on: i32) : i32;
+extern fn aui_set_insets(left: i32, top: i32, right: i32, bottom: i32) : i32;
 // v2.13：系统栏条带颜色（0xAARRGGBB）。传 0 = 跟随主题角色
 // AUI_COLOR_SYSTEM_BAR（默认跟主题底色走）。
-extern fn aui_set_system_bar(color: u32) -> i32;
-extern fn aui_system_bar_color() -> u32;
+extern fn aui_set_system_bar(color: u32) : i32;
+extern fn aui_system_bar_color() : u32;
 // v2.14：JNI 实测系统栏高（见 sysbar_measure_insets）。
 // aui_debug_measure_insets 手动触发一次量取（返回 1 测到 / 0 回落）；
 // aui_debug_insets_source 返回当前安全区来源（0 无/铺满 / 1 内容区 /
 // 2 JNI 实测 / 3 24dp 估算）；aui_debug_insets_px 的 out =
 // [top_px, bottom_px, top_dp, bottom_dp]，未测到时四项均为 -1。
-extern fn aui_debug_measure_insets() -> i32;
-extern fn aui_debug_insets_source() -> i32;
-extern fn aui_debug_insets_px(out: ptr) -> i32;
+extern fn aui_debug_measure_insets() : i32;
+extern fn aui_debug_insets_source() : i32;
+extern fn aui_debug_insets_px(out: ptr) : i32;
 
 // ---- 动画（v1.10；v2.16 扩展）----
 // 固定 64 个槽，按 (key, prop) 寻址；只影响绘制阶段的透明度/位移/缩放，
@@ -1071,20 +1071,20 @@ extern let AUI_EASE_OUT: i32;        // 1-(1-t)^2
 extern let AUI_EASE_IN_OUT: i32;     // 3t^2-2t^3
 extern let AUI_EASE_IN: i32;         // t^2
 extern fn aui_anim(key: i32, prop: i32, from: i32, to: i32,
-                   duration_ms: i32, curve: i32) -> i32;
+                   duration_ms: i32, curve: i32) : i32;
 extern fn aui_anim_spring(key: i32, prop: i32, target: i32,
-                          stiffness: i32, damping_pm: i32) -> i32;
+                          stiffness: i32, damping_pm: i32) : i32;
 extern fn aui_anim_keyframe(key: i32, prop: i32, from: i32, to: i32,
                             ms: i32, n: i32, fracs: ptr, progs: ptr,
-                            curves: ptr, repeat: i32, rmode: i32) -> i32;
-extern fn aui_anim_on_done(key: i32, prop: i32, cb: fn(ptr) -> i32,
-                           user: ptr) -> i32;
-extern fn aui_set_reduced_motion(on: i32) -> i32;
-extern fn aui_reduced_motion() -> i32;
-extern fn aui_anim_value(key: i32, prop: i32) -> i32;
-extern fn aui_anim_active() -> i32;
-extern fn aui_anim_reset(key: i32, prop: i32) -> i32;
-extern fn aui_debug_anim(key: i32, prop: i32, out: ptr) -> i32;
+                            curves: ptr, repeat: i32, rmode: i32) : i32;
+extern fn aui_anim_on_done(key: i32, prop: i32, cb: fn(ptr) : i32,
+                           user: ptr) : i32;
+extern fn aui_set_reduced_motion(on: i32) : i32;
+extern fn aui_reduced_motion() : i32;
+extern fn aui_anim_value(key: i32, prop: i32) : i32;
+extern fn aui_anim_active() : i32;
+extern fn aui_anim_reset(key: i32, prop: i32) : i32;
+extern fn aui_debug_anim(key: i32, prop: i32, out: ptr) : i32;
 
 // ---- 页面转场（v1.11）----
 // aui_nav_transition 设置 push/pop/reset 时的页面转场时长（毫秒，0..1000，
@@ -1111,47 +1111,47 @@ extern fn aui_debug_anim(key: i32, prop: i32, out: ptr) -> i32;
 // 同时转场期间 UI 线程不再同步 present（只标脏唤醒帧泵），避免和泵抢锁。
 // 真机单帧从 100 ms 级降到与普通整页帧相当，240 ms 转场能出 10 帧以上。
 // 转场帧耗时记 trace `q`（毫秒），窗口锁等待记 `w`（毫秒）。
-extern fn aui_nav_transition(ms: i32) -> i32;
-extern fn aui_nav_busy() -> i32;
+extern fn aui_nav_transition(ms: i32) : i32;
+extern fn aui_nav_busy() : i32;
 
 // ---- 无宿主渲染（测试 / 离屏）----
 // 先 aui_headless_init 注册 build 回调，再 aui_headless_render 渲染到调用方
 // 提供的 RGBA8888 缓冲区（stride = w），返回本次绘制的命令数。
-extern fn aui_headless_init(build: fn(ptr) -> i32, user: ptr) -> i32;
-extern fn aui_headless_render(w: i32, h: i32, out: ptr) -> i32;
+extern fn aui_headless_init(build: fn(ptr) : i32, user: ptr) : i32;
+extern fn aui_headless_render(w: i32, h: i32, out: ptr) : i32;
 // 仅测试：模拟 onContentRectChanged 的内容区（像素）。
-extern fn aui_debug_set_content(l: i32, t: i32, r: i32, b: i32) -> i32;
-extern fn aui_debug_set_density(dpi: i32) -> i32;
-extern fn aui_debug_set_time(t: i64) -> i32;
+extern fn aui_debug_set_content(l: i32, t: i32, r: i32, b: i32) : i32;
+extern fn aui_debug_set_density(dpi: i32) : i32;
+extern fn aui_debug_set_time(t: i64) : i32;
 // 仅测试：待定任务数（v2.9 延迟 API；面板/诊断与 Gallery 演示用）。
-extern fn aui_debug_task_pending() -> i32;
+extern fn aui_debug_task_pending() : i32;
 // 仅测试：给 headless 测试挂一个窗口指针，走真机泵路径 pump_frame_once()。
-extern fn aui_debug_set_win(win: ptr) -> i32;
+extern fn aui_debug_set_win(win: ptr) : i32;
 // 仅测试：最近一帧的节点数 / 绘制命令数。
-extern fn aui_debug_node_count() -> i32;
+extern fn aui_debug_node_count() : i32;
 // v1.48.4：累计 build 次数（测试用；滚动帧不应逐帧重建）。
-extern fn aui_debug_build_count() -> i32;
+extern fn aui_debug_build_count() : i32;
 // v1.48.6：最近一帧是否走了纯滚动直搬 / 帧缓冲是否可用（测试用）。
-extern fn aui_debug_frame_blit() -> i32;
-extern fn aui_debug_fbuf_ok() -> i32;
+extern fn aui_debug_frame_blit() : i32;
+extern fn aui_debug_fbuf_ok() : i32;
 // v2.20.2：最近一次直搬判定的 fail 码（测试用）。
-extern fn aui_debug_blit_fail() -> i32;
-extern fn aui_debug_cmd_count() -> i32;
+extern fn aui_debug_blit_fail() : i32;
+extern fn aui_debug_cmd_count() : i32;
 // 仅测试：分页偏移（像素）/ 正在吸附的动画数。
-extern fn aui_debug_pager(key: i32) -> i32;
-extern fn aui_debug_pager_anim() -> i32;
+extern fn aui_debug_pager(key: i32) : i32;
+extern fn aui_debug_pager_anim() : i32;
 // 仅测试：日期选择器状态。part 取 0..2 选中 y/m/d、3..4 显示 y/m、
 // 5 视图（0 日/1 年）、6..8 min（未设置时是 1/1/1）、9..11 max（未设置
 // 时是 9999/12/31）、12 每周首日、13..15 选中/min/max 的天数（Hinnant
 // 纪元日）、16 网格首格天数。
 // view 输出 [x,y,w,h,cell,grid_x,day_y,header_h]（像素，最近一帧）。
 // cell 输出 [y,m,d,enabled,selected,adjacent]；year 输出 [year,enabled,selected]。
-extern fn aui_debug_date_part(key: i32, part: i32, out: ptr) -> i32;
-extern fn aui_debug_date_view(key: i32, out: ptr) -> i32;
-extern fn aui_debug_date_cell(key: i32, index: i32, out: ptr) -> i32;
-extern fn aui_debug_date_year(key: i32, index: i32, out: ptr) -> i32;
+extern fn aui_debug_date_part(key: i32, part: i32, out: ptr) : i32;
+extern fn aui_debug_date_view(key: i32, out: ptr) : i32;
+extern fn aui_debug_date_cell(key: i32, index: i32, out: ptr) : i32;
+extern fn aui_debug_date_year(key: i32, index: i32, out: ptr) : i32;
 // 仅测试：时间选择器状态。part 取 0 时、1 分、2 模式（0 时/1 分）、
 // 3 十二小时制、4 步长、5 当天总分钟数。
 // view 输出 [x,y,w,h,dial_cx,dial_cy,dial_r,header_h]（像素）。
-extern fn aui_debug_time_part(key: i32, part: i32, out: ptr) -> i32;
-extern fn aui_debug_time_view(key: i32, out: ptr) -> i32;
+extern fn aui_debug_time_part(key: i32, part: i32, out: ptr) : i32;
+extern fn aui_debug_time_view(key: i32, out: ptr) : i32;

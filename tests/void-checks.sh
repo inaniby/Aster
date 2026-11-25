@@ -149,7 +149,7 @@ if [ "$have_qemu" != yes ]; then
 else
 # Aster provides a void function with an early return and a fall-through body.
 cat > "$W/aster_void.ast" <<'AST'
-fn logit(x: i32) -> void {
+fn logit(x: i32) : void {
     let y: i32 = x;
     if (y > 0) { return; }
 }
@@ -201,41 +201,41 @@ emit_case(){ # $1 = label
     printf '%s\n' "$3" > "$W/$n.c"
 }
 emit_case void_basic \
-'fn logit(x: i32) -> void { let y: i32 = x; if (y > 0) { return; } }
+'fn logit(x: i32) : void { let y: i32 = x; if (y > 0) { return; } }
 let g: i32 = 0;
-fn main() -> i32 { logit(5); return g; }' \
+fn main() : i32 { logit(5); return g; }' \
 'static int g = 0;
 static void logit(int x){ int y = x; if (y > 0) { return; } }
 int main(void){ logit(5); return g; }'
 emit_case void_fallthrough \
-'fn noop() -> void { let y: i32 = 3; }
+'fn noop() : void { let y: i32 = 3; }
 let g: i32 = 0;
-fn main() -> i32 { noop(); return g; }' \
+fn main() : i32 { noop(); return g; }' \
 'static int g = 0;
 static void noop(void){ int y = 3; }
 int main(void){ noop(); return g; }'
 emit_case void_loop_if \
-'fn bump() -> void { g = g + 1; return; }
-fn add(n: i32) -> void { let i: i32 = 0; while (i < n) { bump(); i = i + 1; } }
+'fn bump() : void { g = g + 1; return; }
+fn add(n: i32) : void { let i: i32 = 0; while (i < n) { bump(); i = i + 1; } }
 let g: i32 = 0;
-fn main() -> i32 { add(3); return g; }' \
+fn main() : i32 { add(3); return g; }' \
 'static int g = 0;
 static void bump(void){ g = g + 1; }
 static void add(int n){ int i = 0; while (i < n) { bump(); i = i + 1; } }
 int main(void){ add(3); return g; }'
 emit_case void_value_fn_calls_void \
-'fn trace() -> void { g = g + 10; }
-fn work(v: i32) -> i32 { trace(); return v + 1; }
+'fn trace() : void { g = g + 10; }
+fn work(v: i32) : i32 { trace(); return v + 1; }
 let g: i32 = 0;
-fn main() -> i32 { return work(4); }' \
+fn main() : i32 { return work(4); }' \
 'static int g = 0;
 static void trace(void){ g = g + 10; }
 static int work(int v){ trace(); return v + 1; }
 int main(void){ return work(4); }'
 emit_case void_maybe \
-'fn maybe(v: i32) -> void { if (v > 0) { g = g + 7; } }
+'fn maybe(v: i32) : void { if (v > 0) { g = g + 7; } }
 let g: i32 = 0;
-fn main() -> i32 { maybe(1); maybe(0); return g; }' \
+fn main() : i32 { maybe(1); maybe(0); return g; }' \
 'static int g = 0;
 static void maybe(int v){ if (v > 0) { g = g + 7; } }
 int main(void){ maybe(1); maybe(0); return g; }'
@@ -296,64 +296,64 @@ failed=0
 rej_n=0
 r(){ reject "$@" && rej_n=$((rej_n + 1)) || failed=1; }
 r 'void: return a value from void fn' \
-'fn f() -> void { return 5; }
-fn main() -> i32 { return 0; }' \
+'fn f() : void { return 5; }
+fn main() : i32 { return 0; }' \
 'cannot return a value from a void function ' ''
 r 'void: as a parameter type' \
-'fn f(a: void) -> i32 { return 0; }
-fn main() -> i32 { return 0; }' \
+'fn f(a: void) : i32 { return 0; }
+fn main() : i32 { return 0; }' \
 'void is only a function return type' \
 'void f(void a){ return 0; }
 int main(void){ return 0; }'
 r 'void: as a local variable type' \
-'fn main() -> i32 { let x: void = 0; return 0; }' \
+'fn main() : i32 { let x: void = 0; return 0; }' \
 'void is only a function return type' \
 'int main(void){ void x = 0; return 0; }'
 r 'void: as a struct field' \
 'struct S { v: void; }
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
 'void is only a function return type' \
 'struct S { void v; };
 int main(void){ return 0; }'
 r 'void: as a type alias' \
 'type V = void;
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
 'a type alias cannot be void: V' ''
 r 'void result: let x : i32 = voidcall' \
-'fn f() -> void { return; }
-fn main() -> i32 { let x: i32 = f(); return x; }' \
+'fn f() : void { return; }
+fn main() : i32 { let x: i32 = f(); return x; }' \
 'expected i32, got void' \
 'void f(void){}
 int main(void){ int x = f(); return x; }'
 r 'void result: assignment x = voidcall' \
-'fn f() -> void { return; }
-fn main() -> i32 { let x: i32 = 0; x = f(); return x; }' \
+'fn f() : void { return; }
+fn main() : i32 { let x: i32 = 0; x = f(); return x; }' \
 'expected i32, got void' \
 'void f(void){}
 int main(void){ int x = 0; x = f(); return x; }'
 r 'void result: return voidcall in i32 fn' \
-'fn f() -> void { return; }
-fn main() -> i32 { return f(); }' \
+'fn f() : void { return; }
+fn main() : i32 { return f(); }' \
 'expected i32, got void' \
 'void f(void){}
 int main(void){ return f(); }'
 r 'void result: argument g(voidcall)' \
-'fn f() -> void { return; }
-fn g(a: i32) -> i32 { return a; }
-fn main() -> i32 { return g(f()); }' \
+'fn f() : void { return; }
+fn g(a: i32) : i32 { return a; }
+fn main() : i32 { return g(f()); }' \
 'expected i32, got void' \
 'void f(void){}
 int g(int a){ return a; }
 int main(void){ return g(f()); }'
 r 'void result: operator f() + 1' \
-'fn f() -> void { return; }
-fn main() -> i32 { let x: i32 = f() + 1; return x; }' \
+'fn f() : void { return; }
+fn main() : i32 { let x: i32 = f() + 1; return x; }' \
 'a void value cannot be used in an expression' \
 'void f(void){}
 int main(void){ int x = f() + 1; return x; }'
 r 'void result: untyped let x = voidcall' \
-'fn f() -> void { return; }
-fn main() -> i32 { let x = f(); return 0; }' \
+'fn f() : void { return; }
+fn main() : i32 { let x = f(); return 0; }' \
 "expected ':'" ''
 [ "$failed" = 0 ] || exit 1
 printf '  %-30s %s\n' "refusals held" "$rej_n"
@@ -406,8 +406,8 @@ mutate(){ # $1 = label, $2 = sed script
 # path's checkValue (7949/7967), which would otherwise reject `got void`.
 # Neutralise both so the witness builds — proving the refusal is load-bearing.
 mutate m1 's|if(retType==Ty::Void){|if(false){|; s|checkValue(retType,\*s.expr,actual,"return type mismatch in function "+fn);|if(retType!=Ty::Void)checkValue(retType,*s.expr,actual,"return type mismatch in function "+fn);|'
-printf '%s\n' 'fn f() -> void { return 5; }
-fn main() -> i32 { return 0; }' > "$W/m1.ast"
+printf '%s\n' 'fn f() : void { return 5; }
+fn main() : i32 { return 0; }' > "$W/m1.ast"
 # The original refuses `return 5;` in a void fn; the mutant accepts it, so it builds.
 if "$OUT/m1" build-elf "$W/m1.ast" -o "$W/m1" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'a) a void fn may return a value' 'noticed'
@@ -416,8 +416,8 @@ else
 fi
 # (b) void is a return type only — mutate the allowVoid gate so void is a general type.
 mutate m2 's|if(t.k==Ty::Void\&\&!allowVoid)|if(false)|'
-printf '%s\n' 'fn f(a: void) -> i32 { return 0; }
-fn main() -> i32 { return 0; }' > "$W/m2.ast"
+printf '%s\n' 'fn f(a: void) : i32 { return 0; }
+fn main() : i32 { return 0; }' > "$W/m2.ast"
 # The original refuses `a: void`; the mutant accepts it, so it builds.
 if "$OUT/m2" build-elf "$W/m2.ast" -o "$W/m2" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'b) void may be a parameter' 'noticed'
@@ -426,8 +426,8 @@ else
 fi
 # (c) A void result may not be used as an operand — mutate isVoidUsingOp off.
 mutate m3 's|if(isVoidUsingOp(e.k)){|if(false){|'
-printf '%s\n' 'fn f() -> void { return; }
-fn main() -> i32 { let x: i32 = f() + 1; return x; }' > "$W/m3.ast"
+printf '%s\n' 'fn f() : void { return; }
+fn main() : i32 { let x: i32 = f() + 1; return x; }' > "$W/m3.ast"
 # The original refuses `f() + 1`; the mutant accepts it, so it builds.
 if "$OUT/m3" build-elf "$W/m3.ast" -o "$W/m3" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'c) a void result may be an operand' 'noticed'
@@ -437,8 +437,8 @@ fi
 # (d) A void function may fall off the end — mutate the exception off so it must
 # return explicitly; a void fn with no return now fails to compile.
 mutate m4 's|if(f.retType!=Ty::Void\&\&!definitelyReturns(f.body))|if(!definitelyReturns(f.body))|'
-printf '%s\n' 'fn f() -> void { let y: i32 = 3; }
-fn main() -> i32 { f(); return 0; }' > "$W/m4.ast"
+printf '%s\n' 'fn f() : void { let y: i32 = 3; }
+fn main() : i32 { f(); return 0; }' > "$W/m4.ast"
 # The original builds; the mutant refuses the fall-through, so it does not build.
 if "$OUT/m4" build-elf "$W/m4.ast" -o "$W/m4" >/dev/null 2>&1; then
     echo 'FAIL: mutation (d) went unnoticed — the void fall-through exception is inert' >&2; exit 1
@@ -449,8 +449,8 @@ printf '  %-40s %s\n' 'd) a void fn must return explicitly' 'noticed'
 # every `got void` refusal fire through checkValue. Making void assignable to
 # anything lets the witness build — proving that refusal is load-bearing.
 mutate m5 's@if(to==from)return true;@if(to==from||from==Ty::Void)return true;@'
-printf '%s\n' 'fn f() -> void { return; }
-fn main() -> i32 { return f(); }' > "$W/m5.ast"
+printf '%s\n' 'fn f() : void { return; }
+fn main() : i32 { return f(); }' > "$W/m5.ast"
 # The original refuses `return f()` in an i32 fn; the mutant accepts it, so it builds.
 if "$OUT/m5" build-elf "$W/m5.ast" -o "$W/m5" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'e) an i32 fn may return a void' 'noticed'
@@ -462,7 +462,7 @@ fi
 # untouched, so only the alias refusal is neutralised.
 mutate m6 's|if(t.k==Ty::Void)$|if(false)|'
 printf '%s\n' 'type V = void;
-fn main() -> i32 { return 0; }' > "$W/m6.ast"
+fn main() : i32 { return 0; }' > "$W/m6.ast"
 # The original refuses `type V = void`; the mutant accepts it, so it builds.
 if "$OUT/m6" build-elf "$W/m6.ast" -o "$W/m6" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'f) an alias may name void' 'noticed'

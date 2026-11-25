@@ -203,7 +203,7 @@ cat > "$W/d05.ast" <<'AST'
 tls let a: i32 = 10;
 tls let b: u64 = 0;
 tls let c: u64 = 0;
-fn touch() -> i32 { b = 5; a = a + 1; return i32(a); }
+fn touch() : i32 { b = 5; a = a + 1; return i32(a); }
 AST
 $PY - "$W" <<'PY'
 import pathlib, sys
@@ -212,7 +212,7 @@ for n in (16, 32, 64, 128, 256, 512, 1024, 2048, 4096):
     (W / ('tls%d.ast' % n)).write_text(
         'tls let a: i32 @align(%d) = 10;\n'
         'tls let b: u64 @align(%d) = 0;\n'
-        'fn touch() -> i32 { b = 5; a = a + 1; return i32(a); }\n' % (n, n))
+        'fn touch() : i32 { b = 5; a = a + 1; return i32(a); }\n' % (n, n))
 PY
 "$A" build-so "$W/d05.ast" -o "$W/s_default.so" >/dev/null
 "$A" build-so --soname libdyn.so "$W/d05.ast" -o "$W/d_default.so" >/dev/null
@@ -233,21 +233,21 @@ bump
 printf '%s\n' '[4/9] Behavioural matrix: D-03 order, D-04 projects, D-05 writers'
 # --- D-03: a pure function call is not a cross-object global read ------------
 cat > "$W/call_a.ast" <<'AST'
-extern fn helper() -> i32;
+extern fn helper() : i32;
 let x: i32 = helper();
 AST
 cat > "$W/call_b.ast" <<'AST'
-fn helper() -> i32 { return 7; }
-fn seed() -> i32 { return 3; }
+fn helper() : i32 { return 7; }
+fn seed() : i32 { return 3; }
 let y: i32 = seed();
 AST
 cat > "$W/call_b2.ast" <<'AST'
-fn helper() -> i32 { return 7; }
+fn helper() : i32 { return 7; }
 let y: i32 = 3;
 AST
 # --- D-03: a real data dependency must still be refused when inverted --------
 cat > "$W/data_a.ast" <<'AST'
-fn fz() -> i32 { return 1; }
+fn fz() : i32 { return 1; }
 let ga: i32 = 22;
 let pa: ptr = &ga;
 AST
@@ -255,7 +255,7 @@ cat > "$W/data_b.ast" <<'AST'
 extern let ga: i32;
 extern let pa: ptr;
 let pb: ptr = pa;
-fn main() -> i32 { if (pb == 0) { return 9; } return *pb; }
+fn main() : i32 { if (pb == 0) { return 9; } return *pb; }
 AST
 for n in call_a call_b call_b2; do
     "$A" build-obj --pic "$W/$n.ast" -o "$W/$n.o" >/dev/null
@@ -277,13 +277,13 @@ done
 # object with _start (A-22), so the caller supplies main; the reversed order
 # must succeed too.
 cat > "$W/lobj_a.ast" <<'AST'
-extern fn helper() -> i32;
+extern fn helper() : i32;
 let x: i32 = helper();
-fn main() -> i32 { return 0; }
+fn main() : i32 { return 0; }
 AST
 cat > "$W/lobj_b.ast" <<'AST'
-fn helper() -> i32 { return 7; }
-fn seed() -> i32 { return 3; }
+fn helper() : i32 { return 7; }
+fn seed() : i32 { return 3; }
 let y: i32 = seed();
 AST
 "$A" build-obj "$W/lobj_a.ast" -o "$W/la.o" >/dev/null
@@ -309,11 +309,11 @@ bump
 mkproj(){ # <dir> <kind> <page-size>
     mkdir -p "$W/$1/src"
     cat > "$W/$1/src/main.ast" <<'AST'
-fn main() -> i32 { return 7; }
+fn main() : i32 { return 7; }
 AST
     if [ "$2" = apk ]; then
         cat > "$W/$1/src/main.ast" <<'AST'
-fn aster_main() -> i32 { return 0; }
+fn aster_main() : i32 { return 0; }
 AST
     fi
     {
@@ -359,10 +359,10 @@ bump
 # and the test run itself.
 mkdir -p "$W/ptest/src" "$W/ptest/tests"
 cat > "$W/ptest/src/main.ast" <<'AST'
-fn main() -> i32 { return 0; }
+fn main() : i32 { return 0; }
 AST
 cat > "$W/ptest/tests/t.ast" <<'AST'
-fn main() -> i32 { return 0; }
+fn main() : i32 { return 0; }
 AST
 cat > "$W/ptest/aster.proj" <<'PROJ'
 kind exe
@@ -438,9 +438,9 @@ printf '%s\n' '[6/9] Every writer and link'
 cat > "$W/full.ast" <<'AST'
 tls let a: i32 @align(64) = 10;
 tls let b: u64 @align(64) = 0;
-fn helper() -> i32 { return 7; }
+fn helper() : i32 { return 7; }
 let x: i32 = helper();
-fn main() -> i32 { b = 5; return a + x - 17; }
+fn main() : i32 { b = 5; return a + x - 17; }
 AST
 "$A" build-elf "$W/full.ast" -o "$W/w_elf" >/dev/null
 rc=0; run "$W/w_elf" >/dev/null 2>&1 || rc=$?

@@ -274,16 +274,16 @@ actual run during extraction (the anchor token is named in each case).
 ### 11.1 Accept — well-typed, dump == M3b
 
 ```
-fn add(a: i32, b: i32) -> i32 { return a + b; }
-fn main() -> i32 { let x: i32 = 1 + 2 * 3; return x; }
+fn add(a: i32, b: i32) : i32 { return a + b; }
+fn main() : i32 { let x: i32 = 1 + 2 * 3; return x; }
 ```
 → stdout: `<dump>` (byte-identical to `parser-checks.sh` §9.1's frozen dump);
 rc=0; stderr empty.
 
 ```
-extern fn write(fd: i32, buf: ptr<u8>, n: i32) -> i32;
+extern fn write(fd: i32, buf: ptr<u8>, n: i32) : i32;
 let tab: i32[4] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let i: i32 = 0;
     let s: ptr = "a\tb";
     tab[i] = i * 2;
@@ -295,46 +295,46 @@ fn main() -> i32 {
 ### 11.2 Reject — ill-typed, empty stdout + S-error
 
 ```
-fn main() -> i64 { return 0; }
+fn main() : i64 { return 0; }
 ```
 → S1 `main must return i32` at `1:1`; rc=1; stdout empty.
 
 ```
-fn main(a: i32) -> i32 { return 0; }
+fn main(a: i32) : i32 { return 0; }
 ```
 → S2 `main must not have parameters` at the `(` of `main`'s params; rc=1.
 
 ```
-fn f(x: i32) -> i32 { return x + y; }
-fn main() -> i32 { return f(1); }
+fn f(x: i32) : i32 { return x + y; }
+fn main() : i32 { return f(1); }
 ```
 → S5 `unknown variable: y` at the `y` name token (line 1); rc=1.
 
 ```
-fn f(x: i32) -> i32 { return x; }
-fn main() -> i32 { return f(1, 2); }
+fn f(x: i32) : i32 { return x; }
+fn main() : i32 { return f(1, 2); }
 ```
 → S9 `wrong argument count calling f: expected 1, got 2` at the call site (the
 callee `f` token); rc=1.
 
 ```
-fn f(x: ptr) -> i32 { return 0; }
-fn main() -> i32 { return f(1); }
+fn f(x: ptr) : i32 { return 0; }
+fn main() : i32 { return f(1); }
 ```
 → S10 `argument type mismatch calling f at argument 1: expected ptr, got i32` at
 the call site; rc=1.
 
 ```
-fn main() -> i32 { let x: i32[4] = 0; x = 1; return 0; }
+fn main() : i32 { let x: i32[4] = 0; x = 1; return 0; }
 ```
 → S12 `cannot assign to an array as a whole: x` at the `=`; rc=1.
 
 ```
-fn main() -> i32 { let x: i32 = 0; if (x) { return 1; } return 0; }
+fn main() : i32 { let x: i32 = 0; if (x) { return 1; } return 0; }
 ```
 → accepted (condition is an integer); rc=0. Contrast:
 ```
-fn main() -> i32 { let x: i32 = 0; if (x + 1) { return 1; } return 0; }
+fn main() : i32 { let x: i32 = 0; if (x + 1) { return 1; } return 0; }
 ```
 → accepted (integer-valued condition). A non-comparison, non-integer,
 non-bool condition (e.g. `if ("a")`) is S15.

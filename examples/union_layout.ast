@@ -10,11 +10,11 @@
 union U { w: i32, q: i64, lo: u8, c: char }
 struct Box { tag: i32, u: U }
 
-fn make(v: i32) -> U { return U { v }; }
-fn id(u: U) -> U { return u; }
-fn boxTag(b: Box) -> i32 { return b.tag + b.u.w; }
+fn make(v: i32) : U { return U { v }; }
+fn id(u: U) : U { return u; }
+fn boxTag(b: Box) : i32 { return b.tag + b.u.w; }
 
-fn main() -> i32 {
+fn main() : i32 {
     // sizeof(U) is 8: i64 is the widest member, and the alignment is 8.
     if (sizeof(U) != 8) { return 11; }
     if (sizeof(Box) != 16) { return 12; }

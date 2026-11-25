@@ -3,31 +3,31 @@
 // twin (tests/aster-std2-twin.c) performs the same operations with libc and
 // prints the same lines; the suite diffs the two outputs byte for byte and
 // also pins each line's expected numbers, so neither side is the only oracle.
-extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
-extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
-extern fn memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
-extern fn strlen(s: ptr<u8>) -> i32;
-extern fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
-extern fn strchr(s: ptr<u8>, c: i32) -> i32;
-extern fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32;
-extern fn strcat(d: ptr<u8>, s: ptr<u8>) -> i32;
-extern fn atoi(s: ptr<u8>) -> i32;
-extern fn fmt_i32(buf: ptr<u8>, v: i32) -> i32;
-extern fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) -> i32;
-extern fn sort_i32(a: ptr, n: i32) -> i32;
-extern fn malloc(n: i32) -> ptr;
-extern fn free(p: ptr) -> i32;
+extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32;
+extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32;
+extern fn memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32;
+extern fn strlen(s: ptr<u8>) : i32;
+extern fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32;
+extern fn strchr(s: ptr<u8>, c: i32) : i32;
+extern fn strstr(h: ptr<u8>, n: ptr<u8>) : i32;
+extern fn strcat(d: ptr<u8>, s: ptr<u8>) : i32;
+extern fn atoi(s: ptr<u8>) : i32;
+extern fn fmt_i32(buf: ptr<u8>, v: i32) : i32;
+extern fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) : i32;
+extern fn sort_i32(a: ptr, n: i32) : i32;
+extern fn malloc(n: i32) : ptr;
+extern fn free(p: ptr) : i32;
 
-fn put(out: ptr<u8>, at: i32, s: ptr<u8>) -> i32 {
+fn put(out: ptr<u8>, at: i32, s: ptr<u8>) : i32 {
     let n: i32 = strlen(s);
     memcpy(out + at, s, n);
     return at + n;
 }
-fn num(out: ptr<u8>, at: i32, v: i32) -> i32 {
+fn num(out: ptr<u8>, at: i32, v: i32) : i32 {
     return at + fmt_i32(out + at, v);
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let ok: i32 = 0;
     let b: u8[64] = 0;
     let c: u8[64] = 0;

@@ -1,4 +1,4 @@
-extern fn add(a: i32, b: i32) -> i32;
-fn main() -> i32 {
+extern fn add(a: i32, b: i32) : i32;
+fn main() : i32 {
     return add(40, 2) - 42;
 }

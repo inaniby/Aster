@@ -1,14 +1,14 @@
 let o: u8[8] = 0;
 
-fn twice(x: f64) -> f64 {
+fn twice(x: f64) : f64 {
     return x + x;
 }
 
-fn addmul(a: f64, b: f64) -> f64 {
+fn addmul(a: f64, b: f64) : f64 {
     return a * b + a;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let r: f64 = twice(1.5);          // 3.0
     if (r > 2.9 && r < 3.1) { store_u8(o, 49); } else { store_u8(o, 48); }
     let s: f64 = addmul(2.0, 3.0);    // 6 + 2 = 8

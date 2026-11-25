@@ -59,14 +59,14 @@ printf '%s\n' '[3/6] Proof: the pass runs before codegen, not during it'
 # front, the type error wins. That difference is the observable proof that
 # checking no longer happens during code generation.
 cat > "$OUT/both.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32 = 1;
     if (x == 1) { return 1; } else { x = 2; }
     let b: bool = 5;
 }
 AST
 cat > "$OUT/fallthrough-only.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32 = 1;
     if (x == 1) { return 1; } else { x = 2; }
 }
@@ -82,53 +82,53 @@ printf '%s\n' 'PASS: type errors now precede codegen diagnostics; the codegen ch
 
 printf '%s\n' '[4/6] Type-rule matrix: the rules the semantic pass owns'
 cat > "$OUT/ptr-to-i32.ast" <<'AST'
-fn f(p: ptr) -> i32 { return 0; }
-fn main() -> i32 { let q: ptr = f; let x: i32 = q; return 0; }
+fn f(p: ptr) : i32 { return 0; }
+fn main() : i32 { let q: ptr = f; let x: i32 = q; return 0; }
 AST
 cat > "$OUT/i32-to-ptr.ast" <<'AST'
-fn main() -> i32 { let p: ptr = 7; return 0; }
+fn main() : i32 { let p: ptr = 7; return 0; }
 AST
 cat > "$OUT/bool-arg.ast" <<'AST'
-fn f(c: bool) -> i32 { if (c) { return 1; } else { return 0; } }
-fn main() -> i32 { let a: i32 = 1; return f(a); }
+fn f(c: bool) : i32 { if (c) { return 1; } else { return 0; } }
+fn main() : i32 { let a: i32 = 1; return f(a); }
 AST
 cat > "$OUT/deref-nonptr.ast" <<'AST'
-fn main() -> i32 { let x: i32 = 1; let y: i32 = *x; return 0; }
+fn main() : i32 { let x: i32 = 1; let y: i32 = *x; return 0; }
 AST
 cat > "$OUT/deref-assign.ast" <<'AST'
-fn main() -> i32 { let x: i32 = 1; *x = 5; return 0; }
+fn main() : i32 { let x: i32 = 1; *x = 5; return 0; }
 AST
 cat > "$OUT/ptr-add.ast" <<'AST'
-fn f(a: ptr, b: ptr) -> i32 { let c: ptr = a + b; return 0; }
+fn f(a: ptr, b: ptr) : i32 { let c: ptr = a + b; return 0; }
 AST
 cat > "$OUT/ptr-sub.ast" <<'AST'
-fn f(a: i32, b: ptr) -> i32 { let c: ptr = a - b; return 0; }
+fn f(a: i32, b: ptr) : i32 { let c: ptr = a - b; return 0; }
 AST
 cat > "$OUT/ptr-cmp.ast" <<'AST'
-fn f(a: ptr) -> i32 { if (a > 0) { return 1; } else { return 0; } }
+fn f(a: ptr) : i32 { if (a > 0) { return 1; } else { return 0; } }
 AST
 cat > "$OUT/ptr-cmp-ne.ast" <<'AST'
-fn f(a: ptr) -> i32 { if (a == 1) { return 1; } else { return 0; } }
+fn f(a: ptr) : i32 { if (a == 1) { return 1; } else { return 0; } }
 AST
 cat > "$OUT/argv-count.ast" <<'AST'
-fn f(a: i32) -> i32 { return a; }
-fn main() -> i32 { return f(1, 2); }
+fn f(a: i32) : i32 { return a; }
+fn main() : i32 { return f(1, 2); }
 AST
 cat > "$OUT/undeclared.ast" <<'AST'
-fn main() -> i32 { return nope(1); }
+fn main() : i32 { return nope(1); }
 AST
 cat > "$OUT/index-scalar.ast" <<'AST'
-fn main() -> i32 { let x: i32 = 1; return x[0]; }
+fn main() : i32 { let x: i32 = 1; return x[0]; }
 AST
 cat > "$OUT/return-array.ast" <<'AST'
-fn main() -> i32 { let a: i32[4] = 0; return a; }
+fn main() : i32 { let a: i32[4] = 0; return a; }
 AST
 cat > "$OUT/whole-array-assign.ast" <<'AST'
 let g: i32[4] = 0;
-fn main() -> i32 { g = 1; return 0; }
+fn main() : i32 { g = 1; return 0; }
 AST
 cat > "$OUT/bounds.ast" <<'AST'
-fn main() -> i32 { let a: i32[4] = 0; a[4] = 1; return 0; }
+fn main() : i32 { let a: i32[4] = 0; a[4] = 1; return 0; }
 AST
 "$OUT/aster" build-elf "$OUT/ptr-to-i32.ast" -o "$OUT/x" 2>&1 | grep -qF "type mismatch initializing 'x': expected i32, got ptr" \
     || { echo 'FAIL: ptr value into an i32 slot not rejected' >&2; exit 1; }
@@ -169,7 +169,7 @@ printf '%s\n' 'PASS: 14 type rules (ptr/i32/bool, deref, pointer arithmetic, cal
 printf '%s\n' '[5/6] Acceptance: the pass models scopes the same way codegen does (qemu self-check)'
 cat > "$OUT/scopes.ast" <<'AST'
 let g: i32 = 100;
-fn add(p: ptr, n: i32) -> i32 {
+fn add(p: ptr, n: i32) : i32 {
     let total: i32 = 0;
     let i: i32 = 0;
     while (i < n) {
@@ -178,7 +178,7 @@ fn add(p: ptr, n: i32) -> i32 {
     }
     return total;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32[4] = 0;
     a[0] = 10; a[1] = 20; a[2] = 30; a[3] = 40;
     let sum: i32 = add(a, 4);
@@ -200,9 +200,9 @@ printf '%s\n' 'PASS: for-header scope, block shadowing of a global, and ptr/arra
 printf '%s\n' '[6/6] Acceptance: a program touching every type still compiles and runs (qemu self-check)'
 cat > "$OUT/mixed.ast" <<'AST'
 let flag: bool = 1;
-fn isBig(x: i32) -> bool { return x > 10; }
-fn pick(c: bool, t: i32, f: i32) -> i32 { if (c) { return t; } else { return f; } }
-fn sumPtr(p: ptr, n: i32) -> i32 {
+fn isBig(x: i32) : bool { return x > 10; }
+fn pick(c: bool, t: i32, f: i32) : i32 { if (c) { return t; } else { return f; } }
+fn sumPtr(p: ptr, n: i32) : i32 {
     let t: i32 = 0;
     let k: i32 = 0;
     while (k < n) {
@@ -211,7 +211,7 @@ fn sumPtr(p: ptr, n: i32) -> i32 {
     }
     return t;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32[3] = 0;
     a[0] = 5; a[1] = 6; a[2] = 7;
     let total: i32 = sumPtr(a, 3);

@@ -1,9 +1,9 @@
 let o: u8[8] = 0;
 
-fn half(x: f64) -> f64 { return x / 2.0; }
-fn scale(x: f64, k: f64) -> f64 { return x * k; }
+fn half(x: f64) : f64 { return x / 2.0; }
+fn scale(x: f64, k: f64) : f64 { return x * k; }
 
-fn main() -> i32 {
+fn main() : i32 {
     // awkward values: the bit patterns are not nice round numbers
     let a: f64 = scale(0.1, 3.0);      // 0.30000000000000004
     let b: f64 = half(a);              // ~0.15000000000000002

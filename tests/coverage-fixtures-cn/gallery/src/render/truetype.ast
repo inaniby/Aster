@@ -127,19 +127,19 @@ include "../aster_std.ast";
 // aggregate loops themselves with /proc/uptime (a libc
 // clock_gettime extern cannot link into a static link-obj test
 // binary). The clock answers milliseconds.
-let g_tt_clock: fn() -> i64 = 0;
+let g_tt_clock: fn() : i64 = 0;
 let g_tt_clock_set: i32 = 0;
 
 // Clock source for raster timing. The function must be defined in
 // the file that passes it (same rule as ui_log_set_clock).
-fn ui_tt_set_clock(f: fn() -> i64) -> i32 {
+fn ui_tt_set_clock(f: fn() : i64) : i32 {
     g_tt_clock = f;
     g_tt_clock_set = 1;
     return 0;
 }
 
 // Milliseconds from the injected clock, or -1 when none is set.
-fn ui_tt_clock_ms() -> i64 {
+fn ui_tt_clock_ms() : i64 {
     if (g_tt_clock_set == 0) {
         return -1;
     } else {
@@ -333,7 +333,7 @@ let g_tt_decode_fail: i32 = 0;
 
 // Bitmap pool slot -> pointer. The pool is two 256-slot halves
 // (v2.19.3); callers never index g_tt_cache_bm0/bm1 directly.
-fn tt_cache_bm(slot: i32) -> ptr {
+fn tt_cache_bm(slot: i32) : ptr {
     if (slot < 256) {
         return g_tt_cache_bm0 + slot * 4096;
     } else {
@@ -356,13 +356,13 @@ let g_tt_dict_n: i32 = 0;
 
 // ---- Big-endian readers (offsets/lengths stay under 2^31) -----------
 
-fn ui_tt_u16(off: i32) -> i32 {
+fn ui_tt_u16(off: i32) : i32 {
     let b0: i32 = load_u8(g_tt_buf + off);
     let b1: i32 = load_u8(g_tt_buf + off + 1);
     return b0 * 256 + b1;
 }
 
-fn ui_tt_i16(off: i32) -> i32 {
+fn ui_tt_i16(off: i32) : i32 {
     let v: i32 = ui_tt_u16(off);
     if (v >= 32768) {
         return v - 65536;
@@ -371,7 +371,7 @@ fn ui_tt_i16(off: i32) -> i32 {
     return v;
 }
 
-fn ui_tt_u32(off: i32) -> i32 {
+fn ui_tt_u32(off: i32) : i32 {
     let b0: i32 = load_u8(g_tt_buf + off);
     let b1: i32 = load_u8(g_tt_buf + off + 1);
     let b2: i32 = load_u8(g_tt_buf + off + 2);
@@ -380,7 +380,7 @@ fn ui_tt_u32(off: i32) -> i32 {
 }
 
 // 1 when [off, off + n) lies inside the file, else 0.
-fn ui_tt_inrange(off: i32, n: i32) -> i32 {
+fn ui_tt_inrange(off: i32, n: i32) : i32 {
     if (off < 0) {
         return 0;
     } else {
@@ -397,7 +397,7 @@ fn ui_tt_inrange(off: i32, n: i32) -> i32 {
 }
 
 // 1 when the 4 bytes at off equal the tag (a, b, c, d), else 0.
-fn ui_tt_tag(off: i32, a: i32, b: i32, c: i32, d: i32) -> i32 {
+fn ui_tt_tag(off: i32, a: i32, b: i32, c: i32, d: i32) : i32 {
     if (load_u8(g_tt_buf + off) != a) {
         return 0;
     } else {
@@ -419,12 +419,12 @@ fn ui_tt_tag(off: i32, a: i32, b: i32, c: i32, d: i32) -> i32 {
 
 // Milliseconds from the injected clock, or -1 when none is set
 // (the name keeps the old call sites; the unit is ms).
-fn ui_tt_now_ms() -> i64 {
+fn ui_tt_now_ms() : i64 {
     return ui_tt_clock_ms();
 }
 
 // floor(v / 256) with C-truncation-safe behaviour for negatives.
-fn ui_tt_floor256(v: i32) -> i32 {
+fn ui_tt_floor256(v: i32) : i32 {
     if (v >= 0) {
         return v / 256;
     } else {
@@ -435,7 +435,7 @@ fn ui_tt_floor256(v: i32) -> i32 {
 }
 
 // ceil(v / 256).
-fn ui_tt_ceil256(v: i32) -> i32 {
+fn ui_tt_ceil256(v: i32) : i32 {
     let nv: i32 = 0 - v;
     let f: i32 = ui_tt_floor256(nv);
     return 0 - f;
@@ -443,51 +443,51 @@ fn ui_tt_ceil256(v: i32) -> i32 {
 
 // ---- Public status getters ------------------------------------------
 
-fn ui_sysfont_ok() -> i32 {
+fn ui_sysfont_ok() : i32 {
     return g_tt_ok;
 }
 
-fn ui_sysfont_path() -> ptr {
+fn ui_sysfont_path() : ptr {
     return g_tt_path;
 }
 
-fn ui_sysfont_face() -> i32 {
+fn ui_sysfont_face() : i32 {
     return g_tt_face;
 }
 
-fn ui_sysfont_face_name() -> ptr {
+fn ui_sysfont_face_name() : ptr {
     return g_tt_face_name;
 }
 
-fn ui_sysfont_glyphs() -> i32 {
+fn ui_sysfont_glyphs() : i32 {
     return g_tt_num_glyphs;
 }
 
-fn ui_sysfont_upm() -> i32 {
+fn ui_sysfont_upm() : i32 {
     return g_tt_upm;
 }
 
-fn ui_sysfont_is_cff() -> i32 {
+fn ui_sysfont_is_cff() : i32 {
     return g_tt_has_cff;
 }
 
-fn ui_sysfont_is_glyf() -> i32 {
+fn ui_sysfont_is_glyf() : i32 {
     return g_tt_has_glyf;
 }
 
-fn ui_sysfont_is_cff2() -> i32 {
+fn ui_sysfont_is_cff2() : i32 {
     return g_tt_has_cff2;
 }
 
-fn ui_sysfont_cmap_fmt() -> i32 {
+fn ui_sysfont_cmap_fmt() : i32 {
     return g_tt_cmap_fmt;
 }
 
-fn ui_sysfont_probe_n() -> i32 {
+fn ui_sysfont_probe_n() : i32 {
     return g_tt_probe_n;
 }
 
-fn ui_sysfont_probe_path(i: i32) -> ptr {
+fn ui_sysfont_probe_path(i: i32) : ptr {
     if (i < 0) {
         return 0;
     } else {
@@ -499,7 +499,7 @@ fn ui_sysfont_probe_path(i: i32) -> ptr {
     return g_tt_probe_namebuf + i * 64;
 }
 
-fn ui_sysfont_probe_size(i: i32) -> i32 {
+fn ui_sysfont_probe_size(i: i32) : i32 {
     if (i < 0) {
         return -1;
     } else {
@@ -511,7 +511,7 @@ fn ui_sysfont_probe_size(i: i32) -> i32 {
     return g_tt_probe_size[i];
 }
 
-fn ui_sysfont_probe_err(i: i32) -> i32 {
+fn ui_sysfont_probe_err(i: i32) : i32 {
     if (i < 0) {
         return -1;
     } else {
@@ -523,35 +523,35 @@ fn ui_sysfont_probe_err(i: i32) -> i32 {
     return g_tt_probe_err[i];
 }
 
-fn ui_sysfont_err() -> i32 {
+fn ui_sysfont_err() : i32 {
     return g_tt_err;
 }
 
-fn ui_tt_cache_hits() -> i32 {
+fn ui_tt_cache_hits() : i32 {
     return g_tt_cache_hits;
 }
 
-fn ui_tt_cache_misses() -> i32 {
+fn ui_tt_cache_misses() : i32 {
     return g_tt_cache_misses;
 }
 
-fn ui_tt_cache_evictions() -> i32 {
+fn ui_tt_cache_evictions() : i32 {
     return g_tt_cache_evictions;
 }
 
-fn ui_tt_cache_live() -> i32 {
+fn ui_tt_cache_live() : i32 {
     return g_tt_cache_live;
 }
 
-fn ui_tt_raster_ms() -> i64 {
+fn ui_tt_raster_ms() : i64 {
     return g_tt_raster_ms;
 }
 
-fn ui_tt_raster_n() -> i32 {
+fn ui_tt_raster_n() : i32 {
     return g_tt_raster_n;
 }
 
-fn ui_tt_avg_ms() -> i32 {
+fn ui_tt_avg_ms() : i32 {
     if (g_tt_raster_n <= 0) {
         return 0;
     } else {
@@ -560,23 +560,23 @@ fn ui_tt_avg_ms() -> i32 {
     return i32(t);
 }
 
-fn ui_tt_decode_failures() -> i32 {
+fn ui_tt_decode_failures() : i32 {
     return g_tt_decode_fail;
 }
 
-fn ui_tt_scan_overflows() -> i32 {
+fn ui_tt_scan_overflows() : i32 {
     return g_tt_scan_overflow;
 }
 
-fn ui_tt_last_bitmap() -> ptr {
+fn ui_tt_last_bitmap() : ptr {
     return g_tt_last_bm;
 }
 
-fn ui_tt_last_bmp_w() -> i32 {
+fn ui_tt_last_bmp_w() : i32 {
     return g_tt_last_bw;
 }
 
-fn ui_tt_last_bmp_h() -> i32 {
+fn ui_tt_last_bmp_h() : i32 {
     return g_tt_last_bh;
 }
 
@@ -584,7 +584,7 @@ fn ui_tt_last_bmp_h() -> i32 {
 
 // 1 when the NUL-terminated string s contains the 2-char needle
 // (a, b) anywhere, else 0.
-fn ui_tt_has_sub(s: ptr, a: i32, b: i32) -> i32 {
+fn ui_tt_has_sub(s: ptr, a: i32, b: i32) : i32 {
     let i: i32 = 0;
     while (1) {
         let c0: i32 = load_u8(s + i);
@@ -609,7 +609,7 @@ fn ui_tt_has_sub(s: ptr, a: i32, b: i32) -> i32 {
 // face whose sfnt directory starts at face_base into out (cap
 // bytes, NUL terminated). Answers the length, or 0 when the face
 // has no such name. Non-ASCII units become '?'.
-fn ui_tt_face_name_of(face_base: i32, out: ptr, cap: i32) -> i32 {
+fn ui_tt_face_name_of(face_base: i32, out: ptr, cap: i32) : i32 {
     if (ui_tt_inrange(face_base, 12) == 0) {
         return 0;
     } else {
@@ -688,7 +688,7 @@ fn ui_tt_face_name_of(face_base: i32, out: ptr, cap: i32) -> i32 {
 
 // Parse the sfnt directory at face_base into the g_tt_off_* /
 // g_tt_len_* globals. Answers 1 on a recognised sfnt version, else 0.
-fn ui_tt_parse_sfnt(face_base: i32) -> i32 {
+fn ui_tt_parse_sfnt(face_base: i32) : i32 {
     if (ui_tt_inrange(face_base, 12) == 0) {
         return 0;
     } else {
@@ -904,7 +904,7 @@ fn ui_tt_parse_sfnt(face_base: i32) -> i32 {
 // u16 countSizePairs, u16 axisCount, u16 axisSize, ...;
 // each axis is axisSize bytes: tag, min/max/default as
 // 16.16 fixed (default at axis + 8).
-fn ui_tt_parse_fvar() -> i32 {
+fn ui_tt_parse_fvar() : i32 {
     g_tt_has_fvar = 0;
     g_tt_fvar_wght = -1;
     if (g_tt_off_fvar < 0) {
@@ -963,7 +963,7 @@ fn ui_tt_parse_fvar() -> i32 {
 }
 
 // fvar wght default, or -1 when the font has no fvar/wght axis.
-fn ui_sysfont_fvar_wght() -> i32 {
+fn ui_sysfont_fvar_wght() : i32 {
     return g_tt_fvar_wght;
 }
 
@@ -975,7 +975,7 @@ fn ui_sysfont_fvar_wght() -> i32 {
 // so neither distinguishes them; the suffix is the only
 // per-file weight signal. Falls back to OS/2 usWeightClass when
 // no suffix matches, else -1.
-fn ui_sysfont_name_weight() -> i32 {
+fn ui_sysfont_name_weight() : i32 {
     let n: i32 = strlen(g_tt_face_name);
     let i: i32 = 0;
     while (i + 2 < n) {
@@ -1009,7 +1009,7 @@ fn ui_sysfont_name_weight() -> i32 {
 // Metrics: unitsPerEm, glyph count, loca format, and the vertical
 // mapping (OS/2 typo ascender/descender when usable, else hhea).
 // Answers 1, or 0 when a required table is missing or too short.
-fn ui_tt_parse_metrics() -> i32 {
+fn ui_tt_parse_metrics() : i32 {
     if (g_tt_off_head < 0) {
         return 0;
     } else {
@@ -1076,7 +1076,7 @@ fn ui_tt_parse_metrics() -> i32 {
 // Choose the cmap subtable: (3,10) fmt 12 first, then (3,1) fmt 4,
 // then (0,4) fmt 12, then (0,3) fmt 4. Answers 1, or 0 when no
 // usable subtable exists.
-fn ui_tt_parse_cmap() -> i32 {
+fn ui_tt_parse_cmap() : i32 {
     if (g_tt_off_cmap < 0) {
         return 0;
     } else {
@@ -1160,7 +1160,7 @@ fn ui_tt_parse_cmap() -> i32 {
 }
 
 // cmap format 4 lookup (BMP). Answers the glyph id, or 0.
-fn ui_tt_cmap4(cp: i32) -> i32 {
+fn ui_tt_cmap4(cp: i32) : i32 {
     if (cp > 65535) {
         return 0;
     } else {
@@ -1225,7 +1225,7 @@ fn ui_tt_cmap4(cp: i32) -> i32 {
 
 // cmap format 12 lookup (full Unicode). Binary search over the
 // groups; answers the glyph id, or 0.
-fn ui_tt_cmap12(cp: i32) -> i32 {
+fn ui_tt_cmap12(cp: i32) : i32 {
     let ngrp: i32 = ui_tt_u32(g_tt_cmap_off + 12);
     let lo: i32 = 0;
     let hi: i32 = ngrp - 1;
@@ -1253,7 +1253,7 @@ fn ui_tt_cmap12(cp: i32) -> i32 {
 }
 
 // Glyph id for code point cp, or 0 when unmapped.
-fn ui_tt_cmap(cp: i32) -> i32 {
+fn ui_tt_cmap(cp: i32) : i32 {
     if (g_tt_ok == 0) {
         return 0;
     } else {
@@ -1278,7 +1278,7 @@ fn ui_tt_cmap(cp: i32) -> i32 {
 }
 
 // 1 when cp maps to a real glyph (gid != 0), else 0.
-fn ui_tt_has_glyph(cp: i32) -> i32 {
+fn ui_tt_has_glyph(cp: i32) : i32 {
     let g: i32 = ui_tt_cmap(cp);
     if (g == 0) {
         return 0;
@@ -1288,7 +1288,7 @@ fn ui_tt_has_glyph(cp: i32) -> i32 {
 }
 
 // Reset the glyph cache and the per-load counters.
-fn ui_tt_cache_reset() -> i32 {
+fn ui_tt_cache_reset() : i32 {
     let i: i32 = 0;
     while (i < 512) {
         g_tt_cache_valid[i] = 0;
@@ -1313,7 +1313,7 @@ fn ui_tt_cache_reset() -> i32 {
 // its contents across loads; every load re-parses from scratch
 // (ui_sysfont_load_face resets all per-face state first), so
 // switching fonts never sees stale table offsets.
-fn ui_tt_read_font(path: ptr) -> i32 {
+fn ui_tt_read_font(path: ptr) : i32 {
     let fd: i32 = fd_open(path, 0, 0);
     if (fd < 0) { return 0 - 1; }
     let st: u8[128] = 0;
@@ -1372,7 +1372,7 @@ fn ui_tt_read_font(path: ptr) -> i32 {
 // Load the font at path, auto-selecting the SC face of a TTC
 // (face_want < 0) or forcing face face_want (>= 0, test-only).
 // Answers 1 on success, 0 on failure (see ui_sysfont_err()).
-fn ui_sysfont_load_face(path: ptr, face_want: i32) -> i32 {
+fn ui_sysfont_load_face(path: ptr, face_want: i32) : i32 {
     g_tt_tried = 1;
     g_tt_ok = 0;
     g_tt_err = 0;
@@ -1542,14 +1542,14 @@ fn ui_sysfont_load_face(path: ptr, face_want: i32) -> i32 {
 }
 
 // Load the font at path with SC auto-selection.
-fn ui_sysfont_load(path: ptr) -> i32 {
+fn ui_sysfont_load(path: ptr) : i32 {
     return ui_sysfont_load_face(path, -1);
 }
 
 // Record one candidate attempt in the probe table (path copied
 // into the row's 64-byte slot, truncated with NUL). Rows beyond 24
 // are dropped; the attempt itself still runs.
-fn ui_tt_probe_note(path: ptr, size: i32, err: i32) -> i32 {
+fn ui_tt_probe_note(path: ptr, size: i32, err: i32) : i32 {
     if (g_tt_probe_n >= 24) {
         return 0;
     } else {
@@ -1577,7 +1577,7 @@ fn ui_tt_probe_note(path: ptr, size: i32, err: i32) -> i32 {
 // buffer, or 0 when the result would overflow it (127 bytes).
 // Callers must consume the result before the next join (the probe
 // table copies the path, so recording is safe).
-fn ui_tt_join_path(dir: ptr, name: ptr) -> ptr {
+fn ui_tt_join_path(dir: ptr, name: ptr) : ptr {
     let dl: i32 = strlen(dir);
     let nl: i32 = strlen(name);
     if (dl + 1 + nl > 127) {
@@ -1603,7 +1603,7 @@ fn ui_tt_join_path(dir: ptr, name: ptr) -> ptr {
 // table. Answers 1 when the font loaded. A missing path costs one
 // failed openat and records err 1; a present-but-unusable file
 // records the parse error (3/4/5/6) from ui_sysfont_err().
-fn ui_sysfont_try_path(path: ptr) -> i32 {
+fn ui_sysfont_try_path(path: ptr) : i32 {
     let sz: i64 = file_size(path);
     if (sz < 0) {
         let n0: i32 = ui_tt_probe_note(path, -1, 1);
@@ -1654,7 +1654,7 @@ fn ui_sysfont_try_path(path: ptr) -> i32 {
 // the device log shows every candidate, and the best loadable one
 // (Regular over Bold) is picked afterwards. Answers 1 when any
 // candidate loaded.
-fn ui_sysfont_scan_dir(dir: ptr) -> i32 {
+fn ui_sysfont_scan_dir(dir: ptr) : i32 {
     let any: i32 = 0;
     let p0: ptr = ui_tt_join_path(dir, "NotoSansCJK-Regular.ttc");
     if (p0 != 0) {
@@ -1724,7 +1724,7 @@ fn ui_sysfont_scan_dir(dir: ptr) -> i32 {
 // When nothing loads, the error is the last parse error from a
 // file that existed, else 1 (no file anywhere) -- so the fallback
 // reason says which.
-fn ui_sysfont_init() -> i32 {
+fn ui_sysfont_init() : i32 {
     if (g_tt_tried == 1) {
         return g_tt_ok;
     } else {
@@ -1765,7 +1765,7 @@ fn ui_sysfont_init() -> i32 {
 // the chain once, so the first text draw on a fresh process finds
 // the font without any backend call (onCreate calls
 // ui_sysfont_init() early so the load does not land mid-frame).
-fn ui_tt_active() -> i32 {
+fn ui_tt_active() : i32 {
     if (g_tt_tried == 0) {
         let r: i32 = ui_sysfont_init();
     } else {
@@ -1775,7 +1775,7 @@ fn ui_tt_active() -> i32 {
 
 // Drop back to the fallback (no system font) until the next
 // explicit load. Test-only: the device never unloads.
-fn ui_sysfont_unload() -> i32 {
+fn ui_sysfont_unload() : i32 {
     g_tt_ok = 0;
     g_tt_tried = 1;
     g_tt_buf = 0;
@@ -1796,7 +1796,7 @@ fn ui_sysfont_unload() -> i32 {
 // ---- Outline buffers + flattening --------------------------------------
 
 // Bit k of v (0/1). Same division shape as ui_glyph_bit.
-fn ui_tt_bit(v: i32, k: i32) -> i32 {
+fn ui_tt_bit(v: i32, k: i32) : i32 {
     let p: i32 = 1;
     let j: i32 = 0;
     while (j < k) {
@@ -1807,7 +1807,7 @@ fn ui_tt_bit(v: i32, k: i32) -> i32 {
     return t - (t / 2) * 2;
 }
 
-fn ui_tt_outline_reset() -> i32 {
+fn ui_tt_outline_reset() : i32 {
     g_tt_npts = 0;
     g_tt_ncon = 0;
     g_tt_cont_open = 0;
@@ -1820,7 +1820,7 @@ fn ui_tt_outline_reset() -> i32 {
 
 // Append one on-curve point. Answers 1, or 0 when the buffer is
 // full (sets the abort flag).
-fn ui_tt_outline_append(x: i32, y: i32) -> i32 {
+fn ui_tt_outline_append(x: i32, y: i32) : i32 {
     if (g_tt_npts >= 4096) {
         g_tt_abort = 1;
         return 0;
@@ -1833,7 +1833,7 @@ fn ui_tt_outline_append(x: i32, y: i32) -> i32 {
 }
 
 // Close the open contour (if it holds any points).
-fn ui_tt_outline_end() -> i32 {
+fn ui_tt_outline_end() : i32 {
     if (g_tt_cont_open == 0) {
         return 0;
     } else {
@@ -1853,7 +1853,7 @@ fn ui_tt_outline_end() -> i32 {
     return 0;
 }
 
-fn ui_tt_move_to(x: i32, y: i32) -> i32 {
+fn ui_tt_move_to(x: i32, y: i32) : i32 {
     let e: i32 = ui_tt_outline_end();
     let a: i32 = ui_tt_outline_append(x, y);
     g_tt_cont_start = g_tt_npts - 1;
@@ -1863,7 +1863,7 @@ fn ui_tt_move_to(x: i32, y: i32) -> i32 {
     return 0;
 }
 
-fn ui_tt_line_to(x: i32, y: i32) -> i32 {
+fn ui_tt_line_to(x: i32, y: i32) : i32 {
     if (g_tt_cont_open == 0) {
         let m: i32 = ui_tt_move_to(x, y);
         return 0;
@@ -1877,7 +1877,7 @@ fn ui_tt_line_to(x: i32, y: i32) -> i32 {
 
 // Quadratic Bezier from the current point via (x1, y1) to (x2, y2),
 // 8 subdivisions, direct Bernstein at denominator 64.
-fn ui_tt_quad_to(x1: i32, y1: i32, x2: i32, y2: i32) -> i32 {
+fn ui_tt_quad_to(x1: i32, y1: i32, x2: i32, y2: i32) : i32 {
     if (g_tt_cont_open == 0) {
         let m: i32 = ui_tt_move_to(g_tt_cx, g_tt_cy);
     } else {
@@ -1904,7 +1904,7 @@ fn ui_tt_quad_to(x1: i32, y1: i32, x2: i32, y2: i32) -> i32 {
 
 // Cubic Bezier from the current point via (x1, y1), (x2, y2) to
 // (x3, y3), 16 subdivisions, direct Bernstein at denominator 4096.
-fn ui_tt_cubic_to(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) -> i32 {
+fn ui_tt_cubic_to(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) : i32 {
     if (g_tt_cont_open == 0) {
         let m: i32 = ui_tt_move_to(g_tt_cx, g_tt_cy);
     } else {
@@ -1939,7 +1939,7 @@ fn ui_tt_cubic_to(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) -> i32 {
 
 // loca entry for gid: the glyph's byte offset inside the glyf
 // table, or -1 when out of range.
-fn ui_tt_loca_off(gid: i32) -> i32 {
+fn ui_tt_loca_off(gid: i32) : i32 {
     if (gid < 0) {
         return -1;
     } else {
@@ -1967,7 +1967,7 @@ fn ui_tt_loca_off(gid: i32) -> i32 {
 
 // Flatten one raw contour (indices s..e in g_tt_tx/ty/ton) into the
 // outline buffer. Answers 0, or -1 on abort.
-fn ui_tt_glyf_flatten(s: i32, e: i32) -> i32 {
+fn ui_tt_glyf_flatten(s: i32, e: i32) : i32 {
     let n: i32 = e - s + 1;
     if (n <= 0) {
         return 0;
@@ -2056,7 +2056,7 @@ fn ui_tt_glyf_flatten(s: i32, e: i32) -> i32 {
 
 // Decode one glyf glyph (simple or compound) into the outline
 // buffer. Answers 0, or -1 on failure. depth caps compound nesting.
-fn ui_tt_glyf_glyph(gid: i32, depth: i32) -> i32 {
+fn ui_tt_glyf_glyph(gid: i32, depth: i32) : i32 {
     if (depth > 8) {
         return -1;
     } else {
@@ -2354,7 +2354,7 @@ fn ui_tt_glyf_glyph(gid: i32, depth: i32) -> i32 {
 // ---- CFF: INDEX + DICT readers ----------------------------------------
 
 // Read one offSize-byte big-endian value at off. Answers the value.
-fn ui_tt_cff_offval(off: i32, osz: i32) -> i32 {
+fn ui_tt_cff_offval(off: i32, osz: i32) : i32 {
     let v: i32 = 0;
     let i: i32 = 0;
     while (i < osz) {
@@ -2368,7 +2368,7 @@ fn ui_tt_cff_offval(off: i32, osz: i32) -> i32 {
 // Parse the INDEX at absolute offset off into the g_tt_idx_*
 // globals (count, offSize, data start). Answers 1, or 0 when the
 // INDEX header is out of range or malformed.
-fn ui_tt_cff_index(off: i32) -> i32 {
+fn ui_tt_cff_index(off: i32) : i32 {
     // CFF2 INDEX counts are Card32 (5-byte header: count +
     // offSize); CFF counts are Card16 (3-byte header). hdr
     // is the header size; the offset array and data follow it.
@@ -2416,7 +2416,7 @@ fn ui_tt_cff_index(off: i32) -> i32 {
 
 
 // Byte offset just past the INDEX at off, or -1 when malformed.
-fn ui_tt_cff_index_end(off: i32) -> i32 {
+fn ui_tt_cff_index_end(off: i32) : i32 {
     let ok: i32 = ui_tt_cff_index(off);
     if (ok == 0) {
         return -1;
@@ -2442,7 +2442,7 @@ fn ui_tt_cff_index_end(off: i32) -> i32 {
 
 // Item i of the INDEX parsed by ui_tt_cff_index: sets
 // g_tt_it_start/end to its absolute file offsets. Answers 1, or 0.
-fn ui_tt_cff_index_item(i: i32) -> i32 {
+fn ui_tt_cff_index_item(i: i32) : i32 {
     if (i < 0) {
         return 0;
     } else {
@@ -2481,7 +2481,7 @@ fn ui_tt_cff_index_item(i: i32) -> i32 {
 // blob). Sets g_tt_nv (value) and g_tt_nn (next offset). Answers 1,
 // or 0 when pc is out of range. Real numbers (op 30) answer 0 and
 // advance past the nibbles (our keys never use them).
-fn ui_tt_dict_num(pc: i32, end: i32) -> i32 {
+fn ui_tt_dict_num(pc: i32, end: i32) : i32 {
     if (pc >= end) {
         return 0;
     } else {
@@ -2586,7 +2586,7 @@ fn ui_tt_dict_num(pc: i32, end: i32) -> i32 {
 // FDSelect) are shortint-encoded in real fonts. Treating every
 // byte < 32 as an operator desynchronises the scan and misses
 // them, so 28/29/30 take the number path too.
-fn ui_tt_dict_find(off: i32, nbytes: i32, want: i32) -> i32 {
+fn ui_tt_dict_find(off: i32, nbytes: i32, want: i32) : i32 {
     let end: i32 = off + nbytes;
     let pc: i32 = off;
     let nst2: i32 = 0;
@@ -2647,7 +2647,7 @@ fn ui_tt_dict_find(off: i32, nbytes: i32, want: i32) -> i32 {
 
 // Parse the CFF table (Top DICT, CharStrings, GlobalSubrs, FDArray
 // when present). Answers 1, or 0 when the table is unusable.
-fn ui_tt_cff_parse() -> i32 {
+fn ui_tt_cff_parse() : i32 {
     // Table: CFF when a CFF table is present, else CFF2. The two
     // share the CharStrings / FDSelect / FDArray / GlobalSubrs
     // tail; only the header, the INDEX counts, and the table
@@ -2828,7 +2828,7 @@ fn ui_tt_cff_parse() -> i32 {
 
 
 // FD index for glyph gid (0 when there is no FDArray / FDSelect).
-fn ui_tt_cff_fd(gid: i32) -> i32 {
+fn ui_tt_cff_fd(gid: i32) : i32 {
     if (g_tt_cff_fdarray_off < 0) {
         return 0;
     } else {
@@ -2890,7 +2890,7 @@ fn ui_tt_cff_fd(gid: i32) -> i32 {
 
 // Load the LocalSubrs INDEX of FD fd into the cache (or record that
 // the FD has none). Answers 1, or 0 when the FD index is bad.
-fn ui_tt_cff_load_lsub(fd: i32) -> i32 {
+fn ui_tt_cff_load_lsub(fd: i32) : i32 {
     if (fd == g_tt_cff_lsub_fd) {
         return 1;
     } else {
@@ -2966,7 +2966,7 @@ fn ui_tt_cff_load_lsub(fd: i32) -> i32 {
 }
 
 // Subroutine bias for a subr INDEX of count entries.
-fn ui_tt_cff_bias(count: i32) -> i32 {
+fn ui_tt_cff_bias(count: i32) : i32 {
     if (count < 1240) {
         return 107;
     } else {
@@ -2984,7 +2984,7 @@ fn ui_tt_cff_bias(count: i32) -> i32 {
 // (AFTER the u16 length prefix): u16 format, u32 regionListOffset,
 // u16 varDataCount, u32 varDataOffsets[count]; each VarData starts
 // u16 itemCount, u16 numShorts, u16 regionIndexCount.
-fn ui_tt_cff_num_regions() -> i32 {
+fn ui_tt_cff_num_regions() : i32 {
     if (g_tt_cff_varstore_off < 0) {
         return -1;
     } else {
@@ -3031,7 +3031,7 @@ fn ui_tt_cff_num_regions() -> i32 {
 // Decode one Type 2 number at absolute offset pc (end bounds the
 // charstring). Sets g_tt_nv / g_tt_nn. Answers 1, or 0 when pc does
 // not hold a number.
-fn ui_tt_cff_num(pc: i32, end: i32) -> i32 {
+fn ui_tt_cff_num(pc: i32, end: i32) : i32 {
     if (pc >= end) {
         return 0;
     } else {
@@ -3095,7 +3095,7 @@ fn ui_tt_cff_num(pc: i32, end: i32) -> i32 {
     return 0;
 }
 
-fn ui_tt_push(v: i32) -> i32 {
+fn ui_tt_push(v: i32) : i32 {
     if (g_tt_nst >= 64) {
         g_tt_abort = 1;
         return 0;
@@ -3106,7 +3106,7 @@ fn ui_tt_push(v: i32) -> i32 {
     return 1;
 }
 
-fn ui_tt_pop() -> i32 {
+fn ui_tt_pop() : i32 {
     if (g_tt_nst <= 0) {
         g_tt_abort = 1;
         return 0;
@@ -3118,7 +3118,7 @@ fn ui_tt_pop() -> i32 {
 
 // The width is the first operand when the operand count before the
 // first stem / move / hint / endchar operator is odd. Drop it once.
-fn ui_tt_maybe_width() -> i32 {
+fn ui_tt_maybe_width() : i32 {
     if (g_tt_width_done == 1) {
         return 0;
     } else {
@@ -3138,7 +3138,7 @@ fn ui_tt_maybe_width() -> i32 {
 }
 
 // One rrcurveto segment from the current point, args relative.
-fn ui_tt_cff_rrseg(a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32) -> i32 {
+fn ui_tt_cff_rrseg(a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32) : i32 {
     let x0: i32 = g_tt_cx;
     let y0: i32 = g_tt_cy;
     let c1x: i32 = x0 + a0;
@@ -3153,7 +3153,7 @@ fn ui_tt_cff_rrseg(a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32) -> i32 
 
 // Run the charstring [start, end) for FD fd. Answers 1 when endchar
 // stopped the whole glyph, 0 on return / normal end, -1 on abort.
-fn ui_tt_cff_run(start: i32, end: i32, fd: i32, depth: i32) -> i32 {
+fn ui_tt_cff_run(start: i32, end: i32, fd: i32, depth: i32) : i32 {
     if (depth > 10) {
         return -1;
     } else {
@@ -3741,7 +3741,7 @@ fn ui_tt_cff_run(start: i32, end: i32, fd: i32, depth: i32) -> i32 {
 }
 
 // Decode one CFF glyph into the outline buffer. Answers 0, or -1.
-fn ui_tt_cff_glyph(gid: i32) -> i32 {
+fn ui_tt_cff_glyph(gid: i32) : i32 {
     if (gid < 0) {
         return -1;
     } else {
@@ -3796,7 +3796,7 @@ fn ui_tt_cff_glyph(gid: i32) -> i32 {
 // Decode the outline of code point cp into the point buffers.
 // Answers the point count (0 for an empty glyph such as space),
 // or -1 on failure (unmapped, bad glyph, unsupported construct).
-fn ui_tt_outline(cp: i32) -> i32 {
+fn ui_tt_outline(cp: i32) : i32 {
     let r0: i32 = ui_tt_outline_reset();
     let gid: i32 = ui_tt_cmap(cp);
     if (gid <= 0) {
@@ -3849,7 +3849,7 @@ fn ui_tt_outline(cp: i32) -> i32 {
 }
 
 // Test/debug getter: outline point count for cp, or -1.
-fn ui_tt_outline_points(cp: i32) -> i32 {
+fn ui_tt_outline_points(cp: i32) : i32 {
     return ui_tt_outline(cp);
 }
 
@@ -3857,7 +3857,7 @@ fn ui_tt_outline_points(cp: i32) -> i32 {
 // or 0 when the outline is empty. The fill never goes below the
 // control polygon, so this bounds the ink from below: a bitmap
 // tall enough to hold this point holds the whole glyph.
-fn ui_tt_outline_min_y() -> i32 {
+fn ui_tt_outline_min_y() : i32 {
     if (g_tt_npts <= 0) {
         return 0;
     } else {
@@ -3885,7 +3885,7 @@ fn ui_tt_outline_min_y() -> i32 {
 // q -229, zhong -79, all equal to the fontTools curve bbox). Never
 // smaller than the requested height; the caller clamps it to the
 // 64-row slot.
-fn ui_tt_outline_rows(ch: i32) -> i32 {
+fn ui_tt_outline_rows(ch: i32) : i32 {
     let span: i32 = g_tt_map_asc - g_tt_map_desc;
     if (span <= 0) {
         span = g_tt_upm;
@@ -3907,7 +3907,7 @@ fn ui_tt_outline_rows(ch: i32) -> i32 {
 // height (see the vertical-mapping note above): the scale is
 // defined by the requested cell, the grown height only extends
 // the clip. Passing the grown height would stretch the glyph.
-fn ui_tt_scale(bw: i32, bh: i32) -> i32 {
+fn ui_tt_scale(bw: i32, bh: i32) : i32 {
     let span: i32 = g_tt_map_asc - g_tt_map_desc;
     if (span <= 0) {
         span = g_tt_upm;
@@ -3925,7 +3925,7 @@ fn ui_tt_scale(bw: i32, bh: i32) -> i32 {
 }
 
 // Sort the collected crossings by x (insertion sort; n is small).
-fn ui_tt_sort_row() -> i32 {
+fn ui_tt_sort_row() : i32 {
     let i: i32 = 1;
     while (i < g_tt_row_n) {
         let kx: i32 = g_tt_row_x[i];
@@ -3950,7 +3950,7 @@ fn ui_tt_sort_row() -> i32 {
 // Scanline-fill the scaled outline into the 1bpp supersampled
 // scratch, then box-average 4x4 into the 8bpp bitmap out_bm
 // (bw x bh bytes). Answers 0.
-fn ui_tt_scan(bw: i32, bh: i32, out_bm: ptr) -> i32 {
+fn ui_tt_scan(bw: i32, bh: i32, out_bm: ptr) : i32 {
     let ss_w: i32 = bw * 4;
     let ss_h: i32 = bh * 4;
     let total: i32 = ss_w * ss_h;
@@ -4074,7 +4074,7 @@ fn ui_tt_scan(bw: i32, bh: i32, out_bm: ptr) -> i32 {
 // 64x64; larger cells remap from it at draw time). Answers the
 // cache slot, or -1 when the code point has no glyph in this font
 // (the caller falls back to the atlas / placeholder path).
-fn ui_tt_rasterize(cp: i32, cw: i32, ch: i32) -> i32 {
+fn ui_tt_rasterize(cp: i32, cw: i32, ch: i32) : i32 {
     if (ui_tt_active() == 0) {
         return -1;
     } else {
@@ -4182,7 +4182,7 @@ fn ui_tt_rasterize(cp: i32, cw: i32, ch: i32) -> i32 {
 // into the caller's 4096-byte bitmap WITHOUT touching the cache.
 // Answers 0, or -1 when the code point has no glyph. Lets the test
 // time cold rasterization in a loop (cache hits would hide it).
-fn ui_tt_rasterize_raw(cp: i32, cw: i32, ch: i32, out_bm: ptr) -> i32 {
+fn ui_tt_rasterize_raw(cp: i32, cw: i32, ch: i32, out_bm: ptr) : i32 {
     if (ui_tt_active() == 0) {
         return -1;
     } else {

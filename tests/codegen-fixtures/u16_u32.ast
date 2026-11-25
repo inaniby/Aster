@@ -1,6 +1,6 @@
 let o: u8[8] = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: u16 = 65535;
     let b: u32 = 4294967295;
     if (a > 1) { store_u8(o, 49); } else { store_u8(o, 48); }

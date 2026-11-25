@@ -12,6 +12,6 @@
 
 let total: i32 = 7;
 
-fn add2(n: i32) -> i32 {
+fn add2(n: i32) : i32 {
     return n + 2;
 }

@@ -1,10 +1,10 @@
 // aster:language=en
-fn lo() -> ptr {
+fn lo() : ptr {
     return @embed("b.bin", 8);
 }
-fn hi() -> ptr {
+fn hi() : ptr {
     return @embed("b.bin", 64);
 }
-fn main() -> i32 {
+fn main() : i32 {
     return load_u8(lo()) + load_u8(hi());
 }

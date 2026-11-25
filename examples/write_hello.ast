@@ -17,7 +17,7 @@
 // Note the `let`: a call is an expression, and a bare expression is not a
 // statement in Aster, so the byte count has to be caught even when unused.
 
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = write(1, "Hello, World!", 14);
     return 0;
 }

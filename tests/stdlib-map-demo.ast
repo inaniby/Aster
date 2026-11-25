@@ -5,7 +5,7 @@
 // table and qsort, and prints the same summary line.
 include "ailib.ast";
 
-fn cmp_desc(a: ptr, b: ptr) -> i32 {
+fn cmp_desc(a: ptr, b: ptr) : i32 {
     let x: i32 = *(a);
     let y: i32 = *(b);
     if (x > y) { return 0 - 1; }
@@ -16,7 +16,7 @@ fn cmp_desc(a: ptr, b: ptr) -> i32 {
 // A comparator of this file's own: the address of an *extern* function cannot
 // be taken ("its location is another object's business"), so a consumer of the
 // library supplies its own comparator even though the library ships one.
-fn cmp_pair_asc(a: ptr, b: ptr) -> i32 {
+fn cmp_pair_asc(a: ptr, b: ptr) : i32 {
     let x: i32 = *(a);
     let y: i32 = *(b);
     if (x < y) { return 0 - 1; }
@@ -24,7 +24,7 @@ fn cmp_pair_asc(a: ptr, b: ptr) -> i32 {
     return 0;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let ok: i32 = 0;
     let cell: i64[8] = 0;
 

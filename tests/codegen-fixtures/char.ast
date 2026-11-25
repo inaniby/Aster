@@ -1,6 +1,6 @@
 let o: u8[8] = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: char = 'a';
     let b: char = 'z';
     if (a < b) { store_u8(o, 49); } else { store_u8(o, 48); }

@@ -2,14 +2,14 @@
 // for fire-and-forget callbacks whose side effect is all that matters. The same
 // handlers are also called for their value, to show the two forms coexist.
 
-struct Handlers { onClick: fn(i32) -> i32, onMove: fn(i32, i32) -> i32 }
+struct Handlers { onClick: fn(i32) : i32, onMove: fn(i32, i32) : i32 }
 
 let fired: i32 = 0;
 
-fn onClickImpl(x: i32) -> i32 { fired = fired + 1; return x + 1; }
-fn onMoveImpl(x: i32, y: i32) -> i32 { fired = fired + 1; return x + y; }
+fn onClickImpl(x: i32) : i32 { fired = fired + 1; return x + 1; }
+fn onMoveImpl(x: i32, y: i32) : i32 { fired = fired + 1; return x + y; }
 
-fn main() -> i32 {
+fn main() : i32 {
     let h: Handlers = Handlers { onClickImpl, onMoveImpl };
     // fire-and-forget: the return value is dropped, only the side effect
     // (incrementing `fired`) matters.

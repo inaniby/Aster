@@ -1,10 +1,10 @@
 // aster:language=en
-fn twice(x: i32) -> i32 { return x * 2; }
-fn first(p: ptr) -> i32 { return load_u8(p); }
-fn first8(p: ptr<u8>) -> i32 { return load_u8(p); }
-fn cmp2(a: ptr, b: ptr) -> i32 { return 5; }
+fn twice(x: i32) : i32 { return x * 2; }
+fn first(p: ptr) : i32 { return load_u8(p); }
+fn first8(p: ptr<u8>) : i32 { return load_u8(p); }
+fn cmp2(a: ptr, b: ptr) : i32 { return 5; }
 fn main(): i32 {
-let f: fn(i32) -> i32 = twice;
+let f: fn(i32) : i32 = twice;
 let cmp: ptr = cmp2;
 return f(20) + cmp(0, 0) - 5 + first("A") - 65 + first8("B") - 66;
 }

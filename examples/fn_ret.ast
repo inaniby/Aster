@@ -21,28 +21,28 @@
 // Its C twin is tests/function-return-fn-twin.c; the two agree on the exit
 // status.
 
-fn inc(x: i32) -> i32 { return x + 1; }
-fn dbl(x: i32) -> i32 { return x + x; }
+fn inc(x: i32) : i32 { return x + 1; }
+fn dbl(x: i32) : i32 { return x + x; }
 
 // Two getters, each with the signature written on the return type.
-fn pick(which: i32) -> fn(i32) -> i32 {
+fn pick(which: i32) : fn(i32) : i32 {
     if (which == 0) { return inc; }
     return dbl;
 }
-fn always() -> fn() -> i32 { return answer; }
-fn answer() -> i32 { return 7; }
+fn always() : fn() : i32 { return answer; }
+fn answer() : i32 { return 7; }
 
-fn apply(op: fn(i32) -> i32, v: i32) -> i32 { return op(v); }
+fn apply(op: fn(i32) : i32, v: i32) : i32 { return op(v); }
 
-fn main() -> i32 {
-    let f: fn(i32) -> i32 = pick(0);
-    let g: fn(i32) -> i32 = pick(1);
+fn main() : i32 {
+    let f: fn(i32) : i32 = pick(0);
+    let g: fn(i32) : i32 = pick(1);
 
     // A returned fn-pointer is a value like any other: it can be handed
     // straight to something that asks for one, and checked there.
     let h: i32 = apply(pick(1), 20);
 
-    let z: fn() -> i32 = always();
+    let z: fn() : i32 = always();
     let s: i32 = f(20) + g(20) + h + z();       // 21 + 40 + 40 + 7 = 108
     return s % 251;
 }

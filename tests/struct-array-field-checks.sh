@@ -114,48 +114,48 @@ if [ "$have_qemu" = yes ]; then
 printf '%s\n' '[3/9] qemu: every element type of a struct array field'
 # --- i32 element: 4-byte stride (a shift).
 check "$A" 'i32 field element'         11 'struct B { nums: i32[4] }
-fn main() -> i32 { let b: B; b.nums[0] = 11; b.nums[3] = 33;
+fn main() : i32 { let b: B; b.nums[0] = 11; b.nums[3] = 33;
     if (b.nums[3] == 33 && b.nums[0] == 11) { return 11; } return 0; }'
 check "$A" 'i32 field element, global' 7 'struct B { nums: i32[4] }
 let gb: B;
-fn main() -> i32 { gb.nums[2] = 7; if (gb.nums[2] == 7) { return 7; } return 0; }'
+fn main() : i32 { gb.nums[2] = 7; if (gb.nums[2] == 7) { return 7; } return 0; }'
 # --- bool element: 1-byte stride (a shift), read as a condition and stored.
 check "$A" 'bool field element'        2 'struct B { flags: bool[3] }
-fn main() -> i32 { let b: B; b.flags[0] = true; b.flags[2] = true;
+fn main() : i32 { let b: B; b.flags[0] = true; b.flags[2] = true;
     if (b.flags[0] && b.flags[2] && !b.flags[1]) { return 2; } return 0; }'
 # --- ptr element: 8-byte stride, null fill then an address.
 check "$A" 'ptr field element'         4 'struct B { ptrs: ptr[4] }
 struct P { x: i32 }
-fn main() -> i32 { let cell: P = P { 42 };
+fn main() : i32 { let cell: P = P { 42 };
     let b: B; b.ptrs[1] = &cell; if (b.ptrs[1] == &cell && b.ptrs[0] == 0) { return 4; } return 0; }'
 # --- struct element: 12 bytes (a multiply), addressed and walked field by field.
 check "$A" 'struct field element'      8 'struct V { a: i32, b: i32, c: i32 }
 struct B { pts: V[2] }
-fn main() -> i32 { let b: B; b.pts[1].a = 100; b.pts[1].c = 200;
+fn main() : i32 { let b: B; b.pts[1].a = 100; b.pts[1].c = 200;
     if (b.pts[1].a == 100 && b.pts[1].c == 200 && b.pts[0].a == 0) { return 8; } return 0; }'
 # --- the address of a struct element is a ptr<S>; deref and read a field.
 check "$A" 'address of struct element' 16 'struct V { a: i32, b: i32, c: i32 }
 struct B { pts: V[2] }
-fn main() -> i32 { let b: B; b.pts[1].a = 100; let p: ptr<V> = &b.pts[1];
+fn main() : i32 { let b: B; b.pts[1].a = 100; let p: ptr<V> = &b.pts[1];
     if (p == &b.pts[1] && (*p).a == 100) { return 16; } return 0; }'
 # --- a struct element can be written through a subscript's field, and a whole
 # element copy is still refused (a struct has no register form).
 check "$A" '12-byte element both scopes' 32 'struct V { a: i32, b: i32, c: i32 }
 struct B { pts: V[2] }
 let gb: B;
-fn main() -> i32 { let b: B; b.pts[1].b = 5; gb.pts[0].b = 3;
+fn main() : i32 { let b: B; b.pts[1].b = 5; gb.pts[0].b = 3;
     if (b.pts[1].b == 5 && gb.pts[0].b == 3) { return 32; } return 0; }'
 # --- a struct element can be copied as a whole into a struct variable.
 check "$A" 'struct element copy'     15 'struct V { a: i32, b: i32, c: i32 }
 struct B { pts: V[2] }
-fn main() -> i32 { let b: B; b.pts[1].a = 100; b.pts[1].b = 55; b.pts[1].c = 200;
+fn main() : i32 { let b: B; b.pts[1].a = 100; b.pts[1].b = 55; b.pts[1].c = 200;
     let c: V = b.pts[1];
     if (c.a == 100 && c.b == 55 && c.c == 200) { return 15; } return 0; }'
 # --- an i32 element read into an i64 context is sign-extended, like an i32
 # local, an i32 global and an i32 struct field: the one SXTW site the field
 # path owns, and the reason it is not a bare 32-bit load.
 check "$A" 'i32 field element into i64' 64 'struct B { nums: i32[4] }
-fn main() -> i32 { let b: B; b.nums[0] = 0 - 5;
+fn main() : i32 { let b: B; b.nums[0] = 0 - 5;
     let x: i64 = b.nums[0];
     if (x == 0 - 5) { return 64; } return 0; }'
 fi
@@ -187,7 +187,7 @@ else
         'struct V3 { a: i32, b: i32, c: i32 }
 struct B { nums: i32[4], flags: bool[3], ptrs: ptr[4], pts: V3[2] }
 let gb: B;
-fn main() -> i32 {
+fn main() : i32 {
     let b: B;
     let anchor: V3 = V3 { 1, 2, 3 };
     let r: i32 = 0;
@@ -244,44 +244,44 @@ reject() {
 # Indexing a non-array field — scalar, bool/ptr, or struct — is refused.
 reject 'index a scalar field'        'cannot index non-array field: x' \
     'struct P { x: i32 }
-fn main() -> i32 { let s: P = P { 1 }; return s.x[0]; }'
+fn main() : i32 { let s: P = P { 1 }; return s.x[0]; }'
 reject 'index a struct field'        'cannot index non-array field: nest' \
     'struct N { a: i32 }
 struct P { nest: N }
-fn main() -> i32 { let s: P = P { N { 1 } }; return s.nest[0].a; }'
+fn main() : i32 { let s: P = P { N { 1 } }; return s.nest[0].a; }'
 reject 'index a bool field'          'cannot index non-array field: f' \
     'struct P { f: bool }
-fn main() -> i32 { let s: P = P { true }; return s.f[0]; }'
+fn main() : i32 { let s: P = P { true }; return s.f[0]; }'
 # Indexing a non-array field and then a field-of-element: `s.x[0].y`.
 reject 'index a scalar field then .y' 'cannot index non-array field: x' \
     'struct P { x: i32 }
-fn main() -> i32 { let s: P = P { 1 }; return s.x[0].y; }'
+fn main() : i32 { let s: P = P { 1 }; return s.x[0].y; }'
 # A compile-time out-of-bounds index on a struct array field.
 reject 'struct array field OOB'      'array index out of bounds: index 9, length 4' \
     'struct B { nums: i32[4] }
-fn main() -> i32 { let b: B; return b.nums[9]; }'
+fn main() : i32 { let b: B; return b.nums[9]; }'
 # A struct that contains an array field cannot be initialized by a literal.
 reject 'local literal of array-field struct' "struct 'B' contains an array field and cannot be initialized by a literal" \
     'struct B { nums: i32[4] }
-fn main() -> i32 { let b: B = B { 0 }; return 0; }'
+fn main() : i32 { let b: B = B { 0 }; return 0; }'
 reject 'global literal of array-field struct' "struct 'B' contains an array field and cannot be initialized by a literal" \
     'struct B { nums: i32[4] }
 let gb: B = B { 0 };
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 # An array field length is bounded like a local array.
 reject 'array field length 0'        'array field length must be between 1 and 1000' \
     'struct B { nums: i32[0] }
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 reject 'array field length 1001'     'array field length must be between 1 and 1000' \
     'struct B { nums: i32[1001] }
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 # A struct array field element is still not a register value: it cannot be
 # returned or read into an integer — only copied as a whole, or walked field by
 # field.
 reject 'struct element into an i32'  "type mismatch initializing 'n': expected i32, got V3" \
     'struct V3 { a: i32, b: i32, c: i32 }
 struct B { pts: V3[2] }
-fn main() -> i32 { let b: B; let n: i32 = b.pts[0]; return 0; }'
+fn main() : i32 { let b: B; let n: i32 = b.pts[0]; return 0; }'
 
 # ---------------------------------------------------------------------------
 # [6/9] Coverage map. Every accepted row above has to name the rule it
@@ -364,20 +364,20 @@ else
 mutate 'm1: arrayFieldOf is gone' \
     's/if(field.k!=Expr::Field)return nullptr;/if(field.k!=Expr::Field)return nullptr; if(true)return nullptr;/' \
     must_not_compile 's.xs[i] read' 'struct B { nums: i32[4] }
-fn main() -> i32 { let b: B; b.nums[0] = 1; return b.nums[0]; }'
+fn main() : i32 { let b: B; b.nums[0] = 1; return b.nums[0]; }'
 # m2: postfix() splits `.` and `[` into two passes again, so `s.xs[i].f`
 # fails to parse — the bracket after a field is no longer consumed.
 mutate 'm2: postfix splits . and [' \
     's/while(cur().k==TK::Dot||cur().k==TK::LBracket||(cur().k==TK::LParen\&\&x->k==Expr::Field)){/while(cur().k==TK::Dot||(cur().k==TK::LParen\&\&x->k==Expr::Field)){/' \
     must_not_compile 's.xs[i].f' 'struct V3 { a: i32 }
 struct B { pts: V3[2] }
-fn main() -> i32 { let b: B; b.pts[1].a = 1; return b.pts[1].a; }'
+fn main() : i32 { let b: B; b.pts[1].a = 1; return b.pts[1].a; }'
 # m3: structHasArrayField always answers false, so a literal initializer for an
 # array-field struct is no longer refused — the new rejection is withdrawn.
 mutate 'm3: array-field struct takes a literal' \
     's/if(f.len>0)return true;/if(false)return true;/' \
     must_now_compile 'local literal of array-field struct' 'struct B { nums: i32[4] }
-fn main() -> i32 { let b: B = B { 0 }; return 0; }'
+fn main() : i32 { let b: B = B { 0 }; return 0; }'
 # m4: the field length is dropped from the declaration, so an array field is
 # laid out as a single scalar and `b.nums[0]` indexes a non-array field — the
 # whole declaration shape is withdrawn, and the witness no longer compiles.
@@ -386,7 +386,7 @@ fn main() -> i32 { let b: B = B { 0 }; return 0; }'
 mutate 'm4: array field length dropped' \
     's/s.fields.push_back({fn.s,fty,0,flen,std::move(dims),std::move(fieldFuncSig),fieldIsFunc});/s.fields.push_back({fn.s,fty,0,0,std::move(dims),std::move(fieldFuncSig),fieldIsFunc});/' \
     must_not_compile 'i32 field element' 'struct B { nums: i32[4] }
-fn main() -> i32 { let b: B; b.nums[0] = 11; b.nums[3] = 33;
+fn main() : i32 { let b: B; b.nums[0] = 11; b.nums[3] = 33;
     if (b.nums[3] == 33 && b.nums[0] == 11) { return 11; } return 0; }'
 # m5: a struct array field element is scaled by 4 instead of its real size, so
 # a 12-byte element (`struct V`) is mis-addressed. The witness must observe it
@@ -400,7 +400,7 @@ mutate 'm5: struct element scaled as i32' \
     's/emitScaledAdd(idxReg,tySize(elem));/emitScaledAdd(idxReg,4);/' \
     must_differ 'struct field element' 0 'struct V { a: i32, b: i32, c: i32 }
 struct B { pts: V[2] }
-fn main() -> i32 { let b: B; b.pts[1].a = 100; return b.pts[0].b; }'
+fn main() : i32 { let b: B; b.pts[1].a = 100; return b.pts[0].b; }'
 # m6: the frame zero-fill stores x0 again instead of the zero register, so a
 # struct local declared without an initializer takes whatever x0 happens to
 # hold. The witness declares a struct with a literal *before* it (which leaves
@@ -410,7 +410,7 @@ mutate 'm6: zero-fill stores x0 not XZR' \
     's/emit(0xf90003e0u|31u|((uint32_t(slot+i))<<10));/emit(0xf90003e0u|0u|((uint32_t(slot+i))<<10));/' \
     must_differ 'ptr field element' 4 'struct P { x: i32 }
 struct B { ptrs: ptr[4] }
-fn main() -> i32 { let cell: P = P { 42 };
+fn main() : i32 { let cell: P = P { 42 };
     let b: B;
     if (b.ptrs[0] == 0) { return 4; } return 0; }'
 # m7: disabling the shared signed-widening predicate makes an i32 field element
@@ -418,7 +418,7 @@ fn main() -> i32 { let cell: P = P { 42 };
 mutate 'm7: i32 field element not widened' \
     's/static bool tyNeedsSignExtend64(Ty t) { return tyIsSignedNarrow(t) || t.k == Ty::I32; }/static bool tyNeedsSignExtend64(Ty t) { return false; }/' \
     must_differ 'i32 field element into i64' 64 'struct B { nums: i32[4] }
-fn main() -> i32 { let b: B; b.nums[0] = 0 - 5;
+fn main() : i32 { let b: B; b.nums[0] = 0 - 5;
     let x: i64 = b.nums[0];
     if (x == 0 - 5) { return 64; } return 0; }'
 printf '%s\n' 'PASS: seven mutated compilers each lose exactly one rule, and the checks notice'

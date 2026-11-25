@@ -32,23 +32,23 @@ READELF=${READELF:-readelf}
 # an extern function is refused by the language itself, so the GLOB_DAT
 # self-reference this guards against is always a same-link definition.
 cat > tmp-dyn-funcaddr-a.ast <<'AST'
-fn cb_add(x: i32) -> i32 { return x + 1; }
-fn cb_mul(x: i32) -> i32 { return x * 2; }
+fn cb_add(x: i32) : i32 { return x + 1; }
+fn cb_mul(x: i32) : i32 { return x * 2; }
 let table: ptr[2] = 0;
-fn install() -> i32 {
+fn install() : i32 {
     table[0] = cb_add;
     table[1] = cb_mul;
     return 0;
 }
-fn call_first(x: i32) -> i32 {
-    let f: fn(i32) -> i32 = table[0];
+fn call_first(x: i32) : i32 {
+    let f: fn(i32) : i32 = table[0];
     return f(x);
 }
 AST
 cat > tmp-dyn-funcaddr-b.ast <<'AST'
-extern fn install() -> i32;
-extern fn call_first(x: i32) -> i32;
-fn run() -> i32 {
+extern fn install() : i32;
+extern fn call_first(x: i32) : i32;
+fn run() : i32 {
     install();
     return call_first(41);
 }
@@ -63,12 +63,12 @@ AST
 # v0.23.81-dev (ELF-P2-2): one TU calls `extern fn f`, another reads
 # `extern let f` — the same name lands in importFuncs and importObjects.
 cat > tmp-dyn-dupimp-call.ast <<'AST'
-extern fn f() -> i32;
-fn run() -> i32 { return f(); }
+extern fn f() : i32;
+fn run() : i32 { return f(); }
 AST
 cat > tmp-dyn-dupimp-data.ast <<'AST'
 extern let f: i32;
-fn getf() -> i32 { return f; }
+fn getf() : i32 { return f; }
 AST
 ./aster build-obj --pic tmp-dyn-dupimp-call.ast -o tmp-dyn-dupimp-call.o
 ./aster build-obj --pic tmp-dyn-dupimp-data.ast -o tmp-dyn-dupimp-data.o
@@ -78,11 +78,11 @@ AST
 # whose .dynsym holds a defined OBJECT `f` and an UND FUNC `f` at once.
 cat > tmp-dyn-kindconf-def.ast <<'AST'
 let f: i32 = 7;
-fn getf() -> i32 { return f; }
+fn getf() : i32 { return f; }
 AST
 cat > tmp-dyn-kindconf-call.ast <<'AST'
-extern fn f() -> i32;
-fn run() -> i32 { return f(); }
+extern fn f() : i32;
+fn run() : i32 { return f(); }
 AST
 ./aster build-obj --pic tmp-dyn-kindconf-def.ast -o tmp-dyn-kindconf-def.o
 ./aster build-obj --pic tmp-dyn-kindconf-call.ast -o tmp-dyn-kindconf-call.o

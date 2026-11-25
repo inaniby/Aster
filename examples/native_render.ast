@@ -1,14 +1,14 @@
-extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32;
-extern fn ANativeWindow_setBuffersGeometry(window: ptr, width: i32, height: i32, format: i32) -> i32;
-extern fn ANativeWindow_lock(window: ptr, outBuffer: ptr, inOutDirty: ptr) -> i32;
-extern fn ANativeWindow_unlockAndPost(window: ptr) -> i32;
+extern fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) : i32;
+extern fn ANativeWindow_setBuffersGeometry(window: ptr, width: i32, height: i32, format: i32) : i32;
+extern fn ANativeWindow_lock(window: ptr, outBuffer: ptr, inOutDirty: ptr) : i32;
+extern fn ANativeWindow_unlockAndPost(window: ptr) : i32;
 
 let g_winbuf: i32[32] = 0;
 let g_dirty: i32[4] = 0;
 
 // Draw one gradient frame into the window's pixel buffer.
 // ANativeWindow_Buffer layout: width@0 height@4 stride@8 format@12 bits@16
-fn draw_frame(window: ptr) -> i32 {
+fn draw_frame(window: ptr) : i32 {
     // Ask for 32-bit pixels up front: most devices honor this, and every path
     // below then knows the pixel size. 0 means "keep the window's value".
     let geom: i32 = ANativeWindow_setBuffersGeometry(window, 0, 0, 1);
@@ -82,20 +82,20 @@ fn draw_frame(window: ptr) -> i32 {
 // draw leaves black bands and stretched stripes once the layout settles.
 // Redraw on every resize/redraw notification: the callbacks receive the
 // window directly, so no global state is needed.
-fn on_native_window_created(activity: ptr, window: ptr) -> i32 {
+fn on_native_window_created(activity: ptr, window: ptr) : i32 {
     let logged: i32 = __android_log_print(3, "Aster", "window created");
     return draw_frame(window);
 }
 
-fn on_native_window_resized(activity: ptr, window: ptr) -> i32 {
+fn on_native_window_resized(activity: ptr, window: ptr) : i32 {
     return draw_frame(window);
 }
 
-fn on_native_window_redraw_needed(activity: ptr, window: ptr) -> i32 {
+fn on_native_window_redraw_needed(activity: ptr, window: ptr) : i32 {
     return draw_frame(window);
 }
 
-fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) -> i32 {
+fn ANativeActivity_onCreate(activity: ptr, savedState: ptr, savedStateSize: i32) : i32 {
     // ANativeActivity layout: callbacks@0, vm@8, env@16, clazz@24,
     // internalDataPath@32, externalDataPath@40, sdkVersion@48, instance@56,
     // assetManager@64, obbPath@72. Offset 48 holds sdkVersion (int32), not a

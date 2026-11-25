@@ -13,8 +13,8 @@
 // to an 8192 frame here (correct result, silently non-compact, no
 // warning); the probe fails if the frame leaves (4096, 8191] or the
 // stack arguments stop arriving.
-fn id(x: i32) -> i32 { return x; }
-fn big(p1: i32, p2: i32, p3: i32, p4: i32, p5: i32, p6: i32, p7: i32, p8: i32, p9: i32, p10: i32) -> i32 {
+fn id(x: i32) : i32 { return x; }
+fn big(p1: i32, p2: i32, p3: i32, p4: i32, p5: i32, p6: i32, p7: i32, p8: i32, p9: i32, p10: i32) : i32 {
     let arr: i32[960] = 0;
     let i: i32 = 0;
     while (i < 960) { arr[i] = i + 1; i = i + 1; }
@@ -23,7 +23,7 @@ fn big(p1: i32, p2: i32, p3: i32, p4: i32, p5: i32, p6: i32, p7: i32, p8: i32, p
     while (j < 960) { s = s + arr[j]; j = j + 1; }
     return s + p9 + p10 + id(id(id(id(7))));
 }
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = big(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
     if (r == 461306) { return 0; } else { return 1; }
 }

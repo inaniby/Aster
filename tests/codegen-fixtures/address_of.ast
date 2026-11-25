@@ -1,7 +1,7 @@
 let g: i32 = 7;
 let o: u8[8] = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32 = 5;
     let y: i32 = 6;
     let p: ptr<i32> = &x;

@@ -197,70 +197,70 @@ printf '%s\n' '[3/9] qemu: every element type, in both scopes, at every width'
 
 # --- bool: a 4-byte 0/1 slot per element, in .data and on the frame.
 check "$A" 'global bool[4] read'        1 'let flags: bool[4] = true;
-fn main() -> i32 { if (flags[2]) { return 1; } return 0; }'
-check "$A" 'local bool[3] write+read'   2 'fn main() -> i32 { let a: bool[3] = false; a[1] = true; if (a[1] && !a[0]) { return 2; } return 0; }'
+fn main() : i32 { if (flags[2]) { return 1; } return 0; }'
+check "$A" 'local bool[3] write+read'   2 'fn main() : i32 { let a: bool[3] = false; a[1] = true; if (a[1] && !a[0]) { return 2; } return 0; }'
 check "$A" 'global bool[3] write'       5 'let flags: bool[3] = false;
-fn main() -> i32 { flags[0] = true; flags[2] = true; let r: i32 = 0;
+fn main() : i32 { flags[0] = true; flags[2] = true; let r: i32 = 0;
     if (flags[0]) { r = r + 1; } if (flags[2]) { r = r + 4; } if (flags[1]) { r = r + 8; } return r; }'
-check "$A" 'local bool[2] store false'  6 'fn main() -> i32 { let a: bool[2] = true; a[1] = false; if (!a[1]) { return 6; } return 0; }'
-check "$A" 'bool[4] under a while'      4 'fn main() -> i32 { let a: bool[4] = true; let n: i32 = 0; let i: i32 = 0;
+check "$A" 'local bool[2] store false'  6 'fn main() : i32 { let a: bool[2] = true; a[1] = false; if (!a[1]) { return 6; } return 0; }'
+check "$A" 'bool[4] under a while'      4 'fn main() : i32 { let a: bool[4] = true; let n: i32 = 0; let i: i32 = 0;
     while (i < 4) { if (a[i]) { n = n + 1; } i = i + 1; } return n; }'
-check "$A" 'bool element as an argument' 1 'fn take(b: bool) -> i32 { if (b) { return 1; } return 0; }
+check "$A" 'bool element as an argument' 1 'fn take(b: bool) : i32 { if (b) { return 1; } return 0; }
 let f: bool[2] = true;
-fn main() -> i32 { return take(f[1]); }'
+fn main() : i32 { return take(f[1]); }'
 
 # --- ptr: eight bytes per element, null or an address.
 check "$A" 'local ptr[3]'               4 'struct P { x: i32 }
 let cell: P = P { 42 };
-fn main() -> i32 { let s: ptr[3] = 0; s[1] = &cell; if (s[0] == 0 && s[1] == &cell) { return 4; } return 0; }'
+fn main() : i32 { let s: ptr[3] = 0; s[1] = &cell; if (s[0] == 0 && s[1] == &cell) { return 4; } return 0; }'
 check "$A" 'global ptr[2]'              5 'struct P { x: i32 }
 let cell: P = P { 7 };
 let s: ptr[2] = 0;
-fn main() -> i32 { s[0] = &cell; if (s[0] == &cell && s[1] == 0) { return 5; } return 0; }'
+fn main() : i32 { s[0] = &cell; if (s[0] == &cell && s[1] == 0) { return 5; } return 0; }'
 check "$A" 'ptr element into ptr<P>'    3 'struct P { x: i32 }
 let cell: P = P { 42 };
-fn main() -> i32 { let s: ptr[2] = 0; s[0] = &cell; let q: ptr<P> = s[0]; if (q == &cell) { return 3; } return 0; }'
+fn main() : i32 { let s: ptr[2] = 0; s[0] = &cell; let q: ptr<P> = s[0]; if (q == &cell) { return 3; } return 0; }'
 
 # --- struct: N copies of the initializer, addressed by a shift or a multiply.
 check "$A" 'global Point[3]'            8 'struct Point { x: i32, y: i32 }
 let pts: Point[3] = Point { 7, 8 };
-fn main() -> i32 { if (pts[2].x == 7 && pts[2].y == 8) { return 8; } return 0; }'
+fn main() : i32 { if (pts[2].x == 7 && pts[2].y == 8) { return 8; } return 0; }'
 check "$A" 'local Point[3] field write' 16 'struct Point { x: i32, y: i32 }
-fn main() -> i32 { let p: Point[3] = Point { 0, 0 }; p[2].x = 9; if (p[2].x == 9 && p[0].x == 0) { return 16; } return 0; }'
+fn main() : i32 { let p: Point[3] = Point { 0, 0 }; p[2].x = 9; if (p[2].x == 9 && p[0].x == 0) { return 16; } return 0; }'
 check "$A" 'Point field +='             6 'struct Point { x: i32, y: i32 }
-fn main() -> i32 { let p: Point[2] = Point { 1, 2 }; p[1].x += 5; return p[1].x; }'
+fn main() : i32 { let p: Point[2] = Point { 1, 2 }; p[1].x += 5; return p[1].x; }'
 check "$A" '12-byte element, both scopes' 32 'struct T { a: i32, b: i32, c: i32 }
 let tri: T[2] = T { 1, 2, 3 };
-fn main() -> i32 { let lt: T[3] = T { 1, 2, 3 }; if (tri[1].c == 3 && lt[2].b == 2) { return 32; } return 0; }'
+fn main() : i32 { let lt: T[3] = T { 1, 2, 3 }; if (tri[1].c == 3 && lt[2].b == 2) { return 32; } return 0; }'
 check "$A" '12-byte element, local only' 7 'struct T { a: i32, b: i32, c: i32 }
-fn main() -> i32 { let t: T[4] = T { 0, 0, 0 }; t[3].b = 7; return t[3].b; }'
+fn main() : i32 { let t: T[4] = T { 0, 0, 0 }; t[3].b = 7; return t[3].b; }'
 check "$A" 'struct with an i64 field'   2 'struct W { v: i64 }
 let ws: W[2] = W { 5 };
-fn main() -> i32 { let v: i64 = ws[1].v; if (v == 5) { return 2; } return 0; }'
+fn main() : i32 { let v: i64 = ws[1].v; if (v == 5) { return 2; } return 0; }'
 # A nested subscript in the field target: `p[i[0]].x`, which is why the
 # dispatch matches brackets by depth instead of counting one pair.
 check "$A" 'nested subscript + field'   4 'struct Point { x: i32, y: i32 }
-fn main() -> i32 { let p: Point[3] = Point { 0, 0 }; let i: i32[2] = 2; p[i[0]].x = 4; return p[2].x; }'
+fn main() : i32 { let p: Point[3] = Point { 0, 0 }; let i: i32[2] = 2; p[i[0]].x = 4; return p[2].x; }'
 
 # --- an element is an lvalue, so it can be read as a whole value: &a[i], a
 # whole-element copy, and a composite parameter.
 check "$A" '&a[i] and a[i] as a value'  64 'struct Point { x: i32, y: i32 }
-fn main() -> i32 { let p: Point[3] = Point { 0, 0 }; let q: ptr<Point> = &p[1]; let c: Point = p[1];
+fn main() : i32 { let p: Point[3] = Point { 0, 0 }; let q: ptr<Point> = &p[1]; let c: Point = p[1];
     if (q == &p[1] && c.y == 0) { return 64; } return 0; }'
 check "$A" 'an element as a parameter'  7 'struct P { x: i32, y: i32 }
-fn take(p: P) -> i32 { return p.x + p.y; }
-fn main() -> i32 { let a: P[2] = P { 3, 4 }; return take(a[1]); }'
+fn take(p: P) : i32 { return p.x + p.y; }
+fn main() : i32 { let a: P[2] = P { 3, 4 }; return take(a[1]); }'
 
 # --- widths that already worked, and must still work: the round is not allowed
 # to move them. i64 and ptr are 8 bytes, u16 2, u8 1.
-check "$A" 'i64[2] at 8 bytes/elem'     1 'fn main() -> i32 { let a: i64[2] = 5; let v: i64 = a[1]; if (v == 5) { return 1; } return 0; }'
-check "$A" 'u8[4] at 1 byte/elem'       1 'fn main() -> i32 { let a: u8[4] = 200; if (a[3] == 200) { return 1; } return 0; }'
-check "$A" 'u16[4] at 2 bytes/elem'     1 'fn main() -> i32 { let a: u16[4] = 65535; if (a[2] == 65535) { return 1; } return 0; }'
-check "$A" 'i32[4] unchanged'           10 'fn main() -> i32 { let a: i32[4] = 7; a[2] = 3; return a[0] + a[2]; }'
+check "$A" 'i64[2] at 8 bytes/elem'     1 'fn main() : i32 { let a: i64[2] = 5; let v: i64 = a[1]; if (v == 5) { return 1; } return 0; }'
+check "$A" 'u8[4] at 1 byte/elem'       1 'fn main() : i32 { let a: u8[4] = 200; if (a[3] == 200) { return 1; } return 0; }'
+check "$A" 'u16[4] at 2 bytes/elem'     1 'fn main() : i32 { let a: u16[4] = 65535; if (a[2] == 65535) { return 1; } return 0; }'
+check "$A" 'i32[4] unchanged'           10 'fn main() : i32 { let a: i32[4] = 7; a[2] = 3; return a[0] + a[2]; }'
 # A ptr *local* is not an array: it indexes at the one i32 stride it always has.
 check "$A" 'ptr local: i32 stride'      9 'let buf: i32[4] = 9;
-fn main() -> i32 { let p: ptr = buf; return p[1]; }'
-check "$A" 'bool scalar'                1 'fn main() -> i32 { let b: bool = true; if (b) { return 1; } return 0; }'
+fn main() : i32 { let p: ptr = buf; return p[1]; }'
+check "$A" 'bool scalar'                1 'fn main() : i32 { let b: bool = true; if (b) { return 1; } return 0; }'
 
 # ---------------------------------------------------------------------------
 # [4/9] Differential layer: the same program under Aster and under the target
@@ -291,7 +291,7 @@ else
     # initializer syntax.
     diff_case 'bool arrays, both scopes' \
         'let flags: bool[4] = true;
-fn main() -> i32 {
+fn main() : i32 {
     let seen: bool[3] = false;
     let r: i32 = 0;
     if (flags[2]) { r = r + 1; }
@@ -315,7 +315,7 @@ int main(void) {
         'struct P { x: i32 }
 let cell: P = P { 42 };
 let gs: ptr[2] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let s: ptr[3] = 0;
     let r: i32 = 0;
     s[1] = &cell;
@@ -340,7 +340,7 @@ int main(void) {
 struct T { a: i32, b: i32, c: i32 }
 let pts: Point[3] = Point { 7, 8 };
 let tri: T[2] = T { 1, 2, 3 };
-fn main() -> i32 {
+fn main() : i32 {
     let lp: Point[3] = Point { 0, 0 };
     let lt: T[3] = T { 1, 2, 3 };
     let r: i32 = 0;
@@ -364,7 +364,7 @@ int main(void) {
     if (tri[1].c == 3 && lt[2].b == 2) r += 4;
     return r; }'
     diff_case 'element widths: 1, 2, 8' \
-        'fn main() -> i32 {
+        'fn main() : i32 {
     let a: u8[4] = 200;
     let b: u16[4] = 65535;
     let c: i64[2] = 5;
@@ -389,7 +389,7 @@ int main(void) {
     return r; }'
     diff_case '&a[i] and a whole-element copy' \
         'struct Point { x: i32, y: i32 }
-fn main() -> i32 {
+fn main() : i32 {
     let p: Point[3] = Point { 0, 0 };
     let q: ptr<Point> = &p[1];
     let c: Point = p[1];
@@ -427,45 +427,45 @@ reject() {
 }
 # A bool element takes 0 or 1 — the check a bool scalar has always applied.
 reject 'local bool[2] = 2'          'local array initializer does not fit in bool' \
-    'fn main() -> i32 { let a: bool[2] = 2; return 0; }'
+    'fn main() : i32 { let a: bool[2] = 2; return 0; }'
 reject 'local bool[2] = 1 + 1'      'local array initializer does not fit in bool' \
-    'fn main() -> i32 { let a: bool[2] = 1 + 1; return 0; }'
+    'fn main() : i32 { let a: bool[2] = 1 + 1; return 0; }'
 reject 'local bool[2] = 0 - 1'      'local array initializer does not fit in bool' \
-    'fn main() -> i32 { let a: bool[2] = 0 - 1; return 0; }'
+    'fn main() : i32 { let a: bool[2] = 0 - 1; return 0; }'
 # An integer element does not take a bool, and does not take an address.
 reject 'local i32[2] = true'        'array initializer type mismatch: expected i32, got bool' \
-    'fn main() -> i32 { let a: i32[2] = true; return 0; }'
+    'fn main() : i32 { let a: i32[2] = true; return 0; }'
 reject 'local i32[2] = &g'          'array initializer type mismatch: expected i32, got ptr' \
     'struct P { x: i32 }
 let g: P = P { 1 };
-fn main() -> i32 { let a: i32[2] = &g; return 0; }'
+fn main() : i32 { let a: i32[2] = &g; return 0; }'
 reject 'local i32[2] = a ptr var'   'array initializer type mismatch: expected i32, got ptr' \
-    'fn main() -> i32 { let p: ptr = 0; let a: i32[2] = p; return 0; }'
+    'fn main() : i32 { let p: ptr = 0; let a: i32[2] = p; return 0; }'
 # A ptr element takes the null constant or an address, and nothing else.
 reject 'local ptr[2] = 7'           'array initializer type mismatch: expected ptr, got i32' \
-    'fn main() -> i32 { let a: ptr[2] = 7; return 0; }'
+    'fn main() : i32 { let a: ptr[2] = 7; return 0; }'
 reject 'local ptr[2] = true'        'array initializer type mismatch: expected ptr, got bool' \
-    'fn main() -> i32 { let a: ptr[2] = true; return 0; }'
+    'fn main() : i32 { let a: ptr[2] = true; return 0; }'
 # The same rules on the store side, where the element type decides the width.
 reject 'boolarr[0] = 2'             'type mismatch assigning array element of '"'"'f'"'"' (expected bool)' \
     'let f: bool[2] = true;
-fn main() -> i32 { f[0] = 2; return 0; }'
+fn main() : i32 { f[0] = 2; return 0; }'
 reject 'ptrarr[0] = 7'              'type mismatch assigning array element of '"'"'s'"'"': expected ptr, got i32' \
-    'fn main() -> i32 { let s: ptr[2] = 0; s[0] = 7; return 0; }'
+    'fn main() : i32 { let s: ptr[2] = 0; s[0] = 7; return 0; }'
 reject 'i32arr[0] = true'           'type mismatch assigning array element of '"'"'a'"'"': expected i32, got bool' \
-    'fn main() -> i32 { let a: i32[2] = 0; a[0] = true; return 0; }'
+    'fn main() : i32 { let a: i32[2] = 0; a[0] = true; return 0; }'
 # v0.23.58-dev generalized `&` to every lvalue, so taking the address of an
 # array element (integer or pointer) is now accepted and yields ptr<T> /
 # ptr<ptr>. It is exercised further by tests/address-of-checks.sh.
 check "$A" '& of an i32 element' 7 \
-    'fn main() -> i32 { let a: i32[2] = 0; let p: ptr<i32> = &a[0]; *p = 7; return a[0]; }'
+    'fn main() : i32 { let a: i32[2] = 0; let p: ptr<i32> = &a[0]; *p = 7; return a[0]; }'
 check "$A" '& of a ptr element' 0 \
-    'fn main() -> i32 { let s: ptr[2] = 0; let q: ptr<ptr> = &s[0]; return 0; }'
+    'fn main() : i32 { let s: ptr[2] = 0; let q: ptr<ptr> = &s[0]; return 0; }'
 # A struct has no register form, so a whole element is not a value.
 reject 'a struct element as a value' 'return type mismatch in function main: expected i32, got P' \
     'struct P { x: i32 }
 let p: P[2] = P { 1 };
-fn main() -> i32 { return p[0]; }'
+fn main() : i32 { return p[0]; }'
 # A field was still not an array when this round shipped: the round was about
 # T[N], not about S.f[N]. v0.23.29-dev opened the field case, and v0.23.31-dev
 # opened the nested one — a field may hold a multi-dimensional array exactly
@@ -475,54 +475,54 @@ fn main() -> i32 { return p[0]; }'
 # that round carry the behavioural coverage. What stays pinned here is that
 # the shape compiles at all — no qemu needed, like every row in this section.
 printf '%s\n' 'struct P { x: i32[2][2] }
-fn main() -> i32 { return 0; }' > "$OUT/r.ast"
+fn main() : i32 { return 0; }' > "$OUT/r.ast"
 if ! "$A" build-elf "$OUT/r.ast" -o "$OUT/r.a64" >"$OUT/r.err" 2>&1; then
     echo "FAIL: nested array field was refused: $(sed -n '1p' "$OUT/r.err")" >&2; exit 1
 fi
 printf '  %-34s accepted\n' 'nested array field'
 reject 'array field of zero length' 'array field length must be between 1 and 1000' \
     'struct P { x: i32[0] }
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 # Lengths: the two limits the three parsers share.
 reject 'local bool[0]'              'local array length must be between 1 and 1000' \
-    'fn main() -> i32 { let a: bool[0] = true; return 0; }'
+    'fn main() : i32 { let a: bool[0] = true; return 0; }'
 reject 'local bool[1001]'           'local array length must be between 1 and 1000' \
-    'fn main() -> i32 { let a: bool[1001] = true; return 0; }'
+    'fn main() : i32 { let a: bool[1001] = true; return 0; }'
 reject 'global bool[0]'             'array length must be between 1 and 1048576' \
     'let f: bool[0] = true;
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 reject 'global Point[0]'            'array length must be between 1 and 1048576' \
     'struct P { x: i32 }
 let p: P[0] = P { 1 };
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 # Bounds, on each of the three new element types: the check is a property of
 # the array, not of what is in it.
 reject 'bool[2] index 5'            'array index out of bounds for '"'"'f'"'"': index 5, length 2' \
     'let f: bool[2] = true;
-fn main() -> i32 { return f[5]; }'
+fn main() : i32 { return f[5]; }'
 reject 'Point[2] index 3'           'array index out of bounds for '"'"'p'"'"': index 3, length 2' \
     'struct P { x: i32 }
 let p: P[2] = P { 1 };
-fn main() -> i32 { return p[3].x; }'
+fn main() : i32 { return p[3].x; }'
 reject 'ptr[2] index 9'             'array index out of bounds for '"'"'s'"'"': index 9, length 2' \
-    'fn main() -> i32 { let s: ptr[2] = 0; let q: ptr = s[9]; return 0; }'
+    'fn main() : i32 { let s: ptr[2] = 0; let q: ptr = s[9]; return 0; }'
 # Indexing something that is not an array is still a mistake — including a
 # struct scalar, which is now the only struct declaration without a `[`.
 reject 'index an i32 scalar'        'cannot index non-array variable: x' \
-    'fn main() -> i32 { let x: i32 = 5; return x[0]; }'
+    'fn main() : i32 { let x: i32 = 5; return x[0]; }'
 reject 'index a struct scalar'      'cannot index non-array variable: s' \
     'struct P { x: i32 }
-fn main() -> i32 { let s: P = P { 1 }; return s[0].x; }'
+fn main() : i32 { let s: P = P { 1 }; return s[0].x; }'
 # A bool array still needs a constant to fill with.
 reject 'bool[2] = a call'           'array initializer must be a constant expression' \
-    'fn f() -> bool { return true; }
-fn main() -> i32 { let a: bool[2] = f(); return 0; }'
+    'fn f() : bool { return true; }
+fn main() : i32 { let a: bool[2] = f(); return 0; }'
 # The element type is not the type of a scalar of the same name.
 reject 'u8 element into a bool'     "type mismatch initializing 'b': expected bool" \
-    'fn main() -> i32 { let a: u8[2] = 1; let b: bool = a[0]; return 0; }'
+    'fn main() : i32 { let a: u8[2] = 1; let b: bool = a[0]; return 0; }'
 reject 'bool element into an i32'   "type mismatch initializing 'n': expected i32, got bool" \
     'let f: bool[2] = true;
-fn main() -> i32 { let n: i32 = f[0]; return n; }'
+fn main() : i32 { let n: i32 = f[0]; return n; }'
 
 # ---------------------------------------------------------------------------
 # [6/9] Coverage map. Every accepted row above has to name the rule it
@@ -627,7 +627,7 @@ else
 mutate 'm1: every scale folds as an i32 shift' \
     's/const bool pow2=(scale&(scale-1))==0;/scale=4;const bool pow2=(scale\&(scale-1))==0;/' \
     must_differ '12-byte element' 0 'struct T { a: i32, b: i32, c: i32 }
-fn main() -> i32 { let t: T[3] = T { 0, 0, 0 }; t[2].a = 5; return t[0].c; }'
+fn main() : i32 { let t: T[3] = T { 0, 0, 0 }; t[2].a = 5; return t[0].c; }'
 # m2: the same, from the other end — a non-power-of-two scaled by 1. The
 # witness has to be an index whose wrong address lands on a field's *first*
 # byte, so index 4: at 12 bytes per element it is element 4, and at 1 byte per
@@ -639,7 +639,7 @@ fn main() -> i32 { let t: T[3] = T { 0, 0, 0 }; t[2].a = 5; return t[0].c; }'
 mutate 'm2: a 12-byte element scaled by 1' \
     's/const bool pow2=(scale&(scale-1))==0;/scale=1;const bool pow2=(scale\&(scale-1))==0;/' \
     must_differ '12-byte element' 0 'struct T { a: i32, b: i32, c: i32 }
-fn main() -> i32 { let t: T[6] = T { 0, 0, 0 }; t[4].a = 5; return t[0].b; }'
+fn main() : i32 { let t: T[6] = T { 0, 0, 0 }; t[4].a = 5; return t[0].b; }'
 # m3 and m4: the element's own size, dropped in one scope at a time. Both
 # EmitElemAddr arms must read elem; each mutant breaks exactly one, and the
 # frame arm and the global arm have their own witness. (Two sed programs in
@@ -648,12 +648,12 @@ fn main() -> i32 { let t: T[6] = T { 0, 0, 0 }; t[4].a = 5; return t[0].b; }'
 mutate 'm3: local elements scaled as i32' \
     '0,/emitElemIndex(r,elem);/s/emitElemIndex(r,elem);/emitElemIndex(r,Ty::I32);/' \
     must_differ 'local 12-byte element' 0 'struct T { a: i32, b: i32, c: i32 }
-fn main() -> i32 { let t: T[3] = T { 0, 0, 0 }; t[2].a = 5; return t[0].c; }'
+fn main() : i32 { let t: T[3] = T { 0, 0, 0 }; t[2].a = 5; return t[0].c; }'
 mutate 'm4: global elements scaled as i32' \
     '0,/emitElemIndex(r,elem);/s/emitElemIndex(r,elem);/ZZMUTZZ;/;0,/emitElemIndex(r,elem);/s/emitElemIndex(r,elem);/emitElemIndex(r,Ty::I32);/;0,/ZZMUTZZ/s/ZZMUTZZ/emitElemIndex(r,elem);/' \
     must_differ 'global 12-byte element' 0 'struct T { a: i32, b: i32, c: i32 }
 let g: T[3] = T { 0, 0, 0 };
-fn main() -> i32 { g[2].a = 5; return g[0].c; }'
+fn main() : i32 { g[2].a = 5; return g[0].c; }'
 
 # -- hole (3): the element type ----------------------------------------------
 # m5: typeOf(Index) is i32 again, for every element. A Point initialized from
@@ -667,32 +667,32 @@ fn main() -> i32 { g[2].a = 5; return g[0].c; }'
 mutate 'm5: typeOf(Index) is i32 again' \
     '0,/return ch.level+1<ch.dims->size()?Ty::Ptr:ch.elem;/s//ZZMUTZZ;/;0,/return ch.level+1<ch.dims->size()?Ty::Ptr:ch.elem;/s//return Ty::I32;/;0,/ZZMUTZZ/s//return ch.level+1<ch.dims->size()?Ty::Ptr:ch.elem;/' \
     must_not_compile 'a Point from a Point element' 'struct Point { x: i32, y: i32 }
-fn main() -> i32 { let p: Point[2] = Point { 0, 0 }; let c: Point = p[1]; return c.y; }'
+fn main() : i32 { let p: Point[2] = Point { 0, 0 }; let c: Point = p[1]; return c.y; }'
 # m6: an element is not an lvalue again. isLValue is what `&` asks, so the
 # witness is &a[i] — refused in sema, one layer above m7's codegen twin.
 mutate 'm6: an element is not an lvalue' \
     's/return e.k==Expr::Var||e.k==Expr::Index||e.k==Expr::Field||e.k==Expr::Deref;/return e.k==Expr::Var||e.k==Expr::Field||e.k==Expr::Deref;/' \
     must_not_compile '&a[i]' 'struct Point { x: i32, y: i32 }
-fn main() -> i32 { let p: Point[2] = Point { 0, 0 }; let q: ptr<Point> = &p[1]; return 0; }'
+fn main() : i32 { let p: Point[2] = Point { 0, 0 }; let q: ptr<Point> = &p[1]; return 0; }'
 # m7: emitStructAddr no longer reaches an element, so &a[i] has no address.
 # v0.23.58-dev routes every &a[i] (any element width) through emitElemAddr; the
 # mutant drops that emit so the address is never produced and &p[1] is refused.
 mutate 'm7: emitStructAddr skips elements' \
     '/emitElemAddr(e.name,\*e.a);/{N;s/emitElemAddr(e.name,\*e.a);\n            return;/            throw Error("emitStructAddr skips an element");\n            return;/}' \
     must_not_compile '&a[i]' 'struct Point { x: i32, y: i32 }
-fn main() -> i32 { let p: Point[2] = Point { 0, 0 }; let q: ptr<Point> = &p[1]; return 0; }'
+fn main() : i32 { let p: Point[2] = Point { 0, 0 }; let q: ptr<Point> = &p[1]; return 0; }'
 # m8: the condition walker no longer admits an element, so a bool array cannot
 # be used as the condition it is made of.
 mutate 'm8: a bool element is not a condition' \
     's/if(e.k==Expr::Field||e.k==Expr::Cond||e.k==Expr::Index){/if(e.k==Expr::Field||e.k==Expr::Cond){/' \
     must_not_compile 'if (flags[2])' 'let f: bool[2] = true;
-fn main() -> i32 { if (f[1]) { return 1; } return 0; }'
+fn main() : i32 { if (f[1]) { return 1; } return 0; }'
 # m9: the a[i].f dispatch is gone — the statement reads as an index assignment
 # whose left side is not a name.
 mutate 'm9: no a[i].f dispatch' \
     's/if(indexedThenField())return fieldAssignStatement();/if(false)return fieldAssignStatement();/' \
     must_not_compile 'a[i].f = v' 'struct Point { x: i32, y: i32 }
-fn main() -> i32 { let p: Point[2] = Point { 0, 0 }; p[1].x = 9; return p[1].x; }'
+fn main() : i32 { let p: Point[2] = Point { 0, 0 }; p[1].x = 9; return p[1].x; }'
 
 # -- hole (1): the local declaration ------------------------------------------
 # m10: the element-type gate is back on a local array. v0.23.31-dev moved the
@@ -700,7 +700,7 @@ fn main() -> i32 { let p: Point[2] = Point { 0, 0 }; p[1].x = 9; return p[1].x; 
 # line, which is where it used to go too.
 mutate 'm10: local arrays, integers only' \
     's/if(!s.dims.empty()){s.isArray=true;/if(!tyIsInteger(ty))throw Error("arrays of this element type are not supported");if(!s.dims.empty()){s.isArray=true;/' \
-    must_not_compile 'let a: bool[2] = true;' 'fn main() -> i32 { let a: bool[2] = true; return 0; }'
+    must_not_compile 'let a: bool[2] = true;' 'fn main() : i32 { let a: bool[2] = true; return 0; }'
 
 # -- hole (2): the global declarations ----------------------------------------
 # m11: the Bool branch stops counting — `bool[2]` declares one element, so the
@@ -712,31 +712,31 @@ mutate 'm10: local arrays, integers only' \
 mutate 'm11: a bool global is never an array' \
     '/`let flags : bool \[ 4 \] = true;`/,/g.isArray=true;g.count=dimsTotal/s/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/' \
     must_not_compile 'global bool[2]' 'let f: bool[2] = true;
-fn main() -> i32 { if (f[1]) { return 1; } return 0; }'
+fn main() : i32 { if (f[1]) { return 1; } return 0; }'
 # m12: the same for the Struct branch — addressed by its marker too, for the
 # same reason as m11 (it used to be "the second of the three identical lines").
 mutate 'm12: a struct global is never an array' \
     '/`let pts : Point \[ 4 \] = Point { 0, 0 };`/,/g.isArray=true;g.count=dimsTotal/s/g.isArray=true;g.count=dimsTotal(g.dims,1048576,"array length",g.name,id.line,id.col);/g.isArray=false;g.count=1;/' \
     must_not_compile 'global Point[2]' 'struct Point { x: i32, y: i32 }
 let p: Point[2] = Point { 1, 2 };
-fn main() -> i32 { return p[1].x; }'
+fn main() : i32 { return p[1].x; }'
 
 # -- the element's own rules --------------------------------------------------
 # m13: a bool element loses its literal reader, so `true` is no longer a
 # constant it can be filled with.
 mutate 'm13: a bool[2] = true is refused' \
     's/if(!boolArrayValue(\*s.expr,v))/if(!constantInteger(\*s.expr,v))/' \
-    must_not_compile 'let a: bool[2] = true;' 'fn main() -> i32 { let a: bool[2] = true; return 0; }'
+    must_not_compile 'let a: bool[2] = true;' 'fn main() : i32 { let a: bool[2] = true; return 0; }'
 # m14: a bool element stops being range-checked, so 2 is accepted again — in
 # both arms of initializerFits (a literal, and a folded expression).
 mutate 'm14: bool fits anything' \
     's/if(t==Ty::Bool)return (uint64_t)e.n<=1u;/if(t==Ty::Bool)return true;/;s/case Ty::Bool: return folded==0||folded==1;/case Ty::Bool: return true;/' \
-    must_now_compile 'let a: bool[2] = 2;' 'fn main() -> i32 { let a: bool[2] = 2; return 0; }'
+    must_now_compile 'let a: bool[2] = 2;' 'fn main() : i32 { let a: bool[2] = 2; return 0; }'
 # m15: a ptr element takes any initializer, so an integer fills an array of
 # addresses.
 mutate 'm15: ptr[2] takes an integer' \
     's/if(actual.k!=Ty::Ptr\&\&!isNullConstant(\*s.expr))/if(false)/' \
-    must_now_compile 'let a: ptr[2] = 7;' 'fn main() -> i32 { let a: ptr[2] = 7; return 0; }'
+    must_now_compile 'let a: ptr[2] = 7;' 'fn main() : i32 { let a: ptr[2] = 7; return 0; }'
 printf '%s\n' 'PASS: fifteen mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

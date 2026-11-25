@@ -325,7 +325,7 @@ the tree expression. An `event` block is a top-level block whose header uses
 a **name**, not a numeric key. Layout and event blocks close with braces;
 an `if` inside a layout body still uses braces in English files. Ordinary
 methods write the return type after a colon (`fn f(): i32`); the English
-`layout` declaration keeps the draft form `-> View`:
+`layout` declaration does the same (`layout …: View`):
 
 ```aster
 event Inc:tap() {
@@ -334,7 +334,7 @@ event Inc:tap() {
     aui_invalidate();
 }
 
-layout page_counter(s: ptr<App>, user: ptr) -> View {
+layout page_counter(s: ptr<App>, user: ptr) : View {
     Column MainCol, Padding(20), Gap(16) {
         Label Title, ptr("Counter")
         Row ButtonRow, Gap(12) {

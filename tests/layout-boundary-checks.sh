@@ -120,26 +120,26 @@ gen_tls() {  # gen_tls <count> <last-expr>
         printf 'tls let g%d: i64[1048576] = 0;\n' "$i" >> "$OUT/gen.ast"
         i=$((i + 1))
     done
-    printf 'fn main() -> i32 { g%d[0] = 1; return i32(%s); }\n' "$((n - 1))" "$body" >> "$OUT/gen.ast"
+    printf 'fn main() : i32 { g%d[0] = 1; return i32(%s); }\n' "$((n - 1))" "$body" >> "$OUT/gen.ast"
 }
 if [ "$have_qemu" = yes ]; then
 # --- struct layout: unchanged for everything that fits ---
 check "$A" 'sizeof(i64[128]) is 1024'       4 'struct A { a: i64[128] }
-fn main() -> i32 { return sizeof(A) / 256; }'
+fn main() : i32 { return sizeof(A) / 256; }'
 check "$A" 'sizeof(1016 + 1) rounds to 1024' 4 'struct B { a: i64[127], b: u8 }
-fn main() -> i32 { return sizeof(B) / 256; }'
+fn main() : i32 { return sizeof(B) / 256; }'
 check "$A" 'mixed alignment: u8,i64,u16'   24 'struct M { a: u8, b: i64, c: u16 }
-fn main() -> i32 { let s: M; s.b = 5; return s.b + 19; }'
+fn main() : i32 { let s: M; s.b = 5; return s.b + 19; }'
 check "$A" 'nested struct array field'      9 'struct In { x: i32, y: i32 }
 struct Out { a: In[2] }
-fn main() -> i32 { let s: Out; s.a[1].y = 9; return s.a[1].y; }'
+fn main() : i32 { let s: Out; s.a[1].y = 9; return s.a[1].y; }'
 # --- thread-locals: distinct at every offset the pair can carry ---
 check "$A" 'two thread-locals do not alias' 1 'tls let t_a: i64 = 0;
 tls let t_b: i64 = 0;
-fn main() -> i32 { t_b = 1; return i32(t_b); }'
+fn main() : i32 { t_b = 1; return i32(t_b); }'
 check "$A" 'the other one is still zero'    0 'tls let t_a: i64 = 0;
 tls let t_b: i64 = 0;
-fn main() -> i32 { t_b = 1; return i32(t_a); }'
+fn main() : i32 { t_b = 1; return i32(t_a); }'
 # The last offset the 32-bit pair can carry: 511 x 8 MiB = 0xFF800000. One
 # more stride and it is 2^32, which is exactly where the next layer refuses.
 gen_tls 512 'g0[0]'
@@ -184,20 +184,20 @@ if [ "$have_qemu" = yes ] && [ "$have_cc" = yes ] && [ -f tests/layout-boundary-
             printf '  %-44s %s\n' "$dname" "$got"
         }
         diffcase 'L1.size_over_256' 'struct A { a: i64[128] }
-fn main() -> i32 { return sizeof(A) / 256; }'
+fn main() : i32 { return sizeof(A) / 256; }'
         diffcase 'L2.size_over_256' 'struct B { a: i64[127], b: u8 }
-fn main() -> i32 { return sizeof(B) / 256; }'
+fn main() : i32 { return sizeof(B) / 256; }'
         diffcase 'L3.size' 'struct M { a: u8, b: i64, c: u16 }
-fn main() -> i32 { return sizeof(M); }'
+fn main() : i32 { return sizeof(M); }'
         diffcase 'L4.size' 'struct In { x: i32, y: i32 }
 struct Out { a: In[2] }
-fn main() -> i32 { return sizeof(Out); }'
+fn main() : i32 { return sizeof(Out); }'
         diffcase 'L5.t_a_after_t_b' 'tls let t_a: i64 = 0;
 tls let t_b: i64 = 0;
-fn main() -> i32 { t_b = 1; return i32(t_a); }'
+fn main() : i32 { t_b = 1; return i32(t_a); }'
         diffcase 'L6.t_b' 'tls let t_a: i64 = 0;
 tls let t_b: i64 = 0;
-fn main() -> i32 { t_b = 1; return i32(t_b); }'
+fn main() : i32 { t_b = 1; return i32(t_b); }'
         printf '%s\n' 'PASS: 6 differential cases agree with C'
     else
         printf '  SKIP: the C twin does not build with %s\n' "$HOSTCC"
@@ -233,10 +233,10 @@ import sys
 out=sys.argv[1]
 n=8192
 f="struct Big { " + ", ".join("f%d: L1[512]"%i for i in range(n)) + " }"
-open(out+"/wrap.ast","w").write("struct L1 { pad: i64[128] }\n"+f+"\nfn main() -> i32 { let s: Big; return 0; }\n")
+open(out+"/wrap.ast","w").write("struct L1 { pad: i64[128] }\n"+f+"\nfn main() : i32 { let s: Big; return 0; }\n")
 n=4195
 f="struct Big { " + ", ".join("f%d: L1[1000]"%i for i in range(n)) + " }"
-open(out+"/wrap712.ast","w").write("struct L1 { pad: i64[128] }\n"+f+"\nfn main() -> i32 { let s: Big; return 0; }\n")
+open(out+"/wrap712.ast","w").write("struct L1 { pad: i64[128] }\n"+f+"\nfn main() : i32 { let s: Big; return 0; }\n")
 PY
 must_refuse '8192 fields reaching exactly 2^32' 'is too large' "$OUT/wrap.ast"
 must_refuse '4195 fields wrapping to 712704'    'is too large' "$OUT/wrap712.ast"
@@ -244,13 +244,13 @@ must_refuse '4195 fields wrapping to 712704'    'is too large' "$OUT/wrap712.ast
 #     the field that crossed it. The first of these is also mutant m3's probe,
 #     so it lives in a file rather than inline. ---
 printf '%s\n' 'struct S { a: i64[129] }
-fn main() -> i32 { let s: S; return 0; }' > "$OUT/over.ast"
+fn main() : i32 { let s: S; return 0; }' > "$OUT/over.ast"
 must_refuse 'one field past 1024' 'is too large: field ' "$OUT/over.ast"
 refuse_ast 'two fields summing past 1024' "field 'b'" 'struct S { a: i64[100], b: i64[100] }
-fn main() -> i32 { let s: S; return 0; }'
+fn main() : i32 { let s: S; return 0; }'
 refuse_ast 'a nested struct array past 1024' 'is too large: field ' 'struct In { x: i32, y: i32 }
 struct S { a: In[200] }
-fn main() -> i32 { let s: S; return 0; }'
+fn main() : i32 { let s: S; return 0; }'
 # --- the thread-local pair: one stride past 2^32 ---
 gen_tls 513 'g0[0]'
 must_refuse '513 x 8 MiB: offset 2^32' 'does not fit the 32-bit MOVZ/MOVK pair' "$OUT/gen.ast"
@@ -370,8 +370,8 @@ cat > "$OUT/shape.ast" <<'EOF'
 struct In { x: i32, y: i32 }
 struct Out { a: In[2] }
 tls let t: i64 = 0;
-fn place(s: Out) -> i32 { return s.a[1].y; }
-fn main() -> i32 {
+fn place(s: Out) : i32 { return s.a[1].y; }
+fn main() : i32 {
     let s: Out;
     s.a[1].y = 40;
     t = t + 2;

@@ -22,7 +22,7 @@ let g: i32 = 42;                 // global scalar
 
 struct S { a: i32, b: i64 }
 
-fn main() -> i32 {
+fn main() : i32 {
     // 1. scalar local: &x is ptr<i32>
     let x: i32 = 7;
     let px: ptr<i32> = &x;

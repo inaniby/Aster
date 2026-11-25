@@ -3,7 +3,7 @@
 // because a signed 64-bit value represents every u32, so every comparison
 // below is signed and a/b uses SDIV. Before this version the same program
 // returned 0: `a < b` was emitted as LO and `a / b` as UDIV.
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = 0;
     let a: i64 = -84;
     let b: u32 = 5;

@@ -15,7 +15,7 @@ struct Row { cells: i32[4] }
 let gscores: i32[4] = 11;                 // a global array, also passed by reference
 
 // Reads four i32 elements through the reference.
-fn sum4(p: ptr) -> i32 {
+fn sum4(p: ptr) : i32 {
     let t: i32 = 0;
     let i: i32 = 0;
     while (i < 4) {
@@ -26,7 +26,7 @@ fn sum4(p: ptr) -> i32 {
 }
 
 // Writes through it — the caller has to see the change, not a copy of it.
-fn fill(p: ptr, v: i32) -> i32 {
+fn fill(p: ptr, v: i32) : i32 {
     let i: i32 = 0;
     while (i < 4) {
         p[i] = v;
@@ -36,7 +36,7 @@ fn fill(p: ptr, v: i32) -> i32 {
 }
 
 // A `bool[3]` stores a 4-byte 0/1 slot an element, so it travels as a ptr too.
-fn countFlags(p: ptr) -> i32 {
+fn countFlags(p: ptr) : i32 {
     let n: i32 = 0;
     if (p[0] != 0) { n = n + 1; }
     if (p[1] != 0) { n = n + 1; }
@@ -46,12 +46,12 @@ fn countFlags(p: ptr) -> i32 {
 
 // `&pr.cells` — the address of a struct's array field, reached through a
 // `ptr<Row>`: the field's own base plus its offset, then the ptr as a value.
-fn rowSum(pr: ptr<Row>) -> i32 {
+fn rowSum(pr: ptr<Row>) : i32 {
     let p: ptr = &pr.cells;
     return sum4(p);
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let buf: i32[4] = 7;                  // four sevens
     let flags: bool[3] = true;
     let row: Row;                         // a struct with an array field: declared, then written

@@ -52,8 +52,8 @@ printf '%s\n' 'PASS: local-array allocation, initialization and both index paths
 
 printf '%s\n' '[3/8] Rejection: non-constant local array initializer'
 cat > "$OUT/nonconst.ast" <<'AST'
-fn get() -> i32 { return 3; }
-fn main() -> i32 { let a: i32[4] = get(); return a[0]; }
+fn get() : i32 { return 3; }
+fn main() : i32 { let a: i32[4] = get(); return a[0]; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/nonconst.ast" -o "$OUT/nonconst" 2>&1); then
     echo 'FAIL: compiler accepted a non-constant local array initializer' >&2
@@ -65,7 +65,7 @@ printf '%s\n' 'PASS: let a: i32[4] = get() rejected (frame init must be compile-
 
 printf '%s\n' '[4/8] Rejection: constant out-of-bounds indexes on a LOCAL array'
 cat > "$OUT/oob-read.ast" <<'AST'
-fn main() -> i32 { let a: i32[4] = 0; return a[4]; }
+fn main() : i32 { let a: i32[4] = 0; return a[4]; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/oob-read.ast" -o "$OUT/oob-read" 2>&1); then
     echo 'FAIL: compiler accepted an out-of-bounds read a[4] on local i32[4]' >&2
@@ -75,7 +75,7 @@ printf '%s\n' "$out" | grep -qF "array index out of bounds for 'a': index 4, len
     || { echo "FAIL: wrong diagnostic for out-of-bounds local read: $out" >&2; exit 1; }
 test ! -e "$OUT/oob-read" || { echo 'FAIL: compiler emitted an image for rejected input' >&2; exit 1; }
 cat > "$OUT/oob-write.ast" <<'AST'
-fn main() -> i32 { let a: i32[4] = 0; a[-1] = 7; return 0; }
+fn main() : i32 { let a: i32[4] = 0; a[-1] = 7; return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/oob-write.ast" -o "$OUT/oob-write" 2>&1); then
     echo 'FAIL: compiler accepted an out-of-bounds write a[-1] on local i32[4]' >&2
@@ -87,7 +87,7 @@ printf '%s\n' 'PASS: a[4] read and a[-1] write on local i32[4] rejected with nam
 
 printf '%s\n' '[5/8] Rejection: misuse matrix (whole assign, scalar index, bool element, zero length, shadowed bounds, return array)'
 cat > "$OUT/whole.ast" <<'AST'
-fn main() -> i32 { let a: i32[4] = 0; a = 1; return 0; }
+fn main() : i32 { let a: i32[4] = 0; a = 1; return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/whole.ast" -o "$OUT/whole" 2>&1); then
     echo 'FAIL: compiler accepted a whole-array assignment' >&2; exit 1
@@ -96,7 +96,7 @@ printf '%s\n' "$out" | grep -qF "cannot assign to an array as a whole: a" \
     || { echo "FAIL: wrong diagnostic for whole-array assignment: $out" >&2; exit 1; }
 
 cat > "$OUT/scalar.ast" <<'AST'
-fn main() -> i32 { let x: i32 = 0; return x[0]; }
+fn main() : i32 { let x: i32 = 0; return x[0]; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/scalar.ast" -o "$OUT/scalar" 2>&1); then
     echo 'FAIL: compiler accepted indexing a scalar local' >&2; exit 1
@@ -110,7 +110,7 @@ printf '%s\n' "$out" | grep -qF "cannot index non-array variable: x" \
 # interesting local-array misuse: an element keeps the array's element TYPE, so
 # a bool literal cannot be stored in an i32 array.
 cat > "$OUT/ptarr.ast" <<'AST'
-fn main() -> i32 { let a: i32[2] = 0; a[0] = true; return a[0]; }
+fn main() : i32 { let a: i32[2] = 0; a[0] = true; return a[0]; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/ptarr.ast" -o "$OUT/ptarr" 2>&1); then
     echo 'FAIL: compiler accepted a bool literal into an i32 local array element' >&2; exit 1
@@ -119,7 +119,7 @@ printf '%s\n' "$out" | grep -qF "type mismatch assigning array element of 'a': e
     || { echo "FAIL: wrong diagnostic for a bool element write: $out" >&2; exit 1; }
 
 cat > "$OUT/zero.ast" <<'AST'
-fn main() -> i32 { let a: i32[0] = 0; return 0; }
+fn main() : i32 { let a: i32[0] = 0; return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/zero.ast" -o "$OUT/zero" 2>&1); then
     echo 'FAIL: compiler accepted a zero-length local array' >&2; exit 1
@@ -131,7 +131,7 @@ printf '%s\n' "$out" | grep -qF "local array length must be between 1 and 1000: 
 # the LOCAL length (2), not the global one (8).
 cat > "$OUT/shadow.ast" <<'AST'
 let g: i32[8] = 0;
-fn main() -> i32 { let g: i32[2] = 0; return g[5]; }
+fn main() : i32 { let g: i32[2] = 0; return g[5]; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/shadow.ast" -o "$OUT/shadow" 2>&1); then
     echo 'FAIL: compiler accepted g[5] against a shadowing local i32[2]' >&2; exit 1
@@ -143,8 +143,8 @@ printf '%s\n' "$out" | grep -qF "array index out of bounds for 'g': index 5, len
 # hand the caller a dangling pointer, so it is a compile error (returning an
 # ELEMENT stays legal).
 cat > "$OUT/ret-array.ast" <<'AST'
-fn f() -> ptr { let a: i32[2] = 0; return a; }
-fn main() -> i32 { return 0; }
+fn f() : ptr { let a: i32[2] = 0; return a; }
+fn main() : i32 { return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/ret-array.ast" -o "$OUT/ret-array" 2>&1); then
     echo 'FAIL: compiler accepted returning a local array' >&2; exit 1
@@ -155,7 +155,7 @@ printf '%s\n' 'PASS: whole-assign / scalar-index / bool-element / zero-length / 
 
 printf '%s\n' '[6/8] Acceptance: dynamic index loop over a local array (qemu self-check)'
 cat > "$OUT/loop.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32[4] = 0;
     a[0] = 10;
     a[1] = 20;
@@ -173,13 +173,13 @@ printf '%s\n' 'PASS: 10+20+30+60 summed through a dynamic-index while loop == 12
 
 printf '%s\n' '[7/8] Acceptance: local array decays to its frame address (ptr argument, odd length)'
 cat > "$OUT/decay.ast" <<'AST'
-fn addAll(p: ptr, n: i32) -> i32 {
+fn addAll(p: ptr, n: i32) : i32 {
     let k: i32 = 0;
     let total: i32 = 0;
     while (k < n) { total = total + *(p + k * 4); k = k + 1; }
     return total;
 }
-fn main() -> i32 {
+fn main() : i32 {
     // Odd length: 3 elements occupy ceil(3/2) = 2 frame slots; the 4th byte
     // pair is padding and must never be observed by addAll.
     let a: i32[3] = 7;
@@ -201,7 +201,7 @@ printf '%s\n' '[8/8] Acceptance: base offset when the array is NOT in slot 0 (qe
 # wrote far outside the 8 KiB frame. The sh=0 encoding (0x91000000) is guarded
 # above; this run proves the frame layout end to end.
 cat > "$OUT/offset.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let total: i32 = 0;
     let a: i32[4] = 0;
     let i: i32 = 0;

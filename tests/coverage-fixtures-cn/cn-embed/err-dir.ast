@@ -1,5 +1,5 @@
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = @embed("adir");
     return load_u8(p);
 }

@@ -111,31 +111,31 @@ check() {
 }
 A=$OUT/aster
 # --- character literals: plain, newline, escaped quote, BEL, hex escape ---
-check "$A" "char 'A' is 65"                      65 "fn main() -> i32 { if ('A' == 65) { return 65; } return 0; }"
-check "$A" "char '\\n' is 10"                     10 "fn main() -> i32 { if ('\n' == 10) { return 10; } return 0; }"
-check "$A" "char apostrophe is 39"                 39 "fn main() -> i32 { if ('\'' == 39) { return 39; } return 0; }"
-check "$A" "char '\\a' is 7"                       7 "fn main() -> i32 { if ('\a' == 7) { return 7; } return 0; }"
-check "$A" "char '\\x41' is 65"                   65 "fn main() -> i32 { if ('\x41' == 65) { return 65; } return 0; }"
+check "$A" "char 'A' is 65"                      65 "fn main() : i32 { if ('A' == 65) { return 65; } return 0; }"
+check "$A" "char '\\n' is 10"                     10 "fn main() : i32 { if ('\n' == 10) { return 10; } return 0; }"
+check "$A" "char apostrophe is 39"                 39 "fn main() : i32 { if ('\'' == 39) { return 39; } return 0; }"
+check "$A" "char '\\a' is 7"                       7 "fn main() : i32 { if ('\a' == 7) { return 7; } return 0; }"
+check "$A" "char '\\x41' is 65"                   65 "fn main() : i32 { if ('\x41' == 65) { return 65; } return 0; }"
 # --- character arithmetic ---
-check "$A" "'B' - 'A' is 1"                        1 "fn main() -> i32 { if ('B' - 'A' == 1) { return 1; } return 0; }"
-check "$A" "'a' + 1 is 'b'"                       98 "fn main() -> i32 { if ('a' + 1 == 'b') { return 98; } return 0; }"
-check "$A" "'z' - 'a' is 25"                      25 "fn main() -> i32 { if ('z' - 'a' == 25) { return 25; } return 0; }"
+check "$A" "'B' - 'A' is 1"                        1 "fn main() : i32 { if ('B' - 'A' == 1) { return 1; } return 0; }"
+check "$A" "'a' + 1 is 'b'"                       98 "fn main() : i32 { if ('a' + 1 == 'b') { return 98; } return 0; }"
+check "$A" "'z' - 'a' is 25"                      25 "fn main() : i32 { if ('z' - 'a' == 25) { return 25; } return 0; }"
 # --- numeric suffixes pin the width ---
-check "$A" "0xFFFFFFFFu is u32, zero-extends"      3 "fn main() -> i32 { let u: u32 = 0xFFFFFFFFu; if (u64(u) == 4294967295) { return 3; } return 0; }"
-check "$A" "5l is i64, equal to 5"                 5 "fn main() -> i32 { let l: i64 = 5l; if (l == 5) { return 5; } return 0; }"
-check "$A" "-1l is a negative i64"                 6 "fn main() -> i32 { let l: i64 = -1l; if (l < 0) { return 6; } return 0; }"
-check "$A" "0xFFFFFFFFFFFFFFFFul is u64 max"       8 "fn main() -> i32 { let b: u64 = 0xFFFFFFFFFFFFFFFFul; if (b == 18446744073709551615) { return 8; } return 0; }"
+check "$A" "0xFFFFFFFFu is u32, zero-extends"      3 "fn main() : i32 { let u: u32 = 0xFFFFFFFFu; if (u64(u) == 4294967295) { return 3; } return 0; }"
+check "$A" "5l is i64, equal to 5"                 5 "fn main() : i32 { let l: i64 = 5l; if (l == 5) { return 5; } return 0; }"
+check "$A" "-1l is a negative i64"                 6 "fn main() : i32 { let l: i64 = -1l; if (l < 0) { return 6; } return 0; }"
+check "$A" "0xFFFFFFFFFFFFFFFFul is u64 max"       8 "fn main() : i32 { let b: u64 = 0xFFFFFFFFFFFFFFFFul; if (b == 18446744073709551615) { return 8; } return 0; }"
 # --- binary literals ---
-check "$A" "0b101010 is 42"                        42 "fn main() -> i32 { if (0b101010 == 42) { return 42; } return 0; }"
-check "$A" "0b1 is 1"                              1 "fn main() -> i32 { if (0b1 == 1) { return 1; } return 0; }"
-check "$A" "0b1111_1111 is 255"                  255 "fn main() -> i32 { if (0b1111_1111 == 255) { return 255; } return 0; }"
+check "$A" "0b101010 is 42"                        42 "fn main() : i32 { if (0b101010 == 42) { return 42; } return 0; }"
+check "$A" "0b1 is 1"                              1 "fn main() : i32 { if (0b1 == 1) { return 1; } return 0; }"
+check "$A" "0b1111_1111 is 255"                  255 "fn main() : i32 { if (0b1111_1111 == 255) { return 255; } return 0; }"
 # --- digit separators ---
-check "$A" "1_000_000 is 1000000"                   9 "fn main() -> i32 { if (1_000_000 == 1000000) { return 9; } return 0; }"
-check "$A" "0xFF_FF is 65535"                     11 "fn main() -> i32 { if (0xFF_FF == 65535) { return 11; } return 0; }"
-check "$A" "0xDEAD_BEEF is 3735928559"            12 "fn main() -> i32 { if (0xDEAD_BEEF == 3735928559) { return 12; } return 0; }"
-check "$A" "0b1111_1111_1111 is 4095"             13 "fn main() -> i32 { if (0b1111_1111_1111 == 4095) { return 13; } return 0; }"
+check "$A" "1_000_000 is 1000000"                   9 "fn main() : i32 { if (1_000_000 == 1000000) { return 9; } return 0; }"
+check "$A" "0xFF_FF is 65535"                     11 "fn main() : i32 { if (0xFF_FF == 65535) { return 11; } return 0; }"
+check "$A" "0xDEAD_BEEF is 3735928559"            12 "fn main() : i32 { if (0xDEAD_BEEF == 3735928559) { return 12; } return 0; }"
+check "$A" "0b1111_1111_1111 is 4095"             13 "fn main() : i32 { if (0b1111_1111_1111 == 4095) { return 13; } return 0; }"
 # --- extended escapes in a string literal ---
-check "$A" "string '\\a\\b\\f\\v' is 7,8,12,11"    14 "fn main() -> i32 { let s: ptr<u8> = \"\a\b\f\v\"; if (s[0] == 7 && s[1] == 8 && s[2] == 12 && s[3] == 11) { return 14; } return 0; }"
+check "$A" "string '\\a\\b\\f\\v' is 7,8,12,11"    14 "fn main() : i32 { let s: ptr<u8> = \"\a\b\f\v\"; if (s[0] == 7 && s[1] == 8 && s[2] == 12 && s[3] == 11) { return 14; } return 0; }"
 printf '%s\n' 'PASS: every literal shape decodes as specified'
 else
     printf '%s\n' '  SKIP: the behavioural cases need qemu to run'
@@ -168,7 +168,7 @@ if [ "$have_qemu" = yes ] && [ "$have_cc" = yes ]; then
         "$(cat tests/literals-twin.c)"
     # A small program using every surface feature, against an independent C read.
     diff_case 'char, suffix, binary, separator' \
-        'fn main() -> i32 {
+        'fn main() : i32 {
     let u: u32 = 0xFFFFFFFFu;
     let b: u64 = 0xFFFFFFFFFFFFFFFFul;
     let r: i32 = 0;
@@ -202,23 +202,23 @@ reject() {
 }
 A=$OUT/aster
 reject 'bad suffix ll'           "invalid numeric suffix 'll'" \
-    "fn main() -> i32 { let x: i32 = 1ll; return 0; }"
+    "fn main() : i32 { let x: i32 = 1ll; return 0; }"
 reject 'bad suffix uu'           "invalid numeric suffix 'uu'" \
-    "fn main() -> i32 { let x: i32 = 1uu; return 0; }"
+    "fn main() : i32 { let x: i32 = 1uu; return 0; }"
 reject 'char literal too long'   "char literal must hold exactly one character" \
-    "fn main() -> i32 { let x: i32 = 'ab'; return 0; }"
+    "fn main() : i32 { let x: i32 = 'ab'; return 0; }"
 reject 'empty char literal'      "empty or unterminated char literal" \
-    "fn main() -> i32 { let x: i32 = ''; return 0; }"
+    "fn main() : i32 { let x: i32 = ''; return 0; }"
 reject 'separator with no digit' "digit separator '_' must be between two digits" \
-    "fn main() -> i32 { let x: i32 = 1_0_; return 0; }"
+    "fn main() : i32 { let x: i32 = 1_0_; return 0; }"
 reject 'binary with no digits'   "binary literal has no digits" \
-    "fn main() -> i32 { let x: i32 = 0b; return 0; }"
+    "fn main() : i32 { let x: i32 = 0b; return 0; }"
 reject 'hex with no digits'      "hexadecimal literal has no digits" \
-    "fn main() -> i32 { let x: i32 = 0x; return 0; }"
+    "fn main() : i32 { let x: i32 = 0x; return 0; }"
 reject 'u32 suffix out of range' "u32 literal out of range at " \
-    "fn main() -> i32 { let x: u32 = 0x1_0000_0001u; return 0; }"
+    "fn main() : i32 { let x: u32 = 0x1_0000_0001u; return 0; }"
 reject 'i64 suffix out of range' "i64 literal out of range at " \
-    "fn main() -> i32 { let x: i64 = 0x8000_0000_0000_0000l; return 0; }"
+    "fn main() : i32 { let x: i64 = 0x8000_0000_0000_0000l; return 0; }"
 printf '%s\n' 'PASS: the rejection matrix holds'
 
 # ---------------------------------------------------------------------------
@@ -288,19 +288,19 @@ else
 # so the witness that reads it returns the wrong bit.
 mutate 'm1: BEL escape mis-decoded' \
     "s|case 'a': return '\\\\a';.*|case 'a': return '?';|" \
-    must_differ 'char '\''\\a'\'' is 7' 7 "fn main() -> i32 { if ('\a' == 7) { return 7; } return 0; }"
+    must_differ 'char '\''\\a'\'' is 7' 7 "fn main() : i32 { if ('\a' == 7) { return 7; } return 0; }"
 # m2: binary-literal decoding is removed — unsignedLiteral no longer treats
 # 0b/0B as base 2, so '0b101010' falls through to the base-10 path and is
 # rejected. The real compiler accepts it; the mutant must refuse it. '#' is the
 # sed delimiter because the patched line itself contains '|'.
 mutate 'm2: binary literal decode removed' \
     's#const bool bin=digits.size()>1&&digits\[0\]=='\''0'\''&&(digits\[1\]=='\''b'\''||digits\[1\]=='\''B'\'');#const bool bin=false;#' \
-    must_reject '0b101010 compiles' "fn main() -> i32 { if (0b101010 == 42) { return 42; } return 0; }"
+    must_reject '0b101010 compiles' "fn main() : i32 { if (0b101010 == 42) { return 42; } return 0; }"
 # m3: the u32 suffix range check is gone, so a value past 2^32 is silently
 # truncated into the slot. The real compiler refuses it; the mutant accepts.
 mutate 'm3: the u32 suffix ceiling is dropped' \
     's|if(low=="u"){nn->suffix=Expr::LSU; if(n>0xffffffffULL)throw Error("u32 literal out of range at .*|if(low=="u"){nn->suffix=Expr::LSU;}|' \
-    must_now_compile 'u32 suffix past 2^32' "fn main() -> i32 { let x: u64 = 0x1_0000_0001u; return 0; }"
+    must_now_compile 'u32 suffix past 2^32' "fn main() : i32 { let x: u64 = 0x1_0000_0001u; return 0; }"
 printf '%s\n' 'PASS: three mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

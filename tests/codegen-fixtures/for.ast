@@ -3,7 +3,7 @@
 // init clause, and a `for` nested in a `while`.
 let out: u8[8] = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     let acc: i32 = 0;
     for (let i: i32 = 0; i < 4; i = i + 1) {
         if (i == 2) { continue; }      // skips the body, still runs the step

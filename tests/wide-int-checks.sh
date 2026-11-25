@@ -73,8 +73,8 @@ printf '%s\n' 'PASS: Ty lattice, tyIs64/tyIsUnsigned/elemShiftOf, MOVK base and 
 printf '%s\n' '[3/8] Rejection: narrowing, unsigned-range and literal-range misuse'
 # i32 value handed to a u8 parameter is a narrowing conversion -> rejected.
 cat > "$OUT/narrow-arg.ast" <<'AST'
-fn f(x: u8) -> i32 { return 0; }
-fn main() -> i32 { let y: i32 = 300; return f(y); }
+fn f(x: u8) : i32 { return 0; }
+fn main() : i32 { let y: i32 = 300; return f(y); }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/narrow-arg.ast" -o "$OUT/narrow-arg" 2>&1); then
     echo 'FAIL: compiler accepted an i32 argument for a u8 parameter' >&2; exit 1
@@ -84,8 +84,8 @@ printf '%s\n' "$out" | grep -qF "argument type mismatch calling f at argument 1:
 
 # i64 value handed to an i32 parameter is a narrowing conversion -> rejected.
 cat > "$OUT/i64-arg.ast" <<'AST'
-fn f(x: i32) -> i32 { return 0; }
-fn main() -> i32 { let y: i64 = 5; return f(y); }
+fn f(x: i32) : i32 { return 0; }
+fn main() : i32 { let y: i64 = 5; return f(y); }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/i64-arg.ast" -o "$OUT/i64-arg" 2>&1); then
     echo 'FAIL: compiler accepted an i64 argument for an i32 parameter' >&2; exit 1
@@ -99,7 +99,7 @@ printf '%s\n' "$out" | grep -qF "argument type mismatch calling f at argument 1:
 # is written for — so 10^19 (< 2^64-1) parses and is caught at the declaration
 # instead of at the token. Still rejected; the diagnostic names the slot.
 cat > "$OUT/lit-range.ast" <<'AST'
-fn main() -> i32 { let x: i64 = 10000000000000000000; return 0; }
+fn main() : i32 { let x: i64 = 10000000000000000000; return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/lit-range.ast" -o "$OUT/lit-range" 2>&1); then
     echo 'FAIL: compiler accepted a literal wider than i64' >&2; exit 1
@@ -110,7 +110,7 @@ printf '%s\n' "$out" | grep -qF "local initializer does not fit in i64" \
 # A narrow global initializer that does not fit the slot is rejected.
 cat > "$OUT/global-range.ast" <<'AST'
 let g: u8 = 300;
-fn main() -> i32 { return 0; }
+fn main() : i32 { return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/global-range.ast" -o "$OUT/global-range" 2>&1); then
     echo 'FAIL: compiler accepted a u8 global initializer of 300' >&2; exit 1
@@ -121,7 +121,7 @@ printf '%s\n' 'PASS: i32->u8 arg, i64->i32 arg, over-wide literal and out-of-ran
 
 printf '%s\n' '[4/8] Acceptance: i64 literals, arithmetic, negative values and all comparisons (qemu)'
 cat > "$OUT/i64ops.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: i64 = 1000000000000;
     let b: i64 = 2000000000000;
     let s: i64 = a + b;
@@ -158,8 +158,8 @@ printf '%s\n' 'PASS: i64 add/sub/mul/div/neg, negative literal and ==/!=/</>/<=/
 
 printf '%s\n' '[5/8] Acceptance: i64 function ABI (params, return, >8 args) and mixed locals (qemu)'
 cat > "$OUT/i64chain.ast" <<'AST'
-fn add3(x: i64, y: i64, z: i64) -> i64 { return x + y + z; }
-fn main() -> i32 {
+fn add3(x: i64, y: i64, z: i64) : i64 { return x + y + z; }
+fn main() : i32 {
     let r: i64 = add3(1000000000000, 2000000000000, 500000000000);
     if (r == 3500000000000) { return 13; } else { return 0; }
 }
@@ -170,9 +170,9 @@ rc=0
 test "$rc" -eq 13 || { echo "FAIL: i64chain expected exit 13, got $rc" >&2; exit 1; }
 
 cat > "$OUT/reti64.ast" <<'AST'
-fn get() -> i64 { return 3000000000000; }
-fn getu() -> u32 { return 4000000000; }
-fn main() -> i32 {
+fn get() : i64 { return 3000000000000; }
+fn getu() : u32 { return 4000000000; }
+fn main() : i32 {
     let x: i64 = get();
     let y: u32 = getu();
     if (x == 3000000000000) {
@@ -186,10 +186,10 @@ rc=0
 test "$rc" -eq 51 || { echo "FAIL: reti64 expected exit 51, got $rc" >&2; exit 1; }
 
 cat > "$OUT/manyi64.ast" <<'AST'
-fn sum9(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64) -> i64 {
+fn sum9(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64) : i64 {
     return a + b + c + d + e + f + g + h + i;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let r: i64 = sum9(100000000000, 200000000000, 300000000000, 400000000000, 500000000000, 600000000000, 700000000000, 800000000000, 900000000000);
     if (r == 4500000000000) { return 52; } else { return 0; }
 }
@@ -202,7 +202,7 @@ printf '%s\n' 'PASS: i64 3-arg return (13), i64/u32 returns (51), 9-arg stack AB
 
 printf '%s\n' '[6/8] Acceptance: narrow unsigned types (u8/u16/u32) with wrap, UDIV and unsigned cmp (qemu)'
 cat > "$OUT/u8test.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: u8 = 200; let b: u8 = 55;
     let s: u8 = a + b;
     let ov: u8 = a + b + 1;
@@ -223,7 +223,7 @@ rc=0
 test "$rc" -eq 21 || { echo "FAIL: u8test expected exit 21, got $rc" >&2; exit 1; }
 
 cat > "$OUT/u16test.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: u16 = 60000; let b: u16 = 5000;
     let s: u16 = a + b;
     let ov: u16 = a + b + 1;
@@ -244,7 +244,7 @@ rc=0
 test "$rc" -eq 22 || { echo "FAIL: u16test expected exit 22, got $rc" >&2; exit 1; }
 
 cat > "$OUT/u32test.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let big: u32 = 4000000000;
     let small: u32 = 1000000000;
     let q: u32 = big / small;
@@ -268,7 +268,7 @@ let gi: i64 = 3000000000000;
 let gu: u32 = 4000000000;
 let gu8: u8 = 250;
 let gu16: u16 = 65000;
-fn main() -> i32 {
+fn main() : i32 {
     if (gi == 3000000000000) {
         if (gu > 1000000000) {
             if (gu8 == 250) {
@@ -287,7 +287,7 @@ rc=0
 test "$rc" -eq 41 || { echo "FAIL: gtest expected exit 41, got $rc" >&2; exit 1; }
 
 cat > "$OUT/arrtest.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32[4] = 0;
     let b: u8[4] = 0;
     let c: i64[2] = 0;
@@ -313,7 +313,7 @@ printf '%s\n' '[8/8] Regression: narrow slot-grid scaling and the incoming stack
 # home — the u16 in slot 1 was then overwritten by the i32 in slot 2, and both
 # read back fine in isolation (which is why this needs a neighbouring i32).
 cat > "$OUT/u16slot.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let p0: i32 = 111;
     let a: u16 = 300;
     let b: i32 = 7;
@@ -336,10 +336,10 @@ test "$rc" -eq 61 || { echo "FAIL: u16slot expected exit 61, got $rc" >&2; exit 
 # the outgoing area and the callee's read of it use the halfword forms, so a
 # wrong scale there shows up as a wrong value rather than as a crash.
 cat > "$OUT/u16arg.ast" <<'AST'
-fn f9(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, p: u16) -> i32 {
+fn f9(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, p: u16) : i32 {
     return p;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let base: i32 = f9(1, 2, 3, 4, 5, 6, 7, 8, 60000);
     let hi: i32 = f9(1, 2, 3, 4, 5, 6, 7, 8, 65535);
     if (base == 60000) {

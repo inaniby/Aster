@@ -16,15 +16,15 @@ grep -F 'e00340f9' "$WORK/text.hex" >/dev/null
 $CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -c src/aster.cpp -o "$WORK/aster.o"
 ${HOSTCC:-cc} -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror tests/c-ptr-host.c -ldl -o "$WORK/c-ptr-host"
 cat > "$WORK/bad-return.ast" <<'AST'
-fn bad(p: ptr) -> i32 { return p; }
+fn bad(p: ptr) : i32 { return p; }
 AST
 if "$WORK/aster" build-so "$WORK/bad-return.ast" -o "$WORK/bad.so" >"$WORK/bad-return.log" 2>&1; then
   echo 'FAIL: pointer-to-i32 return mismatch was accepted'; exit 10
 fi
 grep -F 'return type mismatch' "$WORK/bad-return.log" >/dev/null
 cat > "$WORK/internal-call.ast" <<'AST'
-fn echo(p: ptr) -> ptr { return p; }
-fn caller(p: ptr) -> ptr { return echo(p); }
+fn echo(p: ptr) : ptr { return p; }
+fn caller(p: ptr) : ptr { return echo(p); }
 AST
 "$WORK/aster" build-so "$WORK/internal-call.ast" -o "$WORK/internal-call.so" --soname libaster_internal_call.so
 readelf -Ws "$WORK/internal-call.so" | grep -E 'GLOBAL.*caller$' >/dev/null

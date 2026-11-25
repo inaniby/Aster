@@ -5,6 +5,6 @@
 // with `link-so --needed libc.so.6` so DT_NEEDED and the VERNEED file agree;
 // tests/symbol-versioning-checks.sh dlopens the result and calls the wrapper,
 // which is what proves the versioned import really binds.
-extern fn strlen(s: ptr) -> i32;
-fn len() -> i32 { return strlen("hello world"); }
-fn len_empty() -> i32 { return strlen(""); }
+extern fn strlen(s: ptr) : i32;
+fn len() : i32 { return strlen("hello world"); }
+fn len_empty() : i32 { return strlen(""); }

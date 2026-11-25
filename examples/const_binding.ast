@@ -28,9 +28,9 @@ struct Pt { x: i32, y: i32 }
 const kBase: i32 = 10;
 const kHome: Pt = Pt { 1, 2 };
 
-fn bump(v: i32) -> i32 { return v + 1; }
+fn bump(v: i32) : i32 { return v + 1; }
 
-fn main() -> i32 {
+fn main() : i32 {
     const k: i32 = 5;
     const xs: i32[3] = 7;            // every element is 7
     const home: Pt = Pt { 3, 4 };

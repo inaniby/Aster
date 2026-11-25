@@ -19,7 +19,7 @@
 #      in s0, a different register file, so the decode consumed garbage.
 #
 # The riskiest part is the coordinate capture. Aster has no float type, so
-# AMotionEvent_getX/Y are declared `-> i32` and the value is recovered by
+# AMotionEvent_getX/Y are declared `: i32` and the value is recovered by
 # calling zero-argument lrintf() immediately after: lrintf reads its argument
 # from s0 and returns a long in x0, whose low 32 bits Aster reads. Aster emits
 # no SIMD instruction of its own and the PLT is eagerly bound, so nothing
@@ -95,15 +95,15 @@ else
 fi
 
 printf '%s\n' '[2/4] Source guards: externs, 88/96 wiring, >= 0 drain, lrintf bridge'
-grep -qF 'extern fn AInputQueue_attachLooper(queue: ptr, looper: ptr, ident: i32, cb: ptr, data: ptr) -> i32;' examples/native_touch.ast \
+grep -qF 'extern fn AInputQueue_attachLooper(queue: ptr, looper: ptr, ident: i32, cb: ptr, data: ptr) : i32;' examples/native_touch.ast \
     || { echo 'FAIL: AInputQueue_attachLooper extern is gone' >&2; exit 1; }
-grep -qF 'extern fn AMotionEvent_getX(event: ptr, pointerIndex: i32) -> i32;' examples/native_touch.ast \
+grep -qF 'extern fn AMotionEvent_getX(event: ptr, pointerIndex: i32) : i32;' examples/native_touch.ast \
     || { echo 'FAIL: AMotionEvent_getX extern is gone' >&2; exit 1; }
-grep -qF 'extern fn AMotionEvent_getY(event: ptr, pointerIndex: i32) -> i32;' examples/native_touch.ast \
+grep -qF 'extern fn AMotionEvent_getY(event: ptr, pointerIndex: i32) : i32;' examples/native_touch.ast \
     || { echo 'FAIL: AMotionEvent_getY extern is gone' >&2; exit 1; }
-grep -qF 'extern fn lrintf() -> i32;' examples/native_touch.ast \
+grep -qF 'extern fn lrintf() : i32;' examples/native_touch.ast \
     || { echo 'FAIL: the lrintf bridge extern is gone' >&2; exit 1; }
-grep -qF 'extern fn ALooper_forThread() -> ptr;' examples/native_touch.ast \
+grep -qF 'extern fn ALooper_forThread() : ptr;' examples/native_touch.ast \
     || { echo 'FAIL: ALooper_forThread extern is gone' >&2; exit 1; }
 # The wiring: 80 is onNativeWindowDestroyed, 88 onInputQueueCreated, 96
 # onInputQueueDestroyed (android/native_activity.h, all pointers).
@@ -123,9 +123,9 @@ grep -qF 'if (pre == 0) {' examples/native_touch.ast \
     || { echo 'FAIL: the preDispatchEvent branch is gone' >&2; exit 1; }
 # The bridge helpers exist, and each keeps its two calls adjacent: nothing may
 # sit between the float call and the lrintf that reads s0.
-grep -qF 'fn event_x(ev: ptr) -> i32 {' examples/native_touch.ast \
+grep -qF 'fn event_x(ev: ptr) : i32 {' examples/native_touch.ast \
     || { echo 'FAIL: the event_x bridge helper is gone' >&2; exit 1; }
-grep -qF 'fn event_y(ev: ptr) -> i32 {' examples/native_touch.ast \
+grep -qF 'fn event_y(ev: ptr) : i32 {' examples/native_touch.ast \
     || { echo 'FAIL: the event_y bridge helper is gone' >&2; exit 1; }
 grep -cF 'return lrintf();' examples/native_touch.ast | grep -qx 2 \
     || { echo 'FAIL: expected exactly 2 lrintf bridge returns, got another count' >&2; exit 1; }

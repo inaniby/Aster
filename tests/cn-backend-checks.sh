@@ -1437,7 +1437,7 @@ SRC
 "$ASTER_BIN" build-cn-obj "$TMP/string-en.ast" -o "$TMP/string-en.o"
 cmp "$TMP/string-zh.o" "$TMP/string-en.o" || { echo "FAIL: \$TMP/string-zh.o and \$TMP/string-en.o differ" >&2; exit 1; }
 cat > "$TMP/string-native.ast" <<'SRC'
-fn native_literal() -> i32 {
+fn native_literal() : i32 {
     write(1, "native\n", 7);
     return 0;
 }
@@ -2324,9 +2324,9 @@ else
     echo 'SKIP: signed-narrow execution requires qemu-aarch64 or AArch64 Linux'
 fi
 cat > "$TMP/native-signed-narrow.ast" <<'SRC'
-fn narrow8(value: i8) -> i8 { return value; }
-fn widen16(value: i16) -> i64 { return value; }
-fn main() -> i32 {
+fn narrow8(value: i8) : i8 { return value; }
+fn widen16(value: i16) : i64 { return value; }
+fn main() : i32 {
     let byte: i8 = i8(255);
     let short: i16 = i16(65534);
     if (narrow8(byte) != -1) { return 1; }
@@ -3712,10 +3712,10 @@ if [ "$CAN_RUN" -eq 1 ]; then
 结束 方法
 SRC
     cat > "$TMP/c3-main.ast" <<'SRC'
-extern fn aui_cb_register_default() -> i32;
-extern fn aui_cb_invoke(user: ptr) -> i32;
-extern fn aui_cb_release() -> i32;
-fn main() -> i32 {
+extern fn aui_cb_register_default() : i32;
+extern fn aui_cb_invoke(user: ptr) : i32;
+extern fn aui_cb_release() : i32;
+fn main() : i32 {
 if (aui_cb_register_default() != 1) { return 11; }
 if (aui_cb_invoke(ptr(0)) != 8) { return 12; }
 if (aui_cb_release() != 1) { return 13; }

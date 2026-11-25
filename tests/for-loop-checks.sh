@@ -57,34 +57,34 @@ printf '%s\n' 'PASS: for statement kind, clause grammar, step placement and both
 
 printf '%s\n' '[3/7] Rejection matrix'
 cat > "$OUT/no-paren.ast" <<'AST'
-fn main() -> i32 { for let i: i32 = 0; i < 3; i = i + 1) { return 0; } return 1; }
+fn main() : i32 { for let i: i32 = 0; i < 3; i = i + 1) { return 0; } return 1; }
 AST
 cat > "$OUT/bad-init.ast" <<'AST'
-fn main() -> i32 { for (5; i < 3; i = i + 1) { return 0; } return 1; }
+fn main() : i32 { for (5; i < 3; i = i + 1) { return 0; } return 1; }
 AST
 cat > "$OUT/empty-cond.ast" <<'AST'
-fn main() -> i32 { for (let i: i32 = 0; ; i = i + 1) { return 0; } return 1; }
+fn main() : i32 { for (let i: i32 = 0; ; i = i + 1) { return 0; } return 1; }
 AST
 cat > "$OUT/let-step.ast" <<'AST'
-fn main() -> i32 { for (let i: i32 = 0; i < 3; let j: i32 = 1) { return 0; } return 1; }
+fn main() : i32 { for (let i: i32 = 0; i < 3; let j: i32 = 1) { return 0; } return 1; }
 AST
 # v0.23.25-dev: an integer for-condition is legal now (zero is false), so the
 # non-comparison case that is still refused is a pointer — `for (...; p; ...)`.
 cat > "$OUT/non-compare-cond.ast" <<'AST'
-fn f(p: ptr) -> i32 { for (let i: i32 = 0; p; i = i + 1) { return 0; } return 1; }
-fn main() -> i32 { return 0; }
+fn f(p: ptr) : i32 { for (let i: i32 = 0; p; i = i + 1) { return 0; } return 1; }
+fn main() : i32 { return 0; }
 AST
 cat > "$OUT/break-outside.ast" <<'AST'
-fn main() -> i32 { break; return 0; }
+fn main() : i32 { break; return 0; }
 AST
 cat > "$OUT/continue-outside.ast" <<'AST'
-fn main() -> i32 { continue; return 0; }
+fn main() : i32 { continue; return 0; }
 AST
 cat > "$OUT/leaked-var.ast" <<'AST'
-fn main() -> i32 { for (let i: i32 = 0; i < 3; i = i + 1) { } return i; }
+fn main() : i32 { for (let i: i32 = 0; i < 3; i = i + 1) { } return i; }
 AST
 cat > "$OUT/missing-semi.ast" <<'AST'
-fn main() -> i32 { for (let i: i32 = 0 i < 3; i = i + 1) { return 0; } return 1; }
+fn main() : i32 { for (let i: i32 = 0 i < 3; i = i + 1) { return 0; } return 1; }
 AST
 "$OUT/aster" build-elf "$OUT/no-paren.ast" -o "$OUT/no-paren" 2>&1 | grep -q "expected '(' after for" \
     || { echo 'FAIL: missing ( in for header not rejected' >&2; exit 1; }
@@ -108,7 +108,7 @@ printf '%s\n' 'PASS: header grammar, empty condition, let-in-step, condition typ
 
 printf '%s\n' '[4/7] Acceptance: the initializer runs once and the step advances the variable (qemu self-check)'
 cat > "$OUT/sum.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let total: i32 = 0;
     for (let i: i32 = 1; i < 6; i = i + 1) {
         total = total + i;
@@ -122,7 +122,7 @@ printf '%s\n' 'PASS: 1+2+3+4+5 summed through a for loop == 15 (exit 0)'
 
 printf '%s\n' '[5/7] Acceptance: continue lands on the step, break exits (qemu self-check)'
 cat > "$OUT/flow.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let total: i32 = 0;
     for (let i: i32 = 0; i < 10; i = i + 1) {
         if (i == 3) { continue; } else { total = total + 0; }
@@ -137,7 +137,7 @@ printf '%s\n' 'PASS: continue still runs i = i + 1 (0+1+2+4+5+6 == 18), break st
 
 printf '%s\n' '[6/7] Acceptance: empty initializer/step and assignment-form initializer (qemu self-check)'
 cat > "$OUT/clauses.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let i: i32 = 0;
     let total: i32 = 0;
     for (; i < 5;) {
@@ -156,7 +156,7 @@ printf '%s\n' 'PASS: empty init/step and an assignment initializer both work (5*
 
 printf '%s\n' '[7/7] Acceptance: nested and mixed loops, plus for over a local array (qemu self-check)'
 cat > "$OUT/nested.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let total: i32 = 0;
     for (let i: i32 = 0; i < 4; i = i + 1) {
         for (let j: i32 = 0; j < 3; j = j + 1) {

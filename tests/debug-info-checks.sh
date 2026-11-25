@@ -65,12 +65,12 @@ let gcounter: i32 = 7;
 let gscores: i32[2] = 0;
 let ggrid: i32[2][3] = 0;
 
-fn scale(p: Point, k: i32) -> i32 {
+fn scale(p: Point, k: i32) : i32 {
     let t: i32 = p.x * k;
     return t;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = 10;
     let arr: i32[3] = 0;
     let pt: Point = Point { 1, 2 };
@@ -360,15 +360,15 @@ fi
 cat > "$OUT/defs.ast" <<'AST'
 let gtotal: i32 = 7;
 
-fn add2(n: i32) -> i32 {
+fn add2(n: i32) : i32 {
     return n + 2;
 }
 AST
 cat > "$OUT/main.ast" <<'AST'
 extern let gtotal: i32;
-extern fn add2(n: i32) -> i32;
+extern fn add2(n: i32) : i32;
 
-fn main() -> i32 {
+fn main() : i32 {
     let s: i32 = add2(gtotal);
     return s;
 }
@@ -439,16 +439,16 @@ grep -qF '.debug_abbrev differs from the first input object' "$OUT/bad.log" \
 cat > "$OUT/pa.ast" <<'AST'
 let gv: i32 = 5;
 
-fn twice(n: i32) -> i32 {
+fn twice(n: i32) : i32 {
     let r: i32 = n * 2;
     return r;
 }
 AST
 cat > "$OUT/pb.ast" <<'AST'
 extern let gv: i32;
-extern fn twice(n: i32) -> i32;
+extern fn twice(n: i32) : i32;
 
-fn entry() -> i32 {
+fn entry() : i32 {
     let t: i32 = twice(gv);
     return t;
 }

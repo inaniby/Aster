@@ -147,50 +147,50 @@ check() {
 }
 A=$OUT/aster
 # --- the u64 grid ---
-check "$A" 'sizeof(u64) is 8'               8 'fn main() -> i32 { return sizeof(u64); }'
-check "$A" 'u64 local holds 2^64-1'       100 'fn main() -> i32 { let x: u64 = 18446744073709551615; if (x == 18446744073709551615) { return 100; } return 0; }'
-check "$A" 'u64 local holds 2^63'         101 'fn main() -> i32 { let x: u64 = 9223372036854775808; if (x == 9223372036854775808) { return 101; } return 0; }'
+check "$A" 'sizeof(u64) is 8'               8 'fn main() : i32 { return sizeof(u64); }'
+check "$A" 'u64 local holds 2^64-1'       100 'fn main() : i32 { let x: u64 = 18446744073709551615; if (x == 18446744073709551615) { return 100; } return 0; }'
+check "$A" 'u64 local holds 2^63'         101 'fn main() : i32 { let x: u64 = 9223372036854775808; if (x == 9223372036854775808) { return 101; } return 0; }'
 check "$A" 'u64 global beyond i64'          7 'let g: u64 = 12345678901234567890;
-fn main() -> i32 { if (g == 12345678901234567890) { return 7; } return 0; }'
-check "$A" 'u64 unsigned compare'            9 'fn main() -> i32 { let x: u64 = 9223372036854775808; if (x > 9223372036854775807) { return 9; } return 0; }'
-check "$A" 'u64 unsigned division'          73 'fn main() -> i32 { let x: u64 = 18446744073709551615; if (x / 1000000000000 == 18446744) { return 73; } return 0; }'
-check "$A" 'u64 plus i32 stays u64'         11 'fn main() -> i32 { let x: u64 = 1; if (x + 1 == 2) { return 11; } return 0; }'
-check "$A" 'u64 parameter'                  13 'fn f(v: u64) -> i32 { if (v == 9223372036854775808) { return 13; } return 0; }
-fn main() -> i32 { return f(9223372036854775808); }'
-check "$A" 'u64 array elements'             17 'fn main() -> i32 { let a: u64[2] = 0; a[0] = 9223372036854775808; a[1] = 18446744073709551615; if (a[0] == 9223372036854775808 && a[1] == 18446744073709551615) { return 17; } return 0; }'
+fn main() : i32 { if (g == 12345678901234567890) { return 7; } return 0; }'
+check "$A" 'u64 unsigned compare'            9 'fn main() : i32 { let x: u64 = 9223372036854775808; if (x > 9223372036854775807) { return 9; } return 0; }'
+check "$A" 'u64 unsigned division'          73 'fn main() : i32 { let x: u64 = 18446744073709551615; if (x / 1000000000000 == 18446744) { return 73; } return 0; }'
+check "$A" 'u64 plus i32 stays u64'         11 'fn main() : i32 { let x: u64 = 1; if (x + 1 == 2) { return 11; } return 0; }'
+check "$A" 'u64 parameter'                  13 'fn f(v: u64) : i32 { if (v == 9223372036854775808) { return 13; } return 0; }
+fn main() : i32 { return f(9223372036854775808); }'
+check "$A" 'u64 array elements'             17 'fn main() : i32 { let a: u64[2] = 0; a[0] = 9223372036854775808; a[1] = 18446744073709551615; if (a[0] == 9223372036854775808 && a[1] == 18446744073709551615) { return 17; } return 0; }'
 check "$A" 'u64 struct field'               19 'struct B { hi: u64 }
-fn main() -> i32 { let b: B; b.hi = 18446744073709551615; if (b.hi == 18446744073709551615) { return 19; } return 0; }'
-check "$A" 'ptr<u64> indexes'               23 'fn main() -> i32 { let a: u64[2] = 0; a[0] = 7; let p: ptr<u64> = &a; if (p[0] == 7) { return 23; } return 0; }'
-check "$A" 'ptr<u64> parameter'             29 'fn f(p: ptr<u64>) -> i32 { if (p[0] == 7) { return 29; } return 0; }
-fn main() -> i32 { let a: u64[2] = 0; a[0] = 7; return f(&a); }'
+fn main() : i32 { let b: B; b.hi = 18446744073709551615; if (b.hi == 18446744073709551615) { return 19; } return 0; }'
+check "$A" 'ptr<u64> indexes'               23 'fn main() : i32 { let a: u64[2] = 0; a[0] = 7; let p: ptr<u64> = &a; if (p[0] == 7) { return 23; } return 0; }'
+check "$A" 'ptr<u64> parameter'             29 'fn f(p: ptr<u64>) : i32 { if (p[0] == 7) { return 29; } return 0; }
+fn main() : i32 { let a: u64[2] = 0; a[0] = 7; return f(&a); }'
 # --- narrowing ---
-check "$A" 'u8(300) is 44'                  44 'fn main() -> i32 { if (u8(300) == 44) { return 44; } return 0; }'
-check "$A" 'u16(70000) is 4464'            112 'fn main() -> i32 { if (u16(70000) == 4464) { return 112; } return 0; }'
-check "$A" 'u32(0-1) is 2^32-1'            102 'fn main() -> i32 { if (u32(0 - 1) == 4294967295) { return 102; } return 0; }'
-check "$A" 'u8(0-1) is 255'                 31 'fn main() -> i32 { if (u8(0 - 1) == 255) { return 31; } return 0; }'
-check "$A" 'u16(0-1) is 65535'              37 'fn main() -> i32 { if (u16(0 - 1) == 65535) { return 37; } return 0; }'
-check "$A" 'u32 of an i64 -1'               41 'fn main() -> i32 { let neg: i64 = 0 - 1; if (u32(neg) == 4294967295) { return 41; } return 0; }'
+check "$A" 'u8(300) is 44'                  44 'fn main() : i32 { if (u8(300) == 44) { return 44; } return 0; }'
+check "$A" 'u16(70000) is 4464'            112 'fn main() : i32 { if (u16(70000) == 4464) { return 112; } return 0; }'
+check "$A" 'u32(0-1) is 2^32-1'            102 'fn main() : i32 { if (u32(0 - 1) == 4294967295) { return 102; } return 0; }'
+check "$A" 'u8(0-1) is 255'                 31 'fn main() : i32 { if (u8(0 - 1) == 255) { return 31; } return 0; }'
+check "$A" 'u16(0-1) is 65535'              37 'fn main() : i32 { if (u16(0 - 1) == 65535) { return 37; } return 0; }'
+check "$A" 'u32 of an i64 -1'               41 'fn main() : i32 { let neg: i64 = 0 - 1; if (u32(neg) == 4294967295) { return 41; } return 0; }'
 # --- widening ---
-check "$A" 'u64(0-1) is 2^64-1'             43 'fn main() -> i32 { if (u64(0 - 1) == 18446744073709551615) { return 43; } return 0; }'
-check "$A" 'u64 of a u8'                    47 'fn main() -> i32 { if (u64(u8(200)) == 200) { return 47; } return 0; }'
-check "$A" 'u64 of a u32 top bit'           53 'fn main() -> i32 { if (u64(u32(4294967295)) == 4294967295) { return 53; } return 0; }'
-check "$A" 'i64 of an i32 -1'               59 'fn main() -> i32 { if (i64(i32(0 - 1)) == 0 - 1) { return 59; } return 0; }'
-check "$A" 'i64 of a u32 top bit'           61 'fn main() -> i32 { if (i64(u32(4294967295)) == 4294967295) { return 61; } return 0; }'
+check "$A" 'u64(0-1) is 2^64-1'             43 'fn main() : i32 { if (u64(0 - 1) == 18446744073709551615) { return 43; } return 0; }'
+check "$A" 'u64 of a u8'                    47 'fn main() : i32 { if (u64(u8(200)) == 200) { return 47; } return 0; }'
+check "$A" 'u64 of a u32 top bit'           53 'fn main() : i32 { if (u64(u32(4294967295)) == 4294967295) { return 53; } return 0; }'
+check "$A" 'i64 of an i32 -1'               59 'fn main() : i32 { if (i64(i32(0 - 1)) == 0 - 1) { return 59; } return 0; }'
+check "$A" 'i64 of a u32 top bit'           61 'fn main() : i32 { if (i64(u32(4294967295)) == 4294967295) { return 61; } return 0; }'
 # --- same-width reinterpretation ---
-check "$A" 'i32 of an i64 -1'               67 'fn main() -> i32 { let neg: i64 = 0 - 1; if (i32(neg) == 0 - 1) { return 67; } return 0; }'
-check "$A" 'u64 of an i64 -1'               71 'fn main() -> i32 { let neg: i64 = 0 - 1; if (u64(neg) == 18446744073709551615) { return 71; } return 0; }'
+check "$A" 'i32 of an i64 -1'               67 'fn main() : i32 { let neg: i64 = 0 - 1; if (i32(neg) == 0 - 1) { return 67; } return 0; }'
+check "$A" 'u64 of an i64 -1'               71 'fn main() : i32 { let neg: i64 = 0 - 1; if (u64(neg) == 18446744073709551615) { return 71; } return 0; }'
 # --- through a function, and the constant folder ---
-check "$A" 'narrowing through a function'   79 'fn narrow8(v: i32) -> u8 { return u8(v); }
-fn main() -> i32 { if (narrow8(300) == 44) { return 79; } return 0; }'
-check "$A" 'widening through a function'    83 'fn widen64(v: i32) -> u64 { return u64(v); }
-fn main() -> i32 { if (widen64(0 - 1) == 18446744073709551615) { return 83; } return 0; }'
+check "$A" 'narrowing through a function'   79 'fn narrow8(v: i32) : u8 { return u8(v); }
+fn main() : i32 { if (narrow8(300) == 44) { return 79; } return 0; }'
+check "$A" 'widening through a function'    83 'fn widen64(v: i32) : u64 { return u64(v); }
+fn main() : i32 { if (widen64(0 - 1) == 18446744073709551615) { return 83; } return 0; }'
 check "$A" 'folded cast in a global'        89 'let g: u8 = u8(300);
-fn main() -> i32 { if (g == 44) { return 89; } return 0; }'
+fn main() : i32 { if (g == 44) { return 89; } return 0; }'
 # --- composition ---
-check "$A" 'u8 of a u16 of 70000'           97 'fn main() -> i32 { if (u8(u16(70000)) == 112) { return 97; } return 0; }'
-check "$A" 'u64 of a u8, plus five'        103 'fn main() -> i32 { if (u64(u8(300)) + 5 == 49) { return 103; } return 0; }'
-check "$A" 'a cast as an array index'      107 'fn main() -> i32 { let a: i32[64] = 0; let i: i32 = u8(300); a[i] = 5; if (a[44] == 5) { return 107; } return 0; }'
-check "$A" 'u8 of a u16 of a variable'     109 'fn main() -> i32 { let x: i32 = 70000; if (u8(u16(x)) == 112) { return 109; } return 0; }'
+check "$A" 'u8 of a u16 of 70000'           97 'fn main() : i32 { if (u8(u16(70000)) == 112) { return 97; } return 0; }'
+check "$A" 'u64 of a u8, plus five'        103 'fn main() : i32 { if (u64(u8(300)) + 5 == 49) { return 103; } return 0; }'
+check "$A" 'a cast as an array index'      107 'fn main() : i32 { let a: i32[64] = 0; let i: i32 = u8(300); a[i] = 5; if (a[44] == 5) { return 107; } return 0; }'
+check "$A" 'u8 of a u16 of a variable'     109 'fn main() : i32 { let x: i32 = 70000; if (u8(u16(x)) == 112) { return 109; } return 0; }'
 else
     printf '%s\n' '  SKIP: the behavioural cases need qemu to run'
 fi
@@ -219,7 +219,7 @@ if [ "$have_qemu" = yes ] && [ "$have_cc" = yes ]; then
     # The two boundary literals, where the u64 slot and C's ull agree and an
     # i64 slot would have refused the value outright.
     diff_case 'the two u64-only literals' \
-        'fn main() -> i32 {
+        'fn main() : i32 {
     let top: u64 = 18446744073709551615;
     let bit63: u64 = 9223372036854775808;
     if (top == 18446744073709551615) { if (bit63 == 9223372036854775808) { return 33; } }
@@ -257,30 +257,30 @@ reject() {
 }
 A=$OUT/aster
 reject 'C-style cast (u8)x'          "expected '(' after cast type" \
-    'fn main() -> i32 { let x: i32 = 300; return (u8)x; }'
+    'fn main() : i32 { let x: i32 = 300; return (u8)x; }'
 reject 'cast without its paren'      "expected '(' after cast type" \
-    'fn main() -> i32 { return u64 300; }'
+    'fn main() : i32 { return u64 300; }'
 reject 'cast unclosed'               "expected ')' after cast operand" \
-    'fn main() -> i32 { return u64(300; }'
+    'fn main() : i32 { return u64(300; }'
 reject 'ptr -> bool still refused'   "cannot cast ptr to bool" \
-    'fn main() -> i32 { let p: ptr = 0; let z: bool = bool(p); return 0; }'
+    'fn main() : i32 { let p: ptr = 0; let z: bool = bool(p); return 0; }'
 reject 'bool -> ptr still refused'   "cannot cast bool to ptr" \
-    'fn main() -> i32 { let b: bool = true; let z: ptr = ptr(b); return 0; }'
+    'fn main() : i32 { let b: bool = true; let z: ptr = ptr(b); return 0; }'
 reject 'struct -> integer still refused' "cannot cast struct" \
     'struct B { x: i32 }
-fn main() -> i32 { let b: B; let z: u64 = u64(b); return 0; }'
+fn main() : i32 { let b: B; let z: u64 = u64(b); return 0; }'
 reject 'a narrow slot still refuses' "local initializer does not fit in u8: x (300)" \
-    'fn main() -> i32 { let x: u8 = 300; return 0; }'
+    'fn main() : i32 { let x: u8 = 300; return 0; }'
 reject 'a narrow parameter still refuses' "argument type mismatch calling f at argument 1: expected u8, got i32" \
-    'fn f(v: u8) -> i32 { return 0; }
-fn main() -> i32 { let y: i32 = 1; return f(y); }'
+    'fn f(v: u8) : i32 { return 0; }
+fn main() : i32 { let y: i32 = 1; return f(y); }'
 reject 'a u64 is not a u8 either'    "argument type mismatch calling f at argument 1: expected u8, got u64" \
-    'fn f(v: u8) -> i32 { return 0; }
-fn main() -> i32 { let y: u64 = 1; return f(y); }'
+    'fn f(v: u8) : i32 { return 0; }
+fn main() : i32 { let y: u64 = 1; return f(y); }'
 reject 'an i64 slot still refuses'   "local initializer does not fit in i64: x (-9223372036854775808)" \
-    'fn main() -> i32 { let x: i64 = 9223372036854775808; return 0; }'
+    'fn main() : i32 { let x: i64 = 9223372036854775808; return 0; }'
 reject 'a literal past 2^64-1'       "integer literal is too large" \
-    'fn main() -> i32 { let x: u64 = 18446744073709551616; return 0; }'
+    'fn main() : i32 { let x: u64 = 18446744073709551616; return 0; }'
 printf '%s\n' 'PASS: the rejection matrix holds'
 
 # ---------------------------------------------------------------------------
@@ -302,11 +302,11 @@ cascade() {
 }
 A=$OUT/aster
 cascade 'wide-int-checks: i64 slot'        "local initializer does not fit in i64: x (-9223372036854775808)" \
-    'fn main() -> i32 { let x: i64 = 9223372036854775808; return 0; }'
+    'fn main() : i32 { let x: i64 = 9223372036854775808; return 0; }'
 cascade 'wide-int-literal-checks: hex'     "local initializer does not fit in i64: x (-9223372036854775808)" \
-    'fn main() -> i32 { let x: i64 = 0x8000000000000000; return 0; }'
+    'fn main() : i32 { let x: i64 = 0x8000000000000000; return 0; }'
 cascade 'syntax-relief-checks: i64 slot'   "local initializer does not fit in i64: x (-1) at 2:9" \
-    'fn main() -> i32 {
+    'fn main() : i32 {
     let x: i64 = 18446744073709551615;
     return 0; }'
 # and the suites that own those messages pin the new text
@@ -401,49 +401,49 @@ else
 # answers 70000 instead of 4464.
 mutate 'm1: no normalisation at all' \
     's#                if(wf>wt){#                if(false){#' \
-    must_differ 'u16(70000)' 112 'fn main() -> i32 { if (u16(70000) == 4464) { return 112; } return 0; }'
+    must_differ 'u16(70000)' 112 'fn main() : i32 { if (u16(70000) == 4464) { return 112; } return 0; }'
 # m2: the i32 target takes the u32 target's encoding — a zero-extension
 # instead of the sign-extension, so an i64 reading of the bits is wrong.
 mutate 'm2: SXTW becomes UXTW' \
     's#                emit(0x93407c00u|(uint32_t(a)<<5)|uint32_t(a)); // SXTW Xa, Wa#                emit(0x2a0003e0u|(uint32_t(a)<<16)|uint32_t(a)); // SXTW Xa, Wa#' \
-    must_differ 'i32 of an i64 top bit' 67 'fn main() -> i32 { let x: i64 = 4294967295; let y: i64 = i32(x); if (y == 0 - 1) { return 67; } return 0; }'
+    must_differ 'i32 of an i64 top bit' 67 'fn main() : i32 { let x: i64 = 4294967295; let y: i64 = i32(x); if (y == 0 - 1) { return 67; } return 0; }'
 # m3: the 64-bit consumer's extension is dropped — the one case the operand's
 # own producer cannot cover, because a 32-bit producer zeroes the upper half.
 mutate 'm3: an i32 cast ignores its consumer' \
     's#                if(tyIs64(want)&&tyNeedsSignExtend64(e.ty)&&!(wf>wt&&e.ty==Ty::I32))#                if(false)#' \
-    must_differ 'i64 of an i32 -1' 59 'fn main() -> i32 { if (i64(i32(0 - 1)) == 0 - 1) { return 59; } return 0; }'
+    must_differ 'i64 of an i32 -1' 59 'fn main() : i32 { if (i64(i32(0 - 1)) == 0 - 1) { return 59; } return 0; }'
 # m4: promoteInt loses the u64-first rule, so u64 + i32 promotes to i64 and
 # the comparison of that sum runs signed — 2^63 reads as negative. The sum is
 # what carries the witness: a bare u64 comparison takes its signedness from
 # tyIsUnsigned directly, but the sum's type is exactly promoteInt's answer.
 mutate 'm4: promoteInt forgets u64' \
     's#    if(a==Ty::U64||b==Ty::U64)return Ty::U64;##' \
-    must_differ 'unsigned compare of a u64 sum' 9 'fn main() -> i32 { let x: u64 = 9223372036854775808; if (x + 0 > 9223372036854775807) { return 9; } return 0; }'
+    must_differ 'unsigned compare of a u64 sum' 9 'fn main() : i32 { let x: u64 = 9223372036854775808; if (x + 0 > 9223372036854775807) { return 9; } return 0; }'
 # m5: the i64 slot's range check is gone, so a literal above 2^63-1 is
 # silently truncated into the slot.
 mutate 'm5: an i64 slot takes any literal' \
     's#        if(t==Ty::I64) return (uint64_t)e.n<=0x7fffffffffffffffULL;##' \
-    must_now_compile 'i64 slot above 2^63-1' 'fn main() -> i32 { let x: i64 = 9223372036854775808; return 0; }'
+    must_now_compile 'i64 slot above 2^63-1' 'fn main() : i32 { let x: i64 = 9223372036854775808; return 0; }'
 # m6: the 64-bit representation is no longer shared, so an i64 value cannot
 # be passed to a u64 parameter.
 mutate 'm6: u64 and i64 stop sharing' \
     's#||(to==Ty::U64&&from==Ty::I64)##' \
-    must_reject 'an i64 into a u64 parameter' 'fn f(v: u64) -> i32 { return 0; }
-fn main() -> i32 { let a: i64 = 5; return f(a); }'
+    must_reject 'an i64 into a u64 parameter' 'fn f(v: u64) : i32 { return 0; }
+fn main() : i32 { let a: i64 = 5; return f(a); }'
 # m7: the cast operand is generated at the default width instead of the
 # target's — an i32 widening to u64 keeps its zero-extended 32 bits.
 mutate 'm7: the operand forgets the target width' \
     's#                int a=gen(\*e.a,e.ty);#                int a=gen(*e.a);#' \
-    must_differ 'u64 of an i32 -1' 43 'fn main() -> i32 { if (u64(0 - 1) == 18446744073709551615) { return 43; } return 0; }'
+    must_differ 'u64 of an i32 -1' 43 'fn main() : i32 { if (u64(0 - 1) == 18446744073709551615) { return 43; } return 0; }'
 # m8: only the u16 arm is dropped — u16 casts stop truncating.
 mutate 'm8: only the UXTH arm is dropped' \
     's#                if(wf>wt){#                if(wf>wt \&\& e.ty!=Ty::U16){#' \
-    must_differ 'u16(70000) still truncates' 112 'fn main() -> i32 { if (u16(70000) == 4464) { return 112; } return 0; }'
+    must_differ 'u16(70000) still truncates' 112 'fn main() : i32 { if (u16(70000) == 4464) { return 112; } return 0; }'
 # m9: the literal guard drops back to the i64 ceiling — a u64-only literal
 # has nowhere to go again. The real compiler accepts it; the mutant refuses.
 mutate 'm9: the old i64 literal ceiling' \
     's#n>0xffffffffffffffffULL#n>0x7fffffffffffffffULL#' \
-    must_reject 'the 2^64-1 literal' 'fn main() -> i32 { let x: u64 = 18446744073709551615; return 0; }'
+    must_reject 'the 2^64-1 literal' 'fn main() : i32 { let x: u64 = 18446744073709551615; return 0; }'
 printf '%s\n' 'PASS: nine mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

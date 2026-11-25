@@ -154,67 +154,67 @@ printf '%s\n' '[3/9] qemu: each of the four rules, one at a time'
 
 # (1) `&&` binds tighter than `||`. The four rows of the truth table where the
 # two readings disagree are the ones worth pinning.
-check "$A" 'T || T && F  (T || (T&&F))' 1 'fn main() -> i32 { if (1 == 1 || 1 == 1 && 1 == 2) { return 1; } return 0; }'
-check "$A" 'T || F && T  (T || (F&&T))' 1 'fn main() -> i32 { if (1 == 1 || 1 == 2 && 1 == 1) { return 1; } return 0; }'
-check "$A" 'F && T || T  ((F&&T) || T)' 1 'fn main() -> i32 { if (1 == 2 && 1 == 1 || 1 == 1) { return 1; } return 0; }'
-check "$A" 'F || F && T  (F || (F&&T))' 0 'fn main() -> i32 { if (1 == 2 || 1 == 2 && 1 == 1) { return 1; } return 0; }'
-check "$A" 'T && F || F  ((T&&F) || F)' 0 'fn main() -> i32 { if (1 == 1 && 1 == 2 || 1 == 2) { return 1; } return 0; }'
+check "$A" 'T || T && F  (T || (T&&F))' 1 'fn main() : i32 { if (1 == 1 || 1 == 1 && 1 == 2) { return 1; } return 0; }'
+check "$A" 'T || F && T  (T || (F&&T))' 1 'fn main() : i32 { if (1 == 1 || 1 == 2 && 1 == 1) { return 1; } return 0; }'
+check "$A" 'F && T || T  ((F&&T) || T)' 1 'fn main() : i32 { if (1 == 2 && 1 == 1 || 1 == 1) { return 1; } return 0; }'
+check "$A" 'F || F && T  (F || (F&&T))' 0 'fn main() : i32 { if (1 == 2 || 1 == 2 && 1 == 1) { return 1; } return 0; }'
+check "$A" 'T && F || F  ((T&&F) || F)' 0 'fn main() : i32 { if (1 == 1 && 1 == 2 || 1 == 2) { return 1; } return 0; }'
 # A single operator at either level is unchanged: three operands still fold
 # left, which is what every shipped example relies on.
-check "$A" 'T && T && T'             1 'fn main() -> i32 { if (1 == 1 && 1 == 1 && 1 == 1) { return 1; } return 0; }'
-check "$A" 'F || F || T'              1 'fn main() -> i32 { if (1 == 2 || 1 == 2 || 1 == 1) { return 1; } return 0; }'
+check "$A" 'T && T && T'             1 'fn main() : i32 { if (1 == 1 && 1 == 1 && 1 == 1) { return 1; } return 0; }'
+check "$A" 'F || F || T'              1 'fn main() : i32 { if (1 == 2 || 1 == 2 || 1 == 1) { return 1; } return 0; }'
 # Short-circuiting survives the split: the right operand is not evaluated.
-check "$A" '|| short-circuits'        2 'fn side() -> bool { return 1 == 1; }
-fn main() -> i32 { let n: i32 = 0; if (1 == 1 || side()) { n = 2; } return n; }'
+check "$A" '|| short-circuits'        2 'fn side() : bool { return 1 == 1; }
+fn main() : i32 { let n: i32 = 0; if (1 == 1 || side()) { n = 2; } return n; }'
 check "$A" '&& short-circuits'        0 'let g: i32 = 0;
-fn side() -> bool { g = 1; return 1 == 1; }
-fn main() -> i32 { if (1 == 2 && side()) { return 9; } return g; }'
+fn side() : bool { g = 1; return 1 == 1; }
+fn main() : i32 { if (1 == 2 && side()) { return 9; } return g; }'
 
 # (2) A prefix operator sees the whole postfix chain.
 check "$A" '-(s.v)'                   5 'struct S { v: i32 }
-fn main() -> i32 { let s: S = S { 5 }; return 0 - (-s.v); }'
+fn main() : i32 { let s: S = S { 5 }; return 0 - (-s.v); }'
 check "$A" '!(s.ok)'                  2 'struct S { ok: bool }
-fn main() -> i32 { let s: S = S { true }; if (!s.ok) { return 1; } return 2; }'
+fn main() : i32 { let s: S = S { true }; if (!s.ok) { return 1; } return 2; }'
 check "$A" '~(s.v)'                   1 'struct S { v: i32 }
-fn main() -> i32 { let s: S = S { 5 }; if (~s.v == 0 - 6) { return 1; } return 0; }'
+fn main() : i32 { let s: S = S { 5 }; if (~s.v == 0 - 6) { return 1; } return 0; }'
 check "$A" '*(s.p)'                   9 'struct S { p: ptr, v: i32 }
 let buf: i32[4] = 9;
-fn main() -> i32 { let s: S = S { buf, 1 }; return *s.p; }'
+fn main() : i32 { let s: S = S { buf, 1 }; return *s.p; }'
 # A prefix on something with no field access is exactly as it was.
-check "$A" '-x (no field)'            1 'fn main() -> i32 { let x: i32 = 6; if (-x == 0 - 6) { return 1; } return 0; }'
+check "$A" '-x (no field)'            1 'fn main() : i32 { let x: i32 = 6; if (-x == 0 - 6) { return 1; } return 0; }'
 check "$A" '*p (no field)'            7 'let buf: i32[4] = 7;
-fn main() -> i32 { let p: ptr = buf; return *p; }'
-check "$A" '-a[i]'                    1 'fn main() -> i32 { let a: i32[2] = 6; if (-a[1] == 0 - 6) { return 1; } return 0; }'
+fn main() : i32 { let p: ptr = buf; return *p; }'
+check "$A" '-a[i]'                    1 'fn main() : i32 { let a: i32[2] = 6; if (-a[1] == 0 - 6) { return 1; } return 0; }'
 # Two prefixes in a row, and a prefix on a parenthesised expression. `--` is
 # one token, so the two negations are written with a space between them.
-check "$A" '- -x'                     6 'fn main() -> i32 { let x: i32 = 6; return - -x; }'
-check "$A" '-(x + y)'                 1 'fn main() -> i32 { let x: i32 = 2; let y: i32 = 4; if (-(x + y) == 0 - 6) { return 1; } return 0; }'
+check "$A" '- -x'                     6 'fn main() : i32 { let x: i32 = 6; return - -x; }'
+check "$A" '-(x + y)'                 1 'fn main() : i32 { let x: i32 = 2; let y: i32 = 4; if (-(x + y) == 0 - 6) { return 1; } return 0; }'
 # `&` is unchanged: it already reached postfix(), and it still means &(s.v).
 check "$A" '&s (struct lvalue)'       1 'struct S { v: i32 }
-fn main() -> i32 { let s: S = S { 5 }; let p: ptr = &s; if (p != 0) { return 1; } return 0; }'
+fn main() : i32 { let s: S = S { 5 }; let p: ptr = &s; if (p != 0) { return 1; } return 0; }'
 
 # (3) A level crossing is not a chain.
-check "$A" 'a < b == c'               1 'fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 1; if (a < b == c) { return 1; } return 0; }'
-check "$A" 'a < b == c (false)'       0 'fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 0; if (a < b == c) { return 1; } return 0; }'
-check "$A" 'a < b != c'               0 'fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 1; if (a < b != c) { return 1; } return 0; }'
-check "$A" 'a == b < c  (a == (b<c))' 1 'fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 3; if (a == b < c) { return 1; } return 0; }'
-check "$A" 'a <= b == b >= a'         1 'fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; if (a <= b == b >= a) { return 1; } return 0; }'
+check "$A" 'a < b == c'               1 'fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 1; if (a < b == c) { return 1; } return 0; }'
+check "$A" 'a < b == c (false)'       0 'fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 0; if (a < b == c) { return 1; } return 0; }'
+check "$A" 'a < b != c'               0 'fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 1; if (a < b != c) { return 1; } return 0; }'
+check "$A" 'a == b < c  (a == (b<c))' 1 'fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 3; if (a == b < c) { return 1; } return 0; }'
+check "$A" 'a <= b == b >= a'         1 'fn main() : i32 { let a: i32 = 1; let b: i32 = 2; if (a <= b == b >= a) { return 1; } return 0; }'
 # A comparison result is still an ordinary bool, so it composes.
-check "$A" '(a<b)==c stored as bool'  3 'fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 1;
+check "$A" '(a<b)==c stored as bool'  3 'fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 1;
     let d: bool = (a < b == c); if (d) { return 3; } return 0; }'
 
 # (4) A narrow local is range-checked exactly like a narrow global.
-check "$A" 'u8 at 255'                1 'fn main() -> i32 { let b: u8 = 255; if (b == 255) { return 1; } return 0; }'
-check "$A" 'u16 at 65535'             1 'fn main() -> i32 { let b: u16 = 65535; if (b == 65535) { return 1; } return 0; }'
-check "$A" 'u32 at 4000000000'        1 'fn main() -> i32 { let b: u32 = 4000000000; if (b > 0) { return 1; } return 0; }'
-check "$A" 'u8[4] at 200'             1 'fn main() -> i32 { let a: u8[4] = 200; if (a[3] == 200) { return 1; } return 0; }'
-check "$A" 'u16[2] at 65535'          1 'fn main() -> i32 { let a: u16[2] = 65535; if (a[1] == 65535) { return 1; } return 0; }'
+check "$A" 'u8 at 255'                1 'fn main() : i32 { let b: u8 = 255; if (b == 255) { return 1; } return 0; }'
+check "$A" 'u16 at 65535'             1 'fn main() : i32 { let b: u16 = 65535; if (b == 65535) { return 1; } return 0; }'
+check "$A" 'u32 at 4000000000'        1 'fn main() : i32 { let b: u32 = 4000000000; if (b > 0) { return 1; } return 0; }'
+check "$A" 'u8[4] at 200'             1 'fn main() : i32 { let a: u8[4] = 200; if (a[3] == 200) { return 1; } return 0; }'
+check "$A" 'u16[2] at 65535'          1 'fn main() : i32 { let a: u16[2] = 65535; if (a[1] == 65535) { return 1; } return 0; }'
 # v0.23.63-dev changed this one: narrowing a *value* used to be allowed in both
 # scopes and now is not, so what stays legal is the spelled-out truncation. The
 # un-cast forms moved down to the rejection matrix as two of its rows.
-check "$A" 'i32 from an i64 value, cast' 5 'fn main() -> i32 { let a: i64 = 5; let b: i32 = i32(a); return b; }'
-check "$A" 'u8 from an i32 value, cast'  1 'fn main() -> i32 { let a: i32 = 200; let b: u8 = u8(a); if (b == 200) { return 1; } return 0; }'
-check "$A" 'i32 from a wide literal'  1 'fn main() -> i32 { let a: i32 = 5000000000; if (a != 0) { return 1; } return 0; }'
+check "$A" 'i32 from an i64 value, cast' 5 'fn main() : i32 { let a: i64 = 5; let b: i32 = i32(a); return b; }'
+check "$A" 'u8 from an i32 value, cast'  1 'fn main() : i32 { let a: i32 = 200; let b: u8 = u8(a); if (b == 200) { return 1; } return 0; }'
+check "$A" 'i32 from a wide literal'  1 'fn main() : i32 { let a: i32 = 5000000000; if (a != 0) { return 1; } return 0; }'
 
 # ---------------------------------------------------------------------------
 # [4/9] Differential layer: the same program under Aster and under the target
@@ -242,7 +242,7 @@ else
     # The four rows where the two readings of `||` and `&&` disagree. C has
     # always bound && tighter; Aster now agrees.
     diff_case '|| and &&: four rows' \
-        'fn main() -> i32 {
+        'fn main() : i32 {
     let r: i32 = 0;
     if (1 == 1 || 1 == 1 && 1 == 2) { r = r + 1; }
     if (1 == 2 || 1 == 2 && 1 == 1) { r = r + 2; }
@@ -260,7 +260,7 @@ else
     diff_case 'prefix operators vs .' \
         'struct S { p: ptr, v: i32, ok: bool }
 let buf: i32[4] = 9;
-fn main() -> i32 {
+fn main() : i32 {
     let s: S = S { buf, 5, false };
     let r: i32 = 0;
     if (*s.p == 9) { r = r + 1; }
@@ -280,7 +280,7 @@ int main(void) {
     # A level crossing, and the two cross-level spellings with != and with the
     # operands the other way round.
     diff_case 'a < b == c' \
-        'fn main() -> i32 {
+        'fn main() : i32 {
     let a: i32 = 1; let b: i32 = 2; let c: i32 = 1; let d: i32 = 0;
     let r: i32 = 0;
     if (a < b == c) { r = r + 1; }
@@ -299,7 +299,7 @@ int main(void) {
     # A narrow local at the top of its range — the shape that used to truncate
     # in silence inside a function.
     diff_case 'narrow local at its top' \
-        'fn main() -> i32 {
+        'fn main() : i32 {
     let u: u8 = 255;
     let w: u16 = 65535;
     let r: i32 = 0;
@@ -339,52 +339,52 @@ reject() {
 # operators at the relational level, two at the equality level.
 for op in '<' '<=' '>' '>='; do
     reject "a $op b $op c (chain)" 'chained comparisons are not supported' \
-        "fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 3;
+        "fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 3;
     if (a $op b $op c) { return 1; } return 0; }"
 done
 reject 'a == b == c (chain)' 'chained comparisons are not supported' \
-    'fn main() -> i32 { let a: i32 = 1; let b: i32 = 1; let c: i32 = 1;
+    'fn main() : i32 { let a: i32 = 1; let b: i32 = 1; let c: i32 = 1;
     if (a == b == c) { return 1; } return 0; }'
 reject 'a != b != c (chain)' 'chained comparisons are not supported' \
-    'fn main() -> i32 { let a: i32 = 1; let b: i32 = 1; let c: i32 = 1;
+    'fn main() : i32 { let a: i32 = 1; let b: i32 = 1; let c: i32 = 1;
     if (a != b != c) { return 1; } return 0; }'
 # A narrow local out of range, in each of the four shapes the check covers.
 reject 'local u8 = 300' 'local initializer does not fit in u8' \
-    'fn main() -> i32 { let b: u8 = 300; return b; }'
+    'fn main() : i32 { let b: u8 = 300; return b; }'
 reject 'local u8 = 256' 'local initializer does not fit in u8' \
-    'fn main() -> i32 { let b: u8 = 256; return b; }'
+    'fn main() : i32 { let b: u8 = 256; return b; }'
 reject 'local u16 = 65536' 'local initializer does not fit in u16' \
-    'fn main() -> i32 { let b: u16 = 65536; return b; }'
+    'fn main() : i32 { let b: u16 = 65536; return b; }'
 reject 'local u32 = 0 - 1' 'local initializer does not fit in u32' \
-    'fn main() -> i32 { let b: u32 = 0 - 1; return b; }'
+    'fn main() : i32 { let b: u32 = 0 - 1; return b; }'
 reject 'local u8[4] = 300' 'local array initializer does not fit in u8' \
-    'fn main() -> i32 { let a: u8[4] = 300; return a[0]; }'
+    'fn main() : i32 { let a: u8[4] = 300; return a[0]; }'
 reject 'local u16[2] = 65536' 'local array initializer does not fit in u16' \
-    'fn main() -> i32 { let a: u16[2] = 65536; return a[0]; }'
+    'fn main() : i32 { let a: u16[2] = 65536; return a[0]; }'
 # A folded expression, not just a bare literal — the check sees the value, so
 # `200 + 100` is the same mistake as `300`.
 reject 'local u8 = 200 + 100' 'local initializer does not fit in u8' \
-    'fn main() -> i32 { let b: u8 = 200 + 100; return b; }'
+    'fn main() : i32 { let b: u8 = 200 + 100; return b; }'
 # v0.23.63-dev: an implicit narrowing in a store is refused at last — the rule
 # `checkArgument` always applied to an argument now applies to a `let` too.
 # A constant that does not fit is still diagnosed as a range problem first, so
 # these two are the *value* shape the rows above are not.
 reject 'local i32 from an i64 value' 'type mismatch initializing' \
-    'fn main() -> i32 { let a: i64 = 5; let b: i32 = a; return b; }'
+    'fn main() : i32 { let a: i64 = 5; let b: i32 = a; return b; }'
 reject 'local u8 from an i32 value' 'type mismatch initializing' \
-    'fn main() -> i32 { let a: i32 = 200; let b: u8 = a; return b; }'
+    'fn main() : i32 { let a: i32 = 200; let b: u8 = a; return b; }'
 # The prefix operators still refuse the operands they always refused: a bool
 # cannot be negated arithmetically, and a struct is not a number. (`&` is no
 # longer in this set — v0.23.58-dev generalized it to every lvalue, so taking
 # the address of a scalar and reading it back is now accepted, not refused.)
 reject '-b (a bool)' 'cannot use a bool value in -' \
-    'fn main() -> i32 { let b: bool = true; let n: i32 = 0 - b; return n; }'
+    'fn main() : i32 { let b: bool = true; let n: i32 = 0 - b; return n; }'
 reject '!(an i32)' "'!' requires a bool operand" \
-    'fn main() -> i32 { let n: i32 = 1; if (!n) { return 1; } return 0; }'
+    'fn main() : i32 { let n: i32 = 1; if (!n) { return 1; } return 0; }'
 # v0.23.58-dev: `&` of a scalar is now accepted and yields a ptr<i32>; the prefix
 # binding itself is unchanged (it still binds tighter than the binary operators).
 check "$A" '& of an i32 yields ptr<i32>' 42 \
-    'fn main() -> i32 { let n: i32 = 42; let p: ptr<i32> = &n; return *p; }'
+    'fn main() : i32 { let n: i32 = 42; let p: ptr<i32> = &n; return *p; }'
 
 # ---------------------------------------------------------------------------
 # [6/9] Coverage map. Every accepted row above has to name the rule it
@@ -506,7 +506,7 @@ else
 # (1) m1: one loop over both operators again — the pre-round shape.
 mutate 'm1: && and || back to one level' \
     's/while(cur().k==TK::And){/while(cur().k==TK::And||cur().k==TK::Or){/' \
-    must_differ 'T || T && F' 1 'fn main() -> i32 { if (1 == 1 || 1 == 1 && 1 == 2) { return 1; } return 0; }'
+    must_differ 'T || T && F' 1 'fn main() : i32 { if (1 == 1 || 1 == 1 && 1 == 2) { return 1; } return 0; }'
 # m2: the two levels swapped. Under the mutant `||` binds tighter and each token
 # builds the other's node, so `T && F || F` parses as `T && (F || F)` with `&&`
 # computing || : true || false, i.e. 1. The real compiler reads `(T && F) || F`,
@@ -515,27 +515,27 @@ mutate 'm1: && and || back to one level' \
 # there — which is why this row is the one pinned to it.)
 mutate 'm2: the two levels swapped' \
     's/while(cur().k==TK::And){/while(cur().k==TK::ZZ){/;s/while(cur().k==TK::Or){/while(cur().k==TK::And){/;s/while(cur().k==TK::ZZ){/while(cur().k==TK::Or){/' \
-    must_differ 'T && F || F' 0 'fn main() -> i32 { if (1 == 1 && 1 == 2 || 1 == 2) { return 1; } return 0; }'
+    must_differ 'T && F || F' 0 'fn main() : i32 { if (1 == 1 && 1 == 2 || 1 == 2) { return 1; } return 0; }'
 # (2) m3: `-` takes a primary() operand again, so `-s.v` is `(-s).v`.
 mutate 'm3: - takes a primary operand' \
     's/if(eat(TK::Minus)){E x=unary();/if(eat(TK::Minus)){E x=primary();/' \
     must_not_compile '-(s.v)' 'struct S { v: i32 }
-fn main() -> i32 { let s: S = S { 5 }; return 0 - (-s.v); }'
+fn main() : i32 { let s: S = S { 5 }; return 0 - (-s.v); }'
 # m4: `*` takes a primary() operand again, so `*s.p` is `(*s).p`.
 mutate 'm4: * takes a primary operand' \
     's/if(eat(TK::Star)){E x=unary();/if(eat(TK::Star)){E x=primary();/' \
     must_not_compile '*(s.p)' 'struct S { p: ptr, v: i32 }
 let buf: i32[4] = 9;
-fn main() -> i32 { let s: S = S { buf, 1 }; return *s.p; }'
+fn main() : i32 { let s: S = S { buf, 1 }; return *s.p; }'
 # m5: `!` takes a primary() operand again.
 mutate 'm5: ! takes a primary operand' \
     's/if(eat(TK::Not)){E x=unary();/if(eat(TK::Not)){E x=primary();/' \
     must_not_compile '!(s.ok)' 'struct S { ok: bool }
-fn main() -> i32 { let s: S = S { true }; if (!s.ok) { return 1; } return 2; }'
+fn main() : i32 { let s: S = S { true }; if (!s.ok) { return 1; } return 2; }'
 # (3) m6: relational() refuses a level crossing again — the pre-round shape.
 mutate 'm6: relational refuses == too' \
     's/if(isRelationalOp(cur().k))throw Error("chained comparisons are not supported/if(isRelationalOp(cur().k)||isEqualityOp(cur().k))throw Error("chained comparisons are not supported/' \
-    must_not_compile 'a < b == c' 'fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 1;
+    must_not_compile 'a < b == c' 'fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let c: i32 = 1;
     if (a < b == c) { return 1; } return 0; }'
 # m7: equality() stops refusing a chain inside its own level. An empty block,
 # not nothing: the mutant has to compile for the check to be observable.
@@ -544,7 +544,7 @@ mutate 'm6: relational refuses == too' \
 # catches it is the rejection-matrix row, which asks for the specific message.
 mutate 'm7: equality allows a chain' \
     's/if(isEqualityOp(cur().k))throw Error("chained comparisons are not supported at "+std::to_string(cur().line)+":"+std::to_string(cur().col));/if(isEqualityOp(cur().k)){}/' \
-    must_not_say 'a == b == c' 'chained comparisons are not supported' 'fn main() -> i32 { let a: i32 = 1; let b: i32 = 1; let c: i32 = 1;
+    must_not_say 'a == b == c' 'chained comparisons are not supported' 'fn main() : i32 { let a: i32 = 1; let b: i32 = 1; let c: i32 = 1;
     if (a == b == c) { return 1; } return 0; }'
 # (4) The range check on a narrow local initializer. It exists twice — once in
 # sema, once in codegen — so it takes three mutants to pin down: each half on
@@ -561,27 +561,27 @@ mutate 'm7: equality allows a chain' \
 # for one reason only, which is what isolates the check under test.
 mutate 'm8: sema drops the scalar check' \
     '/foldAtExprType(constExprType(\*s.expr),s.ty,v);/,+2 s/if(!initializerFits(s.ty,\*s.expr,v))/if(false)/' \
-    must_still_say 'local u32 = 0 - 1' 'local initializer does not fit in u32' 'fn main() -> i32 { let b: u32 = 0 - 1; return 0; }'
+    must_still_say 'local u32 = 0 - 1' 'local initializer does not fit in u32' 'fn main() : i32 { let b: u32 = 0 - 1; return 0; }'
 # m9: both passes drop the scalar check — the bug the round closes comes back:
 # `let b: u32 = 0 - 1;` compiles again and stores 4294967295.
 mutate 'm9: both passes drop the scalar check' \
     '/foldAtExprType(constExprType(\*s.expr),s.ty,v);/,+2 s/if(!initializerFits(s.ty,\*s.expr,v))/if(false)/;/foldAtExprType(constExprType(\*s.expr),s.ty,cv);/,+2 s/if(!initializerFits(s.ty,\*s.expr,cv))/if(false)/' \
-    must_now_compile 'local u32 = 0 - 1' 'fn main() -> i32 { let b: u32 = 0 - 1; return 0; }'
+    must_now_compile 'local u32 = 0 - 1' 'fn main() : i32 { let b: u32 = 0 - 1; return 0; }'
 # m10: sema drops the array check; codegen's twin has to catch it.
 mutate 'm10: sema drops the array check' \
     's/if(!initializerFits(s.ty,\*s.expr,v))/if(false)/' \
-    must_still_say 'local u32[4] = 0 - 1' 'local array initializer does not fit in u32' 'fn main() -> i32 { let a: u32[4] = 0 - 1; return a[0]; }'
+    must_still_say 'local u32[4] = 0 - 1' 'local array initializer does not fit in u32' 'fn main() : i32 { let a: u32[4] = 0 - 1; return a[0]; }'
 # m11: both passes drop the array check.
 mutate 'm11: both drop the array check' \
     's/if(!initializerFits(s.ty,\*s.expr,v))/if(false)/;s/if(!initializerFits(elem,\*s.expr,value))/if(false)/' \
-    must_now_compile 'local u32[4] = 0 - 1' 'fn main() -> i32 { let a: u32[4] = 0 - 1; return a[0]; }'
+    must_now_compile 'local u32[4] = 0 - 1' 'fn main() : i32 { let a: u32[4] = 0 - 1; return a[0]; }'
 # m12: the range check itself stops refusing anything narrow — the widest
 # possible withdrawal, and the one that would silently restore truncation
 # everywhere, globals included.
 mutate 'm12: initializerFits always true' \
     's/static bool initializerFits(Ty t,const Expr& e,int64_t folded){/static bool initializerFits(Ty t,const Expr\& e,int64_t folded){return true;/' \
     must_now_compile 'global u32 = 0 - 1' 'let b: u32 = 0 - 1;
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 printf '%s\n' 'PASS: twelve mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

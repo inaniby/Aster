@@ -68,14 +68,14 @@ fi
 printf '%s\n' '[3/4] Differential battery: Aster vs gcc on the residual edges'
 cat > "$W/cases.txt" <<'CASES_EOF'
 1~string_byte_index_across_call
-fn at(s: ptr, i: i32) -> i32 { return load_u8(s + i); }
-fn main() -> i32 { return at("ABC", 1); }
+fn at(s: ptr, i: i32) : i32 { return load_u8(s + i); }
+fn main() : i32 { return at("ABC", 1); }
 @C@
 int at(const char* s, int i){ return (unsigned char)s[i]; }
 int main(void){ return at("ABC", 1); }
 @@@
 2~two_string_literals_offset
-fn main() -> i32 { let a: ptr = "XY"; let b: ptr = "ZW"; return load_u8(a + 0) + load_u8(b + 1); }
+fn main() : i32 { let a: ptr = "XY"; let b: ptr = "ZW"; return load_u8(a + 0) + load_u8(b + 1); }
 @C@
 int main(void){ const char* a = "XY"; const char* b = "ZW"; return (unsigned char)a[0] + (unsigned char)b[1]; }
 @@@
@@ -138,11 +138,11 @@ printf 'PASS: %d Aster rodata/string edges match aarch64 gcc exactly (byte index
 # side is caught.
 printf '%s\n' '[3b] Narrow u8 parameter across an Aster<->Aster link-obj (cross-asserted with gcc)'
 cat > "$W/np_def.ast" <<'AST'
-fn add_one(x: u8) -> u8 { return x + 1; }
+fn add_one(x: u8) : u8 { return x + 1; }
 AST
 cat > "$W/np_main.ast" <<'AST'
-extern fn add_one(x: u8) -> u8;
-fn main() -> i32 { return add_one(200); }
+extern fn add_one(x: u8) : u8;
+fn main() : i32 { return add_one(200); }
 AST
 cat > "$W/np_def.c" <<'C'
 unsigned char add_one(unsigned char x){ return x + 1; }

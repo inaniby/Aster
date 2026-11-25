@@ -170,22 +170,22 @@ check() {
     printf '  %-34s %s\n' "$name" "$got"
 }
 A=$OUT/aster
-check "$A" '2-D element write and read'   42 'fn main() -> i32 { let a: i32[2][3] = 0; a[1][2] = 42; return a[1][2]; }'
-check "$A" 'row address to a function'    15 'fn rowSum(p: ptr, n: i32) -> i32 { let t: i32 = 0; let i: i32 = 0; while (i < n) { t = t + p[i]; i = i + 1; } return t; }
-fn main() -> i32 { let a: i32[2][3] = 0; a[0][0] = 1; a[0][1] = 2; a[0][2] = 3; a[1][0] = 4; a[1][1] = 5; a[1][2] = 6; return rowSum(a[1], 3); }'
+check "$A" '2-D element write and read'   42 'fn main() : i32 { let a: i32[2][3] = 0; a[1][2] = 42; return a[1][2]; }'
+check "$A" 'row address to a function'    15 'fn rowSum(p: ptr, n: i32) : i32 { let t: i32 = 0; let i: i32 = 0; while (i < n) { t = t + p[i]; i = i + 1; } return t; }
+fn main() : i32 { let a: i32[2][3] = 0; a[0][0] = 1; a[0][1] = 2; a[0][2] = 3; a[1][0] = 4; a[1][1] = 5; a[1][2] = 6; return rowSum(a[1], 3); }'
 check "$A" 'global 2-D grid'              22 'let g: i32[2][3] = 0;
-fn main() -> i32 { g[1][2] = 22; if (g[0][0] == 0 && g[1][2] == 22) { return 22; } return 0; }'
-check "$A" '3-D walk'                      8 'fn main() -> i32 { let c: i32[2][2][2] = 0; c[1][1][1] = 8; c[0][1][0] = 3; if (c[1][1][1] == 8 && c[0][1][0] == 3) { return 8; } return 0; }'
-check "$A" '3-D row to a function'        11 'fn rowSum(p: ptr, n: i32) -> i32 { let t: i32 = 0; let i: i32 = 0; while (i < n) { t = t + p[i]; i = i + 1; } return t; }
-fn main() -> i32 { let c: i32[2][2][2] = 0; c[1][0][0] = 5; c[1][0][1] = 6; return rowSum(c[1][0], 2); }'
+fn main() : i32 { g[1][2] = 22; if (g[0][0] == 0 && g[1][2] == 22) { return 22; } return 0; }'
+check "$A" '3-D walk'                      8 'fn main() : i32 { let c: i32[2][2][2] = 0; c[1][1][1] = 8; c[0][1][0] = 3; if (c[1][1][1] == 8 && c[0][1][0] == 3) { return 8; } return 0; }'
+check "$A" '3-D row to a function'        11 'fn rowSum(p: ptr, n: i32) : i32 { let t: i32 = 0; let i: i32 = 0; while (i < n) { t = t + p[i]; i = i + 1; } return t; }
+fn main() : i32 { let c: i32[2][2][2] = 0; c[1][0][0] = 5; c[1][0][1] = 6; return rowSum(c[1][0], 2); }'
 check "$A" 'struct field 2-D'              6 'struct Grid { cells: i32[2][3] }
-fn main() -> i32 { let g: Grid; g.cells[1][2] = 6; g.cells[0][1] = 2; if (g.cells[1][2] == 6 && g.cells[0][1] == 2) { return 6; } return 0; }'
-check "$A" 'i64 grid, stride 24'          88 'fn main() -> i32 { let w: i64[2][3] = 0; w[1][2] = 600; w[0][0] = 100; if (w[1][2] == 600 && w[0][0] == 100) { return 88; } return 0; }'
-check "$A" 'u8 grid, stride 1'             5 'fn main() -> i32 { let n: u8[2][3] = 0; n[1][1] = 5; if (n[1][1] == 5 && n[0][2] == 0) { return 5; } return 0; }'
-check "$A" 'computed subscripts'          61 'fn main() -> i32 { let a: i32[2][3] = 0; let i: i32 = 0; while (i < 2) { let j: i32 = 0; while (j < 3) { a[i][j] = i * 3 + j + 1; j = j + 1; } i = i + 1; } return a[1][2] * 10 + a[0][0]; }'
-check "$A" 'a row is a ptr value'          4 'fn main() -> i32 { let a: i32[2][3] = 0; a[1][0] = 4; let p: ptr = a[1]; return p[0]; }'
-check "$A" 'compound assign on 2-D'       42 'fn main() -> i32 { let a: i32[2][3] = 0; a[1][2] = 40; a[1][2] += 2; return a[1][2]; }'
-check "$A" '2-D inside for loops'          9 'fn main() -> i32 { let a: i32[2][3] = 0; let s: i32 = 0; for (let i: i32 = 0; i < 2; i = i + 1) { for (let j: i32 = 0; j < 3; j = j + 1) { a[i][j] = i + j; s = s + a[i][j]; } } return s; }'
+fn main() : i32 { let g: Grid; g.cells[1][2] = 6; g.cells[0][1] = 2; if (g.cells[1][2] == 6 && g.cells[0][1] == 2) { return 6; } return 0; }'
+check "$A" 'i64 grid, stride 24'          88 'fn main() : i32 { let w: i64[2][3] = 0; w[1][2] = 600; w[0][0] = 100; if (w[1][2] == 600 && w[0][0] == 100) { return 88; } return 0; }'
+check "$A" 'u8 grid, stride 1'             5 'fn main() : i32 { let n: u8[2][3] = 0; n[1][1] = 5; if (n[1][1] == 5 && n[0][2] == 0) { return 5; } return 0; }'
+check "$A" 'computed subscripts'          61 'fn main() : i32 { let a: i32[2][3] = 0; let i: i32 = 0; while (i < 2) { let j: i32 = 0; while (j < 3) { a[i][j] = i * 3 + j + 1; j = j + 1; } i = i + 1; } return a[1][2] * 10 + a[0][0]; }'
+check "$A" 'a row is a ptr value'          4 'fn main() : i32 { let a: i32[2][3] = 0; a[1][0] = 4; let p: ptr = a[1]; return p[0]; }'
+check "$A" 'compound assign on 2-D'       42 'fn main() : i32 { let a: i32[2][3] = 0; a[1][2] = 40; a[1][2] += 2; return a[1][2]; }'
+check "$A" '2-D inside for loops'          9 'fn main() : i32 { let a: i32[2][3] = 0; let s: i32 = 0; for (let i: i32 = 0; i < 2; i = i + 1) { for (let j: i32 = 0; j < 3; j = j + 1) { a[i][j] = i + j; s = s + a[i][j]; } } return s; }'
 else
     printf '%s\n' '  SKIP: the behavioural cases need qemu to run'
 fi
@@ -211,8 +211,8 @@ if [ "$have_qemu" = yes ] && [ "$have_cc" = yes ]; then
         printf '  %-34s %s\n' "$1" "$ga"
     }
     diff_case '2-D and 3-D, rows to a function' \
-        'fn rowSum(p: ptr, n: i32) -> i32 { let t: i32 = 0; let i: i32 = 0; while (i < n) { t = t + p[i]; i = i + 1; } return t; }
-fn main() -> i32 {
+        'fn rowSum(p: ptr, n: i32) : i32 { let t: i32 = 0; let i: i32 = 0; while (i < n) { t = t + p[i]; i = i + 1; } return t; }
+fn main() : i32 {
     let a: i32[3][4] = 0;
     let i: i32 = 0;
     while (i < 3) { let j: i32 = 0; while (j < 4) { a[i][j] = i * 4 + j; j = j + 1; } i = i + 1; }
@@ -231,7 +231,7 @@ int main(void) {
     return 0; }'
     diff_case 'i64 and u8 grids, struct field grid' \
         'struct Grid { cells: i32[2][3] }
-fn main() -> i32 {
+fn main() : i32 {
     let w: i64[2][3] = 0;
     w[0][2] = 300; w[1][0] = 400; w[1][2] = 600;
     let n: u8[3][2] = 0;
@@ -253,8 +253,8 @@ int main(void) {
     return 0; }'
     diff_case 'global grid, both scopes, shared rows' \
         'let g: i32[2][3] = 0;
-fn bump(p: ptr, n: i32) -> i32 { let i: i32 = 0; while (i < n) { p[i] = p[i] + 1; i = i + 1; } return p[0]; }
-fn main() -> i32 {
+fn bump(p: ptr, n: i32) : i32 { let i: i32 = 0; while (i < n) { p[i] = p[i] + 1; i = i + 1; } return p[0]; }
+fn main() : i32 {
     let i: i32 = 0;
     while (i < 2) { let j: i32 = 0; while (j < 3) { g[i][j] = i * 3 + j; j = j + 1; } i = i + 1; }
     let z: i32 = bump(g[1], 3);
@@ -292,53 +292,53 @@ reject() {
 }
 A=$OUT/aster
 reject '1-D then two subscripts'    "too many subscripts for 'a': it has 1 dimension" \
-    'fn main() -> i32 { let a: i32[3] = 0; return a[0][1]; }'
+    'fn main() : i32 { let a: i32[3] = 0; return a[0][1]; }'
 reject '2-D then three subscripts'  "too many subscripts for 'a': it has 2 dimensions" \
-    'fn main() -> i32 { let a: i32[2][3] = 0; return a[0][1][0]; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; return a[0][1][0]; }'
 reject 'row store, single subscript' "cannot assign to 'a'[i]: it addresses a row, not an element" \
-    'fn main() -> i32 { let a: i32[2][3] = 0; a[1] = 5; return 0; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; a[1] = 5; return 0; }'
 reject 'row compound store'         "cannot assign to 'a'[i]: it addresses a row, not an element" \
-    'fn main() -> i32 { let a: i32[2][3] = 0; a[1] += 5; return 0; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; a[1] += 5; return 0; }'
 reject 'row store on 3-D'           "cannot assign to 'a'[i]: it addresses a row, not an element" \
-    'fn main() -> i32 { let a: i32[2][2][2] = 0; a[0][1] = 5; return 0; }'
+    'fn main() : i32 { let a: i32[2][2][2] = 0; a[0][1] = 5; return 0; }'
 reject 'row store, field'           "cannot assign to field 'xs'[i]: it addresses a row, not an element" \
     'struct S { xs: i32[2][3] }
-fn main() -> i32 { let s: S; s.xs[0] = 5; return 0; }'
+fn main() : i32 { let s: S; s.xs[0] = 5; return 0; }'
 reject 'row store in a for step'    "cannot assign to 'a'[i]: it addresses a row, not an element" \
-    'fn main() -> i32 { let a: i32[2][3] = 0; for (let i: i32 = 0; i < 2; a[1] = 5) { } return 0; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; for (let i: i32 = 0; i < 2; a[1] = 5) { } return 0; }'
 reject 'row into an i32'            'type mismatch initializing '"'"'x'"'"': expected i32, got ptr' \
-    'fn main() -> i32 { let a: i32[2][3] = 0; let x: i32 = a[1]; return x; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; let x: i32 = a[1]; return x; }'
 reject 'row into an i32 parameter'  'argument type mismatch calling f at argument 1: expected i32' \
-    'fn f(n: i32) -> i32 { return n; }
-fn main() -> i32 { let a: i32[2][3] = 0; return f(a[1]); }'
+    'fn f(n: i32) : i32 { return n; }
+fn main() : i32 { let a: i32[2][3] = 0; return f(a[1]); }'
 reject 'two levels on a ptr'        'pointer indexing is not supported yet' \
-    'fn main() -> i32 { let p: ptr = 0; return p[0][1]; }'
+    'fn main() : i32 { let p: ptr = 0; return p[0][1]; }'
 reject 'bool subscript, outer'      'cannot use a bool value in an array index' \
-    'fn main() -> i32 { let a: i32[2][3] = 0; return a[true][0]; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; return a[true][0]; }'
 reject 'bool subscript, inner'      'cannot use a bool value in an array index' \
-    'fn main() -> i32 { let a: i32[2][3] = 0; return a[0][true]; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; return a[0][true]; }'
 reject 'outer subscript out of bounds' "array index out of bounds for 'a': index 2, length 2" \
-    'fn main() -> i32 { let a: i32[2][3] = 0; return a[2][0]; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; return a[2][0]; }'
 reject 'inner subscript out of bounds' 'array index out of bounds: index 3, length 3' \
-    'fn main() -> i32 { let a: i32[2][3] = 0; return a[0][3]; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; return a[0][3]; }'
 reject 'negative subscript'         "array index out of bounds for 'a': index -1, length 2" \
-    'fn main() -> i32 { let a: i32[2][3] = 0; return a[0 - 1][0]; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; return a[0 - 1][0]; }'
 reject 'zero dimension'             'local array length must be between 1 and 1000: a' \
-    'fn main() -> i32 { let a: i32[0][3] = 0; return a[0][0]; }'
+    'fn main() : i32 { let a: i32[0][3] = 0; return a[0][0]; }'
 reject 'total too large'            'local array length must be between 1 and 1000: a' \
-    'fn main() -> i32 { let a: i32[1000][1000] = 0; return a[0][0]; }'
+    'fn main() : i32 { let a: i32[1000][1000] = 0; return a[0][0]; }'
 reject 'scalar, two subscripts'     'cannot index non-array variable: x' \
-    'fn main() -> i32 { let x: i32 = 1; return x[0][1]; }'
+    'fn main() : i32 { let x: i32 = 1; return x[0][1]; }'
 reject 'unknown, two subscripts'    'unknown array: q' \
-    'fn main() -> i32 { return q[0][1]; }'
+    'fn main() : i32 { return q[0][1]; }'
 reject '1-D global, two subscripts' "too many subscripts for 'g': it has 1 dimension" \
     'let g: i32[3] = 0;
-fn main() -> i32 { return g[0][1]; }'
+fn main() : i32 { return g[0][1]; }'
 reject '1-D field, two subscripts'  "too many subscripts for field 'xs': it has 1 dimension" \
     'struct S { xs: i32[3] }
-fn main() -> i32 { let s: S; return s.xs[0][1]; }'
+fn main() : i32 { let s: S; return s.xs[0][1]; }'
 reject 'row in a condition'         'condition must be a comparison, a bool expression, or an integer' \
-    'fn main() -> i32 { let a: i32[2][3] = 0; if (a[1]) { return 1; } return 0; }'
+    'fn main() : i32 { let a: i32[2][3] = 0; if (a[1]) { return 1; } return 0; }'
 
 # ---------------------------------------------------------------------------
 # [6/9] Coverage map: which case exercises which rule.
@@ -433,15 +433,15 @@ else
 # sums the second row through a function: 15 real, 9 broken.
 mutate 'm1: a row strides by the element' \
     's|        for(size_t k=levels;k<dims->size();++k)stride\*=(\*dims)\[k\];||' \
-    must_differ 'rowSum over the second row' 15 'fn rowSum(p: ptr, n: i32) -> i32 { let t: i32 = 0; let i: i32 = 0; while (i < n) { t = t + p[i]; i = i + 1; } return t; }
-fn main() -> i32 { let a: i32[2][3] = 0; let i: i32 = 0; while (i < 2) { let j: i32 = 0; while (j < 3) { a[i][j] = i * 3 + j + 1; j = j + 1; } i = i + 1; } return rowSum(a[1], 3); }'
+    must_differ 'rowSum over the second row' 15 'fn rowSum(p: ptr, n: i32) : i32 { let t: i32 = 0; let i: i32 = 0; while (i < n) { t = t + p[i]; i = i + 1; } return t; }
+fn main() : i32 { let a: i32[2][3] = 0; let i: i32 = 0; while (i < 2) { let j: i32 = 0; while (j < 3) { a[i][j] = i * 3 + j + 1; j = j + 1; } i = i + 1; } return rowSum(a[1], 3); }'
 # m2: the outer stride multiply is dropped, so every level strides by the
 # element size. The witness cannot read back through the same broken chain —
 # that cancels — so it reads a[0][2], which under the broken stride lands on
 # element 2, where the broken fill last wrote a[1][1]'s value: 3 real, 5 broken.
 mutate 'm2: every level strides by the element' \
     's|            if(k>0)stride\*=(\*dims)\[k\];||' \
-    must_differ 'a[0][2] after a full fill' 3 'fn main() -> i32 { let a: i32[2][3] = 0; let i: i32 = 0; while (i < 2) { let j: i32 = 0; while (j < 3) { a[i][j] = i * 3 + j + 1; j = j + 1; } i = i + 1; } return a[0][2]; }'
+    must_differ 'a[0][2] after a full fill' 3 'fn main() : i32 { let a: i32[2][3] = 0; let i: i32 = 0; while (i < 2) { let j: i32 = 0; while (j < 3) { a[i][j] = i * 3 + j + 1; j = j + 1; } i = i + 1; } return a[0][2]; }'
 # m3: the per-level bool-index check is withdrawn at its source, so an inner
 # bool literal compiles — the hole this round's per-level walk closed. The
 # mutant therefore *accepts* what the real compiler refuses, and the rejection
@@ -455,37 +455,37 @@ mutate 'm2: every level strides by the element' \
 # rejectBool at the same call, which the scalar-base rows pin instead.
 mutate 'm3: the per-level bool-index check is withdrawn' \
     's|                        rejectBool(idxTy,"an array index");||' \
-    must_now_compile 'a[true][0]' 'fn main() -> i32 { let a: i32[2][3] = 0; return a[true][0]; }'
+    must_now_compile 'a[true][0]' 'fn main() : i32 { let a: i32[2][3] = 0; return a[true][0]; }'
 # m4: the single-subscript row store is no longer refused — the check that
 # reads the dimension count for a target the parser handed over as itself.
 # Withdrawn, the store is accepted (and lands on an element), so the mutant
 # compiles what the real compiler refuses.
 mutate 'm4: a single subscript may store a row' \
     's|if(rowWhat.empty()&&s.subs<2){|if(false){|' \
-    must_now_compile 'a[1] = 5 on a 2-D array' 'fn main() -> i32 { let a: i32[2][3] = 0; a[1] = 5; return 0; }'
+    must_now_compile 'a[1] = 5 on a 2-D array' 'fn main() : i32 { let a: i32[2][3] = 0; a[1] = 5; return 0; }'
 # m5: indexSubscripts() stops building a chain, so `a[i][j] = v` leaves the
 # second subscript unconsumed and the statement no longer parses.
 mutate 'm5: no chain for a second subscript' \
     's|        if(cur().k!=TK::LBracket)return first;|        return first;|' \
-    must_not_compile 'a[0][1] = 5' 'fn main() -> i32 { let a: i32[2][3] = 0; a[0][1] = 5; return a[0][1]; }'
+    must_not_compile 'a[0][1] = 5' 'fn main() : i32 { let a: i32[2][3] = 0; a[0][1] = 5; return a[0][1]; }'
 # m6: arrayDimList() no longer consumes the leading `[`, so no array
 # declaration parses at all — the one-dimensional spelling included.
 mutate 'm6: the leading [ is not consumed' \
     "s|            ++p;                                                    // the '\\['|            ;|" \
-    must_not_compile 'let a: i32[2][3]' 'fn main() -> i32 { let a: i32[2][3] = 0; return a[0][0]; }'
+    must_not_compile 'let a: i32[2][3]' 'fn main() : i32 { let a: i32[2][3] = 0; return a[0][0]; }'
 # m7: a local array's dimensions are no longer registered for codegen, so a
 # two-dimensional local is refused at address computation (a one-dimensional
 # one still walks emitElemAddr and still compiles).
 mutate 'm7: local dimensions not registered' \
     's|localArrayLength\[slot\]=s.dims\[0\];slotDims\[slot\]=s.dims;|localArrayLength[slot]=s.dims[0];|' \
-    must_not_compile 'a local 2-D element' 'fn main() -> i32 { let a: i32[2][3] = 0; a[0][0] = 1; return a[0][0]; }'
+    must_not_compile 'a local 2-D element' 'fn main() : i32 { let a: i32[2][3] = 0; a[0][0] = 1; return a[0][0]; }'
 # m8: a global array's dimensions are no longer registered, so a
 # two-dimensional global is refused in sema (a one-dimensional one still
 # answers through the fallback path and still compiles).
 mutate 'm8: global dimensions not registered' \
     's|arrayLengths\[g.name\]=g.dims\[0\];arrayDims\[g.name\]=g.dims;|arrayLengths[g.name]=g.dims[0];|' \
     must_not_compile 'a global 2-D element' 'let g: i32[2][3] = 0;
-fn main() -> i32 { g[0][1] = 5; return g[0][1]; }'
+fn main() : i32 { g[0][1] = 5; return g[0][1]; }'
 printf '%s\n' 'PASS: eight mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

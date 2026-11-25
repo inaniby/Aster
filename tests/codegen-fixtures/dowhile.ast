@@ -5,7 +5,7 @@
 // arrays.
 let out: u8[8] = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = 0;
     do {
         n = n + 1;

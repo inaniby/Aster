@@ -39,11 +39,11 @@ struct Node {
 let g_scale: i32 = 3;
 let g_buf: i32[4] = 0;
 
-fn inner(p: ptr, n: i32, s: i32) -> i32 {
+fn inner(p: ptr, n: i32, s: i32) : i32 {
     return load_u8(p) + n * s;
 }
 
-fn outer(x: i32) -> i32 {
+fn outer(x: i32) : i32 {
     if (x <= 0) {
         return 0;
     } else {
@@ -51,7 +51,7 @@ fn outer(x: i32) -> i32 {
     return (x * 256 + 128) / 256;
 }
 
-fn big(n: ptr<Node>) -> i32 {
+fn big(n: ptr<Node>) : i32 {
     let a0: i32 = 1;
     let a1: i32 = 2;
     let a2: i32 = 3;
@@ -70,7 +70,7 @@ fn big(n: ptr<Node>) -> i32 {
     return (a0 + outer(inner(n.text, n.text_len, g_scale))) + n.x + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + a12 + a13 + a14;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     g_buf[0] = 26952;
     let nd: Node;
     nd.text = &g_buf;

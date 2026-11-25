@@ -24,7 +24,7 @@
 // tests/literals-checks.sh; the C twin (tests/literals-twin.c) returns the
 // same 255 through C's own literal rules.
 
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = 0;
 
     // 1: character literals — plain, newline, the escaped quote, BEL, and a

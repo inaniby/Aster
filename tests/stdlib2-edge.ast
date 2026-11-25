@@ -1,17 +1,17 @@
 // tests/stdlib2-edge.ast — the boundary cases the demo's happy path does not
 // reach. Every check returns a distinct code, so a failure names the routine.
-extern fn memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
-extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
-extern fn strchr(s: ptr<u8>, c: i32) -> i32;
-extern fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32;
-extern fn atoi(s: ptr<u8>) -> i32;
-extern fn fmt_i32(buf: ptr<u8>, v: i32) -> i32;
-extern fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) -> i32;
-extern fn sort_i32(a: ptr, n: i32) -> i32;
-extern fn malloc(n: i32) -> ptr;
-extern fn free(p: ptr) -> i32;
+extern fn memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32;
+extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32;
+extern fn strchr(s: ptr<u8>, c: i32) : i32;
+extern fn strstr(h: ptr<u8>, n: ptr<u8>) : i32;
+extern fn atoi(s: ptr<u8>) : i32;
+extern fn fmt_i32(buf: ptr<u8>, v: i32) : i32;
+extern fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) : i32;
+extern fn sort_i32(a: ptr, n: i32) : i32;
+extern fn malloc(n: i32) : ptr;
+extern fn free(p: ptr) : i32;
 
-fn main() -> i32 {
+fn main() : i32 {
     let b: u8[16] = 0;
     let c: u8[16] = 0;
 

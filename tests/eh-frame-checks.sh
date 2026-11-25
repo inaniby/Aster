@@ -55,17 +55,17 @@ DECODE="python3 tests/ehframe-decode.py"
 # fill, and the exit status is asserted in layer 8.
 SRC="$OUT/unwind.ast"
 cat > "$SRC" <<'AST'
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: i32, b: i32) : i32 {
     let t: i32 = a + b;
     return t;
 }
 
-fn sub(a: i32, b: i32) -> i32 {
+fn sub(a: i32, b: i32) : i32 {
     let t: i32 = a - b;
     return t;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     return add(3, 4) - sub(3, 4);
 }
 AST
@@ -354,14 +354,14 @@ fi
 # --- 8. it survives linking, and it runs -----------------------------------------
 printf '%s\n' '[8/9] linking and running'
 cat > "$OUT/defs.ast" <<'AST'
-fn add2(n: i32) -> i32 {
+fn add2(n: i32) : i32 {
     return n + 2;
 }
 AST
 cat > "$OUT/entry.ast" <<'AST'
-extern fn add2(n: i32) -> i32;
+extern fn add2(n: i32) : i32;
 
-fn main() -> i32 {
+fn main() : i32 {
     return add2(40);
 }
 AST

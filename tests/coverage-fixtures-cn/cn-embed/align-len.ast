@@ -1,4 +1,4 @@
 // aster:language=en
-fn main() -> i32 {
+fn main() : i32 {
     return @embed_len("a.bin", 8);
 }

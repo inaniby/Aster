@@ -29,12 +29,12 @@ let ggrid: i32[3][4] = 0;               // a global 3x4 grid: 48 bytes, 12 eleme
 
 // An array parameter remembers its extent, so sizeof/len see the length the
 // caller's array carries — 16 bytes / 4 elements, and 48 / 6 for a 2x3 i64 grid.
-fn paramBytes(a: i32[4]) -> i32 { return sizeof(a); }
-fn paramCount(a: i32[4]) -> i32 { return len(a); }
-fn gridBytes(a: i64[2][3]) -> i32 { return sizeof(a); }
-fn gridCount(a: i64[2][3]) -> i32 { return len(a); }
+fn paramBytes(a: i32[4]) : i32 { return sizeof(a); }
+fn paramCount(a: i32[4]) : i32 { return len(a); }
+fn gridBytes(a: i64[2][3]) : i32 { return sizeof(a); }
+fn gridCount(a: i64[2][3]) : i32 { return len(a); }
 
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = 0;
 
     // 1: the type spelling — a scalar, a wider scalar, and an array literal.

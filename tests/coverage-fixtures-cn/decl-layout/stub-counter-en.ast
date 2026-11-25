@@ -14,32 +14,32 @@ let endn: i32 = 0;
 let padn: i32 = 0;
 let gapn: i32 = 0;
 let statev: i32 = 0;
-let savedDec: fn(ptr) -> i32 = null;
-let savedInc: fn(ptr) -> i32 = null;
-let savedReset: fn(ptr) -> i32 = null;
+let savedDec: fn(ptr) : i32 = null;
+let savedInc: fn(ptr) : i32 = null;
+let savedReset: fn(ptr) : i32 = null;
 let savedUser: ptr = null;
-fn logKey(key: i32) -> i32 {
+fn logKey(key: i32) : i32 {
     keylog[logn] = key;
     logn = logn + 1;
     return 0;
 }
-fn aui_column(key: i32) -> i32 {
+fn aui_column(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_row(key: i32) -> i32 {
+fn aui_row(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_label(key: i32, text: ptr) -> i32 {
+fn aui_label(key: i32, text: ptr) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_text_i32(key: i32, value: i32) -> i32 {
+fn aui_text_i32(key: i32, value: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_button(key: i32, text: ptr, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     if (key == 1786076415) {
         savedDec = cb;
@@ -51,28 +51,28 @@ fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
     savedUser = user;
     return 0;
 }
-fn aui_pad(dp: i32) -> i32 {
+fn aui_pad(dp: i32) : i32 {
     padn = padn + 1;
     return 0;
 }
-fn aui_gap(dp: i32) -> i32 {
+fn aui_gap(dp: i32) : i32 {
     gapn = gapn + 1;
     return 0;
 }
-fn aui_state_set(key: i32, value: i32) -> i32 {
+fn aui_state_set(key: i32, value: i32) : i32 {
     if (key == 1) {
         statev = value;
     }
     return 0;
 }
-fn aui_invalidate() -> i32 {
+fn aui_invalidate() : i32 {
     return 0;
 }
-fn aui_end() -> i32 {
+fn aui_end() : i32 {
     endn = endn + 1;
     return 0;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr<App> = &g_app;
     let r: i32 = page_counter(p, p);
     if (r != 0) {

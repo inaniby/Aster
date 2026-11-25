@@ -12,9 +12,9 @@
 // expression `big + id(zero())` keeps big live across two nested calls
 // (the park fires at [SP, #4032] before each BL); correct runs return 0
 // under both the default and the --compact-frames layouts.
-fn id(x: i64) -> i64 { return x; }
-fn zero() -> i64 { return 0; }
-fn main() -> i32 {
+fn id(x: i64) : i64 { return x; }
+fn zero() : i64 { return 0; }
+fn main() : i32 {
     let big: i64 = 5000000000;
     let r: i64 = big + id(zero());
     if (r == 5000000000) { return 0; } else { return 1; }

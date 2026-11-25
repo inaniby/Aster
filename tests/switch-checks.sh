@@ -116,34 +116,34 @@ check() {
 }
 A=$OUT/aster
 # --- Pascal semantics: each matching case body self-ends; no fallthrough ---
-check "$A" 'case 1 matches, value 11'         11 'fn main() -> i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
-check "$A" 'case 2 matches, value 22'         22 'fn main() -> i32 { let x: i32 = 2; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
-check "$A" 'no case matches, default 99'       99 'fn main() -> i32 { let x: i32 = 7; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
-check "$A" 'default may precede the cases'     22 'fn main() -> i32 { let x: i32 = 2; let r: i32 = 0; switch (x) { default: r = 99; case 1: r = 11; case 2: r = 22; } return r; }'
-check "$A" 'default after the cases still runs' 99 'fn main() -> i32 { let x: i32 = 9; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
-check "$A" 'case value is an expression (1+1)' 22 'fn main() -> i32 { let x: i32 = 2; let r: i32 = 0; switch (x) { case 1+1: r = 22; default: r = 99; } return r; }'
-check "$A" 'empty case body chains, value 0'    0 'fn main() -> i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { case 1: case 2: r = 22; default: r = 99; } return r; }'
-check "$A" 'subject reused across every case'  55 'fn main() -> i32 { let x: i32 = 5; let r: i32 = 0; switch (x) { case 3: r = 33; case 5: r = 55; default: r = 99; } return r; }'
-check "$A" 'middle of three cases, value 22'    22 'fn main() -> i32 { let x: i32 = 2; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; case 3: r = 33; default: r = 99; } return r; }'
+check "$A" 'case 1 matches, value 11'         11 'fn main() : i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
+check "$A" 'case 2 matches, value 22'         22 'fn main() : i32 { let x: i32 = 2; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
+check "$A" 'no case matches, default 99'       99 'fn main() : i32 { let x: i32 = 7; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
+check "$A" 'default may precede the cases'     22 'fn main() : i32 { let x: i32 = 2; let r: i32 = 0; switch (x) { default: r = 99; case 1: r = 11; case 2: r = 22; } return r; }'
+check "$A" 'default after the cases still runs' 99 'fn main() : i32 { let x: i32 = 9; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
+check "$A" 'case value is an expression (1+1)' 22 'fn main() : i32 { let x: i32 = 2; let r: i32 = 0; switch (x) { case 1+1: r = 22; default: r = 99; } return r; }'
+check "$A" 'empty case body chains, value 0'    0 'fn main() : i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { case 1: case 2: r = 22; default: r = 99; } return r; }'
+check "$A" 'subject reused across every case'  55 'fn main() : i32 { let x: i32 = 5; let r: i32 = 0; switch (x) { case 3: r = 33; case 5: r = 55; default: r = 99; } return r; }'
+check "$A" 'middle of three cases, value 22'    22 'fn main() : i32 { let x: i32 = 2; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; case 3: r = 33; default: r = 99; } return r; }'
 # --- nested switch ---
-check "$A" 'nested switch, inner case 2'       200 'fn main() -> i32 { let a: i32 = 1; let b: i32 = 2; let r: i32 = 0; switch (a) { case 1: switch (b) { case 2: r = 200; default: r = 100; } default: r = 7; } return r; }'
+check "$A" 'nested switch, inner case 2'       200 'fn main() : i32 { let a: i32 = 1; let b: i32 = 2; let r: i32 = 0; switch (a) { case 1: switch (b) { case 2: r = 200; default: r = 100; } default: r = 7; } return r; }'
 # --- switch inside a loop, the C-style continue still steers the loop ---
-check "$A" 'switch in loop, continue skips add'  4 'fn main() -> i32 { let r: i32 = 0; let i: i32 = 0; while (i < 5) { i = i + 1; switch (i) { case 2: continue; } r = r + 1; } return r; }'
+check "$A" 'switch in loop, continue skips add'  4 'fn main() : i32 { let r: i32 = 0; let i: i32 = 0; while (i < 5) { i = i + 1; switch (i) { case 2: continue; } r = r + 1; } return r; }'
 # --- single-label break / continue ---
-check "$A" 'single label break'                 5 'fn main() -> i32 { let r: i32 = 0; outer: while (r < 100) { r = r + 1; if (r == 5) { break outer; } } return r; }'
-check "$A" 'single label continue into step'     4 'fn main() -> i32 { let r: i32 = 0; outer: for (let i: i32 = 0; i < 4; i = i + 1) { if (i == 2) { continue outer; } r = r + i; } return r; }'
+check "$A" 'single label break'                 5 'fn main() : i32 { let r: i32 = 0; outer: while (r < 100) { r = r + 1; if (r == 5) { break outer; } } return r; }'
+check "$A" 'single label continue into step'     4 'fn main() : i32 { let r: i32 = 0; outer: for (let i: i32 = 0; i < 4; i = i + 1) { if (i == 2) { continue outer; } r = r + i; } return r; }'
 # --- double-label continue: outer is the target, not the inner loop ---
-check "$A" 'double label continue outer'         3 'fn main() -> i32 { let r: i32 = 0; outer: for (let k: i32 = 0; k < 3; k = k + 1) { let i: i32 = 0; inner: while (i < 3) { i = i + 1; if (i == 2) { continue outer; } r = r + 1; } } return r; }'
+check "$A" 'double label continue outer'         3 'fn main() : i32 { let r: i32 = 0; outer: for (let k: i32 = 0; k < 3; k = k + 1) { let i: i32 = 0; inner: while (i < 3) { i = i + 1; if (i == 2) { continue outer; } r = r + 1; } } return r; }'
 # --- wide subjects: u8 / i64 / u64 ---
-check "$A" 'wide u8 subject, value 1'           1 'fn main() -> i32 { let a: u8 = 200; let r: i32 = 0; switch (a) { case 200: r = 1; default: r = 2; } return r; }'
-check "$A" 'wide i64 subject, negative'          1 'fn main() -> i32 { let a: i64 = -5; let r: i32 = 0; switch (a) { case -5: r = 1; default: r = 2; } return r; }'
-check "$A" 'wide u64 subject, >2^32'             1 'fn main() -> i32 { let a: u64 = 4294967296; let r: i32 = 0; switch (a) { case 4294967296: r = 1; default: r = 2; } return r; }'
-check "$A" 'wide u8 mismatch falls to default'   2 'fn main() -> i32 { let a: u8 = 5; let r: i32 = 0; switch (a) { case 200: r = 1; default: r = 2; } return r; }'
+check "$A" 'wide u8 subject, value 1'           1 'fn main() : i32 { let a: u8 = 200; let r: i32 = 0; switch (a) { case 200: r = 1; default: r = 2; } return r; }'
+check "$A" 'wide i64 subject, negative'          1 'fn main() : i32 { let a: i64 = -5; let r: i32 = 0; switch (a) { case -5: r = 1; default: r = 2; } return r; }'
+check "$A" 'wide u64 subject, >2^32'             1 'fn main() : i32 { let a: u64 = 4294967296; let r: i32 = 0; switch (a) { case 4294967296: r = 1; default: r = 2; } return r; }'
+check "$A" 'wide u8 mismatch falls to default'   2 'fn main() : i32 { let a: u8 = 5; let r: i32 = 0; switch (a) { case 200: r = 1; default: r = 2; } return r; }'
 # --- definitelyReturns: a switch with a default that covers every case ---
-check "$A" 'definitelyReturns switch + default'  99 'fn f(x: i32) -> i32 { switch (x) { case 1: return 10; case 2: return 20; default: return 99; } }
-fn main() -> i32 { return f(3); }'
+check "$A" 'definitelyReturns switch + default'  99 'fn f(x: i32) : i32 { switch (x) { case 1: return 10; case 2: return 20; default: return 99; } }
+fn main() : i32 { return f(3); }'
 # --- a label on a for, not just a while ---
-check "$A" 'label on for, break'                 5 'fn main() -> i32 { let r: i32 = 0; outer: for (let i: i32 = 0; i < 100; i = i + 1) { r = r + 1; if (r == 5) { break outer; } } return r; }'
+check "$A" 'label on for, break'                 5 'fn main() : i32 { let r: i32 = 0; outer: for (let i: i32 = 0; i < 100; i = i + 1) { r = r + 1; if (r == 5) { break outer; } } return r; }'
 else
     printf '%s\n' '  SKIP: the behavioural cases need qemu to run'
 fi
@@ -175,7 +175,7 @@ if [ "$have_qemu" = yes ] && [ "$have_cc" = yes ]; then
     # A label crossing a nested loop, where C needs a goto and Aster names the
     # outer loop directly.
     diff_case 'labeled continue crosses a loop' \
-        'fn main() -> i32 {
+        'fn main() : i32 {
     let r: i32 = 0;
     outer: for (let k: i32 = 0; k < 3; k = k + 1) {
         let i: i32 = 0;
@@ -194,7 +194,7 @@ int main(void) {
     # A switch that steers nothing but selects — Pascal no-fallthrough against
     # C with explicit breaks on every case.
     diff_case 'switch selects, no fallthrough' \
-        'fn main() -> i32 {
+        'fn main() : i32 {
     let r: i32 = 0;
     let x: i32 = 2;
     switch (x) {
@@ -235,29 +235,29 @@ reject() {
 }
 A=$OUT/aster
 reject 'bool subject'            "switch subject must be an integer, not bool" \
-    'fn main() -> i32 { let b: bool = true; let r: i32 = 0; switch (b) { case 1: r = 1; default: r = 2; } return r; }'
+    'fn main() : i32 { let b: bool = true; let r: i32 = 0; switch (b) { case 1: r = 1; default: r = 2; } return r; }'
 reject 'ptr subject'             "switch subject must be an integer, not ptr" \
-    'fn main() -> i32 { let p: ptr = "x"; let r: i32 = 0; switch (p) { case 1: r = 1; default: r = 2; } return r; }'
+    'fn main() : i32 { let p: ptr = "x"; let r: i32 = 0; switch (p) { case 1: r = 1; default: r = 2; } return r; }'
 reject 'non-constant case value'  "case value must be a compile-time constant" \
-    'fn main() -> i32 { let x: i32 = 1; let y: i32 = 2; let r: i32 = 0; switch (x) { case y: r = 1; default: r = 2; } return r; }'
+    'fn main() : i32 { let x: i32 = 1; let y: i32 = 2; let r: i32 = 0; switch (x) { case y: r = 1; default: r = 2; } return r; }'
 reject 'duplicate case value'     "duplicate case value 1" \
-    'fn main() -> i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { case 1: r = 1; case 1: r = 2; default: r = 3; } return r; }'
+    'fn main() : i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { case 1: r = 1; case 1: r = 2; default: r = 3; } return r; }'
 reject 'case value too wide for i32' "case value does not fit the switch subject type" \
-    'fn main() -> i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { case 2147483648: r = 1; default: r = 2; } return r; }'
+    'fn main() : i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { case 2147483648: r = 1; default: r = 2; } return r; }'
 reject 'case value too wide for u8' "case value does not fit the switch subject type" \
-    'fn main() -> i32 { let a: u8 = 5; let r: i32 = 0; switch (a) { case 300: r = 1; default: r = 2; } return r; }'
+    'fn main() : i32 { let a: u8 = 5; let r: i32 = 0; switch (a) { case 300: r = 1; default: r = 2; } return r; }'
 reject 'second default'          "a second default case" \
-    'fn main() -> i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { default: r = 1; default: r = 2; } return r; }'
+    'fn main() : i32 { let x: i32 = 1; let r: i32 = 0; switch (x) { default: r = 1; default: r = 2; } return r; }'
 reject 'break outside a loop'     "break used outside a loop" \
-    'fn main() -> i32 { let x: i32 = 1; switch (x) { case 1: break; } return 0; }'
+    'fn main() : i32 { let x: i32 = 1; switch (x) { case 1: break; } return 0; }'
 reject 'continue outside a loop'   "continue used outside a loop" \
-    'fn main() -> i32 { let x: i32 = 1; switch (x) { case 1: continue; } return 0; }'
+    'fn main() : i32 { let x: i32 = 1; switch (x) { case 1: continue; } return 0; }'
 reject 'label on a non-loop'      "only a while, for or do loop may be labeled" \
-    'fn main() -> i32 { let x: i32 = 0; foo: if (x < 2) { x = x + 1; } return x; }'
+    'fn main() : i32 { let x: i32 = 0; foo: if (x < 2) { x = x + 1; } return x; }'
 reject 'break to a missing label'  "no such loop label: outer" \
-    'fn main() -> i32 { let r: i32 = 0; while (r < 2) { break outer; } return r; }'
+    'fn main() : i32 { let r: i32 = 0; while (r < 2) { break outer; } return r; }'
 reject 'continue to a missing label' "no such loop label: outer" \
-    'fn main() -> i32 { let r: i32 = 0; while (r < 2) { continue outer; } return r; }'
+    'fn main() : i32 { let r: i32 = 0; while (r < 2) { continue outer; } return r; }'
 printf '%s\n' 'PASS: the rejection matrix holds'
 
 # ---------------------------------------------------------------------------
@@ -327,17 +327,17 @@ else
 # mismatch falls into it, so the wrong case body runs.
 mutate 'm1: the mismatch branch is inverted' \
     's|patchCond(skip,1,code.size())|patchCond(skip,0,code.size())|' \
-    must_differ 'no case matches, default 99' 99 'fn main() -> i32 { let x: i32 = 7; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
+    must_differ 'no case matches, default 99' 99 'fn main() : i32 { let x: i32 = 7; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
 # m2: a labeled break/continue always targets the innermost loop instead of the
 # named one, so `continue outer` no longer crosses out of the inner loop.
 mutate 'm2: a labeled jump always takes the innermost loop' \
     's|if(loops\[i\].name==s.label)return i;|return loops.size()-1;|' \
-    must_differ 'double label continue outer' 3 'fn main() -> i32 { let r: i32 = 0; outer: for (let k: i32 = 0; k < 3; k = k + 1) { let i: i32 = 0; inner: while (i < 3) { i = i + 1; if (i == 1) { continue outer; } r = r + 1; } } return r; }'
+    must_differ 'double label continue outer' 3 'fn main() : i32 { let r: i32 = 0; outer: for (let k: i32 = 0; k < 3; k = k + 1) { let i: i32 = 0; inner: while (i < 3) { i = i + 1; if (i == 1) { continue outer; } r = r + 1; } } return r; }'
 # m3: the default body is never emitted, so a subject that matches no case and
 # would have hit the default instead returns the uninitialised accumulator.
 mutate 'm3: the default body is not emitted' \
     's|if(s.hasDefault)block(s.elseBody,true);||' \
-    must_differ 'no case matches, default 99' 99 'fn main() -> i32 { let x: i32 = 7; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
+    must_differ 'no case matches, default 99' 99 'fn main() : i32 { let x: i32 = 7; let r: i32 = 0; switch (x) { case 1: r = 11; case 2: r = 22; default: r = 99; } return r; }'
 printf '%s\n' 'PASS: three mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

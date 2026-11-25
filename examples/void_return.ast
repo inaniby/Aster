@@ -15,12 +15,12 @@
 
 let g: i32 = 0;
 
-fn bump() -> void {
+fn bump() : void {
     g = g + 1;
     return;
 }
 
-fn add(n: i32) -> void {
+fn add(n: i32) : void {
     let i: i32 = 0;
     while (i < n) {
         bump();
@@ -28,17 +28,17 @@ fn add(n: i32) -> void {
     }
 }
 
-fn no_return() -> void {
+fn no_return() : void {
     g = g + 5;
 }
 
-fn maybe(v: i32) -> void {
+fn maybe(v: i32) : void {
     if (v > 0) {
         g = g + 10;
     }
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     bump();          // g = 1
     add(3);          // g = 4
     no_return();     // g = 9

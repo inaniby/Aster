@@ -39,12 +39,12 @@ DECODE="python3 tests/debugline-decode.py"
 # not): blank lines, the closing braces, and the declarations that are not
 # themselves statements.
 cat > "$OUT/lines.ast" <<'AST'
-fn helper(n: i32) -> i32 {
+fn helper(n: i32) : i32 {
     let t: i32 = n * 2;
     return t + 1;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = 10;
     let b: i32 = helper(a);
     if (b > 20) {
@@ -190,15 +190,15 @@ readelf -r "$OUT/dbg.o" | awk '/\.rela\.debug_line/,/^$/' | grep -q '\.text' \
 cat > "$OUT/defs.ast" <<'AST'
 let total: i32 = 7;
 
-fn add2(n: i32) -> i32 {
+fn add2(n: i32) : i32 {
     return n + 2;
 }
 AST
 cat > "$OUT/main.ast" <<'AST'
 extern let total: i32;
-extern fn add2(n: i32) -> i32;
+extern fn add2(n: i32) : i32;
 
-fn main() -> i32 {
+fn main() : i32 {
     return add2(total);
 }
 AST

@@ -22,13 +22,13 @@
 // Exit status: 144 — the sum below reduced mod 251, and the same under the
 // C twin this example was written against.
 
-fn inc(x: i32) -> i32 { return x + 1; }
-fn dec(x: i32) -> i32 { return x - 1; }
-fn twice(x: i32) -> i32 { return x * 2; }
+fn inc(x: i32) : i32 { return x + 1; }
+fn dec(x: i32) : i32 { return x - 1; }
+fn twice(x: i32) : i32 { return x * 2; }
 
 // The trampoline: the callee arrives as a parameter. This is the callback
 // shape — a table of operations, a dispatcher, a comparator.
-fn apply(op: ptr, x: i32) -> i32 { return op(x); }
+fn apply(op: ptr, x: i32) : i32 { return op(x); }
 
 // A slot is a function address that lives in memory.
 struct Slot { op: ptr }
@@ -37,7 +37,7 @@ struct Slot { op: ptr }
 // the static ELF links a function's address the same way a data global's.
 let dispatched: ptr = inc;
 
-fn main() -> i32 {
+fn main() : i32 {
     // 1. a local pointer, called directly: 40 + 1.
     let a: ptr = inc;
     let r1: i32 = a(40);

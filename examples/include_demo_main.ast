@@ -18,6 +18,6 @@
 
 include "include_demo_defs.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return add2(total);
 }

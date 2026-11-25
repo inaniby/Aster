@@ -79,48 +79,48 @@ C = {}
 # same-kind duplicates and the union spelling of a struct tag.
 C['tag_alias_struct'] = '''type P = i32;
 struct P { x: i32 }
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_alias_enum'] = '''type P = i32;
 enum P { A }
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_struct_alias'] = '''struct P { x: i32 }
 type P = i32;
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_struct_enum'] = '''struct P { x: i32 }
 enum P { A }
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_enum_alias'] = '''enum P { A }
 type P = i32;
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_enum_struct'] = '''enum P { A }
 struct P { x: i32 }
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_alias_alias'] = '''type P = i32;
 type P = u16;
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_struct_struct'] = '''struct P { x: i32 }
 struct P { y: i32 }
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_enum_enum'] = '''enum P { A }
 enum P { B }
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_union_alias'] = '''union P { x: i32 }
 type P = i32;
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_distinct'] = '''type A = i32;
 struct B { x: i32 }
 enum C { Red }
-fn main()->i32 { let a: A = 1; let b: B = B { 2 }; let c: C = Red;
+fn main():i32 { let a: A = 1; let b: B = B { 2 }; let c: C = Red;
     return a + b.x + i32(c); }
 '''
 # P1-5 (v0.23.80-dev): the tag check used to live only on the struct/enum/
@@ -130,48 +130,48 @@ fn main()->i32 { let a: A = 1; let b: B = B { 2 }; let c: C = Red;
 # are refused now.
 C['tag_struct_global'] = '''struct P { x: i32 }
 let P: i32 = 5;
-fn main()->i32 { return 0; }
+fn main():i32 { return 0; }
 '''
 C['tag_struct_fn'] = '''struct P { x: i32 }
-fn P() -> i32 { return 1; }
-fn main()->i32 { return 0; }
+fn P() : i32 { return 1; }
+fn main():i32 { return 0; }
 '''
 # F-05
 C['enum_case_big'] = '''enum Color { Red = 0 }
-fn main()->i32 { let c: Color = Red;
+fn main():i32 { let c: Color = Red;
     switch (c) { case 4294967296: return 1; default: return 0; } }
 '''
 C['enum_case_ok'] = '''enum Color { Red = 0, Green = 1 }
-fn main()->i32 { let c: Color = Green;
+fn main():i32 { let c: Color = Green;
     switch (c) { case 0: return 10; case 1: return 20; default: return 30; } }
 '''
 C['enum_case_neg'] = '''enum Color { Red = 0 }
-fn main()->i32 { let c: Color = Red;
+fn main():i32 { let c: Color = Red;
     switch (c) { case -4294967296: return 1; default: return 0; } }
 '''
-C['i32_case_big'] = '''fn main()->i32 { let c: i32 = 0;
+C['i32_case_big'] = '''fn main():i32 { let c: i32 = 0;
     switch (c) { case 4294967296: return 1; default: return 0; } }
 '''
 # F-11
-C['deref_bool'] = '''fn main()->i32 { let a: i64 = 7; let p: ptr<i64> = &a;
+C['deref_bool'] = '''fn main():i32 { let a: i64 = 7; let p: ptr<i64> = &a;
     *p = true; if (a == 1) { return 1; } return 0; }
 '''
-C['deref_ok'] = '''fn main()->i32 { let a: i64 = 7; let p: ptr<i64> = &a;
+C['deref_ok'] = '''fn main():i32 { let a: i64 = 7; let p: ptr<i64> = &a;
     *p = 42; if (a == 42) { return 1; } return 0; }
 '''
-C['deref_u8_ok'] = '''fn main()->i32 { let a: u8 = 7; let p: ptr<u8> = &a;
+C['deref_u8_ok'] = '''fn main():i32 { let a: u8 = 7; let p: ptr<u8> = &a;
     *p = 9; if (a == 9) { return 1; } return 0; }
 '''
-C['deref_i32_expr'] = '''fn main()->i32 { let a: i64 = 7; let p: ptr<i64> = &a;
+C['deref_i32_expr'] = '''fn main():i32 { let a: i64 = 7; let p: ptr<i64> = &a;
     let w: i32 = 5; *p = w; return 0; }
 '''
 # An untyped ptr keeps its historical 64-bit store; the F-11 check applies
 # only to typed pointers. Both spellings of taking the address are witnessed.
 C['untyped1'] = '''let g: i32[4] = 0;
-fn main()->i32 { let p: ptr = &g; *p = 42; if (g[0] == 42) { return 1; } return 0; }
+fn main():i32 { let p: ptr = &g; *p = 42; if (g[0] == 42) { return 1; } return 0; }
 '''
 C['untyped2'] = '''let g: i32[4] = 0;
-fn main()->i32 { let p: ptr = &g[0]; *p = 42; if (g[0] == 42) { return 1; } return 0; }
+fn main():i32 { let p: ptr = &g[0]; *p = 42; if (g[0] == 42) { return 1; } return 0; }
 '''
 for n, src in C.items():
     (w / (n + '.ast')).write_text(src)

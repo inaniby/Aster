@@ -13,10 +13,10 @@
 # see that. One `load_i64` is one LDR, and it cannot be wrong that way.
 #
 # The contracts (each pinned by a case or a rejection below):
-#   load_u16(p)  -> i32   zero-extended, 0..65535      (load_u8's shape, one width up)
-#   store_u16(p, v) -> i32  writes v & 0xFFFF, answers the ORIGINAL v
-#   load_i64(p)  -> i64   the full 64-bit value
-#   store_i64(p, v) -> i64  writes eight bytes, answers the ORIGINAL v; an i32
+#   load_u16(p)  : i32   zero-extended, 0..65535      (load_u8's shape, one width up)
+#   store_u16(p, v) : i32  writes v & 0xFFFF, answers the ORIGINAL v
+#   load_i64(p)  : i64   the full 64-bit value
+#   store_i64(p, v) : i64  writes eight bytes, answers the ORIGINAL v; an i32
 #                          v widens by sign-extension, exactly as storing it
 #                          into an i64 local does — and bool is rejected, as no
 #                          i64 slot accepts it either.
@@ -134,7 +134,7 @@ emit_case(){
     case "$n" in
     u16_round)
         ast='let blob: u8[8] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = store_u16(blob, 0xBEEF);
     let b: i32 = load_u16(blob);
     return (a % 251) + (b % 251);
@@ -151,7 +151,7 @@ int main(void){
         # is what C's assignment expression would yield. The twin separates
         # the store from the captured value for exactly that reason.
         ast='let blob: u8[8] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let c: i32 = store_u16(blob + 2, 0x1BEEF);
     let d: i32 = load_u16(blob + 2);
     return (c % 251) + (d % 251);
@@ -167,7 +167,7 @@ int main(void){
         # 0xFFFF must read back as 65535, not -1: LDRH zero-extends. A
         # sign-extending halfword load (LDRSH) would fail this case.
         ast='let blob: u8[8] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = store_u16(blob, 0xFFFF);
     return load_u16(blob) % 251;
 }'
@@ -181,7 +181,7 @@ int main(void){
         # The same zero-extended halfword consumed at 64-bit width: the upper
         # half of the i64 must be zero, not a replica of bit 15.
         ast='let blob: u8[8] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = store_u16(blob, 0xFFFF);
     let x: i64 = load_u16(blob);
     return x % 251;
@@ -198,7 +198,7 @@ int main(void){
         # hardware grants unaligned halfword access, so blob+3 must work.
         # The twin uses memcpy so the oracle itself never assumes alignment.
         ast='let blob: u8[8] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = store_u16(blob + 3, 0xBEEF);
     let b: i32 = load_u16(blob + 3);
     return (a % 251) + (b % 251);
@@ -215,7 +215,7 @@ int main(void){
 }' ;;
     u16_loop)
         ast='let blob: u8[16] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let i: i32 = 0;
     let s: i32 = 0;
     while (i < 8) {
@@ -239,11 +239,11 @@ int main(void){
 }' ;;
     u16_helper)
         ast='let blob: u8[8] = 0;
-fn round(hi: i32, lo: i32) -> i32 {
+fn round(hi: i32, lo: i32) : i32 {
     let r: i32 = store_u16(blob, (hi * 256) + lo);
     return load_u16(blob) + (r % 251);
 }
-fn main() -> i32 { return round(52, 18) % 251; }'
+fn main() : i32 { return round(52, 18) % 251; }'
         c='static unsigned char blob[8] __attribute__((aligned(8)));
 static int round(int hi, int lo){
     int r = (hi*256)+lo;
@@ -254,7 +254,7 @@ static int round(int hi, int lo){
 int main(void){ return round(52,18)%251; }' ;;
     i64_round)
         ast='let blob: u8[16] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i64 = store_i64(blob, 0x0123456789ABCDEF);
     let b: i64 = load_i64(blob);
     return (a % 251) + (b % 251);
@@ -271,7 +271,7 @@ int main(void){
         # an i32 is `hi << 0`, so the high word came back as the low word.
         # This case is that trap, pinned.
         ast='let blob: u8[16] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i64 = store_i64(blob, 0x100000000);
     let b: i64 = load_i64(blob);
     return (a % 251) + (b % 251);
@@ -288,7 +288,7 @@ int main(void){
         # land as eight 0xFF bytes. Zero-extension would store
         # 0x00000000FFFFFFFF and this case would see 4294967295, not -1.
         ast='let blob: u8[16] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let neg: i32 = -1;
     let g: i64 = store_i64(blob, neg);
     let h: i64 = load_i64(blob);
@@ -304,7 +304,7 @@ int main(void){
 }' ;;
     i64_widen_pos)
         ast='let blob: u8[16] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let pos: i32 = 2147483647;
     let g: i64 = store_i64(blob, pos);
     let h: i64 = load_i64(blob);
@@ -325,7 +325,7 @@ int main(void){
         # load_i64(blob);` is an implicit narrowing now, and the cast is the
         # spelling the diagnostic asks for.
         ast='let blob: u8[16] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i64 = store_i64(blob, 0x0123456789ABCDEF);
     let x: i32 = i32(load_i64(blob));
     return (a % 251) + (x % 251);
@@ -341,7 +341,7 @@ int main(void){
         # The pointer may address .rodata: a string literal's bytes read at
         # quadword width. The twin copies the bytes so the oracle makes no
         # alignment promise about a literal.
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let v: i64 = load_i64("abcdefgh");
     return v % 251;
 }'
@@ -353,7 +353,7 @@ int main(void){
 }' ;;
     i64_rmw)
         ast='let blob: u8[16] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i64 = store_i64(blob, 0x100000000);
     let b: i64 = store_i64(blob, load_i64(blob) + 1);
     let c: i64 = load_i64(blob);
@@ -374,7 +374,7 @@ int main(void){
         # 64-bit path is exercised on every iteration, and the accumulator
         # carries an X register across the loop.
         ast='let blob: u8[32] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let i: i32 = 0;
     let s: i64 = 0;
     while (i < 4) {
@@ -401,8 +401,8 @@ int main(void){
 }' ;;
     i64_helper)
         ast='let blob: u8[16] = 0;
-fn bump(p: ptr, x: i64) -> i64 { return store_i64(p, load_i64(p) + x); }
-fn main() -> i32 {
+fn bump(p: ptr, x: i64) : i64 { return store_i64(p, load_i64(p) + x); }
+fn main() : i32 {
     let a: i64 = store_i64(blob, 0x1000000000);
     let b: i64 = bump(blob, 1);
     let c: i64 = load_i64(blob);
@@ -428,7 +428,7 @@ int main(void){
         # answer feeds (wideOp's operand types) — without it the modulo runs
         # on the low 32 bits alone and the value is wrong.
         ast='let blob: u8[16] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i64 = store_i64(blob, 0x0123456789ABCDEF);
     let m: i32 = load_i64(blob) % 251;
     let n: i32 = load_i64(blob) % 7;
@@ -448,7 +448,7 @@ int main(void){
         # endian layout of the two bytes is what a wrong width or a wrong
         # offset would break.
         ast='let blob: u8[16] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = store_u16(blob + 6, 0xCAFE);
     let b: i64 = load_i64(blob);
     return (a % 251) + (b % 251);
@@ -463,43 +463,43 @@ int main(void){
     return (a%251)+(int)(b%251);
 }' ;;
     shadow_load_u16)
-        ast='fn load_u16(p: ptr) -> i32 { return 7; }
-fn main() -> i32 { return load_u16("x") % 251; }'
+        ast='fn load_u16(p: ptr) : i32 { return 7; }
+fn main() : i32 { return load_u16("x") % 251; }'
         c='static int load_u16(const char *p){ (void)p; return 7; }
 int main(void){ return load_u16("x")%251; }' ;;
     shadow_load_i64)
-        ast='fn load_i64(p: ptr) -> i64 { return 42; }
-fn main() -> i32 { let q: ptr = "xyz"; let v: i64 = load_i64(q); return v % 251; }'
+        ast='fn load_i64(p: ptr) : i64 { return 42; }
+fn main() : i32 { let q: ptr = "xyz"; let v: i64 = load_i64(q); return v % 251; }'
         c='static long long load_i64(const char *p){ (void)p; return 42; }
 int main(void){ const char *q = "xyz"; long long v = load_i64(q); return (int)(v%251); }' ;;
     shadow_store_u16)
-        ast='fn store_u16(p: ptr, v: i32) -> i32 { return v + 1; }
+        ast='fn store_u16(p: ptr, v: i32) : i32 { return v + 1; }
 let blob: u8[8] = 0;
-fn main() -> i32 { return store_u16(blob, 41) % 251; }'
+fn main() : i32 { return store_u16(blob, 41) % 251; }'
         c='static unsigned char blob[8] __attribute__((aligned(8)));
 static int store_u16(void *p, int v){ (void)p; return v+1; }
 int main(void){ return store_u16(blob, 41)%251; }' ;;
     shadow_store_i64)
-        ast='fn store_i64(p: ptr, v: i64) -> i64 { return v + 1; }
+        ast='fn store_i64(p: ptr, v: i64) : i64 { return v + 1; }
 let blob: u8[16] = 0;
-fn main() -> i32 { let r: i64 = store_i64(blob, 41); return r % 251; }'
+fn main() : i32 { let r: i64 = store_i64(blob, 41); return r % 251; }'
         c='static unsigned char blob[16] __attribute__((aligned(8)));
 static long long store_i64(void *p, long long v){ (void)p; return v+1; }
 int main(void){ long long r = store_i64(blob, 41); return (int)(r%251); }' ;;
     shadow_same_sig)
         # The signature matches the intrinsic's exactly — the user's
         # function must still win, and no memory may be touched.
-        ast='fn load_i64(p: ptr) -> i64 { return 123456789; }
-fn main() -> i32 { let q: ptr = "abcdefgh"; let v: i64 = load_i64(q); return v % 251; }'
+        ast='fn load_i64(p: ptr) : i64 { return 123456789; }
+fn main() : i32 { let q: ptr = "abcdefgh"; let v: i64 = load_i64(q); return v % 251; }'
         c='static long long load_i64(const char *p){ (void)p; return 123456789; }
 int main(void){ const char *q = "abcdefgh"; long long v = load_i64(q); return (int)(v%251); }' ;;
     partial_shadow)
         # store_u16 is shadowed, load_u16 is not: the guard is per name, not
         # a global switch. The user's store leaves memory untouched, and the
         # intrinsic load still reads it.
-        ast='fn store_u16(p: ptr, v: i32) -> i32 { return v * 2; }
+        ast='fn store_u16(p: ptr, v: i32) : i32 { return v * 2; }
 let blob: u8[8] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = store_u16(blob, 21);
     let b: i32 = load_u16(blob);
     return (a + b) % 251;
@@ -562,33 +562,33 @@ reject(){ # reject <name> <source> <expected message fragment>
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "load_u16 on an integer" \
-    'fn main() -> i32 { let x: i32 = load_u16(5); return x; }' \
+    'fn main() : i32 { let x: i32 = load_u16(5); return x; }' \
     "load_u16 expects a ptr argument"
 reject "load_u16 with two arguments" \
     'let blob: u8[8] = 0;
-fn main() -> i32 { let x: i32 = load_u16(blob, blob); return x; }' \
+fn main() : i32 { let x: i32 = load_u16(blob, blob); return x; }' \
     "load_u16 expects exactly one ptr argument"
 reject "store_u16 on an integer destination" \
-    'fn main() -> i32 { let x: i32 = store_u16(5, 7); return x; }' \
+    'fn main() : i32 { let x: i32 = store_u16(5, 7); return x; }' \
     "store_u16 first argument must be ptr"
 reject "store_u16 with a string value" \
     'let blob: u8[8] = 0;
-fn main() -> i32 { let x: i32 = store_u16(blob, "s"); return x; }' \
+fn main() : i32 { let x: i32 = store_u16(blob, "s"); return x; }' \
     "store_u16 second argument must be i32"
 reject "load_i64 on an integer" \
-    'fn main() -> i32 { let x: i64 = load_i64(5); return x % 251; }' \
+    'fn main() : i32 { let x: i64 = load_i64(5); return x % 251; }' \
     "load_i64 expects a ptr argument"
 reject "store_i64 with a string value" \
     'let blob: u8[8] = 0;
-fn main() -> i32 { let x: i64 = store_i64(blob, "s"); return x % 251; }' \
+fn main() : i32 { let x: i64 = store_i64(blob, "s"); return x % 251; }' \
     "store_i64 second argument must be i64"
 reject "store_i64 with a bool value" \
     'let blob: u8[8] = 0;
-fn main() -> i32 { let b: bool = 1 < 2; let x: i64 = store_i64(blob, b); return x % 251; }' \
+fn main() : i32 { let b: bool = 1 < 2; let x: i64 = store_i64(blob, b); return x % 251; }' \
     "store_i64 second argument must be i64"
 reject "store_i64 with one argument" \
     'let blob: u8[8] = 0;
-fn main() -> i32 { let x: i64 = store_i64(blob); return x % 251; }' \
+fn main() : i32 { let x: i64 = store_i64(blob); return x % 251; }' \
     "store_i64 expects (ptr, i64)"
 
 # ---------------------------------------------------------------------------

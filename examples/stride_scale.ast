@@ -28,7 +28,7 @@ let g4096: u8[2][4096] = 0;   // row stride 2^12 = 4096, formerly LSL #4
 struct Big { a:i32, b:i32, c:i32, d:i32, e:i32, f:i32, g:i32, h:i32 }  // 32 bytes
 let gbig: Big[2] = Big{1,2,3,4,5,6,7,8};
 
-fn main()->i32 {
+fn main():i32 {
     let r: i32 = 0;
     let i: i32 = 1;                       // variable index: no constant folding
 

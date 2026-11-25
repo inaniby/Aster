@@ -87,61 +87,61 @@ reject(){
         *) echo "FAIL: $name not rejected as expected: want '$want', got: $msg" >&2; exit 1 ;;
     esac
 }
-reject unknown-struct  'expected i8, i16, i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name' 'fn main() -> i32 { let p: Nope = Nope { 1 }; return p.x; }'
+reject unknown-struct  'expected i8, i16, i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool, or a struct name' 'fn main() : i32 { let p: Nope = Nope { 1 }; return p.x; }'
 reject unknown-field   "struct 'P' has no field named 'y'"                 'struct P { x: i32 }
-fn main() -> i32 { let p: P = P { 1 }; return p.y; }'
+fn main() : i32 { let p: P = P { 1 }; return p.y; }'
 reject literal-count   "struct literal for 'P' has 2 values but the struct has 1 fields" 'struct P { x: i32 }
-fn main() -> i32 { let p: P = P { 1, 2 }; return p.x; }'
+fn main() : i32 { let p: P = P { 1, 2 }; return p.x; }'
 reject dup-field       'duplicate field in struct P: x'                    'struct P { x: i32, x: i32 }
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 reject dup-struct      'duplicate struct declaration: P'                   'struct P { x: i32 }
 struct P { y: i32 }
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 reject self-contain    'struct P cannot contain itself'                    'struct P { x: i32, p: P }
-fn main() -> i32 { return 0; }'
+fn main() : i32 { return 0; }'
 # v0.23.29-dev: a field may be an array, so this row no longer refuses the
 # declaration -- it refuses a *literal* initializer for a struct that has one,
 # which is the rule that replaced it. (Covered in full by
 # tests/struct-array-field-checks.sh [5/9].)
 reject array-field-lit "struct 'P' contains an array field and cannot be initialized by a literal" 'struct P { a: i32[4] }
-fn main() -> i32 { let s: P = P { 0 }; return 0; }'
+fn main() : i32 { let s: P = P { 0 }; return 0; }'
 reject struct-arith    'cannot use a struct value (P) in +'                'struct P { x: i32 }
-fn main() -> i32 { let p: P = P { 1 }; return p + 1; }'
+fn main() : i32 { let p: P = P { 1 }; return p + 1; }'
 reject struct-compare  'cannot use a struct value (P) in a comparison'     'struct P { x: i32 }
-fn main() -> i32 { let p: P = P { 1 }; let q: P = P { 1 }; if (p == q) { return 1; } else { return 0; } }'
+fn main() : i32 { let p: P = P { 1 }; let q: P = P { 1 }; if (p == q) { return 1; } else { return 0; } }'
 reject struct-cond     'condition must be a comparison, a bool expression, or an integer' 'struct P { x: i32 }
-fn main() -> i32 { let p: P = P { 1 }; if (p) { return 1; } else { return 0; } }'
+fn main() : i32 { let p: P = P { 1 }; if (p) { return 1; } else { return 0; } }'
 reject arg-struct-i32  'argument type mismatch calling f at argument 1: expected i32, got P' 'struct P { x: i32 }
-fn f(a: i32) -> i32 { return a; }
-fn main() -> i32 { let p: P = P { 1 }; return f(p); }'
+fn f(a: i32) : i32 { return a; }
+fn main() : i32 { let p: P = P { 1 }; return f(p); }'
 reject arg-i32-struct  'argument type mismatch calling f at argument 1: expected P, got i32' 'struct P { x: i32 }
-fn f(p: P) -> i32 { return p.x; }
-fn main() -> i32 { return f(1); }'
+fn f(p: P) : i32 { return p.x; }
+fn main() : i32 { return f(1); }'
 # Structs are nominal: two structs with identical layouts are different types.
 reject arg-other-struct 'argument type mismatch calling g at argument 1: expected Q, got P' 'struct P { x: i32 }
 struct Q { x: i32 }
-fn g(q: Q) -> i32 { return q.x; }
-fn main() -> i32 { let p: P = P { 1 }; return g(p); }'
+fn g(q: Q) : i32 { return q.x; }
+fn main() : i32 { let p: P = P { 1 }; return g(p); }'
 reject ptr-mismatch    'argument type mismatch calling g at argument 1: expected ptr<P>' 'struct P { x: i32 }
 struct Q { y: i32 }
-fn g(p: ptr<P>) -> i32 { return p.x; }
-fn main() -> i32 { let q: Q = Q { 1 }; return g(&q); }'
+fn g(p: ptr<P>) : i32 { return p.x; }
+fn main() : i32 { let q: Q = Q { 1 }; return g(&q); }'
 reject let-struct-i32  "type mismatch initializing 'x': expected i32, got P" 'struct P { x: i32 }
-fn main() -> i32 { let x: i32 = P { 1 }; return x; }'
+fn main() : i32 { let x: i32 = P { 1 }; return x; }'
 reject let-other-struct "type mismatch initializing 'q': expected Q, got P" 'struct P { x: i32 }
 struct Q { y: i32 }
-fn mk() -> P { return P { 1 }; }
-fn main() -> i32 { let q: Q = mk(); return q.y; }'
+fn mk() : P { return P { 1 }; }
+fn main() : i32 { let q: Q = mk(); return q.y; }'
 reject addr-of-to-i32  "type mismatch initializing 'k': expected i32, got ptr" 'struct P { x: i32 }
-fn main() -> i32 { let p: P = P { 1 }; let k: i32 = &p; return 0; }'
-reject field-of-i32    "cannot read field 'y' of i32: expected a struct or a ptr<S>" 'fn main() -> i32 { let x: i32 = 5; return x.y; }'
+fn main() : i32 { let p: P = P { 1 }; let k: i32 = &p; return 0; }'
+reject field-of-i32    "cannot read field 'y' of i32: expected a struct or a ptr<S>" 'fn main() : i32 { let x: i32 = 5; return x.y; }'
 reject main-returns-struct 'main must return i32'                          'struct P { x: i32 }
-fn main() -> P { return P { 1 }; }'
+fn main() : P { return P { 1 }; }'
 reject return-struct-from-i32 'return type mismatch in function main: expected i32, got P' 'struct P { x: i32 }
-fn main() -> i32 { return P { 1 }; }'
+fn main() : i32 { return P { 1 }; }'
 reject global-ptr-field "global struct field 'P.p' cannot be initialized by a constant: g" 'struct P { x: i32, p: ptr }
 let g: P = P { 1, 2 };
-fn main() -> i32 { return g.x; }'
+fn main() : i32 { return g.x; }'
 printf '%s\n' 'PASS: 20 struct rules rejected with the diagnostic that explains each'
 
 printf '%s\n' '[4/8] Structural: every pre-existing example still compiles byte for byte'
@@ -230,23 +230,23 @@ ${HOSTCC:-cc} -std=c11 -O2 -Wall -Wextra -Werror "$OUT/layout.c" -o "$OUT/layout
 cat > "$OUT/layout-a.ast" <<'AST'
 struct A { x: i32, y: i32 }
 let g: A = A { 1, 2 };
-fn main() -> i32 { return g.x; }
+fn main() : i32 { return g.x; }
 AST
 cat > "$OUT/layout-b.ast" <<'AST'
 struct B { a: u8, b: i64, c: u16, d: i32 }
 let g: B = B { 1, 2, 3, 4 };
-fn main() -> i32 { return g.a; }
+fn main() : i32 { return g.a; }
 AST
 cat > "$OUT/layout-c.ast" <<'AST'
 struct A { x: i32, y: i32 }
 struct C2 { p: A, q: i32, r: i64 }
 let g: C2 = C2 { A { 5, 6 }, 7, 8 };
-fn main() -> i32 { return g.q; }
+fn main() : i32 { return g.q; }
 AST
 cat > "$OUT/layout-d.ast" <<'AST'
 struct D { a: u8, b: u8 }
 let g: D = D { 1, 2 };
-fn main() -> i32 { return g.a; }
+fn main() : i32 { return g.a; }
 AST
 : > "$OUT/layout-aster.txt"
 for n in a b c d; do
@@ -291,9 +291,9 @@ selfcheck(){
 }
 cat > "$OUT/byval8.ast" <<'AST'
 struct P { x: i32, y: i32 }
-fn sum(p: P) -> i32 { return p.x + p.y; }
-fn mk(v: i32) -> P { return P { v, v * 2 }; }
-fn main() -> i32 {
+fn sum(p: P) : i32 { return p.x + p.y; }
+fn mk(v: i32) : P { return P { v, v * 2 }; }
+fn main() : i32 {
     let p: P = P { 3, 4 };
     let q: P = mk(21);
     return sum(p) + sum(q) - 70;
@@ -301,9 +301,9 @@ fn main() -> i32 {
 AST
 cat > "$OUT/byval16.ast" <<'AST'
 struct T { a: i32, b: i32, c: i32 }
-fn sum(t: T) -> i32 { return t.a + t.b + t.c; }
-fn mk(v: i32) -> T { return T { v, v + 1, v + 2 }; }
-fn main() -> i32 {
+fn sum(t: T) : i32 { return t.a + t.b + t.c; }
+fn mk(v: i32) : T { return T { v, v + 1, v + 2 }; }
+fn main() : i32 {
     let t: T = T { 5, 6, 7 };
     let u: T = mk(30);
     return sum(t) + sum(u) - 111;
@@ -311,9 +311,9 @@ fn main() -> i32 {
 AST
 cat > "$OUT/byval24.ast" <<'AST'
 struct B { a: i64, b: i64, c: i64 }
-fn sum(b: B) -> i64 { return b.a + b.b + b.c; }
-fn mk(v: i64) -> B { return B { v, v + 1, v + 2 }; }
-fn main() -> i32 {
+fn sum(b: B) : i64 { return b.a + b.b + b.c; }
+fn mk(v: i64) : B { return B { v, v + 1, v + 2 }; }
+fn main() : i32 {
     let b: B = B { 100, 200, 300 };
     let c: B = mk(1000);
     return sum(b) + sum(c) - 3603;
@@ -326,8 +326,8 @@ printf '%s\n' '[7/8] Acceptance: nesting, ptr<S>, &, whole-struct copy, globals 
 cat > "$OUT/nested.ast" <<'AST'
 struct Inner { a: i32, b: i32 }
 struct Outer { p: Inner, c: i32 }
-fn sum(o: Outer) -> i32 { return o.p.a + o.p.b + o.c; }
-fn main() -> i32 {
+fn sum(o: Outer) : i32 { return o.p.a + o.p.b + o.c; }
+fn main() : i32 {
     let o: Outer = Outer { Inner { 1, 2 }, 3 };
     o.p = Inner { 10, 20 };
     o.p.b = o.p.b + 5;
@@ -336,8 +336,8 @@ fn main() -> i32 {
 AST
 cat > "$OUT/ptrfield.ast" <<'AST'
 struct Node { v: i32, next: ptr<Node> }
-fn count(n: ptr<Node>) -> i32 { return n.v; }
-fn main() -> i32 {
+fn count(n: ptr<Node>) : i32 { return n.v; }
+fn main() : i32 {
     let buf: i32[4] = 0;
     let a: Node = Node { 1, buf };
     let b: Node = Node { 2, buf };
@@ -347,8 +347,8 @@ fn main() -> i32 {
 AST
 cat > "$OUT/copy.ast" <<'AST'
 struct P { x: i32, y: i32 }
-fn twice(p: P) -> P { return P { p.x * 2, p.y * 2 }; }
-fn main() -> i32 {
+fn twice(p: P) : P { return P { p.x * 2, p.y * 2 }; }
+fn main() : i32 {
     let p: P = P { 3, 4 };
     let q: P = p;
     q.x = q.x + 10;
@@ -364,8 +364,8 @@ struct Rect { a: Point, b: Point }
 let origin: Point = Point { 3, 4 };
 let zero: Point = Point { 0, 0 };
 let unit: Rect = Rect { Point { 1, 2 }, Point { 3, 4 } };
-fn set(p: ptr<Point>) -> i32 { p.x = 10; return p.x; }
-fn main() -> i32 {
+fn set(p: ptr<Point>) : i32 { p.x = 10; return p.x; }
+fn main() : i32 {
     origin.x = origin.x + 1;
     let t: i32 = set(&origin);
     return origin.x + t + origin.y + zero.x + zero.y
@@ -374,19 +374,19 @@ fn main() -> i32 {
 AST
 cat > "$OUT/stackarg.ast" <<'AST'
 struct B { a: i64, b: i64, c: i64 }
-fn nine(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, big: B) -> i64 {
+fn nine(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, big: B) : i64 {
     return big.a + big.b + big.c + a + b + h;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let big: B = B { 100, 200, 300 };
     return nine(1, 2, 3, 4, 5, 6, 7, 8, big) - 611;
 }
 AST
 cat > "$OUT/callarg.ast" <<'AST'
 struct B { a: i64, b: i64, c: i64 }
-fn mk(v: i64) -> B { return B { v, v + 1, v + 2 }; }
-fn use(b: B) -> i64 { return b.a + b.b + b.c; }
-fn main() -> i32 {
+fn mk(v: i64) : B { return B { v, v + 1, v + 2 }; }
+fn use(b: B) : i64 { return b.a + b.b + b.c; }
+fn main() : i32 {
     let x: B = mk(use(mk(5)));   // {5,6,7} -> 18 -> {18,19,20}
     return use(x) - 57;
 }
@@ -395,10 +395,10 @@ AST
 # puts s1 in x1/x2 and s2 in x3/x4 for `f4(int a, struct T s1, struct T s2)`.
 cat > "$OUT/pairalloc.ast" <<'AST'
 struct T { a: i32, b: i32, c: i32 }
-fn f4(a: i32, s1: T, s2: T) -> i32 {
+fn f4(a: i32, s1: T, s2: T) : i32 {
     return a + s1.a + s1.b + s1.c + s2.a + s2.b + s2.c;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let s1: T = T { 1, 2, 3 };
     let s2: T = T { 4, 5, 6 };
     return f4(10, s1, s2) - 31;
@@ -410,13 +410,13 @@ printf '%s\n' 'PASS: nested aggregates, ptr<S> fields, &, whole-struct assignmen
 printf '%s\n' '[8/8] Bit-level: >16-byte returns go through X8, and the pair case uses X0/X1'
 cat > "$OUT/sret.ast" <<'AST'
 struct B { a: i64, b: i64, c: i64 }
-fn mk(v: i64) -> B { return B { v, v + 1, v + 2 }; }
-fn main() -> i32 { let b: B = mk(1); return b.a + b.b + b.c - 6; }
+fn mk(v: i64) : B { return B { v, v + 1, v + 2 }; }
+fn main() : i32 { let b: B = mk(1); return b.a + b.b + b.c - 6; }
 AST
 cat > "$OUT/pair.ast" <<'AST'
 struct T { a: i32, b: i32, c: i32 }
-fn mk(v: i32) -> T { return T { v, v + 1, v + 2 }; }
-fn main() -> i32 { let t: T = mk(1); return t.a + t.b + t.c - 6; }
+fn mk(v: i32) : T { return T { v, v + 1, v + 2 }; }
+fn main() : i32 { let t: T = mk(1); return t.a + t.b + t.c - 6; }
 AST
 "$OUT/aster" build-elf "$OUT/sret.ast" -o "$OUT/sret" >/dev/null
 "$OUT/aster" build-elf "$OUT/pair.ast" -o "$OUT/pair" >/dev/null

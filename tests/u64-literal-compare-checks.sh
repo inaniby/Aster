@@ -113,42 +113,42 @@ check() {
     printf '  %-46s %s\n' "$name" "$got"
 }
 # --- F-01: a bare literal at or past 2^63 is unsigned ---
-check 'max u64 > 0'                    1 'fn main() -> i32 { if (18446744073709551615 > 0) { return 1; } return 0; }'
-check '2^63 < literal > 2^63-1'        2 'fn main() -> i32 { if (9223372036854775807 < 10823014186374572430) { return 2; } return 0; }'
-check '0 < literal > 2^63'             3 'fn main() -> i32 { if (0 < 10823014186374572430) { return 3; } return 0; }'
-check 'literal < 2^63 is false'        4 'fn main() -> i32 { if (18446744073709551615 < 9223372036854775807) { return 0; } return 4; }'
-check 'equal literals compare equal'   5 'fn main() -> i32 { if (10823014186374572430 == 10823014186374572430) { return 5; } return 0; }'
-check 'u64 variable vs bare literal'   6 'fn main() -> i32 { let a: u64 = 1; if (a < 10823014186374572430) { return 6; } return 0; }'
-check 'i64 1 < max u64 (unsigned read)' 7 'fn main() -> i32 { let n: i64 = 1; if (n < 18446744073709551615) { return 7; } return 0; }'
-check 'i64 -1 < max u64 is equal, not <' 8 'fn main() -> i32 { let n: i64 = -1; if (n < 18446744073709551615) { return 0; } return 8; }'
-check 'u64 vs i64 -1 compares unsigned' 9 'fn main() -> i32 { let u: u64 = 18446744073709551615; let i: i64 = -1; if (u == i) { return 9; } return 0; }'
-check 'u64 slot holds the whole range' 10 'fn main() -> i32 { let q: u64 = 18446744073709551615; if (q > 0) { return 10; } return 0; }'
-check 'ul suffix agrees with the bare form' 11 'fn main() -> i32 { if (18446744073709551615ul > 0) { return 11; } return 0; }'
-check 'literal >> is logical at 64 bits' 12 'fn main() -> i32 { if (18446744073709551615 >> 62 == 3) { return 12; } return 0; }'
-check 'literal / is unsigned'          13 'fn main() -> i32 { if (18446744073709551615 / 3 == 6148914691236517205) { return 13; } return 0; }'
-check 'literal % is unsigned'          14 'fn main() -> i32 { if (18446744073709551615 % 10 == 5) { return 14; } return 0; }'
-check 'u64 shift into the top bit'     15 'fn main() -> i32 { let a: u64 = 1; if ((a << 63) > 0) { return 15; } return 0; }'
-check 'negative i64 literal stays signed' 16 'fn main() -> i32 { if (-9223372036854775807l - 1l < 0) { return 16; } return 0; }'
+check 'max u64 > 0'                    1 'fn main() : i32 { if (18446744073709551615 > 0) { return 1; } return 0; }'
+check '2^63 < literal > 2^63-1'        2 'fn main() : i32 { if (9223372036854775807 < 10823014186374572430) { return 2; } return 0; }'
+check '0 < literal > 2^63'             3 'fn main() : i32 { if (0 < 10823014186374572430) { return 3; } return 0; }'
+check 'literal < 2^63 is false'        4 'fn main() : i32 { if (18446744073709551615 < 9223372036854775807) { return 0; } return 4; }'
+check 'equal literals compare equal'   5 'fn main() : i32 { if (10823014186374572430 == 10823014186374572430) { return 5; } return 0; }'
+check 'u64 variable vs bare literal'   6 'fn main() : i32 { let a: u64 = 1; if (a < 10823014186374572430) { return 6; } return 0; }'
+check 'i64 1 < max u64 (unsigned read)' 7 'fn main() : i32 { let n: i64 = 1; if (n < 18446744073709551615) { return 7; } return 0; }'
+check 'i64 -1 < max u64 is equal, not <' 8 'fn main() : i32 { let n: i64 = -1; if (n < 18446744073709551615) { return 0; } return 8; }'
+check 'u64 vs i64 -1 compares unsigned' 9 'fn main() : i32 { let u: u64 = 18446744073709551615; let i: i64 = -1; if (u == i) { return 9; } return 0; }'
+check 'u64 slot holds the whole range' 10 'fn main() : i32 { let q: u64 = 18446744073709551615; if (q > 0) { return 10; } return 0; }'
+check 'ul suffix agrees with the bare form' 11 'fn main() : i32 { if (18446744073709551615ul > 0) { return 11; } return 0; }'
+check 'literal >> is logical at 64 bits' 12 'fn main() : i32 { if (18446744073709551615 >> 62 == 3) { return 12; } return 0; }'
+check 'literal / is unsigned'          13 'fn main() : i32 { if (18446744073709551615 / 3 == 6148914691236517205) { return 13; } return 0; }'
+check 'literal % is unsigned'          14 'fn main() : i32 { if (18446744073709551615 % 10 == 5) { return 14; } return 0; }'
+check 'u64 shift into the top bit'     15 'fn main() : i32 { let a: u64 = 1; if ((a << 63) > 0) { return 15; } return 0; }'
+check 'negative i64 literal stays signed' 16 'fn main() : i32 { if (-9223372036854775807l - 1l < 0) { return 16; } return 0; }'
 # --- F-06: the `u` suffix pins u32, so the arithmetic wraps at 32 bits ---
-check 'u32 multiply wraps'             17 'fn main() -> i32 { if (4294967295u * 2u == 4294967294u) { return 17; } return 0; }'
-check 'u32 add wraps to zero'          18 'fn main() -> i32 { if (0xFFFFFFFFu + 1u == 0) { return 18; } return 0; }'
-check 'u32 wrap with a variable operand' 19 'fn main() -> i32 { let a: u32 = 1; if (4294967295u + a == 0) { return 19; } return 0; }'
-check 'u32 literal compares unsigned'   20 'fn main() -> i32 { if (4294967295u > 0) { return 20; } return 0; }'
-check 'u32 variable vs u32 literal'     21 'fn main() -> i32 { let x: u32 = 4294967295u; if (x == 4294967295u) { return 21; } return 0; }'
-check 'i64 context still widens a u32 literal' 22 'fn main() -> i32 { let q: i64 = 4294967295u + 1; if (q == 4294967296) { return 22; } return 0; }'
-check 'u8 store wraps, expression does not' 23 'fn main() -> i32 { let a: u8 = 255; if (a + 1 == 256) { let b: u8 = a + 1; if (b == 0) { return 23; } } return 0; }'
-check 'u32 cast is the folding escape hatch' 24 'fn main() -> i32 { let q: u32 = u32(4294967295u + 1u); if (q == 0) { return 24; } return 0; }'
+check 'u32 multiply wraps'             17 'fn main() : i32 { if (4294967295u * 2u == 4294967294u) { return 17; } return 0; }'
+check 'u32 add wraps to zero'          18 'fn main() : i32 { if (0xFFFFFFFFu + 1u == 0) { return 18; } return 0; }'
+check 'u32 wrap with a variable operand' 19 'fn main() : i32 { let a: u32 = 1; if (4294967295u + a == 0) { return 19; } return 0; }'
+check 'u32 literal compares unsigned'   20 'fn main() : i32 { if (4294967295u > 0) { return 20; } return 0; }'
+check 'u32 variable vs u32 literal'     21 'fn main() : i32 { let x: u32 = 4294967295u; if (x == 4294967295u) { return 21; } return 0; }'
+check 'i64 context still widens a u32 literal' 22 'fn main() : i32 { let q: i64 = 4294967295u + 1; if (q == 4294967296) { return 22; } return 0; }'
+check 'u8 store wraps, expression does not' 23 'fn main() : i32 { let a: u8 = 255; if (a + 1 == 256) { let b: u8 = a + 1; if (b == 0) { return 23; } } return 0; }'
+check 'u32 cast is the folding escape hatch' 24 'fn main() : i32 { let q: u32 = u32(4294967295u + 1u); if (q == 0) { return 24; } return 0; }'
 # --- F-06b: a constant initializer folds at the type it names, so the same
 # expression is accepted without the cast now that the fold wraps ---
-check 'u32 initializer folds with the wrap' 25 'fn main() -> i32 { let q: u32 = 4294967295u + 1u; if (q == 0) { return 25; } return 0; }'
+check 'u32 initializer folds with the wrap' 25 'fn main() : i32 { let q: u32 = 4294967295u + 1u; if (q == 0) { return 25; } return 0; }'
 check 'u32 global initializer folds too' 26 'let g: u32 = 4294967295u + 1u;
-fn main() -> i32 { if (g == 0) { return 26; } return 0; }'
+fn main() : i32 { if (g == 0) { return 26; } return 0; }'
 check 'a u64 consumer keeps the fold and the run equal' 27 'let g: u64 = 0u - 1u;
-fn main() -> i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
+fn main() : i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
 # --- A-11: a long operator chain must not cost exponential type computation ---
-long=$(awk 'BEGIN{s="1"; for(i=1;i<200;i++)s=s"+1"; printf "fn main() -> i32 { let a: i32 = %s; if (a == 200) { return 29; } return 0; }\n", s}')
+long=$(awk 'BEGIN{s="1"; for(i=1;i<200;i++)s=s"+1"; printf "fn main() : i32 { let a: i32 = %s; if (a == 200) { return 29; } return 0; }\n", s}')
 check '200-term chain compiles and runs'       29 "$long"
-check 'u32 switch case folds at its own type' 28 'fn main() -> i32 { let x: u32 = 4294967295u; switch (x) { case 0u - 1u: return 28; default: return 0; } }'
+check 'u32 switch case folds at its own type' 28 'fn main() : i32 { let x: u32 = 4294967295u; switch (x) { case 0u - 1u: return 28; default: return 0; } }'
 else
     printf '%s\n' '  SKIP: the behavioural matrix needs qemu to run'
 fi
@@ -175,23 +175,23 @@ if [ "$have_qemu" = yes ] && [ "$have_cc" = yes ]; then
         printf '  %-46s %s\n' "$1" "$ga"
     }
     diff_case 'max u64 > 0' \
-        'fn main() -> i32 { if (18446744073709551615 > 0) { return 31; } return 0; }' \
+        'fn main() : i32 { if (18446744073709551615 > 0) { return 31; } return 0; }' \
         '#include <stdint.h>
 int main(void) { if (18446744073709551615ULL > 0ULL) { return 31; } return 0; }'
     diff_case 'i64 1 < max u64' \
-        'fn main() -> i32 { let n: i64 = 1; if (n < 18446744073709551615) { return 32; } return 0; }' \
+        'fn main() : i32 { let n: i64 = 1; if (n < 18446744073709551615) { return 32; } return 0; }' \
         '#include <stdint.h>
 int main(void) { int64_t n = 1; if ((uint64_t)n < 18446744073709551615ULL) { return 32; } return 0; }'
     diff_case 'u32 multiply wraps' \
-        'fn main() -> i32 { if (4294967295u * 2u == 4294967294u) { return 33; } return 0; }' \
+        'fn main() : i32 { if (4294967295u * 2u == 4294967294u) { return 33; } return 0; }' \
         '#include <stdint.h>
 int main(void) { if ((uint32_t)(4294967295u * 2u) == 4294967294u) { return 33; } return 0; }'
     diff_case 'literal / and % are unsigned' \
-        'fn main() -> i32 { if (18446744073709551615 / 3 == 6148914691236517205) { if (18446744073709551615 % 10 == 5) { return 34; } } return 0; }' \
+        'fn main() : i32 { if (18446744073709551615 / 3 == 6148914691236517205) { if (18446744073709551615 % 10 == 5) { return 34; } } return 0; }' \
         '#include <stdint.h>
 int main(void) { if (18446744073709551615ULL / 3ULL == 6148914691236517205ULL) { if (18446744073709551615ULL % 10ULL == 5ULL) { return 34; } } return 0; }'
     diff_case 'u8 store wraps, expression does not' \
-        'fn main() -> i32 { let a: u8 = 255; if (a + 1 == 256) { let b: u8 = a + 1; if (b == 0) { return 35; } } return 0; }' \
+        'fn main() : i32 { let a: u8 = 255; if (a + 1 == 256) { let b: u8 = a + 1; if (b == 0) { return 35; } } return 0; }' \
         '#include <stdint.h>
 int main(void) { uint8_t a = 255; if ((int32_t)a + 1 == 256) { uint8_t b = (uint8_t)(a + 1); if (b == 0) { return 35; } } return 0; }'
 else
@@ -212,15 +212,15 @@ reject() {
     printf '  %-46s refused\n' "$1"
 }
 reject 'i64 slot refuses max u64' 'local initializer does not fit in i64' \
-    'fn main() -> i32 { let x: i64 = 18446744073709551615; return 1; }'
+    'fn main() : i32 { let x: i64 = 18446744073709551615; return 1; }'
 reject 'u32 suffix past 2^32' 'u32 literal out of range' \
-    'fn main() -> i32 { let x: u32 = 4294967296u; return 1; }'
+    'fn main() : i32 { let x: u32 = 4294967296u; return 1; }'
 reject 'i64 suffix past 2^63-1' 'i64 literal out of range' \
-    'fn main() -> i32 { let x: i64 = 9223372036854775808l; return 1; }'
+    'fn main() : i32 { let x: i64 = 9223372036854775808l; return 1; }'
 reject 'past 2^64-1' 'integer literal is too large' \
-    'fn main() -> i32 { let x: u64 = 18446744073709551616; return 1; }'
+    'fn main() : i32 { let x: u64 = 18446744073709551616; return 1; }'
 reject 'u8 slot still range-checked' 'local initializer does not fit in u8' \
-    'fn main() -> i32 { let x: u8 = 300; return 1; }'
+    'fn main() : i32 { let x: u8 = 300; return 1; }'
 printf '%s\n' 'PASS: the rejection matrix holds'
 
 # ---------------------------------------------------------------------------
@@ -286,18 +286,18 @@ mutate() {   # mutate <name> <sed-script> <expectation...>
 # comparison goes back to reading its top bit as a sign.
 mutate 'm1: oversized literals stay i32-typed' \
     's|if(suf.empty()&&n>0x7fffffffffffffffULL)nn->suffix=Expr::LSUL;||' \
-    must_differ 'max u64 > 0' 1 'fn main() -> i32 { if (18446744073709551615 > 0) { return 1; } return 0; }'
+    must_differ 'max u64 > 0' 1 'fn main() : i32 { if (18446744073709551615 > 0) { return 1; } return 0; }'
 # m2: the `u` suffix no longer wins over the magnitude test, so a u32
 # operation is forced to 64 bits and stops wrapping.
 mutate 'm2: the u suffix no longer wins' \
     's|if(p->suffix==Expr::LSU)return false;||' \
-    must_differ 'u32 multiply wraps' 17 'fn main() -> i32 { if (4294967295u * 2u == 4294967294u) { return 17; } return 0; }'
+    must_differ 'u32 multiply wraps' 17 'fn main() : i32 { if (4294967295u * 2u == 4294967294u) { return 17; } return 0; }'
 # m4: the fold wraps at the expression's width even when the consumer is
 # 64-bit, so the global and the running local disagree.
 mutate 'm4: the fold ignores the consumer width' \
     's|t==Ty::U32&&!tyIs64(slot)|t==Ty::U32|' \
     must_differ 'a u64 consumer keeps the fold and the run equal' 27 'let g: u64 = 0u - 1u;
-fn main() -> i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
+fn main() : i32 { let q: u64 = 0u - 1u; if (q == g) { return 27; } return 0; }'
 # m6: the memo lookup is removed, so a 200-term chain goes back to 2^n work.
 mutate 'm6: the type cache is bypassed' \
     's|if(it!=exprTypeCache.end())return it->second;||' \
@@ -305,12 +305,12 @@ mutate 'm6: the type cache is bypassed' \
 # m5: a switch case value is folded in i64 again, so a u32 label is refused.
 mutate 'm5: case labels ignore their own type' \
     's|v=foldAtExprType(constExprType(c),subj,v);||' \
-    must_not_compile 'u32 switch case folds at its own type' 'fn main() -> i32 { let x: u32 = 4294967295u; switch (x) { case 0u - 1u: return 28; default: return 0; } }'
+    must_not_compile 'u32 switch case folds at its own type' 'fn main() : i32 { let x: u32 = 4294967295u; switch (x) { case 0u - 1u: return 28; default: return 0; } }'
 # m3: the oversized literal is typed i64 instead of u64 — the value cannot fit,
 # so the unsigned reading is lost and `> 0` flips.
 mutate 'm3: oversized literals typed i64' \
     's|nn->suffix=Expr::LSUL;|nn->suffix=Expr::LSL;|g' \
-    must_differ 'ul suffix agrees with the bare form' 11 'fn main() -> i32 { if (18446744073709551615ul > 0) { return 11; } return 0; }'
+    must_differ 'ul suffix agrees with the bare form' 11 'fn main() : i32 { if (18446744073709551615ul > 0) { return 11; } return 0; }'
 printf '%s\n' 'PASS: six mutated compilers each lose exactly one rule, and the checks notice'
 fi
 
@@ -356,7 +356,7 @@ printf '%s\n' '[9/9] The two fixes together'
 if [ "$have_qemu" = no ]; then
     printf '  SKIP: the end-to-end case needs qemu to run\n'
 else
-    printf '%s\n' 'fn main() -> i32 {
+    printf '%s\n' 'fn main() : i32 {
     if (18446744073709551615 > 0) {
         if (4294967295u * 2u == 4294967294u) {
             if (10823014186374572430 > 9223372036854775807) {

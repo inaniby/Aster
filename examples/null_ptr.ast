@@ -12,7 +12,7 @@
 let buf: i32[8] = 0;
 
 // The address of `needle` inside buf, or null when it is not there.
-fn find(needle: i32) -> ptr {
+fn find(needle: i32) : ptr {
     let base: ptr = buf;
     let i: i32 = 0;
     while (i < 8) {
@@ -22,7 +22,7 @@ fn find(needle: i32) -> ptr {
     return 0;                       // not found
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     buf[2] = 7;
     buf[5] = 42;
     let r: i32 = 0;

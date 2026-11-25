@@ -5,7 +5,7 @@
 // && ./cp < in > out   (or: echo hi | ./cp)
 let buf: u8[256] = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = 0;
     n = read(0, &buf, 256);
     while (n > 0) {

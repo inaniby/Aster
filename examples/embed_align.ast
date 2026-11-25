@@ -24,13 +24,13 @@ let g_tail:  ptr = @embed("embed_align_assets/tail.bin", 64);
 let g_again: ptr = @embed("embed_align_assets/tail.bin", 16);
 let g_third: ptr = @embed("embed_align_assets/third.bin", 16);
 
-fn align_sum() -> i32 {
+fn align_sum() : i32 {
     return load_u8(g_head)
          + load_u8(g_tail) + load_u8(g_tail + 1)
          + load_u8(g_again)
          + load_u8(g_third) + load_u8(g_third + 1) + load_u8(g_third + 2);
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     return align_sum();
 }

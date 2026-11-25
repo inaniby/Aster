@@ -18,12 +18,12 @@ let rng: u32 = 1u;
 let lang_c: bool = false;
 
 // --- tiny output helpers ---------------------------------------------------
-fn putc_(c: i32) -> i32 {
+fn putc_(c: i32) : i32 {
     store_u8(out + at, c);
     at = at + 1;
     return c;
 }
-fn puts_(s: ptr<u8>) -> i32 {
+fn puts_(s: ptr<u8>) : i32 {
     let i: i32 = 0;
     while (1) {
         let ch: i32 = load_u8(s + i);
@@ -33,7 +33,7 @@ fn puts_(s: ptr<u8>) -> i32 {
     }
     return i;
 }
-fn putu_(v: u32) -> i32 {
+fn putu_(v: u32) : i32 {
     let tmp: u8[24] = 0;
     let i: i32 = 0;
     let x: u32 = v;
@@ -51,13 +51,13 @@ fn putu_(v: u32) -> i32 {
     }
     return n;
 }
-fn next_() -> u32 {
+fn next_() : u32 {
     rng = rng * 1103515245u + 12345u;
     return (rng >> 16u) & 0x7fffu;
 }
 
 // --- per-language tokens ---------------------------------------------------
-fn ty(k: i32) -> ptr<u8> {
+fn ty(k: i32) : ptr<u8> {
     if (k == 0) { if (lang_c) { return "int32_t"; } return "i32"; }
     if (k == 1) { if (lang_c) { return "uint32_t"; } return "u32"; }
     if (k == 2) { if (lang_c) { return "int64_t"; } return "i64"; }
@@ -66,18 +66,18 @@ fn ty(k: i32) -> ptr<u8> {
     return "u8";
 }
 // u32(x) / (uint32_t)(x)
-fn cast_u32_open() -> i32 {
+fn cast_u32_open() : i32 {
     if (lang_c) { puts_("(uint32_t)("); } else { puts_("u32("); }
     return 0;
 }
-fn cast_open(k: i32) -> i32 {
+fn cast_open(k: i32) : i32 {
     if (lang_c) { puts_("("); puts_(ty(k)); puts_(")("); }
     else { puts_(ty(k)); puts_("("); }
     return 0;
 }
-fn cast_close() -> i32 { putc_(41); return 0; }
+fn cast_close() : i32 { putc_(41); return 0; }
 // A local declaration: Aster writes `let name: T = v;`, C writes `T name = v;`.
-fn decl(k: i32, name: ptr<u8>) -> i32 {
+fn decl(k: i32, name: ptr<u8>) : i32 {
     puts_("    ");
     if (lang_c) { puts_(ty(k)); puts_(" "); puts_(name); puts_(" = "); }
     else { puts_("let "); puts_(name); puts_(": "); puts_(ty(k)); puts_(" = "); }
@@ -87,8 +87,8 @@ fn decl(k: i32, name: ptr<u8>) -> i32 {
 // --- the printers every generated program carries --------------------------
 // Aster cannot print an integer without a writer, and the harness must not
 // depend on the library it is testing, so each program brings its own.
-fn emit_aster_print() -> i32 {
-    puts_("fn hexw(v: i32) -> i32 {\n");
+fn emit_aster_print() : i32 {
+    puts_("fn hexw(v: i32) : i32 {\n");
     puts_("    let b: u8[16] = 0;\n");
     puts_("    let i: i32 = 0;\n");
     puts_("    while (i < 8) {\n");
@@ -105,20 +105,20 @@ fn emit_aster_print() -> i32 {
     puts_("}\n");
     return 0;
 }
-fn emit_main_open() -> i32 {
-    if (lang_c) { puts_("int main(void) {\n"); } else { puts_("fn main() -> i32 {\n"); }
+fn emit_main_open() : i32 {
+    if (lang_c) { puts_("int main(void) {\n"); } else { puts_("fn main() : i32 {\n"); }
     return 0;
 }
-fn emit_main_close() -> i32 {
+fn emit_main_close() : i32 {
     if (lang_c) { puts_("    return 0;\n}\n"); } else { puts_("    return 0;\n}\n"); }
     return 0;
 }
-fn emit_print_u32(expr_label: i32) -> i32 {
+fn emit_print_u32(expr_label: i32) : i32 {
     if (lang_c) { puts_("    printf(\"%08x\\n\", (unsigned)sum);\n"); }
     else { puts_("    hexw(i32(sum));\n    write(1, \"\\n\", 1);\n"); }
     return 0;
 }
-fn emit_print_u64() -> i32 {
+fn emit_print_u64() : i32 {
     if (lang_c) { puts_("    printf(\"%08x%08x\\n\", (unsigned)(sum >> 32), (unsigned)sum);\n"); }
     else {
         puts_("    hexw(i32(sum >> 32));\n");
@@ -129,7 +129,7 @@ fn emit_print_u64() -> i32 {
 }
 
 // --- family 0: u32 expressions --------------------------------------------
-fn ex_u(depth: i32) -> i32 {
+fn ex_u(depth: i32) : i32 {
     if (depth <= 0) {
         let r: u32 = next_() % 3u;
         if (r == 0u) { puts_("a"); return 0; }
@@ -154,7 +154,7 @@ fn ex_u(depth: i32) -> i32 {
     putc_(41);
     return 0;
 }
-fn family0() -> i32 {
+fn family0() : i32 {
     if (lang_c) { puts_("#include <stdio.h>\n#include <stdint.h>\n"); }
     else { emit_aster_print(); }
     emit_main_open();
@@ -174,7 +174,7 @@ fn family0() -> i32 {
 }
 
 // --- family 1: i64 expressions -------------------------------------------
-fn ex_l(depth: i32) -> i32 {
+fn ex_l(depth: i32) : i32 {
     if (depth <= 0) {
         let r: u32 = next_() % 3u;
         if (r == 0u) { puts_("a"); return 0; }
@@ -197,7 +197,7 @@ fn ex_l(depth: i32) -> i32 {
     putc_(41);
     return 0;
 }
-fn family1() -> i32 {
+fn family1() : i32 {
     if (lang_c) { puts_("#include <stdio.h>\n#include <stdint.h>\n"); }
     else { emit_aster_print(); }
     emit_main_open();
@@ -219,9 +219,9 @@ fn family1() -> i32 {
 // --- family 2: call shapes ------------------------------------------------
 // The shapes that have produced real bugs: nine or more arguments (the stack
 // window), a 12-byte aggregate in registers, a 24-byte aggregate in memory.
-fn argval(i: i32) -> u32 { return next_() % 2000u + 1u; }
+fn argval(i: i32) : u32 { return next_() % 2000u + 1u; }
 
-fn family2() -> i32 {
+fn family2() : i32 {
     if (lang_c) { puts_("#include <stdio.h>\n#include <stdint.h>\n"); }
     else { emit_aster_print(); }
     if (lang_c) {
@@ -241,7 +241,7 @@ fn family2() -> i32 {
         i = i + 1;
     }
     if (lang_c) { puts_(") {\n    return "); }
-    else { puts_(") -> "); puts_(ty(1)); puts_(" {\n    return "); }
+    else { puts_(") : "); puts_(ty(1)); puts_(" {\n    return "); }
     i = 0;
     while (i < 9) {
         if (i > 0) { puts_(" + "); }
@@ -263,7 +263,7 @@ fn family2() -> i32 {
         puts_(", T3 s, "); puts_(ty(0)); puts_(" t, "); puts_(ty(0)); puts_(" u) {\n    return ");
     } else {
         puts_(", s: T3, t: "); puts_(ty(0)); puts_(", u: "); puts_(ty(0));
-        puts_(") -> "); puts_(ty(1)); puts_(" {\n    return ");
+        puts_(") : "); puts_(ty(1)); puts_(" {\n    return ");
     }
     i = 0;
     while (i < 6) {
@@ -283,7 +283,7 @@ fn family2() -> i32 {
         puts_(ty(0)); puts_(" k, T6 m, "); puts_(ty(0)); puts_(" n) {\n    return ");
     } else {
         puts_("k: "); puts_(ty(0)); puts_(", m: T6, n: "); puts_(ty(0));
-        puts_(") -> "); puts_(ty(1)); puts_(" {\n    return ");
+        puts_(") : "); puts_(ty(1)); puts_(" {\n    return ");
     }
     cast_u32_open(); puts_("k"); cast_close(); puts_(" * 3u");
     puts_(" + "); cast_u32_open(); puts_("m.a"); cast_close(); puts_(" * 5u");
@@ -333,7 +333,7 @@ fn family2() -> i32 {
 }
 
 // --- entry ---------------------------------------------------------------
-fn digits(s: ptr<u8>) -> u32 {
+fn digits(s: ptr<u8>) : u32 {
     let i: i32 = 0;
     let v: u32 = 0u;
     while (1) {
@@ -345,7 +345,7 @@ fn digits(s: ptr<u8>) -> u32 {
     return v;
 }
 
-fn main(argc: i32, argv: ptr) -> i32 {
+fn main(argc: i32, argv: ptr) : i32 {
     if (argc < 4) { return 2; }
     let mode: ptr<u8> = ptr(load_i64(argv + 8));
     let seedp: ptr<u8> = ptr(load_i64(argv + 16));

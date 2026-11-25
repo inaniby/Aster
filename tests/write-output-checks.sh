@@ -88,7 +88,7 @@ emit_case(){
     case "$n" in
     hello_stdout)
         cat > "$W/$n.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = write(1, "Hello, World!", 14);
     return 0;
 }
@@ -100,7 +100,7 @@ CEOF
         ;;
     hello_stderr)
         cat > "$W/$n.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = write(2, "to stderr", 10);
     return 0;
 }
@@ -112,7 +112,7 @@ CEOF
         ;;
     zero_len)
         cat > "$W/$n.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = write(1, "abc", 0);
     return n;
 }
@@ -128,7 +128,7 @@ CEOF
         # from a mutable global rather than from .rodata.
         cat > "$W/$n.ast" <<'AST'
 let buf: u8[5] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     buf[0] = 72; buf[1] = 105; buf[2] = 33; buf[3] = 10; buf[4] = 0;
     let n: i32 = write(1, buf, 4);
     return n;
@@ -147,7 +147,7 @@ CEOF
         # A pointer plus an integer is a byte offset in Aster (no scaling on
         # ptr + i32), so p + 2 addresses the third byte of the literal.
         cat > "$W/$n.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = "abcdef";
     let n: i32 = write(1, p + 2, 3);
     return n;
@@ -166,7 +166,7 @@ CEOF
         # .rodata bytes, which is what a wrong base or a wrong relocation
         # would break.
         cat > "$W/$n.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = write(1, "one-", 4);
     let b: i32 = write(1, "two!", 4);
     return a + b;
@@ -186,7 +186,7 @@ CEOF
         # half zero, and the count is never negative, so widening cannot
         # diverge. This case pins that.
         cat > "$W/$n.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let n: i64 = write(1, "wide", 4);
     return n % 100;
 }
@@ -203,7 +203,7 @@ CEOF
         # COVERAGE_MAP: the byte count must add to the running total, not to
         # itself — the first failure of the intrinsic (EBADF was the second).
         cat > "$W/$n.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let total: i32 = 0;
     total = total + write(1, "ab", 2);
     total = total + write(1, "cd", 2);
@@ -226,7 +226,7 @@ CEOF
         # COVERAGE_MAP: the same accumulation, but the value carried across
         # loop iterations is the one a clobbered w0 would corrupt silently.
         cat > "$W/$n.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let total: i32 = 0;
     let i: i32 = 0;
     while (i < 3) {
@@ -249,7 +249,7 @@ CEOF
         # COVERAGE_MAP: two writes in one expression — the second write's
         # argument load runs while the first write's result is still live.
         cat > "$W/$n.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = write(1, "A", 1);
     let b: i32 = write(1, "B", 1);
     return (a + b) + (write(1, "C", 1) + write(1, "D", 1));
@@ -269,9 +269,9 @@ CEOF
         # arguments: the argument staging must nest (callDepth) without
         # colliding with the helper's own frame.
         cat > "$W/$n.ast" <<'AST'
-fn twice(x: i32) -> i32 { return x + x; }
-fn emit(s: ptr, n: i32) -> i32 { return write(1, s, n); }
-fn main() -> i32 { return emit("ZZZZ", twice(2)); }
+fn twice(x: i32) : i32 { return x + x; }
+fn emit(s: ptr, n: i32) : i32 { return write(1, s, n); }
+fn main() : i32 { return emit("ZZZZ", twice(2)); }
 AST
         cat > "$W/$n.c" <<'CEOF'
 #include <unistd.h>
@@ -291,8 +291,8 @@ CEOF
         case "$n" in
         shadow_write)
             cat > "$W/$n.ast" <<'AST'
-fn write(fd: i32, n: i32) -> i32 { return n * 10; }
-fn main() -> i32 { return write(3, 9); }
+fn write(fd: i32, n: i32) : i32 { return n * 10; }
+fn main() : i32 { return write(3, 9); }
 AST
             cat > "$W/$n.c" <<'CEOF'
 static int write(int fd, int n){ (void)fd; return n * 10; }
@@ -303,8 +303,8 @@ CEOF
             # The signature matches the intrinsic's exactly — the user's
             # function must still win, and nothing may be printed.
             cat > "$W/$n.ast" <<'AST'
-fn write(fd: i32, buf: ptr, len: i32) -> i32 { return 99; }
-fn main() -> i32 { return write(1, "abc", 3); }
+fn write(fd: i32, buf: ptr, len: i32) : i32 { return 99; }
+fn main() : i32 { return write(1, "abc", 3); }
 AST
             cat > "$W/$n.c" <<'CEOF'
 static int write(int fd, const char *buf, int len){ (void)fd; (void)buf; (void)len; return 99; }
@@ -313,8 +313,8 @@ CEOF
             ;;
         shadow_load_u8)
             cat > "$W/$n.ast" <<'AST'
-fn load_u8(p: ptr) -> i32 { return 7; }
-fn main() -> i32 { return load_u8("x"); }
+fn load_u8(p: ptr) : i32 { return 7; }
+fn main() : i32 { return load_u8("x"); }
 AST
             cat > "$W/$n.c" <<'CEOF'
 static int load_u8(const char *p){ (void)p; return 7; }
@@ -325,8 +325,8 @@ CEOF
             # The shadowing function returns a ptr, so the *intrinsic* load_u8
             # (unshadowed) still reads through what it returned.
             cat > "$W/$n.ast" <<'AST'
-fn load_ptr(p: ptr) -> ptr { return p; }
-fn main() -> i32 { let q: ptr = load_ptr("ab"); return load_u8(q); }
+fn load_ptr(p: ptr) : ptr { return p; }
+fn main() : i32 { let q: ptr = load_ptr("ab"); return load_u8(q); }
 AST
             cat > "$W/$n.c" <<'CEOF'
 static const char *load_ptr(const char *p){ return p; }
@@ -336,9 +336,9 @@ CEOF
             ;;
         shadow_store_u8)
             cat > "$W/$n.ast" <<'AST'
-fn store_u8(p: ptr, v: i32) -> i32 { return v + 1; }
+fn store_u8(p: ptr, v: i32) : i32 { return v + 1; }
 let g: u8[4] = 0;
-fn main() -> i32 { return store_u8(g, 41); }
+fn main() : i32 { return store_u8(g, 41); }
 AST
             cat > "$W/$n.c" <<'CEOF'
 static int store_u8(void *p, int v){ (void)p; return v + 1; }
@@ -409,16 +409,16 @@ reject(){ # $1 = description, $2 = source, $3 = expected message fragment
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "a string length" \
-    'fn main() -> i32 { let n: i32 = write(1, "x", "y"); return n; }' \
+    'fn main() : i32 { let n: i32 = write(1, "x", "y"); return n; }' \
     "write third argument must be i32"
 reject "a string fd" \
-    'fn main() -> i32 { let n: i32 = write("a", "x", 1); return n; }' \
+    'fn main() : i32 { let n: i32 = write("a", "x", 1); return n; }' \
     "write first argument must be i32"
 reject "an integer buffer" \
-    'fn main() -> i32 { let n: i32 = write(1, 5, 1); return n; }' \
+    'fn main() : i32 { let n: i32 = write(1, 5, 1); return n; }' \
     "write second argument must be ptr"
 reject "two arguments" \
-    'fn main() -> i32 { let n: i32 = write(1, "x"); return n; }' \
+    'fn main() : i32 { let n: i32 = write(1, "x"); return n; }' \
     "write expects (fd: i32, buf: ptr, len: i32)"
 
 # ---------------------------------------------------------------------------

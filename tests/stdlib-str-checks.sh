@@ -66,7 +66,7 @@ ok 'demo output == the C oracle'
 printf '%s\n' '[5/9] the parsers: edges'
 cat > "$OUT/edge.ast" <<'AST'
 include "ailib.ast";
-fn main() -> i32 {
+fn main() : i32 {
     let v: i64[1] = 0;
     let ov: ptr = ptr(&v);
     // base 0 auto-detects both prefixes
@@ -119,7 +119,7 @@ ok 'prefixes, signs, bases, INT64_MAX, .5, 1., 1e2, -0.5'
 printf '%s\n' '[6/9] trim and lines stay inside their buffers'
 cat > "$OUT/lines.ast" <<'AST'
 include "ailib.ast";
-fn main() -> i32 {
+fn main() : i32 {
     // no newline at all: one line, and the iterator answers 0 afterwards
     let a: u8[8] = 0;
     memcpy(a, "abc", 4);
@@ -157,7 +157,7 @@ include "ailib.ast";
 
 let b: u8[16] = 0;
 
-fn put(text: ptr<u8>) -> i32 {
+fn put(text: ptr<u8>) : i32 {
     let i: i32 = 0;
     while (1 == 1) {
         let ch: i32 = load_u8(text + i);
@@ -168,7 +168,7 @@ fn put(text: ptr<u8>) -> i32 {
     return i;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     put("heLLo");
     to_upper(b);
     if (strcmp(b, "HELLO") != 0) { return 1; }

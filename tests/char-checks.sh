@@ -145,8 +145,8 @@ if [ "$have_qemu" != yes ]; then
     echo 'SKIP: no cross gcc or no qemu — the C-ABI link did not run'
 else
 cat > "$W/aster_charfn.ast" <<'AST'
-fn toUpper(c: char) -> char { return char(c - 32); }
-fn ord(c: char) -> i32 { return i32(c); }
+fn toUpper(c: char) : char { return char(c - 32); }
+fn ord(c: char) : i32 { return i32(c); }
 AST
 "$A" build-obj --pic "$W/aster_charfn.ast" -o "$W/aster_charfn.o" >"$W/aster_charfn.log" 2>&1 \
     || { echo 'FAIL: Aster char function does not build to an object:' >&2; cat "$W/aster_charfn.log" >&2; exit 1; }
@@ -202,7 +202,7 @@ emit_case(){ # $1 = label
     printf '%s\n' "$3" > "$W/$n.c"
 }
 emit_case char_arith \
-'fn main() -> i32 {
+'fn main() : i32 {
     let a: char = '"'"'A'"'"';
     let b: char = '"'"'B'"'"';
     let s: char = a + b;
@@ -215,7 +215,7 @@ emit_case char_arith \
     return 1;
 }'
 emit_case char_array \
-'fn main() -> i32 {
+'fn main() : i32 {
     let arr: char[4] = 0;
     arr[0] = '"'"'x'"'"';
     arr[1] = '"'"'y'"'"';
@@ -230,7 +230,7 @@ emit_case char_array \
 }'
 emit_case char_struct \
 'struct S { c: char, n: i32 }
-fn main() -> i32 {
+fn main() : i32 {
     let s: S = S { '"'"'q'"'"', 7 };
     if (s.c == 113 && s.n == 7) { return 0; }
     return 1;
@@ -242,7 +242,7 @@ int main(void){
     return 1;
 }'
 emit_case char_widen \
-'fn main() -> i32 {
+'fn main() : i32 {
     let c: char = '"'"'m'"'"';
     let w: i32 = c;
     if (w == 109) { return 0; }
@@ -254,7 +254,7 @@ emit_case char_widen \
     return 1;
 }'
 emit_case char_narrow \
-'fn main() -> i32 {
+'fn main() : i32 {
     let c: char = char(300);
     if (c == 44) { return 0; }
     return 1;
@@ -265,8 +265,8 @@ emit_case char_narrow \
     return 1;
 }'
 emit_case char_param_ret \
-'fn toUpper(c: char) -> char { return char(c - 32); }
-fn main() -> i32 {
+'fn toUpper(c: char) : char { return char(c - 32); }
+fn main() : i32 {
     let r: char = toUpper('"'"'a'"'"');
     if (r == 65) { return 0; }
     return 1;
@@ -321,37 +321,37 @@ failed=0
 rej_n=0
 r(){ reject "$@" && rej_n=$((rej_n + 1)) || failed=1; }
 r 'char: local init 300' \
-'let c: char = 300; fn main() -> i32 { return 0; }' \
+'let c: char = 300; fn main() : i32 { return 0; }' \
 'does not fit in char'
 r 'char: global init 300' \
-'let g: char = 300; fn main() -> i32 { return 0; }' \
+'let g: char = 300; fn main() : i32 { return 0; }' \
 'does not fit in char'
 r 'char: const init 300' \
-'const c: char = 300; fn main() -> i32 { return 0; }' \
+'const c: char = 300; fn main() : i32 { return 0; }' \
 'does not fit in char'
 r 'char: init -1' \
-'let c: char = -1; fn main() -> i32 { return 0; }' \
+'let c: char = -1; fn main() : i32 { return 0; }' \
 'does not fit in char'
 r 'char: init 300+1 (folded)' \
-'fn main() -> i32 { let c: char = 300 + 1; return 0; }' \
+'fn main() : i32 { let c: char = 300 + 1; return 0; }' \
 'does not fit in char'
 r 'char: assignment 300' \
-'fn main() -> i32 { let c: char = 0; c = 300; return 0; }' \
+'fn main() : i32 { let c: char = 0; c = 300; return 0; }' \
 'does not fit in char'
 r 'char: return 300' \
-'fn f() -> char { return 300; } fn main() -> i32 { return 0; }' \
+'fn f() : char { return 300; } fn main() : i32 { return 0; }' \
 'expected char, got i32'
 r 'char: struct field 300' \
-'struct S { c: char, n: i32 } fn main() -> i32 { let s: S = S { 300, 7 }; return 0; }' \
+'struct S { c: char, n: i32 } fn main() : i32 { let s: S = S { 300, 7 }; return 0; }' \
 'expected char, got i32'
 r 'char: return i32 param' \
-'fn f(x: i32) -> char { return x; } fn main() -> i32 { return 0; }' \
+'fn f(x: i32) : char { return x; } fn main() : i32 { return 0; }' \
 'expected char, got i32'
 r 'char: init from i32 var' \
-'fn main() -> i32 { let x: i32 = 300; let c: char = x; return 0; }' \
+'fn main() : i32 { let x: i32 = 300; let c: char = x; return 0; }' \
 'expected char, got i32'
 r 'char: switch case 300' \
-'fn main() -> i32 { let c: char = 0; switch (c) { case 300: return 0; } return 1; }' \
+'fn main() : i32 { let c: char = 0; switch (c) { case 300: return 0; } return 1; }' \
 'case value does not fit the switch subject type'
 [ "$failed" = 0 ] || exit 1
 printf '  %-30s %s\n' "refusals held" "$rej_n"
@@ -405,7 +405,7 @@ mutate(){ # $1 = label, $2 = sed script
 # (the switch case at ~894). Neutralise both so a literal assignment builds —
 # proving the refusal is load-bearing.
 mutate m1 '/static bool initializerFits/,/static bool caseValueFits/ { s/if(t==Ty::Char)return (uint64_t)e.n<=255u;/if(t==Ty::Char)return true;/; s/case Ty::Char:return folded>=0&&folded<=255;/case Ty::Char:return true;/; }'
-printf '%s\n' 'fn main() -> i32 { let c: char = 0; c = 300; return 0; }' > "$W/m1.ast"
+printf '%s\n' 'fn main() : i32 { let c: char = 0; c = 300; return 0; }' > "$W/m1.ast"
 # The original refuses `c = 300`; the mutant accepts it, so it builds.
 if "$OUT/m1" build-elf "$W/m1.ast" -o "$W/m1" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'a) char accepts out-of-range' 'noticed'
@@ -414,7 +414,7 @@ else
 fi
 # (b) char is a type — mutate parseType so the CharType keyword is not a type.
 mutate m2 's/case TK::CharType: out=Ty::Char; ++p; return true;/case TK::CharType: return false;/'
-printf '%s\n' 'fn main() -> i32 { let a: char = 0; return 0; }' > "$W/m2.ast"
+printf '%s\n' 'fn main() : i32 { let a: char = 0; return 0; }' > "$W/m2.ast"
 # The original builds; the mutant refuses `char` as a type, so it does not build.
 if "$OUT/m2" build-elf "$W/m2.ast" -o "$W/m2" >/dev/null 2>&1; then
     echo 'FAIL: mutation (b) went unnoticed — parseType is not what admits char' >&2; exit 1
@@ -424,7 +424,7 @@ printf '  %-40s %s\n' 'b) char ceases to be a type' 'noticed'
 # recognised as a cast at all. The original builds `char(300)` (truncating to
 # 44); the mutant rejects the spelling, so it does not build.
 mutate m3 's/||cur().k==TK::CharType//'
-printf '%s\n' 'fn main() -> i32 { let c: char = char(300); return 0; }' > "$W/m3.ast"
+printf '%s\n' 'fn main() : i32 { let c: char = char(300); return 0; }' > "$W/m3.ast"
 # The original builds; the mutant refuses the char cast, so it does not build.
 if "$OUT/m3" build-elf "$W/m3.ast" -o "$W/m3" >/dev/null 2>&1; then
     echo 'FAIL: mutation (c) went unnoticed — the cast site is not what admits char(x)' >&2; exit 1
@@ -435,7 +435,7 @@ printf '  %-40s %s\n' 'c) char ceases to be a cast target' 'noticed'
 # so a switch over a char with an out-of-range case builds — proving the case
 # refusal is load-bearing.
 mutate m4 '/static bool caseValueFits/,/^}/ s/case Ty::Char:return folded>=0&&folded<=255;/case Ty::Char:return true;/'
-printf '%s\n' 'fn main() -> i32 { let c: char = 0; switch (c) { case 300: return 0; } return 1; }' > "$W/m4.ast"
+printf '%s\n' 'fn main() : i32 { let c: char = 0; switch (c) { case 300: return 0; } return 1; }' > "$W/m4.ast"
 # The original refuses `return 300;`; the mutant accepts it, so it builds.
 if "$OUT/m4" build-elf "$W/m4.ast" -o "$W/m4" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'd) char fn returns out-of-range' 'noticed'
@@ -447,7 +447,7 @@ fi
 # the mutant treats char as non-integer so tyAssignable to a char from an i32
 # constant now fails, and the witness does not build.
 mutate m5 's/|| t.k == Ty::Char //'
-printf '%s\n' "fn main() -> i32 { let a: char = 'A'; return 0; }" > "$W/m5.ast"
+printf '%s\n' "fn main() : i32 { let a: char = 'A'; return 0; }" > "$W/m5.ast"
 # The original builds; the mutant refuses the char slot, so it does not build.
 if "$OUT/m5" build-elf "$W/m5.ast" -o "$W/m5" >/dev/null 2>&1; then
     echo 'FAIL: mutation (e) went unnoticed — tyIsInteger is not what admits char arithmetic' >&2; exit 1

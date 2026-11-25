@@ -19,57 +19,57 @@ let clearn: i32 = 0;
 let focusn: i32 = 0;
 let openv: i32 = 0;
 let reasonn: i32 = 0;
-let savedClear: fn(ptr) -> i32 = null;
-let savedFocus: fn(ptr) -> i32 = null;
-let savedNotify: fn(ptr) -> i32 = null;
-let savedPromo: fn(ptr) -> i32 = null;
-let savedVolume: fn(ptr) -> i32 = null;
-let savedLanguage: fn(ptr) -> i32 = null;
+let savedClear: fn(ptr) : i32 = null;
+let savedFocus: fn(ptr) : i32 = null;
+let savedNotify: fn(ptr) : i32 = null;
+let savedPromo: fn(ptr) : i32 = null;
+let savedVolume: fn(ptr) : i32 = null;
+let savedLanguage: fn(ptr) : i32 = null;
 let savedUser: ptr = null;
-fn logKey(key: i32) -> i32 {
+fn logKey(key: i32) : i32 {
     keylog[logn] = key;
     logn = logn + 1;
     return 0;
 }
-fn aui_scroll(key: i32) -> i32 {
+fn aui_scroll(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_weight(w: i32) -> i32 {
+fn aui_weight(w: i32) : i32 {
     weightn = weightn + 1;
     return 0;
 }
-fn aui_column(key: i32) -> i32 {
+fn aui_column(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_row(key: i32) -> i32 {
+fn aui_row(key: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_pad(dp: i32) -> i32 {
+fn aui_pad(dp: i32) : i32 {
     padn = padn + 1;
     return 0;
 }
-fn aui_gap(dp: i32) -> i32 {
+fn aui_gap(dp: i32) : i32 {
     gapn = gapn + 1;
     return 0;
 }
-fn aui_label(key: i32, text: ptr) -> i32 {
+fn aui_label(key: i32, text: ptr) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_text_field(key: i32, hint: ptr) -> i32 {
+fn aui_text_field(key: i32, hint: ptr) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_text_value(key: i32) -> ptr {
+fn aui_text_value(key: i32) : ptr {
     return null;
 }
-fn aui_focus_get() -> i32 {
+fn aui_focus_get() : i32 {
     return 0;
 }
-fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_button(key: i32, text: ptr, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     if (key == -1171597166) {
         savedClear = cb;
@@ -79,72 +79,72 @@ fn aui_button(key: i32, text: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
     savedUser = user;
     return 0;
 }
-fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     openv = open;
     savedLanguage = cb;
     savedUser = user;
     return 0;
 }
-fn aui_option(key: i32, text: ptr) -> i32 {
+fn aui_option(key: i32, text: ptr) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_select_value(key: i32) -> i32 {
+fn aui_select_value(key: i32) : i32 {
     return 2;
 }
-fn aui_select_reason() -> i32 {
+fn aui_select_reason() : i32 {
     reasonn = reasonn + 1;
     if (reasonn == 1) {
         return 0;
     }
     return 1;
 }
-fn aui_switch(key: i32, on: i32, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_switch(key: i32, on: i32, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     savedNotify = cb;
     savedUser = user;
     return 0;
 }
-fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     savedPromo = cb;
     savedUser = user;
     return 0;
 }
-fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr) -> i32, user: ptr) -> i32 {
+fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr) : i32, user: ptr) : i32 {
     logKey(key);
     savedVolume = cb;
     savedUser = user;
     return 0;
 }
-fn aui_slider_value(key: i32) -> i32 {
+fn aui_slider_value(key: i32) : i32 {
     return 42;
 }
-fn aui_progress(key: i32, value: i32) -> i32 {
+fn aui_progress(key: i32, value: i32) : i32 {
     logKey(key);
     return 0;
 }
-fn aui_keyboard(target_key: i32) -> i32 {
+fn aui_keyboard(target_key: i32) : i32 {
     kbn = kbn + 1;
     return 0;
 }
-fn aui_text_clear(key: i32) -> i32 {
+fn aui_text_clear(key: i32) : i32 {
     clearn = clearn + 1;
     return 0;
 }
-fn aui_focus(key: i32) -> i32 {
+fn aui_focus(key: i32) : i32 {
     focusn = focusn + 1;
     return 0;
 }
-fn aui_invalidate() -> i32 {
+fn aui_invalidate() : i32 {
     return 0;
 }
-fn aui_end() -> i32 {
+fn aui_end() : i32 {
     endn = endn + 1;
     return 0;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr<App> = &g_app;
     g_app.sel_open = -1104391733;
     let r: i32 = page_input(p, p);
@@ -278,31 +278,31 @@ fn main() -> i32 {
 // tab-input-en.ast — D-2a syntax draft, NOT compilable (needs the compiler work order to land).
 // Source: new-line Gallery Input tab (116 lines); work-order target 99 lines, measured in the D2A report.
 // The 130 sentinel now goes through key(Language); event kinds follow the skeleton event set (change).
-extern fn aui_scroll(key: i32) -> i32;
-extern fn aui_weight(w: i32) -> i32;
-extern fn aui_column(key: i32) -> i32;
-extern fn aui_row(key: i32) -> i32;
-extern fn aui_pad(dp: i32) -> i32;
-extern fn aui_gap(dp: i32) -> i32;
-extern fn aui_label(key: i32, text: ptr) -> i32;
-extern fn aui_text_field(key: i32, hint: ptr) -> i32;
-extern fn aui_text_value(key: i32) -> ptr;
-extern fn aui_focus_get() -> i32;
-extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
-extern fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr): i32, user: ptr) -> i32;
-extern fn aui_option(key: i32, text: ptr) -> i32;
-extern fn aui_select_value(key: i32) -> i32;
-extern fn aui_select_reason() -> i32;
-extern fn aui_switch(key: i32, on: i32, cb: fn(ptr): i32, user: ptr) -> i32;
-extern fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr): i32, user: ptr) -> i32;
-extern fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr): i32, user: ptr) -> i32;
-extern fn aui_slider_value(key: i32) -> i32;
-extern fn aui_progress(key: i32, value: i32) -> i32;
-extern fn aui_keyboard(target_key: i32) -> i32;
-extern fn aui_text_clear(key: i32) -> i32;
-extern fn aui_focus(key: i32) -> i32;
-extern fn aui_invalidate() -> i32;
-extern fn aui_end() -> i32;
+extern fn aui_scroll(key: i32) : i32;
+extern fn aui_weight(w: i32) : i32;
+extern fn aui_column(key: i32) : i32;
+extern fn aui_row(key: i32) : i32;
+extern fn aui_pad(dp: i32) : i32;
+extern fn aui_gap(dp: i32) : i32;
+extern fn aui_label(key: i32, text: ptr) : i32;
+extern fn aui_text_field(key: i32, hint: ptr) : i32;
+extern fn aui_text_value(key: i32) : ptr;
+extern fn aui_focus_get() : i32;
+extern fn aui_button(key: i32, text: ptr, cb: fn(ptr): i32, user: ptr) : i32;
+extern fn aui_select(key: i32, selected: i32, open: i32, placeholder: ptr, cb: fn(ptr): i32, user: ptr) : i32;
+extern fn aui_option(key: i32, text: ptr) : i32;
+extern fn aui_select_value(key: i32) : i32;
+extern fn aui_select_reason() : i32;
+extern fn aui_switch(key: i32, on: i32, cb: fn(ptr): i32, user: ptr) : i32;
+extern fn aui_checkbox(key: i32, text: ptr, checked: i32, cb: fn(ptr): i32, user: ptr) : i32;
+extern fn aui_slider(key: i32, value: i32, step: i32, cb: fn(ptr): i32, user: ptr) : i32;
+extern fn aui_slider_value(key: i32) : i32;
+extern fn aui_progress(key: i32, value: i32) : i32;
+extern fn aui_keyboard(target_key: i32) : i32;
+extern fn aui_text_clear(key: i32) : i32;
+extern fn aui_focus(key: i32) : i32;
+extern fn aui_invalidate() : i32;
+extern fn aui_end() : i32;
 event Clear:tap() {
     aui_text_clear(key(Input));
     aui_invalidate();
@@ -338,7 +338,7 @@ event Language:change() {
     }
     aui_invalidate();
 }
-layout page_input(s: ptr<App>, user: ptr) -> View {
+layout page_input(s: ptr<App>, user: ptr) : View {
     Scroll MainScroll, Weight(1) {
         Column MainCol, Padding(20), Gap(12) {
             Label Title, ptr("Text field + select")

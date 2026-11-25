@@ -107,21 +107,21 @@ check() {
 }
 A=$OUT/aster
 # --- bool <-> integer ---
-check "$A" 'bool -> i32 (true=1, false=0)'      1 'fn main() -> i32 { if (i32(true) == 1 && i32(false) == 0) { return 1; } return 0; }'
-check "$A" 'bool -> u64 (true=1, false=0)'      2 'fn main() -> i32 { if (u64(true) == 1 && u64(false) == 0) { return 2; } return 0; }'
-check "$A" 'bool -> u8 (true=1, false=0)'       3 'fn main() -> i32 { if (u8(true) == 1 && u8(false) == 0) { return 3; } return 0; }'
+check "$A" 'bool -> i32 (true=1, false=0)'      1 'fn main() : i32 { if (i32(true) == 1 && i32(false) == 0) { return 1; } return 0; }'
+check "$A" 'bool -> u64 (true=1, false=0)'      2 'fn main() : i32 { if (u64(true) == 1 && u64(false) == 0) { return 2; } return 0; }'
+check "$A" 'bool -> u8 (true=1, false=0)'       3 'fn main() : i32 { if (u8(true) == 1 && u8(false) == 0) { return 3; } return 0; }'
 # --- integer -> bool (the one non-trivial direction: normalized to 0/1) ---
-check "$A" 'int -> bool, nonzero is true'       4 'fn main() -> i32 { if (bool(7)) { return 4; } return 0; }'
-check "$A" 'int -> bool, zero is false'         8 'fn main() -> i32 { if (bool(0)) { return 0; } return 8; }'
-check "$A" 'int -> bool, negative is true'      5 'fn main() -> i32 { let n: i32 = 0 - 1; if (bool(n)) { return 5; } return 0; }'
+check "$A" 'int -> bool, nonzero is true'       4 'fn main() : i32 { if (bool(7)) { return 4; } return 0; }'
+check "$A" 'int -> bool, zero is false'         8 'fn main() : i32 { if (bool(0)) { return 0; } return 8; }'
+check "$A" 'int -> bool, negative is true'      5 'fn main() : i32 { let n: i32 = 0 - 1; if (bool(n)) { return 5; } return 0; }'
 # --- integer <-> ptr ---
-check "$A" 'int -> ptr -> i64 round trip'      16 'fn main() -> i32 { if (i64(ptr(0x10)) == 0x10) { return 16; } return 0; }'
-check "$A" 'ptr -> i32 takes low 32 bits'      32 'fn main() -> i32 { if (i32(ptr(0x20)) == 0x20) { return 32; } return 0; }'
-check "$A" 'int -> ptr keeps high bits'         17 'fn main() -> i32 { if (i64(ptr(0x100000000)) == 0x100000000) { return 17; } return 0; }'
+check "$A" 'int -> ptr -> i64 round trip'      16 'fn main() : i32 { if (i64(ptr(0x10)) == 0x10) { return 16; } return 0; }'
+check "$A" 'ptr -> i32 takes low 32 bits'      32 'fn main() : i32 { if (i32(ptr(0x20)) == 0x20) { return 32; } return 0; }'
+check "$A" 'int -> ptr keeps high bits'         17 'fn main() : i32 { if (i64(ptr(0x100000000)) == 0x100000000) { return 17; } return 0; }'
 # --- ptr<S> <-> ptr<U> is a pure reinterpretation ---
 check "$A" 'ptr<S> -> ptr<U> reads the field'   64 'struct Point { x: i32, y: i32 }
-fn main() -> i32 { let pt: Point; pt.x = 9; pt.y = 8; let pp: ptr<Point> = &pt; let ppa: ptr<i32> = ptr<i32>(pp); if (*ppa == 9) { return 64; } return 0; }'
-check "$A" 'typed ptr -> untyped -> i32'       65 'fn main() -> i32 { let u: ptr = ptr(0x40); let ut: ptr<i32> = ptr<i32>(u); if (i32(ut) == 0x40) { return 65; } return 0; }'
+fn main() : i32 { let pt: Point; pt.x = 9; pt.y = 8; let pp: ptr<Point> = &pt; let ppa: ptr<i32> = ptr<i32>(pp); if (*ppa == 9) { return 64; } return 0; }'
+check "$A" 'typed ptr -> untyped -> i32'       65 'fn main() : i32 { let u: ptr = ptr(0x40); let ut: ptr<i32> = ptr<i32>(u); if (i32(ut) == 0x40) { return 65; } return 0; }'
 else
     printf '%s\n' '  SKIP: the behavioural cases need qemu to run'
 fi
@@ -173,20 +173,20 @@ reject() {
 }
 A=$OUT/aster
 reject 'bool -> ptr'                 "cannot cast bool to ptr" \
-    'fn main() -> i32 { let b: bool = true; let z: ptr = ptr(b); return 0; }'
+    'fn main() : i32 { let b: bool = true; let z: ptr = ptr(b); return 0; }'
 reject 'ptr -> bool'                 "cannot cast ptr to bool" \
-    'fn main() -> i32 { let p: ptr = 0; let z: bool = bool(p); return 0; }'
+    'fn main() : i32 { let p: ptr = 0; let z: bool = bool(p); return 0; }'
 reject 'struct -> integer'           "cannot cast struct" \
     'struct S { a: i32 }
-fn main() -> i32 { let s: S; let z: i32 = i32(s); return 0; }'
+fn main() : i32 { let s: S; let z: i32 = i32(s); return 0; }'
 reject 'cast without its paren'      "expected '(' after cast type" \
-    'fn main() -> i32 { return i64 300; }'
+    'fn main() : i32 { return i64 300; }'
 reject 'cast unclosed'               "expected ')' after cast operand" \
-    'fn main() -> i32 { return i64(300; }'
+    'fn main() : i32 { return i64(300; }'
 reject 'ptr< with no closing >'      "expected '>' after the type in a ptr<...> cast" \
-    'fn main() -> i32 { let p: ptr = ptr<i32(0); return 0; }'
+    'fn main() : i32 { let p: ptr = ptr<i32(0); return 0; }'
 reject 'ptr< of unknown struct'      "unknown struct type in ptr<" \
-    'fn main() -> i32 { let p: ptr<NoSuch> = ptr<NoSuch>(0); return 0; }'
+    'fn main() : i32 { let p: ptr<NoSuch> = ptr<NoSuch>(0); return 0; }'
 printf '%s\n' 'PASS: the rejection matrix holds'
 
 # ---------------------------------------------------------------------------
@@ -250,26 +250,26 @@ else
 # keeps its raw bits instead of becoming 1, so i32(bool(x)) is 5, not 1.
 mutate 'm1: integer -> bool not normalized' \
     's#                if(e.ty==Ty::Bool){#                if(false){#' \
-    must_differ 'i32(bool(x)) is 1' 1 'fn main() -> i32 { let x: i32 = 5; if (i32(bool(x)) == 1) { return 1; } return 0; }'
+    must_differ 'i32(bool(x)) is 1' 1 'fn main() : i32 { let x: i32 = 5; if (i32(bool(x)) == 1) { return 1; } return 0; }'
 # m2: bool -> integer is refused again — sema only admits integer sources to
 # integer targets when they are integers, not bools.
 mutate 'm2: bool -> integer refused' \
     's#                if(toInt)         return e.ty;#                if(toInt \&\& !fromBool) return e.ty;#' \
-    must_reject 'bool -> i32' 'fn main() -> i32 { if (i32(true) == 1) { return 1; } return 0; }'
+    must_reject 'bool -> i32' 'fn main() : i32 { if (i32(true) == 1) { return 1; } return 0; }'
 # m4: integer -> ptr is refused again.
 mutate 'm4: integer -> ptr refused' \
     's#                if(toPtr\&\&!fromBool) return e.ty;#                if(false) return e.ty;#' \
-    must_reject 'int -> ptr' 'fn main() -> i32 { if (i64(ptr(0)) == 0) { return 16; } return 0; }'
+    must_reject 'int -> ptr' 'fn main() : i32 { if (i64(ptr(0)) == 0) { return 16; } return 0; }'
 # m5: integer -> bool is refused again.
 mutate 'm5: integer -> bool refused' \
     's#                if(toBool\&\&fromInt)  return e.ty;#                if(false)  return e.ty;#' \
-    must_reject 'int -> bool' 'fn main() -> i32 { if (bool(5)) { return 4; } return 0; }'
+    must_reject 'int -> bool' 'fn main() : i32 { if (bool(5)) { return 4; } return 0; }'
 # m6: the cast operand is generated at the default width instead of the target's
 # — a 64-bit address materialized through a 32-bit literal is truncated, so
 # i64(ptr(0x100000000)) is 0, not 0x100000000.
 mutate 'm6: the operand forgets the target width' \
     's#                int a=gen(\*e.a,e.ty);#                int a=gen(*e.a);#' \
-    must_differ 'i64(ptr(0x100000000)) round trips' 17 'fn main() -> i32 { if (i64(ptr(0x100000000)) == 0x100000000) { return 17; } return 0; }'
+    must_differ 'i64(ptr(0x100000000)) round trips' 17 'fn main() : i32 { if (i64(ptr(0x100000000)) == 0x100000000) { return 17; } return 0; }'
 printf '%s\n' 'PASS: five mutated compilers each lose exactly one rule, and the checks notice'
 fi
 

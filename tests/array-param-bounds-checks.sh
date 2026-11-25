@@ -71,12 +71,12 @@ if [ "$have_qemu" = yes ]; then
 printf '%s\n' '[3/9] Acceptance: in-range parameter subscripts behave identically (qemu)'
 # Read through a parameter array; in range, identical to a plain local read.
 cat > "$OUT/read.ast" <<'AST'
-fn f(a: i32[4]) -> i32 {
+fn f(a: i32[4]) : i32 {
     let s: i32 = 0;
     s = s + a[0]; s = s + a[1]; s = s + a[2]; s = s + a[3];
     return s;
 }
-fn main() -> i32 { let arr: i32[4] = 10; return f(arr); }
+fn main() : i32 { let arr: i32[4] = 10; return f(arr); }
 AST
 "$OUT/aster" build-elf "$OUT/read.ast" -o "$OUT/read-off" >/dev/null
 "$OUT/aster" build-elf "$OUT/read.ast" -o "$OUT/read-on" --bounds-check >/dev/null
@@ -84,8 +84,8 @@ st=$(run_status "$OUT/read-off"); [ "$st" = 40 ] || { echo "FAIL: read-off exit 
 st=$(run_status "$OUT/read-on");  [ "$st" = 40 ] || { echo "FAIL: read-on exit $st, want 40" >&2; exit 1; }
 # Write through a parameter array.
 cat > "$OUT/write.ast" <<'AST'
-fn f(a: i32[4], v: i32) -> i32 { a[1] = v; return a[1]; }
-fn main() -> i32 { let arr: i32[4] = 0; return f(arr, 7); }
+fn f(a: i32[4], v: i32) : i32 { a[1] = v; return a[1]; }
+fn main() : i32 { let arr: i32[4] = 0; return f(arr, 7); }
 AST
 "$OUT/aster" build-elf "$OUT/write.ast" -o "$OUT/write-on" --bounds-check >/dev/null
 st=$(run_status "$OUT/write-on"); [ "$st" = 7 ] || { echo "FAIL: write-on exit $st, want 7" >&2; exit 1; }
@@ -93,16 +93,16 @@ printf '%s\n' 'PASS: in-range read and write through a parameter array return th
 
 printf '%s\n' '[4/9] Acceptance: out-of-range parameter subscripts trap (SIGTRAP 133)'
 cat > "$OUT/oob-read.ast" <<'AST'
-fn f(a: i32[4], k: i32) -> i32 { return a[k]; }
-fn main() -> i32 { let arr: i32[4] = 7; return f(arr, 4); }
+fn f(a: i32[4], k: i32) : i32 { return a[k]; }
+fn main() : i32 { let arr: i32[4] = 7; return f(arr, 4); }
 AST
 cat > "$OUT/oob-write.ast" <<'AST'
-fn f(a: i32[4], k: i32) -> i32 { a[k] = 9; return a[0]; }
-fn main() -> i32 { let arr: i32[4] = 3; return f(arr, 4); }
+fn f(a: i32[4], k: i32) : i32 { a[k] = 9; return a[0]; }
+fn main() : i32 { let arr: i32[4] = 3; return f(arr, 4); }
 AST
 cat > "$OUT/oob-neg.ast" <<'AST'
-fn f(a: i32[4], k: i32) -> i32 { return a[k]; }
-fn main() -> i32 { let arr: i32[4] = 7; return f(arr, 0 - 1); }
+fn f(a: i32[4], k: i32) : i32 { return a[k]; }
+fn main() : i32 { let arr: i32[4] = 7; return f(arr, 0 - 1); }
 AST
 for f in oob-read oob-write oob-neg; do
     "$OUT/aster" build-elf "$OUT/$f.ast" -o "$OUT/$f-on" --bounds-check >/dev/null
@@ -117,18 +117,18 @@ printf '%s\n' 'PASS: out-of-range read/write/negative parameter subscripts raise
 
 printf '%s\n' '[5/9] Multi-dimensional parameter: a[i][j] checked per dimension'
 cat > "$OUT/md-ok.ast" <<'AST'
-fn f(a: i32[2][3], i: i32, j: i32) -> i32 { return a[i][j]; }
-fn main() -> i32 { let arr: i32[2][3] = 0; return f(arr, 1, 2); }
+fn f(a: i32[2][3], i: i32, j: i32) : i32 { return a[i][j]; }
+fn main() : i32 { let arr: i32[2][3] = 0; return f(arr, 1, 2); }
 AST
 "$OUT/aster" build-elf "$OUT/md-ok.ast" -o "$OUT/md-ok-on" --bounds-check >/dev/null
 st=$(run_status "$OUT/md-ok-on"); [ "$st" = 0 ] || { echo "FAIL: md-ok exit $st, want 0" >&2; exit 1; }
 cat > "$OUT/md-row.ast" <<'AST'
-fn f(a: i32[2][3], i: i32, j: i32) -> i32 { return a[i][j]; }
-fn main() -> i32 { let arr: i32[2][3] = 1; return f(arr, 2, 0); }
+fn f(a: i32[2][3], i: i32, j: i32) : i32 { return a[i][j]; }
+fn main() : i32 { let arr: i32[2][3] = 1; return f(arr, 2, 0); }
 AST
 cat > "$OUT/md-col.ast" <<'AST'
-fn f(a: i32[2][3], i: i32, j: i32) -> i32 { return a[i][j]; }
-fn main() -> i32 { let arr: i32[2][3] = 1; return f(arr, 0, 3); }
+fn f(a: i32[2][3], i: i32, j: i32) : i32 { return a[i][j]; }
+fn main() : i32 { let arr: i32[2][3] = 1; return f(arr, 0, 3); }
 AST
 for f in md-row md-col; do
     "$OUT/aster" build-elf "$OUT/$f.ast" -o "$OUT/$f-on" --bounds-check >/dev/null
@@ -139,12 +139,12 @@ printf '%s\n' 'PASS: i32[2][3] parameter checked per dimension (valid index runs
 
 printf '%s\n' '[6/9] Compile-time rejection: constant out-of-bounds parameter subscripts'
 cat > "$OUT/const-1d.ast" <<'AST'
-fn f(a: i32[4]) -> i32 { return a[4]; }
-fn main() -> i32 { let arr: i32[4] = 7; return f(arr); }
+fn f(a: i32[4]) : i32 { return a[4]; }
+fn main() : i32 { let arr: i32[4] = 7; return f(arr); }
 AST
 cat > "$OUT/const-2d.ast" <<'AST'
-fn f(a: i32[2][3]) -> i32 { return a[1][3]; }
-fn main() -> i32 { let arr: i32[2][3] = 1; return f(arr); }
+fn f(a: i32[2][3]) : i32 { return a[1][3]; }
+fn main() : i32 { let arr: i32[2][3] = 1; return f(arr); }
 AST
 for f in const-1d const-2d; do
     "$OUT/aster" build-elf "$OUT/$f.ast" -o "$OUT/$f-out" --bounds-check 2>&1 | grep -qF 'array index out of bounds' \
@@ -154,8 +154,8 @@ printf '%s\n' 'PASS: constant out-of-bounds read through a parameter is rejected
 
 printf '%s\n' '[7/9] Differential: Aster (--bounds-check) vs a cross-compiled C twin'
 cat > "$OUT/diff.ast" <<'AST'
-fn pick(a: i32[4], k: i32) -> i32 { return a[k]; }
-fn main() -> i32 {
+fn pick(a: i32[4], k: i32) : i32 { return a[k]; }
+fn main() : i32 {
     let arr: i32[4] = 0;
     arr[0] = 3; arr[1] = 1; arr[2] = 4; arr[3] = 1;
     let s: i32 = pick(arr, 0) + pick(arr, 1) * pick(arr, 2) - pick(arr, 3);
@@ -195,16 +195,16 @@ mutate() { # mutate <name> <sed-expr> <source>
 # no subscript through a parameter is ever range-checked.
 mutate 'no param-length init' \
     '/slotDims\[slot\]=f.paramDims\[i\];/d;/paramArrayLength\[slot\]=(uint32_t)dimsProduct(f.paramDims\[i\]);/d' \
-    'fn f(a: i32[4], k: i32) -> i32 { return a[k]; }
-fn main() -> i32 { let arr: i32[4] = 7; return f(arr, 4); }'
+    'fn f(a: i32[4], k: i32) : i32 { return a[k]; }
+fn main() : i32 { let arr: i32[4] = 7; return f(arr, 4); }'
 # m2: drop only the two read-side check *calls* in emitElemAddr (the `if` guard
 # stays, now empty); the out-of-range read must fall through without trapping.
 # The two lines are unique to the read branch (`paramArrayLength.at(slot)`); the
 # write branch uses `paramArrayLength[aslot]`, so it is untouched.
 mutate 'no read-side check' \
     '/checkArrayBounds(paramArrayLength.at(slot),index);/d;/emitBoundsCheck(paramArrayLength.at(slot),index,r);/d' \
-    'fn f(a: i32[4], k: i32) -> i32 { return a[k]; }
-fn main() -> i32 { let arr: i32[4] = 7; return f(arr, 4); }'
+    'fn f(a: i32[4], k: i32) : i32 { return a[k]; }
+fn main() : i32 { let arr: i32[4] = 7; return f(arr, 4); }'
 fi
 
 printf '%s\n' 'PASS: array-parameter-bounds checks ([1/9]..[8/9] as applicable)'

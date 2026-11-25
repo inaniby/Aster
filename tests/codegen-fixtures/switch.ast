@@ -4,12 +4,12 @@
 let out: u8[8] = 0;
 let hits: i32 = 0;
 
-fn next() -> i32 {
+fn next() : i32 {
     hits = hits + 1;
     return hits;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let i: i32 = 0;
     let r: i32 = 0;
     while (i < 3) {

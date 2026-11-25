@@ -11,18 +11,18 @@ let counter: i32 = 0;
 let limit: i32 = 100;
 let buffer: i32[4] = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     counter = counter + 1;
     buffer[0] = counter;
     return add_values(buffer[0], limit - 59);
 }
 
-fn add_values(a: i32, b: i32) -> i32 {
+fn add_values(a: i32, b: i32) : i32 {
     return a + b;
 }
 ```
 
-Function definitions use `fn name(arg: i32, ...) -> i32 { ... }`. The initial pointer ABI slice also accepts `ptr` parameter and return types, and `let name: ptr = expr;` local bindings. Calls use `name(expr, ...)`; calls to functions with pointer parameters or a pointer return type are supported since v0.22.9-dev. `main` is the program entry and must have no parameters; it is emitted as ELF symbol `_start`. Other functions are global function symbols and can be defined in another `.ast` file compiled to `.o`. Cross-file callers should declare external signatures with `extern fn name(arg: i32, ...) -> i32;`.
+Function definitions use `fn name(arg: i32, ...) : i32 { ... }`. The initial pointer ABI slice also accepts `ptr` parameter and return types, and `let name: ptr = expr;` local bindings. Calls use `name(expr, ...)`; calls to functions with pointer parameters or a pointer return type are supported since v0.22.9-dev. `main` is the program entry and must have no parameters; it is emitted as ELF symbol `_start`. Other functions are global function symbols and can be defined in another `.ast` file compiled to `.o`. Cross-file callers should declare external signatures with `extern fn name(arg: i32, ...) : i32;`.
 
 The first eight arguments are passed in AArch64 registers `w0`–`w7`; `w0` carries the return value. Each function copies incoming parameters to its stack frame. Non-entry functions save and restore `x30`, enabling nested calls and recursion.
 
@@ -174,15 +174,15 @@ global:
 struct Row { cells: i32[4] }
 let gscores: i32[4] = 11;              // a file-scope array
 
-fn sum4(p: ptr<i32>) -> i32 { … return t; } // reads four i32 elements
-fn fill(p: ptr<i32>, v: i32) -> i32 { … }   // writes four, and the caller sees it
+fn sum4(p: ptr<i32>) : i32 { … return t; } // reads four i32 elements
+fn fill(p: ptr<i32>, v: i32) : i32 { … }   // writes four, and the caller sees it
 
-fn rowSum(pr: ptr<Row>) -> i32 {
+fn rowSum(pr: ptr<Row>) : i32 {
     let p: ptr<i32> = &pr.cells;       // an array field, behind a ptr<Row>
     return sum4(p);
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let buf: i32[4] = 7;
     let row: Row;
     let p: ptr<i32> = &buf;            // the address itself, kept in a variable
@@ -227,7 +227,7 @@ written `T[N]` **decays to `ptr<T>`** at the call boundary — `fn sum(a: i32[4]
 receives the argument's decayed address and `a[i]` scales by `sizeof(T)`. There
 is no length, so a parameter subscript is unchecked (no `--bounds-check`, no
 compile-time fold). The same decayed `ptr<T>` is the type a function **returns**
-when its return type is written `ptr<T>`: `fn first(w: i32[3]) -> ptr<i32>` hands
+when its return type is written `ptr<T>`: `fn first(w: i32[3]) : ptr<i32>` hands
 back `&w` with the stride intact, and the caller binds it to `ptr<i32>`. An array
 is still **not usable as a whole by value** — `return buf;` from an `i32` function
 and `buf = ...` are still rejected exactly as before.
@@ -259,9 +259,9 @@ For the innermost subscript that is `sizeof(elem)` — the one stride a one-dime
 - **A chain may stop short, and what it addresses is a row.** A row is an ordinary `ptr` value: it may be read, bound to a `ptr` variable, and handed to a `ptr` parameter — the exact route `&buf` opened in v0.23.30-dev:
 
 ```aster
-fn rowSum(p: ptr, n: i32) -> i32 { … }     // sums n i32 elements
+fn rowSum(p: ptr, n: i32) : i32 { … }     // sums n i32 elements
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32[2][3] = 0;
     a[1][2] = 6;
     let p: ptr = a[1];                      // the second row, kept in a variable
@@ -391,15 +391,15 @@ for condition`, and `expected ')' after for step`.
 `bool` is a first-class type holding `0` or `1` in a 4-byte slot. Comparisons
 (`== != < <= > >=`, signed 32-bit) are ordinary **bool expressions**: they can be
 stored in a `let`, passed to a `bool` parameter, returned from a function with
-`-> bool`, and held in a `let g: bool = 0;` global. Previously they were legal
+`: bool`, and held in a `let g: bool = 0;` global. Previously they were legal
 only inside an `if`/`while`/`for` condition.
 
 ```aster
 let enabled: bool = true;                    // bool literals are 0/1 — or true/false since v0.23.25-dev
-fn isBig(x: i32) -> bool { return x > 10; }
-fn pick(c: bool, t: i32, f: i32) -> i32 { if (c) { return t; } else { return f; } }
+fn isBig(x: i32) : bool { return x > 10; }
+fn pick(c: bool, t: i32, f: i32) : i32 { if (c) { return t; } else { return f; } }
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = 3;
     let b: i32 = 5;
     let both: bool = a < b && b > a;         // && of two comparisons
@@ -419,7 +419,7 @@ fn main() -> i32 {
   `CSINC` with `Rn = Rm = WZR`, encoding `0x1a9f07e0 | (cond^1) << 12 | Rd`.
 - **No implicit conversion.** `bool` is not `i32`: `let x: i32 = a < b;`,
   `let b: bool = 5;`, `f(i32)` into a `bool` parameter,
-  `return bool` from an `i32` function, and `fn main() -> bool` are all compile
+  `return bool` from an `i32` function, and `fn main() : bool` are all compile
   errors. The only integer values assignable to a `bool` are the literals `0`
   and `1`; a bool global's initializer must be one of them (or `true`/`false`
   since v0.23.25-dev). `if (x)` where `x: i32` used to be one of these errors
@@ -454,7 +454,7 @@ is a `bool` everywhere a type is asked:
 ```aster
 let on: bool = true;
 let off: bool = false;
-fn flip(b: bool) -> bool { if (b) { return false; } else { return true; } }
+fn flip(b: bool) : bool { if (b) { return false; } else { return true; } }
 ```
 
 - A `bool` literal is **not** an integer literal: `constantInteger` refuses to
@@ -481,7 +481,7 @@ fn flip(b: bool) -> bool { if (b) { return false; } else { return true; } }
    other value is true.
 
 ```aster
-fn steps(n: i32) -> i32 {
+fn steps(n: i32) : i32 {
     let r: i32 = 0;
     while (n) { r = r + n; n = n - 1; }      // integer condition: run to zero
     return r;
@@ -530,12 +530,12 @@ ptr or the null constant, bool/int mismatches in arguments and returns.
 The literal **`0` in a pointer context is null**, exactly as in C — and it is
 the *only* integer that crosses the integer/pointer line. It may initialize a
 `ptr`, be assigned to one, be passed to a `ptr` parameter and be returned from
-a `-> ptr` function:
+a `: ptr` function:
 
 ```aster
 let g: ptr = 0;                          // a null global (it lands in .bss)
 
-fn find(needle: i32) -> ptr {
+fn find(needle: i32) : ptr {
     let base: ptr = buf;
     let i: i32 = 0;
     while (i < 8) {
@@ -545,7 +545,7 @@ fn find(needle: i32) -> ptr {
     return 0;                            // "not found" is a ptr answer
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let p: ptr = 0;                      // a null local
     let r: i32 = find(42);               // an answer, or null
     p = 0;                               // cleared
@@ -555,7 +555,7 @@ fn main() -> i32 {
 
 - **Only the literal `0`.** `let p: ptr = 1;` is
   `type mismatch initializing 'p': expected ptr`, and so are `p = 1`, `f(1)`
-  and `return 1` from a `-> ptr` function. A cast does not help either:
+  and `return 1` from a `: ptr` function. A cast does not help either:
   since v0.23.48-dev the six cast spellings are the integer types only —
   `ptr` is not one of them, so there is no way to ask for an address with a
   value.
@@ -576,8 +576,8 @@ fn main() -> i32 {
 same test):
 
 ```aster
-fn isnull(p: ptr) -> i32 { if (p == 0) { return 1; } return 0; }
-fn same(a: ptr, b: ptr) -> i32 { if (a == b) { return 1; } return 0; }
+fn isnull(p: ptr) : i32 { if (p == 0) { return 1; } return 0; }
+fn same(a: ptr, b: ptr) : i32 { if (a == b) { return 1; } return 0; }
 ```
 
 - **A pointer comparison is an ordinary `bool` expression.** It can be stored
@@ -666,7 +666,7 @@ line meant two different things depending on where it stood:
 
 ```aster
 let b: u8 = 300;                      // global → global initializer does not fit in u8: b (300)
-fn m() -> i32 { let b: u8 = 300; return b; }   // was: accepted, returned 44
+fn m() : i32 { let b: u8 = 300; return b; }   // was: accepted, returned 44
                                                // now: local initializer does not fit in u8: b (300)
 ```
 
@@ -830,14 +830,14 @@ field by field, and is moved as a whole.
 struct Point { x: i32, y: i32 }
 struct Rect  { a: Point, b: Point }        // a field may be another struct
 
-fn area(r: Rect) -> i32 {                  // passed by value
+fn area(r: Rect) : i32 {                  // passed by value
     let p: Point = r.a;                    // copied as a whole
     return p.x * p.y;
 }
 
-fn origin() -> Point { return Point { 0, 0 }; }   // returned by value
+fn origin() : Point { return Point { 0, 0 }; }   // returned by value
 
-fn main() -> i32 {
+fn main() : i32 {
     let r: Rect = Rect { Point { 2, 3 }, Point { 4, 5 } };
     let q: ptr<Rect> = &r;                 // pointer to a struct
     q.a.x = 10;                            // a field through the pointer
@@ -891,7 +891,7 @@ struct Buffers {
 
 let gb: Buffers;                     // a global one, zero-filled in .bss
 
-fn main() -> i32 {
+fn main() : i32 {
     let b: Buffers;                  // a local one, zero-filled
     b.nums[0] = 11;                  // read and write an element
     b.flags[2] = true;               // a bool element is a condition
@@ -1007,7 +1007,7 @@ let copy: u8[@embed_len("res/data.bin")] = 0;   // a constant array bound
 ```aster
 include "include_demo_defs.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return add2(total);
 }
 ```
@@ -1083,10 +1083,10 @@ when it is measured rather than promised:
 
 | Family | Routines |
 | --- | --- |
-| mem | `memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` (bytes copied), `memset(dst: ptr<u8>, c: i32, n: i32) -> i32`, `memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32` (unsigned first-difference) |
-| str | `strlen(s: ptr<u8>) -> i32`, `strcmp(a: ptr<u8>, b: ptr<u8>) -> i32`, `strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` (returns `min(strlen(src), n)`) |
-| num | `utoa(v: i64, buf: ptr<u8>) -> i32`, `itoa(v: i64, buf: ptr<u8>) -> i32`, `utohex(v: i64, buf: ptr<u8>) -> i32` — NUL-terminated digits, digit count returned |
-| hash | `hash_str(s: ptr<u8>) -> i64` (FNV-1a), `hash_put(key: ptr<u8>, val: i64) -> i32` (slot, or `-1` when the 1024-slot table is full), `hash_get(key: ptr<u8>) -> i64` (value, or `-1` when absent — so values are non-negative by contract) |
+| mem | `memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32` (bytes copied), `memset(dst: ptr<u8>, c: i32, n: i32) : i32`, `memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32` (unsigned first-difference) |
+| str | `strlen(s: ptr<u8>) : i32`, `strcmp(a: ptr<u8>, b: ptr<u8>) : i32`, `strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32` (returns `min(strlen(src), n)`) |
+| num | `utoa(v: i64, buf: ptr<u8>) : i32`, `itoa(v: i64, buf: ptr<u8>) : i32`, `utohex(v: i64, buf: ptr<u8>) : i32` — NUL-terminated digits, digit count returned |
+| hash | `hash_str(s: ptr<u8>) : i64` (FNV-1a), `hash_put(key: ptr<u8>, val: i64) : i32` (slot, or `-1` when the 1024-slot table is full), `hash_get(key: ptr<u8>) : i64` (value, or `-1` when absent — so values are non-negative by contract) |
 
 Two spellings in that table are decisions, not decoration. **Every
 byte-buffer parameter is `ptr<u8>`**: it is the only type that accepts *both*
@@ -1273,11 +1273,11 @@ defined since v0.23.5-dev — see *Structs* above. `i32` is not a substitute for
 Raw pointer memory syntax (v0.22.4-dev):
 
 ```aster
-fn load_i32(p: ptr) -> i32 {
+fn load_i32(p: ptr) : i32 {
     return *p;
 }
 
-fn store_i32(p: ptr, value: i32) -> i32 {
+fn store_i32(p: ptr, value: i32) : i32 {
     *p = value;
     return *p;
 }
@@ -1290,8 +1290,8 @@ Dereference loads/stores exactly one 32-bit integer. It does not imply that arbi
 
 The compiler recognizes two built-in calls (no declaration required):
 
-- `load_u8(p) -> i32`: requires one `ptr`, emits `LDRB Wt, [Xn]`, and returns the byte as a zero-extended i32 in the range 0..255.
-- `store_u8(p, value) -> i32`: requires a `ptr` followed by an i32 expression, emits `STRB Wt, [Xn]`, stores `value & 255`, and returns the original i32 expression value.
+- `load_u8(p) : i32`: requires one `ptr`, emits `LDRB Wt, [Xn]`, and returns the byte as a zero-extended i32 in the range 0..255.
+- `store_u8(p, value) : i32`: requires a `ptr` followed by an i32 expression, emits `STRB Wt, [Xn]`, stores `value & 255`, and returns the original i32 expression value.
 
 These are compiler intrinsics rather than a first-class `u8` type. They perform unchecked raw memory access; invalid pointers can fault. Example: `return load_u8(p);` and `store_u8(p, 0x1ff);` (the memory byte becomes `0xff`).
 
@@ -1300,16 +1300,16 @@ These are compiler intrinsics rather than a first-class `u8` type. They perform 
 
 The byte pair's shape, one and three widths up. Four more built-in calls (no declaration required):
 
-- `load_u16(p) -> i32`: requires one `ptr`, emits `LDRH Wt, [Xn]`, and returns the halfword as a zero-extended i32 in the range 0..65535. An unaligned address is accepted; the hardware grants unaligned halfword access, and `ptr + i32` is a byte offset, so `p + 3` is a legal operand.
-- `store_u16(p, value) -> i32`: requires a `ptr` followed by an i32 expression, emits `STRH Wt, [Xn]`, stores `value & 0xFFFF`, and returns the original i32 expression value (the same contract as `store_u8` — the store answers what it was given, not the truncated half).
-- `load_i64(p) -> i64`: requires one `ptr`, emits `LDR Xt, [Xn]`, and returns the full 64-bit value. Consumed at `i32` width it narrows to the low 32 bits, exactly as any other i64-to-i32 conversion in the language.
-- `store_i64(p, value) -> i64`: requires a `ptr` followed by an i32 or i64 expression, emits `STR Xt, [Xn]`, stores the full 64 bits, and returns the original expression value. An i32 `value` widens by **sign-extension** — the same rule that stores an i32 into an `i64` local — so `store_i64(p, -1)` writes eight `0xFF` bytes; a `bool` second argument is rejected, as no `i64` slot accepts one.
+- `load_u16(p) : i32`: requires one `ptr`, emits `LDRH Wt, [Xn]`, and returns the halfword as a zero-extended i32 in the range 0..65535. An unaligned address is accepted; the hardware grants unaligned halfword access, and `ptr + i32` is a byte offset, so `p + 3` is a legal operand.
+- `store_u16(p, value) : i32`: requires a `ptr` followed by an i32 expression, emits `STRH Wt, [Xn]`, stores `value & 0xFFFF`, and returns the original i32 expression value (the same contract as `store_u8` — the store answers what it was given, not the truncated half).
+- `load_i64(p) : i64`: requires one `ptr`, emits `LDR Xt, [Xn]`, and returns the full 64-bit value. Consumed at `i32` width it narrows to the low 32 bits, exactly as any other i64-to-i32 conversion in the language.
+- `store_i64(p, value) : i64`: requires a `ptr` followed by an i32 or i64 expression, emits `STR Xt, [Xn]`, stores the full 64 bits, and returns the original expression value. An i32 `value` widens by **sign-extension** — the same rule that stores an i32 into an `i64` local — so `store_i64(p, -1)` writes eight `0xFF` bytes; a `bool` second argument is rejected, as no `i64` slot accepts one.
 
 Like the byte pair, these are compiler intrinsics rather than first-class `u16`/`i64` *load* types: the access width is spelled by the name, and the result enters the expression lattice as `i32` (halfword) or `i64` (quadword). They perform unchecked raw memory access; invalid pointers can fault. Example:
 
 ```aster
 let blob: u8[24] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = store_u16(blob, 0xBEEF);          // the low 16 bits land; r is 0xBEEF
     let q: i64 = store_i64(blob + 8, 0x100000000); // 2^32 — the value a byte
     return load_u16(blob) % 251 + q % 251;         // assembly's << 32 used to drop
@@ -1323,16 +1323,16 @@ A program that defines its own function of one of these names shadows the intrin
 
 Four more built-in calls (no declaration required) that emit a raw Linux AArch64 system call (`MOV X8, #num; SVC #0`) with **no libc** — the input side of a self-hosting compiler, companion to the `write` output primitive. A program that defines its own function of one of these names shadows the intrinsic, exactly as for `write`/`load_u8`.
 
-- `read(fd: i32, buf: ptr, len: i32) -> i32` — syscall 63. Reads up to `len` bytes into `buf`, answers the byte count (0 at end of file). `read(0, &buf, 256)` pulls source in from stdin.
-- `openat(fd: i32, path: ptr, flags: i32, mode: i32) -> i32` — syscall 56. Opens `path` relative to the directory `fd`; `AT_FDCWD` is `-100` (the current directory), `O_RDONLY` is `0`. Answers a file descriptor, or a negative `-errno`. **AArch64 has no plain `open`** — 56 *is* `openat`, four arguments.
-- `close(fd: i32) -> i32` — syscall 57. Closes a descriptor, answers 0 or `-errno`.
-- `fstat(fd: i32, buf: ptr) -> i32` — syscall **80**. Fills a `struct stat` at `buf`; `st_size` is the 64-bit field at offset 48 on AArch64 (`load_i64(buf + 48)`). **79 is `newfstatat`, not `fstat`.**
+- `read(fd: i32, buf: ptr, len: i32) : i32` — syscall 63. Reads up to `len` bytes into `buf`, answers the byte count (0 at end of file). `read(0, &buf, 256)` pulls source in from stdin.
+- `openat(fd: i32, path: ptr, flags: i32, mode: i32) : i32` — syscall 56. Opens `path` relative to the directory `fd`; `AT_FDCWD` is `-100` (the current directory), `O_RDONLY` is `0`. Answers a file descriptor, or a negative `-errno`. **AArch64 has no plain `open`** — 56 *is* `openat`, four arguments.
+- `close(fd: i32) : i32` — syscall 57. Closes a descriptor, answers 0 or `-errno`.
+- `fstat(fd: i32, buf: ptr) : i32` — syscall **80**. Fills a `struct stat` at `buf`; `st_size` is the 64-bit field at offset 48 on AArch64 (`load_i64(buf + 48)`). **79 is `newfstatat`, not `fstat`.**
 
 Every argument is checked in Sema (`callType`) and again in codegen: the count and each argument's kind (`ptr` vs `i32`), naming the offending argument. The result is the **raw kernel return**, not libc's — a failing call answers `-errno` (a `close` of a never-open descriptor is `-9`, which lands 247 in the exit status), because the intrinsic *is* the system call with no wrapper normalising it to `-1`. The `examples/copy.ast` cat copies stdin to stdout in 256-byte chunks with `read`/`write`/`close` alone:
 
 ```aster
 let buf: u8[256] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = read(0, &buf, 256);
     while (n > 0) { write(1, &buf, n); n = read(0, &buf, 256); }
     close(0);
@@ -1345,8 +1345,8 @@ fn main() -> i32 {
 
 Two more built-in calls that emit a raw system call — `mmap` (x8=222) and `brk` (x8=214) — completing the memory half of self-hosting (`SELFHOSTING-PLAN.md` M1). Aster still owns **no allocator**: these are the kernel's two ways to obtain memory, and a program that wants a heap builds one (the 25-line bump allocator in `examples/arena.ast` is the whole shape). A user function of either name shadows the intrinsic, as for every intrinsic since `write`.
 
-- `mmap(addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64) -> ptr` — syscall 222, the widest intrinsic the language has (six arguments, two of them `i64`). A length of 0 maps a page-aligned region chosen by the kernel; a nonzero `addr` is a hint. `prot` is the usual OR of bits (1=read, 2=write, 4=exec); `flags` controls the mapping (32=`MAP_PRIVATE`, 16=`MAP_ANONYMOUS`, the pair 34 being anonymous-private); `fd` is ignored for an anonymous mapping (`-1`); **`offset` must be a multiple of the page size (4096)** — the kernel answers `EINVAL` otherwise, which as a raw syscall arrives as the pointer `-22`. Answers the mapping's address (a `ptr`, so `let heap: ptr = mmap(...)` type-checks and `heap + k` addresses it), or a negative `-errno` on failure.
-- `brk(addr: ptr) -> ptr` — syscall 214. With the null pointer (`brk(z)`, `z` the null constant) it *answers* the current break without moving it; with a nonzero, page-aligned address it moves the break there and answers the new one. A program grows its own `.bss`-style region with it, or queries where one ends.
+- `mmap(addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64) : ptr` — syscall 222, the widest intrinsic the language has (six arguments, two of them `i64`). A length of 0 maps a page-aligned region chosen by the kernel; a nonzero `addr` is a hint. `prot` is the usual OR of bits (1=read, 2=write, 4=exec); `flags` controls the mapping (32=`MAP_PRIVATE`, 16=`MAP_ANONYMOUS`, the pair 34 being anonymous-private); `fd` is ignored for an anonymous mapping (`-1`); **`offset` must be a multiple of the page size (4096)** — the kernel answers `EINVAL` otherwise, which as a raw syscall arrives as the pointer `-22`. Answers the mapping's address (a `ptr`, so `let heap: ptr = mmap(...)` type-checks and `heap + k` addresses it), or a negative `-errno` on failure.
+- `brk(addr: ptr) : ptr` — syscall 214. With the null pointer (`brk(z)`, `z` the null constant) it *answers* the current break without moving it; with a nonzero, page-aligned address it moves the break there and answers the new one. A program grows its own `.bss`-style region with it, or queries where one ends.
 
 The two rules the implementation adds to the system-call contract, both of them visible only at 64 bits:
 
@@ -1360,10 +1360,10 @@ let z: ptr = 0;                       // the null constant — the only integer 
 let heap: ptr = mmap(z, 65536, 3, 34, -1, 0);   // 64 KiB, RW, private|anonymous
 let cursor: i64 = 0;
 
-fn alloc(n: i64) -> ptr { let p: ptr = heap + cursor; cursor = cursor + n; return p; }
-fn reclaim() -> i32 { cursor = 0; return 0; }
+fn alloc(n: i64) : ptr { let p: ptr = heap + cursor; cursor = cursor + n; return p; }
+fn reclaim() : i32 { cursor = 0; return 0; }
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: ptr = alloc(16);
     store_i64(a, 1234605616436508552);            // 8-byte payload at offset 0
     store_u8(a + 8, 65);                          // tag byte 'A'
@@ -1383,7 +1383,7 @@ one token per line — no parsing, no name resolution, no output file:
 aster build-obj bootstrap/aster.ast -o boot.o
 aster build-obj stdlib/aster_std.ast -o std.o
 aster link-obj boot.o std.o -o asterlex
-echo 'fn main() -> i32 { return 0; }' | ./asterlex
+echo 'fn main() : i32 { return 0; }' | ./asterlex
 ```
 
 The contract is `bootstrap/LEXER-SPEC.md` (13 sections, frozen); this section
@@ -1492,7 +1492,7 @@ file:
 aster build-obj bootstrap/aster.ast -o boot.o
 aster build-obj stdlib/aster_std.ast -o std.o
 aster link-obj boot.o std.o -o asterparse
-echo 'fn main() -> i32 { return 0; }' | ./asterparse
+echo 'fn main() : i32 { return 0; }' | ./asterparse
 ```
 
 The contract is `bootstrap/PARSER-SPEC.md` (13 sections, frozen); this
@@ -1567,10 +1567,10 @@ reporting the callee's position as 1:11 instead of 1:20; and **P37/P40**'s
 An external function declaration may specify `ptr` parameters, for example:
 
 ```aster
-extern fn strlen(s: ptr) -> i32;
-extern fn memcmp(a: ptr, b: ptr, n: i32) -> i32;
+extern fn strlen(s: ptr) : i32;
+extern fn memcmp(a: ptr, b: ptr, n: i32) : i32;
 
-fn string_length(s: ptr) -> i32 {
+fn string_length(s: ptr) : i32 {
     return strlen(s);
 }
 ```
@@ -1583,8 +1583,8 @@ At a call site, every argument must match the declared `ptr`/`i32` type. Pointer
 A double-quoted string literal is an expression of type `ptr`. The compiler stores its decoded bytes in static `.rodata` and appends one NUL byte when emitting a shared object directly with `build-so`. Supported escapes are `\\`, `\"`, `\n`, `\r`, `\t`, and `\0`. For example:
 
 ```aster
-extern fn strlen(s: ptr) -> i32;
-fn literal_length() -> i32 {
+extern fn strlen(s: ptr) : i32;
+fn literal_length() : i32 {
     return strlen("Aster");
 }
 ```
@@ -1654,8 +1654,8 @@ The `examples/c_abi_32_external_call.ast` fixture declares a 32-argument externa
 ## Reading a C `float` return without a float type (v0.23.15-dev)
 
 An `extern fn` whose C implementation returns `float` cannot be captured by
-declaring it `-> i32`: the AArch64 result arrives in **s0**, while an
-`extern fn … -> i32` call reads **w0** — a different physical register file,
+declaring it `: i32`: the AArch64 result arrives in **s0**, while an
+`extern fn … : i32` call reads **w0** — a different physical register file,
 so no aliasing exists and the `w0` read yields garbage (this was the
 v0.23.14-dev bug: `examples/native_touch.ast` decoded whatever `w0` happened
 to hold and the on-device app never moved a dot). The working technique is a
@@ -1667,9 +1667,9 @@ bits the caller reads as the `i32` return) hands back the exact integer. The
 two calls must be adjacent, with no Aster call in between:
 
 ```aster
-extern fn lrintf() -> i32;   // argument: s0 (the float left by the call before)
+extern fn lrintf() : i32;   // argument: s0 (the float left by the call before)
 
-fn event_x(ev: ptr) -> i32 {
+fn event_x(ev: ptr) : i32 {
     let junk: i32 = AMotionEvent_getX(ev, 0);   // float -> s0
     return lrintf();                            // s0 -> x0
 }
@@ -1694,11 +1694,11 @@ not exist. As of v0.23.24-dev, `fp(args)` where `fp` is a `ptr` variable is an
 indirect call, compiled to `BLR X9`.
 
 ```aster
-fn inc(x: i32) -> i32 { return x + 1; }
+fn inc(x: i32) : i32 { return x + 1; }
 
-fn apply(op: ptr, x: i32) -> i32 { return op(x); }   // the callback shape
+fn apply(op: ptr, x: i32) : i32 { return op(x); }   // the callback shape
 
-fn main() -> i32 {
+fn main() : i32 {
     let fp: ptr = inc;
     let a: i32 = fp(40);      // 41 — through the variable
     let b: i32 = apply(inc, 40);  // 41 — the callee crossed a call as a parameter
@@ -1718,7 +1718,7 @@ The rules, and the reasons for them:
 - **A bare `ptr` has no function type, so it has no signature.** A `ptr`
   variable carries an address, not a signature: no arity check, no parameter
   types, no return type beyond the fixed answer below. *(A **typed**
-  fn-pointer — `fn(P1,..,Pn) -> R` — does carry one, since v0.23.37-dev; see
+  fn-pointer — `fn(P1,..,Pn) : R` — does carry one, since v0.23.37-dev; see
   the next section. The rules below are the bare-`ptr` contract, unchanged.)* The argument-staging consequence
   is the round's one design decision: **every scalar argument rides at 64-bit
   width**. An `i32`-declaring callee reads the low half — exactly the bits a
@@ -1761,23 +1761,23 @@ shared-object structural check, 10 rejections, a coverage map and an
 
 ## Function types (v0.23.37-dev)
 
-A function pointer may be declared **with its signature**. `fn(P1,..,Pn) -> R`
+A function pointer may be declared **with its signature**. `fn(P1,..,Pn) : R`
 is a new type spelling that rides beside a `ptr` variable, so an indirect call
 through it is checked and code-generated like the direct call it stands for:
 
 ```aster
-fn inc(x: i32) -> i32 { return x + 1; }
-fn high32(a: i64) -> i64 { return a >> 32; }
-fn combine(a: i32, b: i32) -> i32 { return a * 3 + b; }
+fn inc(x: i32) : i32 { return x + 1; }
+fn high32(a: i64) : i64 { return a >> 32; }
+fn combine(a: i32, b: i32) : i32 { return a * 3 + b; }
 
-fn apply(op: fn(i32) -> i32, x: i32) -> i32 { return op(x); }
+fn apply(op: fn(i32) : i32, x: i32) : i32 { return op(x); }
 
-let gop: fn(i32, i32) -> i32;            // a global, null until assigned
+let gop: fn(i32, i32) : i32;            // a global, null until assigned
 
-fn main() -> i32 {
-    let fp: fn(i32) -> i32 = inc;        // a local
+fn main() : i32 {
+    let fp: fn(i32) : i32 = inc;        // a local
     let a: i32 = fp(41);                 // 42 — checked and staged by the signature
-    let wp: fn(i64) -> i64 = high32;
+    let wp: fn(i64) : i64 = high32;
     let hi: i64 = wp(4294967296);        // 1 — a 64-bit argument at full width
     let b: i32 = apply(fp, a);           // 43 — the signature crosses a call as a parameter
     gop = combine;                       // assigned at run time
@@ -1817,7 +1817,7 @@ The rules, and the reasons for them:
   64-bit staging and `i32` answer, a struct argument through it is still
   refused (*"a composite needs a signature to lay it out"*), and every program
   written before this round compiles to the same bytes.
-- **A global fn-pointer may be left uninitialized** (`let gop: fn(i32) -> i32;`
+- **A global fn-pointer may be left uninitialized** (`let gop: fn(i32) : i32;`
   zero-fills into `.bss`, exactly as a global `ptr` always could) and assigned
   at run time. `examples/indirect_call.ast`'s global form works unchanged
   because it was already a `ptr`.
@@ -1839,21 +1839,21 @@ be written where the field is:
 
 ```aster
 struct Handlers {
-    onClick: fn(i32) -> i32,
-    onMove: fn(i32, i32) -> i32,
+    onClick: fn(i32) : i32,
+    onMove: fn(i32, i32) : i32,
     tag: i32
 }
 
-fn inc(x: i32) -> i32 { return x + 1; }
-fn add(a: i32, b: i32) -> i32 { return a + b; }
+fn inc(x: i32) : i32 { return x + 1; }
+fn add(a: i32, b: i32) : i32 { return a + b; }
 
-fn run(h: ptr<Handlers>) -> i32 {
+fn run(h: ptr<Handlers>) : i32 {
     let a: i32 = h.onClick(41);      // 42 — checked and staged by the field's signature
     h.onClick = add;                 // an assignment is checked by signature too
     return a + h.tag;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let h: Handlers = Handlers { inc, add, 3 };
     return (run(&h) + h.onMove(1, 2)) % 251;
 }
@@ -1869,7 +1869,7 @@ The rules, and the reasons for them:
 - **A store into the field is checked by signature, not by width.** A struct
   literal's field initializer and a field assignment both run the signature
   comparison, so `Handlers { double_fn, 0 }` where the field wants
-  `fn(i32) -> i32` is refused where the literal is written. A **bare `ptr`**
+  `fn(i32) : i32` is refused where the literal is written. A **bare `ptr`**
   source is deliberately *not* checked (it carries no signature) — the rule is
   the same one a bare `ptr` has always had.
 - **`h.onClick(x)` is its own expression kind, and that is why it works.**
@@ -1907,13 +1907,13 @@ adds the one call form worth allowing: a call written for its side effect alone,
 with its result thrown away.
 
 ```aster
-struct Handlers { onClick: fn(i32) -> i32, onMove: fn(i32, i32) -> i32 }
+struct Handlers { onClick: fn(i32) : i32, onMove: fn(i32, i32) : i32 }
 
 let fired: i32 = 0;
-fn onClickImpl(x: i32) -> i32 { fired = fired + 1; return x + 1; }
-fn onMoveImpl(x: i32, y: i32) -> i32 { fired = fired + 1; return x + y; }
+fn onClickImpl(x: i32) : i32 { fired = fired + 1; return x + 1; }
+fn onMoveImpl(x: i32, y: i32) : i32 { fired = fired + 1; return x + y; }
 
-fn main() -> i32 {
+fn main() : i32 {
     let h: Handlers = Handlers { onClickImpl, onMoveImpl };
     h.onClick(41);        // fire-and-forget: the increment runs, the i32 is dropped
     h.onClick(1);
@@ -1961,19 +1961,19 @@ The second position v0.23.37-dev refused. A function's return type may now be
 a function type, and the signature travels with it, in the return slot:
 
 ```aster
-fn inc(x: i32) -> i32 { return x + 1; }
-fn dbl(x: i32) -> i32 { return x + x; }
+fn inc(x: i32) : i32 { return x + 1; }
+fn dbl(x: i32) : i32 { return x + x; }
 
-fn pick(which: i32) -> fn(i32) -> i32 {
+fn pick(which: i32) : fn(i32) : i32 {
     if (which == 0) { return inc; }
     return dbl;
 }
 
-fn apply(op: fn(i32) -> i32, v: i32) -> i32 { return op(v); }
+fn apply(op: fn(i32) : i32, v: i32) : i32 { return op(v); }
 
-fn main() -> i32 {
-    let f: fn(i32) -> i32 = pick(0);
-    let g: fn(i32) -> i32 = pick(1);
+fn main() : i32 {
+    let f: fn(i32) : i32 = pick(0);
+    let g: fn(i32) : i32 = pick(1);
     let h: i32 = apply(pick(1), 20);   // the return slot's signature meets the parameter's
     return (f(20) + g(20) + h) % 251;  // 21 + 40 + 40
 }
@@ -1984,7 +1984,7 @@ The rules:
 - **What comes back is still an address.** There is no first-class function
   value; the return type is `Ty::Ptr` and the signature rides beside it.
 - **`return` is checked against the return slot's signature**, so `return wide;`
-  in a function declared `-> fn(i32) -> i32` is a compile error at the `return`
+  in a function declared `: fn(i32) : i32` is a compile error at the `return`
   — not a silent mismatch discovered at the first call.
 - **A call's result answers that signature**, which is what makes
   `apply(pick(1), 20)` one check spanning two functions: the getter's promise
@@ -1995,7 +1995,7 @@ The rules:
 - **The result may not be called on the spot.** `pick(0)(20)` is refused;
   assign it to a `fn(...)` variable, to a `fn(...)` field, or hand it to a
   `fn(...)` parameter — all three carry the signature with them.
-- **The return slot does not change codegen.** `let f: fn(i32) -> i32 =
+- **The return slot does not change codegen.** `let f: fn(i32) : i32 =
   pick(0);` gets its staging and result widths from `f`'s own declared type,
   which is the same signature. The return slot's worth is measured in the
   mistakes it refuses.

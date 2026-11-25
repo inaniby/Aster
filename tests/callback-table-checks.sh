@@ -3,7 +3,7 @@
 #
 # v0.23.38-dev lets a struct *field* carry a function type:
 #
-#     struct Handlers { onClick: fn(i32) -> i32, tag: i32 }
+#     struct Handlers { onClick: fn(i32) : i32, tag: i32 }
 #
 # The field is eight bytes of pointer in the layout, exactly as a `ptr` field
 # has always been, and the signature rides beside it — the same shape a local,
@@ -154,9 +154,9 @@ emit_case(){
     n="$1"
     case "$n" in
     ct_basic)
-        ast='struct H { cb: fn(i32) -> i32, tag: i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn main() -> i32 {
+        ast='struct H { cb: fn(i32) : i32, tag: i32 }
+fn inc(x: i32) : i32 { return x + 1; }
+fn main() : i32 {
     let h: H = H { inc, 7 };
     let r: i32 = h.cb(41);
     return (r + h.tag) % 251;
@@ -171,16 +171,16 @@ int main(void){
     ct_ptr_host)
         # The shape a callback table is handed around as: a ptr<H> parameter,
         # called through and reassigned inside a helper.
-        ast='struct H { cb: fn(i32) -> i32, tag: i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn dbl(x: i32) -> i32 { return x + x; }
-fn run(h: ptr<H>) -> i32 {
+        ast='struct H { cb: fn(i32) : i32, tag: i32 }
+fn inc(x: i32) : i32 { return x + 1; }
+fn dbl(x: i32) : i32 { return x + x; }
+fn run(h: ptr<H>) : i32 {
     let a: i32 = h.cb(41);
     h.cb = dbl;
     let b: i32 = h.cb(10);
     return (a + b) % 251;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let h: H = H { inc, 3 };
     return (run(&h) + h.tag) % 251;
 }'
@@ -201,10 +201,10 @@ int main(void){
         # The reason a field call is its own expression kind: a field named
         # like a function in scope must still be the field. Calling the
         # function instead answers 100; calling the field answers 42.
-        ast='fn cb(x: i32) -> i32 { return 100; }
-struct H { cb: fn(i32) -> i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn main() -> i32 {
+        ast='fn cb(x: i32) : i32 { return 100; }
+struct H { cb: fn(i32) : i32 }
+fn inc(x: i32) : i32 { return x + 1; }
+fn main() : i32 {
     let h: H = H { inc };
     return h.cb(41) % 251;
 }'
@@ -222,9 +222,9 @@ int main(void){
         # declared width answers 7 and a read at i32 answers 0. The call is
         # nested in an addition so the result move runs at that width, and the
         # argument is an i64 variable (full width in, whatever the staging).
-        ast='struct H { cb: fn(i64) -> i64 }
-fn shift32(a: i64) -> i64 { return a << 32; }
-fn main() -> i32 {
+        ast='struct H { cb: fn(i64) : i64 }
+fn shift32(a: i64) : i64 { return a << 32; }
+fn main() : i32 {
     let big: i64 = 7;
     let h: H = H { shift32 };
     let r: i64 = 0 + h.cb(big);
@@ -239,9 +239,9 @@ int main(void){
     return (int)((r >> 32) % 251);
 }' ;;
     ct_zero_args)
-        ast='struct H { cb: fn() -> i32 }
-fn answer() -> i32 { return 77; }
-fn main() -> i32 {
+        ast='struct H { cb: fn() : i32 }
+fn answer() : i32 { return 77; }
+fn main() : i32 {
     let h: H = H { answer };
     return h.cb() % 251;
 }'
@@ -254,11 +254,11 @@ int main(void){
     ct_stack_args)
         # Ten arguments: the ninth and tenth travel on the stack, so the
         # outgoing area opens and the callee's address has to survive it.
-        ast='struct H { cb: fn(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 }
-fn add10(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) -> i32 {
+        ast='struct H { cb: fn(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) : i32 }
+fn add10(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) : i32 {
     return a + b + c + d + e + f + g + h + i + j;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let t: H = H { add10 };
     return t.cb(1, 2, 3, 4, 5, 6, 7, 8, 9, 10) % 251;
 }'
@@ -272,10 +272,10 @@ int main(void){
 }' ;;
     ct_nested)
         # A field of a field: the call reads the inner struct's signature.
-        ast='struct Inner { cb: fn(i32) -> i32 }
+        ast='struct Inner { cb: fn(i32) : i32 }
 struct Outer { inner: Inner, tag: i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn main() -> i32 {
+fn inc(x: i32) : i32 { return x + 1; }
+fn main() : i32 {
     let o: Outer = Outer { Inner { inc }, 5 };
     return (o.inner.cb(40) + o.tag) % 251;
 }'
@@ -289,12 +289,12 @@ int main(void){
     ct_readout)
         # A field's value is a fn-pointer like any other: read it out, or hand
         # it straight to a parameter that asks for one.
-        ast='struct H { cb: fn(i32) -> i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn apply(op: fn(i32) -> i32, v: i32) -> i32 { return op(v); }
-fn main() -> i32 {
+        ast='struct H { cb: fn(i32) : i32 }
+fn inc(x: i32) : i32 { return x + 1; }
+fn apply(op: fn(i32) : i32, v: i32) : i32 { return op(v); }
+fn main() : i32 {
     let h: H = H { inc };
-    let g: fn(i32) -> i32 = h.cb;
+    let g: fn(i32) : i32 = h.cb;
     return (apply(h.cb, 10) + g(1)) % 251;
 }'
         c='struct H { int (*cb)(int); };
@@ -308,10 +308,10 @@ int main(void){
     ct_reassign)
         # A field is reassigned like any other — and by signature, so this is
         # the same callback table with a different handler in it.
-        ast='struct H { cb: fn(i32) -> i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn dbl(x: i32) -> i32 { return x + x; }
-fn main() -> i32 {
+        ast='struct H { cb: fn(i32) : i32 }
+fn inc(x: i32) : i32 { return x + 1; }
+fn dbl(x: i32) : i32 { return x + x; }
+fn main() : i32 {
     let h: H = H { inc };
     let a: i32 = h.cb(10);
     h.cb = dbl;
@@ -329,9 +329,9 @@ int main(void){
     return (a*100 + b) % 251;
 }' ;;
     ct_loop)
-        ast='struct H { cb: fn(i32) -> i32 }
-fn dbl(x: i32) -> i32 { return x + x; }
-fn main() -> i32 {
+        ast='struct H { cb: fn(i32) : i32 }
+fn dbl(x: i32) : i32 { return x + x; }
+fn main() : i32 {
     let h: H = H { dbl };
     let s: i32 = 0;
     for (let k: i32 = 0; k < 5; k = k + 1) {
@@ -348,9 +348,9 @@ int main(void){
     return s % 251;
 }' ;;
     ct_bool_ret)
-        ast='struct H { cb: fn(i32) -> bool }
-fn isodd(x: i32) -> bool { return (x & 1) == 1; }
-fn main() -> i32 {
+        ast='struct H { cb: fn(i32) : bool }
+fn isodd(x: i32) : bool { return (x & 1) == 1; }
+fn main() : i32 {
     let h: H = H { isodd };
     let a: bool = h.cb(3);
     let b: bool = h.cb(4);
@@ -367,9 +367,9 @@ int main(void){
     return 1;
 }' ;;
     ct_ptr_ret)
-        ast='struct H { cb: fn() -> ptr }
-fn none() -> ptr { return 0; }
-fn main() -> i32 {
+        ast='struct H { cb: fn() : ptr }
+fn none() : ptr { return 0; }
+fn main() : i32 {
     let h: H = H { none };
     let p: ptr = h.cb();
     if (p == 0) { return 3; }
@@ -450,60 +450,60 @@ reject(){ # reject <name> <source> <expected message fragment>
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "a literal whose signature is not the field's" \
-    'struct H { cb: fn(i32) -> i32 }
-fn wide(x: i64) -> i64 { return x + 1; }
-fn main() -> i32 {
+    'struct H { cb: fn(i32) : i32 }
+fn wide(x: i64) : i64 { return x + 1; }
+fn main() : i32 {
     let h: H = H { wide };
     return 0;
 }' \
-    "expected fn(i32) -> i32, got fn(i64) -> i64"
+    "expected fn(i32) : i32, got fn(i64) : i64"
 reject "an assignment whose signature is not the field's" \
-    'struct H { cb: fn(i32) -> i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn wide(x: i64) -> i64 { return x + 1; }
-fn main() -> i32 {
+    'struct H { cb: fn(i32) : i32 }
+fn inc(x: i32) : i32 { return x + 1; }
+fn wide(x: i64) : i64 { return x + 1; }
+fn main() : i32 {
     let h: H = H { inc };
     h.cb = wide;
     return 0;
 }' \
-    "expected fn(i32) -> i32, got fn(i64) -> i64"
+    "expected fn(i32) : i32, got fn(i64) : i64"
 reject "the wrong argument count calling a field" \
-    'struct H { cb: fn(i32, i32) -> i32 }
-fn add(a: i32, b: i32) -> i32 { return a + b; }
-fn main() -> i32 {
+    'struct H { cb: fn(i32, i32) : i32 }
+fn add(a: i32, b: i32) : i32 { return a + b; }
+fn main() : i32 {
     let h: H = H { add };
     return h.cb(1);
 }' \
     "wrong argument count calling field 'cb': expected 2, got 1"
 reject "a call through a field that is not a function" \
-    'struct H { cb: fn(i32) -> i32, tag: i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn main() -> i32 {
+    'struct H { cb: fn(i32) : i32, tag: i32 }
+fn inc(x: i32) : i32 { return x + 1; }
+fn main() : i32 {
     let h: H = H { inc, 0 };
     return h.tag(1);
 }' \
     "cannot call field 'tag': its type is i32, not a function type"
 reject "an array of fn-pointers" \
-    'struct H { cbs: fn(i32) -> i32[4] }
-fn main() -> i32 { return 0; }' \
+    'struct H { cbs: fn(i32) : i32[4] }
+fn main() : i32 { return 0; }' \
     "an array of function pointers is not supported: H.cbs"
 reject "a call on a call's result" \
-    'fn inc(x: i32) -> i32 { return x + 1; }
-fn get() -> fn(i32) -> i32 { return inc; }
-fn main() -> i32 { return get()(1); }' \
+    'fn inc(x: i32) : i32 { return x + 1; }
+fn get() : fn(i32) : i32 { return inc; }
+fn main() : i32 { return get()(1); }' \
     "cannot call the result of this expression"
 reject "a call through a subscripted field" \
     'struct H { ps: ptr[4] }
-fn main() -> i32 {
+fn main() : i32 {
     let h: H = H { 0 };
     return h.ps[0](1);
 }' \
     "cannot call the result of this expression"
 reject "a global struct constant holding a fn-pointer" \
-    'struct H { cb: fn(i32) -> i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
+    'struct H { cb: fn(i32) : i32 }
+fn inc(x: i32) : i32 { return x + 1; }
 let gh: H = H { inc };
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
     "global struct field 'H.cb' cannot be initialized by a constant"
 
 # ---------------------------------------------------------------------------
@@ -563,21 +563,21 @@ must_accept(){ # must_accept <tag> <probe> — the mutation took the check away,
 
 # Probes the mutation layer reuses, written here so each check really tests
 # its mutation and not a missing file.
-printf '%s\n' 'struct H { cb: fn(i32) -> i32 }
-fn wide(x: i64) -> i64 { return x + 1; }
-fn main() -> i32 {
+printf '%s\n' 'struct H { cb: fn(i32) : i32 }
+fn wide(x: i64) : i64 { return x + 1; }
+fn main() : i32 {
     let h: H = H { wide };
     return 0;
 }' > "$W/rej_sig.ast"
-printf '%s\n' 'struct H { cb: fn(i32) -> i32, tag: i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn main() -> i32 {
+printf '%s\n' 'struct H { cb: fn(i32) : i32, tag: i32 }
+fn inc(x: i32) : i32 { return x + 1; }
+fn main() : i32 {
     let h: H = H { inc, 0 };
     return h.tag(1);
 }' > "$W/rej_notfn.ast"
-printf '%s\n' 'struct H { cb: fn(i32) -> i32 }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn main() -> i32 {
+printf '%s\n' 'struct H { cb: fn(i32) : i32 }
+fn inc(x: i32) : i32 { return x + 1; }
+fn main() : i32 {
     let h: H = H { inc };
     return h.cb(41) % 251;
 }' > "$W/ct_probe.ast"

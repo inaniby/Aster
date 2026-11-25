@@ -15,19 +15,19 @@
 // including the round-half-to-even cases, which is what makes a direct w0 read
 // (the v0.23.14-dev bug) fail this test.
 
-extern fn strtof(s: ptr, end: ptr) -> i32;
-extern fn lrintf() -> i32;
+extern fn strtof(s: ptr, end: ptr) : i32;
+extern fn lrintf() : i32;
 
 let g_null: ptr = 0;            // reusable null pointer (local ptr = 0 is not allowed)
 
 // The capture, exactly as event_x/event_y do it in native_touch.ast: the float
 // call, then the zero-argument bridge, with no Aster call in between.
-fn capture(s: ptr) -> i32 {
+fn capture(s: ptr) : i32 {
     let junk: i32 = strtof(s, g_null);
     return lrintf();
 }
 
-fn coord_check() -> i32 {
+fn coord_check() : i32 {
     let c0: i32 = capture("0.0");       //   0.0 ->   0
     let c1: i32 = capture("1042.0");    // exact integers
     let c2: i32 = capture("768.0");

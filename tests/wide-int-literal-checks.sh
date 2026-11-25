@@ -62,171 +62,171 @@ CASES="$OUT/cases.txt"
 # ---------------------------------------------------------------------------
 cat > "$CASES" <<'CASE_EOF'
 11~11
-fn main() -> i32 { let q: i64 = 1000000000000 + 1000000000000; if (q == 2000000000000) { return 11; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000000000 + 1000000000000; if (q == 2000000000000) { return 11; } else { return 0; } }
 @@@
 12~12
-fn main() -> i32 { let q: i64 = 1000000000000 - 100000000000; if (q == 900000000000) { return 12; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000000000 - 100000000000; if (q == 900000000000) { return 12; } else { return 0; } }
 @@@
 13~13
-fn main() -> i32 { let q: i64 = 1000000 * 3000000000; if (q == 3000000000000000) { return 13; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000 * 3000000000; if (q == 3000000000000000) { return 13; } else { return 0; } }
 @@@
 14~14
-fn main() -> i32 { let q: i64 = 1000000000000 / 7; if (q == 142857142857) { return 14; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000000000 / 7; if (q == 142857142857) { return 14; } else { return 0; } }
 @@@
 15~15
-fn main() -> i32 { let q: i64 = 1000000000000 % 999999999999; if (q == 1) { return 15; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000000000 % 999999999999; if (q == 1) { return 15; } else { return 0; } }
 @@@
 16~16
-fn main() -> i32 { let q: i64 = 1000000000000 << 1; if (q == 2000000000000) { return 16; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000000000 << 1; if (q == 2000000000000) { return 16; } else { return 0; } }
 @@@
 17~17
-fn main() -> i32 { let q: i64 = 1000000000000 >> 20; if (q == 953674) { return 17; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000000000 >> 20; if (q == 953674) { return 17; } else { return 0; } }
 @@@
 18~18
-fn main() -> i32 { let q: i64 = 1000000000000 & 549755813888; if (q == 549755813888) { return 18; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000000000 & 549755813888; if (q == 549755813888) { return 18; } else { return 0; } }
 @@@
 19~19
-fn main() -> i32 { let q: i64 = 1000000000000 | 4294967296; if (q == 1004294967296) { return 19; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000000000 | 4294967296; if (q == 1004294967296) { return 19; } else { return 0; } }
 @@@
 20~20
-fn main() -> i32 { let q: i64 = 1000000000000 ^ 4294967296; if (q == 1004294967296) { return 20; } else { return 0; } }
+fn main() : i32 { let q: i64 = 1000000000000 ^ 4294967296; if (q == 1004294967296) { return 20; } else { return 0; } }
 @@@
 21~21
-fn main() -> i32 { let q: i64 = ~1000000000000; if (q == -1000000000001) { return 21; } else { return 0; } }
+fn main() : i32 { let q: i64 = ~1000000000000; if (q == -1000000000001) { return 21; } else { return 0; } }
 @@@
 31~5
-fn main() -> i32 { let x: i64 = 4294967297; return x % 7; }
+fn main() : i32 { let x: i64 = 4294967297; return x % 7; }
 @@@
 32~4
-fn main() -> i32 { let x: i64 = 4294967297; return x / 1000000000; }
+fn main() : i32 { let x: i64 = 4294967297; return x / 1000000000; }
 @@@
 33~1
-fn main() -> i32 { let x: i64 = 1000000000000; return x % 7; }
+fn main() : i32 { let x: i64 = 1000000000000; return x % 7; }
 @@@
 34~34
-fn main() -> i32 { let x: i64 = 4294967297; if ((x & 7) == 1) { return 34; } else { return 0; } }
+fn main() : i32 { let x: i64 = 4294967297; if ((x & 7) == 1) { return 34; } else { return 0; } }
 @@@
 35~35
-fn main() -> i32 { let x: i64 = 4294967297; if ((x | 1) == 4294967297) { return 35; } else { return 0; } }
+fn main() : i32 { let x: i64 = 4294967297; if ((x | 1) == 4294967297) { return 35; } else { return 0; } }
 @@@
 36~1
-fn main() -> i32 { return 1000000000000 % 7; }
+fn main() : i32 { return 1000000000000 % 7; }
 @@@
 37~4
-fn main() -> i32 { return 4294967297 / 1000000000; }
+fn main() : i32 { return 4294967297 / 1000000000; }
 @@@
 38~0
-fn main() -> i32 { return 8589934593 == 4294967297 ? 1 : 0; }
+fn main() : i32 { return 8589934593 == 4294967297 ? 1 : 0; }
 @@@
 39~1
-fn main() -> i32 { return 8589934593 == 8589934593 ? 1 : 0; }
+fn main() : i32 { return 8589934593 == 8589934593 ? 1 : 0; }
 @@@
 41~41
-fn main() -> i32 { let q: i64 = -900000000000 / 3; if (q / -1000000000 == 300) { return 41; } else { return 0; } }
+fn main() : i32 { let q: i64 = -900000000000 / 3; if (q / -1000000000 == 300) { return 41; } else { return 0; } }
 @@@
 42~42
-fn main() -> i32 { let x: i64 = -900000000000; if (x == -900000000000) { return 42; } else { return 0; } }
+fn main() : i32 { let x: i64 = -900000000000; if (x == -900000000000) { return 42; } else { return 0; } }
 @@@
 43~43
-fn main() -> i32 { let q: i64 = -9223372036854775807 - 1; return q == -9223372036854775807 - 1 ? 43 : 0; }
+fn main() : i32 { let q: i64 = -9223372036854775807 - 1; return q == -9223372036854775807 - 1 ? 43 : 0; }
 @@@
 44~0
-fn main() -> i32 { let x: i64 = 4294967297; return x == -900000000000 ? 1 : 0; }
+fn main() : i32 { let x: i64 = 4294967297; return x == -900000000000 ? 1 : 0; }
 @@@
 47~47
-fn main() -> i32 { if (!(8589934593 == 4294967297)) { return 47; } else { return 0; } }
+fn main() : i32 { if (!(8589934593 == 4294967297)) { return 47; } else { return 0; } }
 @@@
 51~51
-fn get() -> i32 { return -5; }
-fn main() -> i32 { let q: i64 = get(); if (q == -5) { return 51; } else { return 0; } }
+fn get() : i32 { return -5; }
+fn main() : i32 { let q: i64 = get(); if (q == -5) { return 51; } else { return 0; } }
 @@@
 52~52
-fn getu() -> u32 { return 4000000000; }
-fn main() -> i32 { let q: i64 = getu(); if (q == 4000000000) { return 52; } else { return 0; } }
+fn getu() : u32 { return 4000000000; }
+fn main() : i32 { let q: i64 = getu(); if (q == 4000000000) { return 52; } else { return 0; } }
 @@@
 53~53
 struct P { x: i32 }
-fn main() -> i32 { let p: P = P { -5 }; let q: i64 = p.x; if (q == -5) { return 53; } else { return 0; } }
+fn main() : i32 { let p: P = P { -5 }; let q: i64 = p.x; if (q == -5) { return 53; } else { return 0; } }
 @@@
 54~54
-fn main() -> i32 { let a: i32[2] = 0; a[0] = -5; let q: i64 = a[0]; if (q == -5) { return 54; } else { return 0; } }
+fn main() : i32 { let a: i32[2] = 0; a[0] = -5; let q: i64 = a[0]; if (q == -5) { return 54; } else { return 0; } }
 @@@
 55~55
-fn main() -> i32 { let a: i32[2] = 0; a[0] = -5; let p: ptr = a; let q: i64 = *p; if (q == -5) { return 55; } else { return 0; } }
+fn main() : i32 { let a: i32[2] = 0; a[0] = -5; let p: ptr = a; let q: i64 = *p; if (q == -5) { return 55; } else { return 0; } }
 @@@
 56~56
 let g: i32 = -5;
-fn main() -> i32 { let q: i64 = g; if (q == -5) { return 56; } else { return 0; } }
+fn main() : i32 { let q: i64 = g; if (q == -5) { return 56; } else { return 0; } }
 @@@
 57~57
 let g: i32[2] = 0;
-fn main() -> i32 { g[0] = -5; let q: i64 = g[0]; if (q == -5) { return 57; } else { return 0; } }
+fn main() : i32 { g[0] = -5; let q: i64 = g[0]; if (q == -5) { return 57; } else { return 0; } }
 @@@
 58~58
-fn main() -> i32 { let a: i32[2] = 0; a[0] = -5; let p: ptr = a; let q: i64 = p[0]; if (q == -5) { return 58; } else { return 0; } }
+fn main() : i32 { let a: i32[2] = 0; a[0] = -5; let p: ptr = a; let q: i64 = p[0]; if (q == -5) { return 58; } else { return 0; } }
 @@@
 59~59
-fn main() -> i32 { let a: i32 = -5; let q: i64 = -a; if (q == 5) { return 59; } else { return 0; } }
+fn main() : i32 { let a: i32 = -5; let q: i64 = -a; if (q == 5) { return 59; } else { return 0; } }
 @@@
 60~2
-fn main() -> i32 { return 2147483648 % 7; }
+fn main() : i32 { return 2147483648 % 7; }
 @@@
 61~61
-fn main() -> i32 { let q: i64 = (1 == 2) ? 0 : -5; if (q == -5) { return 61; } else { return 0; } }
+fn main() : i32 { let q: i64 = (1 == 2) ? 0 : -5; if (q == -5) { return 61; } else { return 0; } }
 @@@
 62~62
-fn main() -> i32 { let q: i64 = (1 == 2) ? 0 : 4294967297; if (q == 4294967297) { return 62; } else { return 0; } }
+fn main() : i32 { let q: i64 = (1 == 2) ? 0 : 4294967297; if (q == 4294967297) { return 62; } else { return 0; } }
 @@@
 63~63
-fn main() -> i32 { let a: i32 = -5; let q: i64 = (1 == 2) ? 0 : a; if (q == -5) { return 63; } else { return 0; } }
+fn main() : i32 { let a: i32 = -5; let q: i64 = (1 == 2) ? 0 : a; if (q == -5) { return 63; } else { return 0; } }
 @@@
 64~64
-fn main() -> i32 { let q: i64 = (1 == 1) ? 1000000000000 : 2000000000000; if (q == 1000000000000) { return 64; } else { return 0; } }
+fn main() : i32 { let q: i64 = (1 == 1) ? 1000000000000 : 2000000000000; if (q == 1000000000000) { return 64; } else { return 0; } }
 @@@
 65~65
-fn main() -> i32 { if (-4294967297 % 7 == -5) { return 65; } else { return 0; } }
+fn main() : i32 { if (-4294967297 % 7 == -5) { return 65; } else { return 0; } }
 @@@
 66~66
-fn main() -> i32 { let a: i32 = -5; let q: i64 = a; if (q == -5) { return 66; } else { return 0; } }
+fn main() : i32 { let a: i32 = -5; let q: i64 = a; if (q == -5) { return 66; } else { return 0; } }
 @@@
 81~81
-fn main() -> i32 { let c: i64[2] = 0; c[0] = 1000000000000; c[1] = 2000000000000; if (c[0] + c[1] == 3000000000000) { return 81; } else { return 0; } }
+fn main() : i32 { let c: i64[2] = 0; c[0] = 1000000000000; c[1] = 2000000000000; if (c[0] + c[1] == 3000000000000) { return 81; } else { return 0; } }
 @@@
 82~82
-fn main() -> i32 { let c: i64[1] = 1000000000000; if (c[0] == 1000000000000) { return 82; } else { return 0; } }
+fn main() : i32 { let c: i64[1] = 1000000000000; if (c[0] == 1000000000000) { return 82; } else { return 0; } }
 @@@
 83~83
-fn main() -> i32 { let c: u32[2] = 0; c[0] = 4000000000; if (c[0] == 4000000000) { return 83; } else { return 0; } }
+fn main() : i32 { let c: u32[2] = 0; c[0] = 4000000000; if (c[0] == 4000000000) { return 83; } else { return 0; } }
 @@@
 84~84
-fn main() -> i32 { let c: u16[3] = 0; c[0] = 1; c[1] = 2; c[2] = 3; if (c[0] + c[1] + c[2] == 6) { return 84; } else { return 0; } }
+fn main() : i32 { let c: u16[3] = 0; c[0] = 1; c[1] = 2; c[2] = 3; if (c[0] + c[1] + c[2] == 6) { return 84; } else { return 0; } }
 @@@
 85~85
-fn main() -> i32 { let c: u8[3] = 0; c[0] = 1; c[1] = 2; c[2] = 3; if (c[0] + c[1] + c[2] == 6) { return 85; } else { return 0; } }
+fn main() : i32 { let c: u8[3] = 0; c[0] = 1; c[1] = 2; c[2] = 3; if (c[0] + c[1] + c[2] == 6) { return 85; } else { return 0; } }
 @@@
 86~86
-fn main() -> i32 { let c: i64[2] = 0; let z: i64 = 99; c[0] = 1; c[1] = 2; if (c[0] == 1 && c[1] == 2 && z == 99) { return 86; } else { return 0; } }
+fn main() : i32 { let c: i64[2] = 0; let z: i64 = 99; c[0] = 1; c[1] = 2; if (c[0] == 1 && c[1] == 2 && z == 99) { return 86; } else { return 0; } }
 @@@
 87~87
-fn main() -> i32 { let c: i64[3] = 0; c[0] = 1000000000000; c[1] = 2000000000000; c[2] = 3000000000000; if (c[0] + c[1] + c[2] == 6000000000000) { return 87; } else { return 0; } }
+fn main() : i32 { let c: i64[3] = 0; c[0] = 1000000000000; c[1] = 2000000000000; c[2] = 3000000000000; if (c[0] + c[1] + c[2] == 6000000000000) { return 87; } else { return 0; } }
 @@@
 91~91
-fn main() -> i32 { let a: i32 = 2147483647; if (a + 1 == -2147483648) { return 91; } else { return 0; } }
+fn main() : i32 { let a: i32 = 2147483647; if (a + 1 == -2147483648) { return 91; } else { return 0; } }
 @@@
 92~92
-fn main() -> i32 { let a: u32 = 4000000000; if (a / 1000000000 == 4) { return 92; } else { return 0; } }
+fn main() : i32 { let a: u32 = 4000000000; if (a / 1000000000 == 4) { return 92; } else { return 0; } }
 @@@
 93~93
-fn main() -> i32 { let x: i64 = 5; if (x + 1 == 6) { return 93; } else { return 0; } }
+fn main() : i32 { let x: i64 = 5; if (x + 1 == 6) { return 93; } else { return 0; } }
 @@@
 94~94
-fn main() -> i32 { let a: i32 = -3; if (a * 2 == -6) { return 94; } else { return 0; } }
+fn main() : i32 { let a: i32 = -3; if (a * 2 == -6) { return 94; } else { return 0; } }
 @@@
 95~95
-fn main() -> i32 { let a: u32 = 4294967295; if (a + 1 == 0) { return 95; } else { return 0; } }
+fn main() : i32 { let a: u32 = 4294967295; if (a + 1 == 0) { return 95; } else { return 0; } }
 @@@
 96~96
-fn main() -> i32 { let x: i64 = -5; if (x * 3 == -15) { return 96; } else { return 0; } }
+fn main() : i32 { let x: i64 = -5; if (x * 3 == -15) { return 96; } else { return 0; } }
 CASE_EOF
 
 # ---------------------------------------------------------------------------
@@ -340,8 +340,8 @@ printf '%s\n' 'PASS: three width rules, fourteen SXTW sites (eleven leaves, two 
 # ---------------------------------------------------------------------------
 printf '%s\n' '[3/7] Rejection: width discipline unchanged (negative layer)'
 cat > "$W/narrow-arg.ast" <<'AST'
-fn f(x: i32) -> i32 { return 0; }
-fn main() -> i32 { let y: i64 = 5; return f(y); }
+fn f(x: i32) : i32 { return 0; }
+fn main() : i32 { let y: i64 = 5; return f(y); }
 AST
 if out=$("$OUT/aster" build-elf "$W/narrow-arg.ast" -o "$W/narrow-arg" 2>&1); then
     echo 'FAIL: compiler accepted an i64 argument for an i32 parameter' >&2; exit 1
@@ -350,7 +350,7 @@ printf '%s\n' "$out" | grep -qF "argument type mismatch calling f at argument 1:
     || { echo "FAIL: wrong diagnostic for i64->i32 argument: $out" >&2; exit 1; }
 
 cat > "$W/lit-range.ast" <<'AST'
-fn main() -> i32 { let x: i64 = 10000000000000000000; return 0; }
+fn main() : i32 { let x: i64 = 10000000000000000000; return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$W/lit-range.ast" -o "$W/lit-range" 2>&1); then
     echo 'FAIL: compiler accepted a literal wider than i64' >&2; exit 1

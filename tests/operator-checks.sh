@@ -97,44 +97,44 @@ reject() {
     printf '  rejected: %s\n' "$1"
 }
 reject 'a pointer in &'   'cannot use a pointer in &' \
-    'fn f(p: ptr) -> i32 { return p & 1; }'
+    'fn f(p: ptr) : i32 { return p & 1; }'
 reject 'a pointer in ~'   'cannot use a pointer in ~' \
-    'fn f(p: ptr) -> i32 { return ~p; }'
+    'fn f(p: ptr) : i32 { return ~p; }'
 reject 'a pointer in <<'  'cannot use a pointer in <' \
-    'fn f(p: ptr) -> i32 { return p << 1; }'
+    'fn f(p: ptr) : i32 { return p << 1; }'
 reject 'a struct in &'    'cannot use a struct value (S) in &' \
     'struct S { a: i32 }
-fn f(s: S) -> i32 { return s & 1; }'
+fn f(s: S) : i32 { return s & 1; }'
 reject 'postfix ++ in an expression' 'expected' \
-    'fn main() -> i32 { let d: i32 = 10; return d++; }'
+    'fn main() : i32 { let d: i32 = 10; return d++; }'
 reject 'prefix ++ in an expression'  'expected' \
-    'fn main() -> i32 { let d: i32 = 10; return ++d; }'
+    'fn main() : i32 { let d: i32 = 10; return ++d; }'
 reject 'a non-bool ?: condition'     "the condition of '?:' must be a bool expression" \
-    'fn main() -> i32 { return 1 ? 2 : 3; }'
+    'fn main() : i32 { return 1 ? 2 : 3; }'
 reject '?: arms of different types'  "both arms of '?:' must have the same type (got i32 and bool)" \
-    'fn main() -> i32 { return 1 == 1 ? 1 : 2 == 2; }'
+    'fn main() : i32 { return 1 == 1 ? 1 : 2 == 2; }'
 reject 'a compound assign whose subscript is a call' \
        'compound assignment would evaluate the subscript twice' \
-    'fn h() -> i32 { return 0; }
-fn main() -> i32 { let a: i32[4] = 0; a[h()] += 1; return 0; }'
+    'fn h() : i32 { return 0; }
+fn main() : i32 { let a: i32[4] = 0; a[h()] += 1; return 0; }'
 reject '% by zero in a global'  'division by zero in global variable initializer' \
     'let g: i32 = 7 % 0;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 # A shift count outside [0,63] has no defined meaning. The old folder masked it
 # with &63, so `1 << -1` silently became `1 << 63`.
 reject 'a negative shift count'  'shift count -1 is out of range (0..63)' \
     'let g: i32 = 1 << -1;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 reject 'a shift count past 63'   'shift count 99 is out of range (0..63)' \
     'let g: i32 = 1 << 99;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 reject 'a left shift that leaves i64' 'left shift overflows i64' \
     'let g: i32 = 3 << 62;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 # Chained comparisons were already rejected; the new precedence chain must not
 # have quietly made them legal.
 reject 'a chained comparison' 'chained comparisons are not supported' \
-    'fn main() -> i32 { return 1 < 2 < 3; }'
+    'fn main() : i32 { return 1 < 2 < 3; }'
 
 # ---------------------------------------------------------------------------
 # Behavioural layers. check <aster-binary> <name> <expected-exit> <source>:
@@ -162,7 +162,7 @@ printf '%s\n' '[4/8] qemu: the new operators, one at a time'
 # The aggregate is the strongest single check: it is one program whose value is
 # the sum of nine independent sub-results, so a wrong operator cannot be masked
 # by another operator's accident.
-check "$A" '% (signed, both signs)'   21 'fn main() -> i32 {
+check "$A" '% (signed, both signs)'   21 'fn main() : i32 {
     let a: i32 = -17; let b: i32 = 5;
     let r1: i32 = a % b;          // -2
     let r2: i32 = 17 % -5;        //  2
@@ -179,85 +179,85 @@ check "$A" '% (signed, both signs)'   21 'fn main() -> i32 {
     return r1 + r2 + r3 + r4 + r5 + r6 + r7 + c + d;
 }'
 # Individually, so a failure names its operator.
-check "$A" '17 % 5'        2 'fn main() -> i32 { let a: i32 = 17; let b: i32 = 5; return a % b; }'
-check "$A" '-17 % 5'      -2 'fn main() -> i32 { let a: i32 = -17; let b: i32 = 5; return a % b; }'
-check "$A" '17 % -5'       2 'fn main() -> i32 { let a: i32 = 17; return a % -5; }'
-check "$A" '-17 % -5'     -2 'fn main() -> i32 { let a: i32 = -17; return a % (-5); }'
-check "$A" '17 << 2'      68 'fn main() -> i32 { let a: i32 = 17; return a << 2; }'
-check "$A" '-8 >> 1 (ASR)' -4 'fn main() -> i32 { let a: i32 = -8; return a >> 1; }'
-check "$A" '-8 << 1'     -16 'fn main() -> i32 { let a: i32 = -8; return a << 1; }'
-check "$A" '17 & 5'        1 'fn main() -> i32 { let a: i32 = 17; let b: i32 = 5; return a & b; }'
-check "$A" '17 | 5'       21 'fn main() -> i32 { let a: i32 = 17; let b: i32 = 5; return a | b; }'
-check "$A" '17 ^ 5'       20 'fn main() -> i32 { let a: i32 = 17; let b: i32 = 5; return a ^ b; }'
-check "$A" '~17'         -18 'fn main() -> i32 { let a: i32 = 17; return ~a; }'
+check "$A" '17 % 5'        2 'fn main() : i32 { let a: i32 = 17; let b: i32 = 5; return a % b; }'
+check "$A" '-17 % 5'      -2 'fn main() : i32 { let a: i32 = -17; let b: i32 = 5; return a % b; }'
+check "$A" '17 % -5'       2 'fn main() : i32 { let a: i32 = 17; return a % -5; }'
+check "$A" '-17 % -5'     -2 'fn main() : i32 { let a: i32 = -17; return a % (-5); }'
+check "$A" '17 << 2'      68 'fn main() : i32 { let a: i32 = 17; return a << 2; }'
+check "$A" '-8 >> 1 (ASR)' -4 'fn main() : i32 { let a: i32 = -8; return a >> 1; }'
+check "$A" '-8 << 1'     -16 'fn main() : i32 { let a: i32 = -8; return a << 1; }'
+check "$A" '17 & 5'        1 'fn main() : i32 { let a: i32 = 17; let b: i32 = 5; return a & b; }'
+check "$A" '17 | 5'       21 'fn main() : i32 { let a: i32 = 17; let b: i32 = 5; return a | b; }'
+check "$A" '17 ^ 5'       20 'fn main() : i32 { let a: i32 = 17; let b: i32 = 5; return a ^ b; }'
+check "$A" '~17'         -18 'fn main() : i32 { let a: i32 = 17; return ~a; }'
 
 printf '%s\n' '[5/8] qemu: precedence, compound assignment, ++/--, ?:'
 # Precedence, checked against C's own order: * / % bind tighter than + -, which
 # bind tighter than << >>, which bind tighter than & , ^ , | .
-check "$A" '1 | 2 & 3 ^ 4'        7 'fn main() -> i32 { return 1 | 2 & 3 ^ 4; }'
-check "$A" '1 + 2 << 3 | 1'      25 'fn main() -> i32 { return 1 + 2 << 3 | 1; }'
-check "$A" '8 >> 1 + 1'           2 'fn main() -> i32 { return 8 >> 1 + 1; }'
-check "$A" '2 * 3 % 4'            2 'fn main() -> i32 { return 2 * 3 % 4; }'
-check "$A" '100 / 7 % 3'          2 'fn main() -> i32 { return 100 / 7 % 3; }'
+check "$A" '1 | 2 & 3 ^ 4'        7 'fn main() : i32 { return 1 | 2 & 3 ^ 4; }'
+check "$A" '1 + 2 << 3 | 1'      25 'fn main() : i32 { return 1 + 2 << 3 | 1; }'
+check "$A" '8 >> 1 + 1'           2 'fn main() : i32 { return 8 >> 1 + 1; }'
+check "$A" '2 * 3 % 4'            2 'fn main() : i32 { return 2 * 3 % 4; }'
+check "$A" '100 / 7 % 3'          2 'fn main() : i32 { return 100 / 7 % 3; }'
 # Compound assignment on every target form the parser accepts.
-check "$A" 'x +=/-=/*=//=/%='     1 'fn main() -> i32 {
+check "$A" 'x +=/-=/*=//=/%='     1 'fn main() : i32 {
     let c: i32 = 10;
     c += 5; c -= 3; c *= 2; c /= 4; c %= 5;
     return c;
 }'
-check "$A" 'x <<=/>>=/&=/|=/^='  28 'fn main() -> i32 {
+check "$A" 'x <<=/>>=/&=/|=/^='  28 'fn main() : i32 {
     let c: i32 = 3;
     c <<= 4; c >>= 1; c |= 1; c &= 30; c ^= 4;
     return c;
 }'
-check "$A" 'a[i] OP= e'          11 'fn main() -> i32 {
+check "$A" 'a[i] OP= e'          11 'fn main() : i32 {
     let a: i32[4] = 0;
     a[2] = 5; a[2] *= 3; a[2] -= 4;
     return a[2];
 }'
 check "$A" 's.f OP= e'           21 'struct S { a: i32, b: i32 }
-fn main() -> i32 {
+fn main() : i32 {
     let s: S = S { 10, 20 };
     s.a += 5; s.b %= 7;
     return s.a + s.b;
 }'
 # ++ / -- in both spellings, and as a for step.
-check "$A" 'd++'                 11 'fn main() -> i32 { let d: i32 = 10; d++; return d; }'
-check "$A" '++d'                 11 'fn main() -> i32 { let d: i32 = 10; ++d; return d; }'
-check "$A" 'd--'                  9 'fn main() -> i32 { let d: i32 = 10; d--; return d; }'
-check "$A" '--d'                  9 'fn main() -> i32 { let d: i32 = 10; --d; return d; }'
-check "$A" 'for step: i++'          10 'fn main() -> i32 {
+check "$A" 'd++'                 11 'fn main() : i32 { let d: i32 = 10; d++; return d; }'
+check "$A" '++d'                 11 'fn main() : i32 { let d: i32 = 10; ++d; return d; }'
+check "$A" 'd--'                  9 'fn main() : i32 { let d: i32 = 10; d--; return d; }'
+check "$A" '--d'                  9 'fn main() : i32 { let d: i32 = 10; --d; return d; }'
+check "$A" 'for step: i++'          10 'fn main() : i32 {
     let s: i32 = 0;
     for (let i: i32 = 0; i < 5; i++) { s += i; }
     return s;
 }'
-check "$A" 'for step: i += 2'      20 'fn main() -> i32 {
+check "$A" 'for step: i += 2'      20 'fn main() : i32 {
     let s: i32 = 0;
     for (let i: i32 = 0; i < 10; i += 2) { s += i; }
     return s;
 }'
-check "$A" 'while with a ?: step'  3 'fn main() -> i32 {
+check "$A" 'while with a ?: step'  3 'fn main() : i32 {
     let n: i32 = 0;
     while ((n < 3 ? 1 : 0) == 1) { n += 1; }
     return n;
 }'
 # ?: , including nested and in an assignment target's value.
-check "$A" '?: true arm'          7 'fn main() -> i32 { return 1 == 1 ? 7 : 9; }'
-check "$A" '?: false arm'         9 'fn main() -> i32 { return 1 == 2 ? 7 : 9; }'
-check "$A" '?: nested'            5 'fn main() -> i32 { return 1 == 1 ? (2 == 2 ? 5 : 6) : 7; }'
-check "$A" '?: right-assoc'       7 'fn main() -> i32 { return 1 == 2 ? 1 : 2 == 2 ? 7 : 8; }'
+check "$A" '?: true arm'          7 'fn main() : i32 { return 1 == 1 ? 7 : 9; }'
+check "$A" '?: false arm'         9 'fn main() : i32 { return 1 == 2 ? 7 : 9; }'
+check "$A" '?: nested'            5 'fn main() : i32 { return 1 == 1 ? (2 == 2 ? 5 : 6) : 7; }'
+check "$A" '?: right-assoc'       7 'fn main() : i32 { return 1 == 2 ? 1 : 2 == 2 ? 7 : 8; }'
 
 printf '%s\n' '[6/8] qemu: constant folding of the new operators'
 check "$A" 'let g = 1 << 4'      16 'let g: i32 = 1 << 4;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 check "$A" 'let g = ~15'        -16 'let g: i32 = ~15;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 check "$A" 'let g = 17 % 5'       2 'let g: i32 = 17 % 5;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 check "$A" 'let g = (1 | 6) & 12' 4 'let g: i32 = (1 | 6) & 12;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 check "$A" 'let g = 1 << 2 | 1'   5 'let g: i32 = 1 << 2 | 1;
-fn main() -> i32 { return g; }'
+fn main() : i32 { return g; }'
 
 # ---------------------------------------------------------------------------
 # [7/8] Differential layer: the same expression, compiled by Aster and by the
@@ -292,7 +292,7 @@ else
     }
     # diff_expr <name> <expression> — the same text, in both languages.
     diff_expr() {
-        diff_case "$1" "fn main() -> i32 { return $2; }" "int main(void) { return $2; }"
+        diff_case "$1" "fn main() : i32 { return $2; }" "int main(void) { return $2; }"
     }
     diff_expr '1 | 2 & 3 ^ 4'  '1 | 2 & 3 ^ 4'
     diff_expr '1 + 2 << 3 | 1' '1 + 2 << 3 | 1'
@@ -306,7 +306,7 @@ else
     diff_expr '?: nesting'     '1 == 1 ? (2 == 2 ? 5 : 6) : 7'
     # A whole program rather than one expression, so the compound assignments
     # and the ++ / -- spellings are compared too.
-    diff_case 'compound + ++ + ?:' 'fn main() -> i32 {
+    diff_case 'compound + ++ + ?:' 'fn main() : i32 {
     let c: i32 = 0;
     c += 5; c -= 2; c *= 3; c /= 2; c %= 4; c <<= 3; c >>= 1; c |= 1; c &= 12; c ^= 3;
     let d: i32 = 10;
@@ -351,14 +351,14 @@ mutate() { # mutate <name> <sed-expr> <expected-value-source> <expected-value>
 }
 # MSUB -> MADD: `17 % 5` becomes 17 + 3*5 instead of 17 - 3*5.
 mutate 'MSUB -> MADD (%)' 's/0x1b008000u/0x1b000000u/' \
-    'fn main() -> i32 { let a: i32 = 17; let b: i32 = 5; return a % b; }' 2
+    'fn main() : i32 { let a: i32 = 17; let b: i32 = 5; return a % b; }' 2
 # ASR -> LSR: a signed >> stops preserving the sign. (`if` always carries an
 # else in Aster, so the two outcomes are two returns rather than one.)
 mutate 'ASR -> LSR (>>)' 's/tyIsUnsigned(ta)?0x400u:0x800u/tyIsUnsigned(ta)?0x400u:0x400u/' \
-    'fn main() -> i32 { let a: i32 = -8; if ((a >> 1) < 0) { return 1; } else { return 2; } }' 1
+    'fn main() : i32 { let a: i32 = -8; if ((a >> 1) < 0) { return 1; } else { return 2; } }' 1
 # ORN -> ORR: `~17` becomes 17.
 mutate 'ORN -> ORR (~)' 's/0xaa200000u:0x2a200000u/0xaa000000u:0x2a000000u/' \
-    'fn main() -> i32 { let a: i32 = 17; return ~a; }' -18
+    'fn main() : i32 { let a: i32 = 17; return ~a; }' -18
 fi
 
 printf '%s\n' 'PASS: operator-checks (% << >> & | ^ ~ OP= ++ -- ?:)'

@@ -21,22 +21,22 @@ const g_embed_str_en_len: i32 = @embed_len("strings_en.txt");
 const g_embed_str_zh_len: i32 = @embed_len("strings_zh.txt");
 const g_embed_font_cjk16_len: i32 = @embed_len("font_cjk16.auf");
 
-fn ui_embed_font() -> ptr {
+fn ui_embed_font() : ptr {
     return @embed("font8x8.bin");
 }
 
 // M3.2: self-authored 16x16 CJK atlas (assets/cjk16.txt -> generated
 // font_cjk16.auf). Hand-drawn bitmaps, no third-party font IP, no
 // licence file. See asterui/M3-NOTES.md.
-fn ui_embed_font_cjk16() -> ptr {
+fn ui_embed_font_cjk16() : ptr {
     return @embed("font_cjk16.auf");
 }
 
-fn ui_embed_strings_en() -> ptr {
+fn ui_embed_strings_en() : ptr {
     return @embed("strings_en.txt");
 }
 
-fn ui_embed_strings_zh() -> ptr {
+fn ui_embed_strings_zh() : ptr {
     return @embed("strings_zh.txt");
 }
 
@@ -51,14 +51,14 @@ fn ui_embed_strings_zh() -> ptr {
 // rule for the one example the APK proof needs.
 const g_embed_icon48_png_len: i32 = @embed_len("../examples/assets/icon48.png");
 
-fn ui_embed_icon48_png() -> ptr {
+fn ui_embed_icon48_png() : ptr {
     return @embed("../examples/assets/icon48.png");
 }
 
-fn ui_embed_icon48_png_len() -> i32 {
+fn ui_embed_icon48_png_len() : i32 {
     return g_embed_icon48_png_len;
 }
 
-fn ui_embed_icon48_raw() -> ptr {
+fn ui_embed_icon48_raw() : ptr {
     return @embed("../examples/assets/icon48.bin");
 }

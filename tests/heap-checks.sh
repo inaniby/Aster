@@ -87,7 +87,7 @@ emit_case(){
         # mis-staged argument each fault or diverge.
         cat > "$W/$n.ast" <<AST
 let res: u8[8] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let z: ptr = 0;
     let p: ptr = mmap(z, 4096, 3, 34, -1, 0);
     if (p == z) { write(1, "MAP-FAIL\n", 10); return 1; }
@@ -127,7 +127,7 @@ CEOF
         # and the first byte is writable. This case is the m_mmap_argwidth
         # probe's resident case.
         cat > "$W/$n.ast" <<AST
-fn main() -> i32 {
+fn main() : i32 {
     let z: ptr = 0;
     let maplen: i64 = 4294967296;
     let p: ptr = mmap(z, maplen, 3, 34, -1, 0);
@@ -162,7 +162,7 @@ CEOF
         cat > "$W/$n.ast" <<AST
 let st: u8[144] = 0;
 let out: u8[64] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let z: ptr = 0;
     let fd: i32 = openat(-100, "$ABS/big.txt", 0, 0);
     if (fd < 0) { write(1, "OPEN-ERR\n", 9); return 1; }
@@ -209,7 +209,7 @@ CEOF
         # oracle would diverge for a reason that is not a bug.
         cat > "$W/$n.ast" <<AST
 let res: u8[8] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let z: ptr = 0;
     let base: ptr = brk(z);
     let grown: ptr = brk(base + 4096);
@@ -302,39 +302,39 @@ reject(){ # $1 = description, $2 = source, $3 = expected message fragment
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "mmap with five arguments (no offset)" \
-    'fn main() -> i32 { let z: ptr = 0; let p: ptr = mmap(z, 4096, 3, 34, -1); return 0; }' \
+    'fn main() : i32 { let z: ptr = 0; let p: ptr = mmap(z, 4096, 3, 34, -1); return 0; }' \
     "mmap expects (addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64)"
 reject "mmap with seven arguments" \
-    'fn main() -> i32 { let z: ptr = 0; let p: ptr = mmap(z, 4096, 3, 34, -1, 0, 0); return 0; }' \
+    'fn main() : i32 { let z: ptr = 0; let p: ptr = mmap(z, 4096, 3, 34, -1, 0, 0); return 0; }' \
     "mmap expects (addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64)"
 reject "mmap with an integer address" \
-    'fn main() -> i32 { let p: ptr = mmap(5, 4096, 3, 34, -1, 0); return 0; }' \
+    'fn main() : i32 { let p: ptr = mmap(5, 4096, 3, 34, -1, 0); return 0; }' \
     "mmap first argument must be ptr"
 reject "mmap with a pointer length" \
     'let gb: u8[8] = 0;
-fn main() -> i32 { let p: ptr = mmap(&gb, &gb, 3, 34, -1, 0); return 0; }' \
+fn main() : i32 { let p: ptr = mmap(&gb, &gb, 3, 34, -1, 0); return 0; }' \
     "mmap second argument must be i64"
 reject "mmap with a bool length" \
     'let gb: u8[8] = 0;
-fn main() -> i32 { let p: ptr = mmap(&gb, true, 3, 34, -1, 0); return 0; }' \
+fn main() : i32 { let p: ptr = mmap(&gb, true, 3, 34, -1, 0); return 0; }' \
     "mmap second argument must be i64"
 reject "mmap with a pointer prot" \
     'let gb: u8[8] = 0;
-fn main() -> i32 { let p: ptr = mmap(&gb, 4096, &gb, 34, -1, 0); return 0; }' \
+fn main() : i32 { let p: ptr = mmap(&gb, 4096, &gb, 34, -1, 0); return 0; }' \
     "mmap third argument must be i32"
 reject "mmap with a pointer offset" \
     'let gb: u8[8] = 0;
-fn main() -> i32 { let p: ptr = mmap(&gb, 4096, 3, 34, -1, &gb); return 0; }' \
+fn main() : i32 { let p: ptr = mmap(&gb, 4096, 3, 34, -1, &gb); return 0; }' \
     "mmap sixth argument must be i64"
 reject "brk with no arguments" \
-    'fn main() -> i32 { let p: ptr = brk(); return 0; }' \
+    'fn main() : i32 { let p: ptr = brk(); return 0; }' \
     "brk expects (addr: ptr)"
 reject "brk with two arguments" \
     'let gb: u8[8] = 0;
-fn main() -> i32 { let p: ptr = brk(&gb, &gb); return 0; }' \
+fn main() : i32 { let p: ptr = brk(&gb, &gb); return 0; }' \
     "brk expects (addr: ptr)"
 reject "brk with an integer argument" \
-    'fn main() -> i32 { let p: ptr = brk(5); return 0; }' \
+    'fn main() : i32 { let p: ptr = brk(5); return 0; }' \
     "brk argument must be ptr"
 
 # ---------------------------------------------------------------------------
@@ -356,28 +356,28 @@ check_shadow(){ # $1 = name, $2 = source, $3 = expected exit status
     printf 'PASS: %-14s user function won (exit %s)\n' "$1" "$src"
 }
 check_shadow shadow_mmap \
-    'fn mmap(a: ptr, b: i64, c: i32, d: i32, e: i32, f: i64) -> ptr {
+    'fn mmap(a: ptr, b: i64, c: i32, d: i32, e: i32, f: i64) : ptr {
     calls = calls + 1;
     return a;
 }
 let calls: i32 = 0;
 let gb: u8[8] = 0;
 let gp: ptr = 0;
-fn main() -> i32 {
+fn main() : i32 {
     gp = &gb;
     let p: ptr = mmap(gp, 4096, 3, 34, -1, 0);
     return calls;
 }' \
     1
 check_shadow shadow_brk \
-    'fn brk(p: ptr) -> ptr {
+    'fn brk(p: ptr) : ptr {
     hits = hits + 1;
     return p;
 }
 let hits: i32 = 0;
 let gb: u8[8] = 0;
 let gp: ptr = 0;
-fn main() -> i32 {
+fn main() : i32 {
     gp = &gb;
     let r: ptr = brk(gp);
     return hits;

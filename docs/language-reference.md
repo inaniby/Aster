@@ -55,7 +55,7 @@ fails for every one of them).
 | `enum` | enumeration declaration (named `i32` constants) | v0.23.61-dev |
 | `type` | type-alias declaration (`type Name = T ;`) | v0.23.67-dev |
 | `const` | read-only binding (`const x : T = e ;`) | v0.23.67-dev |
-| `void` | return type only — names the absence of a result on a function (`fn f() -> void`) | v0.23.68-dev |
+| `void` | return type only — names the absence of a result on a function (`fn f() : void`) | v0.23.68-dev |
 | `char` | unsigned 8-bit integer type (**distinct** from the `'a'` character literal, which still folds to `i32`) | v0.23.69-dev |
 | `union` | union declaration (`union U { … }`) | v0.23.70-dev |
 | `include` | `include "file.ast";` declaration sharing | v0.23.13-dev |
@@ -125,7 +125,7 @@ suffixes, digit separators and `0b` binary all landed in v0.23.50-dev).
 | --- | --- |
 | Grouping | `( )` `{ }` `[ ]` |
 | Separators | `;` `,` `:` |
-| Declaration | `->` (return type) `@` (attributes) |
+| Declaration | `:` (return type) `@` (attributes) |
 | Assignment | `=` `+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `\|=` `^=` |
 | Arithmetic | `+` `-` `*` `/` `%` |
 | Bitwise | `&` `\|` `^` `~` `<<` `>>` |
@@ -158,7 +158,7 @@ leading `&` and the bitwise level only sees one in operator position.
 | `u64` | 8 | 8 | unsigned; X registers, `UDIV`, `LO/LS/HI/HS` (v0.23.48-dev) |
 | `ptr` | 8 | 8 | untyped address |
 | `ptr<S>` | 8 | 8 | address of an `S`; gives `.field` its offsets |
-| `fn(P1,..,Pn) -> R` | 8 | 8 | function pointer carrying a signature (v0.23.37-dev); stored as a `ptr`. Since v0.23.38-dev it is also legal as a **struct field** type and as a function's **return** type |
+| `fn(P1,..,Pn) : R` | 8 | 8 | function pointer carrying a signature (v0.23.37-dev); stored as a `ptr`. Since v0.23.38-dev it is also legal as a **struct field** type and as a function's **return** type |
 | `u8` | 1 | 1 | zero-extended on load, truncated on store |
 | `f64` | 8 | 8 | an IEEE-754 double (v0.23.77-dev); lives in the FP register bank (checked in the first slice by `LDR D`/`STR D`), spelled like a struct name rather than a reserved word |
 | `f32` | 4 | 4 | a four-byte IEEE-754 single beside it (v0.23.77-dev), the same FP bank's low half; arithmetic is same-type only, and `f64(x)`/`f32(x)` convert between the two" 
@@ -189,7 +189,7 @@ There is **no** `float`/`double`. `typedef` is spelled `type Name = T ;`
 (v0.23.67-dev, §8) and `union U { … }` is a real union (v0.23.70-dev, §5.5);
 both exist. `void` exists
 as a **return type only** (v0.23.68-dev) — it names the absence of a result on a
-function (`fn f() -> void`) and can never be a value, a parameter, a local, a
+function (`fn f() : void`) and can never be a value, a parameter, a local, a
 field, an alias or an array element; see §5.0. There is a **character literal**
 (`'a'`) that still folds to `i32` (§3.2, v0.23.50-dev), **and** a distinct
 `char` *type* (v0.23.69-dev) — `char` is an unsigned 8-bit integer type
@@ -206,14 +206,14 @@ expressible. (`sizeof` and `len` are operators since v0.23.35-dev — see §6.)
 
 `void` is the one type that names the **absence** of a result rather than a
 thing to compute. It is a `Ty::Void`, but it can appear **only** in a function's
-return slot — a function declaration's `-> void`, or a function type's `-> void`
-(`fn() -> void`). `parseType` accepts the `void` keyword solely behind
+return slot — a function declaration's `: void`, or a function type's `: void`
+(`fn() : void`). `parseType` accepts the `void` keyword solely behind
 `needType`'s `allowVoid` gate, which the two return-parsers pass `true` to and
 every value position passes `false`.
 
 Anywhere else `void` is refused:
 
-- as a **parameter** type — `fn f(a: void) -> i32` → `void is only a function return type`;
+- as a **parameter** type — `fn f(a: void) : i32` → `void is only a function return type`;
 - as a **local** type — `let x: void = …` → the same;
 - as a **struct field** — the same;
 - as a **type alias** — `type V = void` → `a type alias cannot be void: V`.
@@ -239,7 +239,7 @@ either side.
 ### 5.1 `f64` — an IEEE-754 double, first slice (v0.23.77-dev)
 
 ```aster
-fn main() -> i32 {
+fn main() : i32 {
     let x: f64 = 1.5;            // a fractional literal is a double
     let y: f64 = x * 2.0;        // + - * /, FNEG for unary minus
     let b: bool = y > 2.0;       // six relations: FCMP + CSET
@@ -368,7 +368,7 @@ now runs at every position that stores a value:
 | A `let` initializer | `let b: u8 = e;` where `e: i32` | refused since v0.23.63-dev |
 | A local assignment | `b = x;` with a narrowing mismatch | refused since v0.23.63-dev |
 | A global initializer | `let g: u8 = <an i64>;` | refused since v0.23.63-dev |
-| A `return` | `fn f() -> u8 { return n; }` with `n: i64` | refused since v0.23.63-dev |
+| A `return` | `fn f() : u8 { return n; }` with `n: i64` | refused since v0.23.63-dev |
 | An array element or a struct field | `a[i] = w;` with `w: i64` and `a` an `i32[N]` | **unchanged** — see below |
 
 The diagnostic names both types and says what to write instead:
@@ -629,9 +629,9 @@ v0.23.24-dev it can also be *called* — `fp(args)` where `fp` is a `ptr`
 variable is an indirect call, compiled to `BLR X9`:
 
 ```aster
-fn inc(x: i32) -> i32 { return x + 1; }
+fn inc(x: i32) : i32 { return x + 1; }
 
-fn main() -> i32 {
+fn main() : i32 {
     let fp: ptr = inc;
     return fp(41);                  // 42 — BLR X9, not BL
 }
@@ -671,7 +671,7 @@ address of an `extern` function ("its location is another object's business").
 ### Function types (v0.23.37-dev)
 
 A function pointer may be declared **with its signature**:
-`let fp: fn(i32) -> i32 = inc;`. The storage type is still `ptr` (8 bytes) —
+`let fp: fn(i32) : i32 = inc;`. The storage type is still `ptr` (8 bytes) —
 the signature rides beside it, on the local `let`, the global and the
 parameter list — so a bare `ptr` keeps every rule it had (64-bit argument
 staging, an `i32` answer, a struct argument refused) and a typed fn-pointer
@@ -688,19 +688,19 @@ gains the direct call's contract:
   having no signature to lay one out with). A typed call supersedes the bare-`ptr` rule that every scalar rides at 64-bit width; the two coincide for scalars, so only the struct case is load-bearing. The result is read at the
   signature's **return type** (`i64`/`ptr`/`bool`/`u32`, default `i32`), so
   `let r: i64 = fp(x);` type-checks where a bare-`ptr` call answered `i32`.
-- **Every scope**: a local (`let fp: fn(i32) -> i32 = inc;`), a global
-  (`let gop: fn(i32, i32) -> i32;` — which may be left **uninitialized**,
+- **Every scope**: a local (`let fp: fn(i32) : i32 = inc;`), a global
+  (`let gop: fn(i32, i32) : i32;` — which may be left **uninitialized**,
   zero-filling into `.bss`, and assigned at run time), and a **parameter**
-  (`fn apply(op: fn(i32) -> i32, x: i32) -> i32 { return op(x); }` — the
+  (`fn apply(op: fn(i32) : i32, x: i32) : i32 { return op(x); }` — the
   signature crosses the call with the pointer).
 - **A struct field may declare one** (v0.23.38-dev): `struct Handlers {
-  onClick: fn(i32) -> i32, tag: i32 }` — still eight bytes in the layout, and
+  onClick: fn(i32) : i32, tag: i32 }` — still eight bytes in the layout, and
   the call is written where the field is: `h.onClick(41)`. A store into the
   field is checked by signature, and a call through it is checked and staged by
   the field's own signature. An **array** of fn-pointer fields is refused
   (`an array of function pointers is not supported: Handlers.onClick`).
-- **A function may return one** (v0.23.38-dev): `fn pick(which: i32) -> fn(i32)
-  -> i32 { … return inc; }` — the `return` is checked against the return slot's
+- **A function may return one** (v0.23.38-dev): `fn pick(which: i32) : fn(i32)
+  : i32 { … return inc; }` — the `return` is checked against the return slot's
   signature, and a call's result answers it, so `apply(pick(1), 20)` is checked
   against `apply`'s parameter. `pick(0)(20)` is refused (`cannot call the
   result of this expression`): assign it first.
@@ -790,13 +790,13 @@ a raw AArch64 `SVC #0`, no libc. A user function of the same name shadows one.
 
 | Call | Syscall | Signature |
 | --- | --- | --- |
-| `read` | 63 | `(fd: i32, buf: ptr, len: i32) -> i32` — bytes read, 0 at EOF |
-| `openat` | 56 | `(fd: i32, path: ptr, flags: i32, mode: i32) -> i32` — `AT_FDCWD=-100`, `O_RDONLY=0` |
-| `close` | 57 | `(fd: i32) -> i32` |
-| `fstat` | **80** | `(fd: i32, buf: ptr) -> i32` — `st_size` at offset 48 (79 is `newfstatat`) |
-| `mmap` | 222 | `(addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64) -> ptr` — page-aligned `offset` (EINVAL otherwise), answers an address |
-| `brk` | 214 | `(addr: ptr) -> ptr` — null queries the break, a page-aligned address grows it |
-| `clock_gettime` | 113 | `(clockid: i32, tp: ptr) -> i32` — `CLOCK_MONOTONIC=1`, timespec `sec` i64 at +0, `nsec` i64 at +8, 0 ok / raw `-errno` on failure (v0.23.82-dev) |
+| `read` | 63 | `(fd: i32, buf: ptr, len: i32) : i32` — bytes read, 0 at EOF |
+| `openat` | 56 | `(fd: i32, path: ptr, flags: i32, mode: i32) : i32` — `AT_FDCWD=-100`, `O_RDONLY=0` |
+| `close` | 57 | `(fd: i32) : i32` |
+| `fstat` | **80** | `(fd: i32, buf: ptr) : i32` — `st_size` at offset 48 (79 is `newfstatat`) |
+| `mmap` | 222 | `(addr: ptr, length: i64, prot: i32, flags: i32, fd: i32, offset: i64) : ptr` — page-aligned `offset` (EINVAL otherwise), answers an address |
+| `brk` | 214 | `(addr: ptr) : ptr` — null queries the break, a page-aligned address grows it |
+| `clock_gettime` | 113 | `(clockid: i32, tp: ptr) : i32` — `CLOCK_MONOTONIC=1`, timespec `sec` i64 at +0, `nsec` i64 at +8, 0 ok / raw `-errno` on failure (v0.23.82-dev) |
 
 Results are the **raw kernel return**: failure answers `-errno`, not libc's `-1`
 (`close` of a bad fd → `-9` → exit 247). Companion to `write` (64); see the
@@ -1060,7 +1060,7 @@ decl      ::= 'include' string ';'
             | 'const' ident ':' type '=' expr ';'
             | 'tls' [ 'extern' ] 'let' ident ':' type [ '[' length ']' ] '=' expr ';'
             | 'extern' 'let' ident ':' type [ '[' length ']' ] ';'
-            | [ 'extern' ] 'fn' name '(' params ')' '->' type ( block | ';' )
+            | [ 'extern' ] 'fn' name '(' params ')' ':' type ( block | ';' )
 struct-decl ::= 'struct' ident '{' field (',' field)* '}'
 union-decl  ::= 'union' ident '{' field (',' field)* '}'
 field     ::= ident ':' type
@@ -1150,12 +1150,12 @@ be labeled like `while`/`for` (`outer: do { … } while (c);`), and a `break` or
 
 ### Functions
 
-- The `-> type` is **mandatory** (`fn g() { }` → `expected ->`).
+- The `: type` is **mandatory** (`fn g() { }` → `expected ':'`).
 - At most **32 parameters** and at most **32 call arguments**.
 - No nested functions. No default or variadic parameters.
 - Body may not be empty.
 - `main` must return `i32`. It takes **no** parameters, or the entry form
-  `fn main(argc: i32, argv: ptr) -> i32` (v0.23.77-dev), or the same with a
+  `fn main(argc: i32, argv: ptr) : i32` (v0.23.77-dev), or the same with a
   third `envp: ptr`. Those three arrive in `x0`/`x1`/`x2` — the kernel enters a
   static image with `argc` at `[sp]` and `argv` at `[sp+8]`, and the entry
   prologue reads them there before the first statement, so `_start` is still
@@ -1168,7 +1168,7 @@ be labeled like `while`/`for` (`outer: do { … } while (c);`), and a `break` or
   `call to undeclared function: nope`.
 - Every path must return; falling off the end is an error.
 - `extern fn` declares an imported symbol — this is how libc is reached:
-  `extern fn strlen(s: ptr) -> i32;`.
+  `extern fn strlen(s: ptr) : i32;`.
 - v0.23.77-dev (audit A-19): an `extern fn` may be **called**, but its
   **address** cannot be taken — `let p: ptr = fa;` with `extern fn fa` is
   refused with "cannot take the address of extern function 'fa': its location is
@@ -1250,12 +1250,12 @@ type Name = T ;
 ```
 
 - `T` is **any type the grammar accepts** — a scalar, a struct, an enum, a
-  `ptr<…>`, or a `fn(…) -> …`. The name expands by the same `parseType` every
+  `ptr<…>`, or a `fn(…) : …`. The name expands by the same `parseType` every
   declaration site uses, so it is gone before layout, Sema and codegen run.
 - There is no "alias type": two names for `i32` are `i32`, and a value of one
   is a value of the other. The one thing a `Ty` cannot carry — a **function
   signature** — travels in the alias record and is handed back at every use, so
-  `type Op = fn(i32) -> i64;` is a real signature and a 64-bit result is read
+  `type Op = fn(i32) : i64;` is a real signature and a 64-bit result is read
   at full width.
 - An alias **cannot** stand for an array (`i32[4]` is a declaration form, not a
   type → `expected ';' after a type alias declaration`), and is **not** a cast
@@ -1484,7 +1484,7 @@ differ in what a rebuild can catch:
 * `include "defs.ast";` reads the declarations out of the file that holds the
   body (§8), so the consumer's view cannot drift from the definition. Its body
   and any global initializer stay in `defs.o`.
-* `extern fn add2(x: i32) -> i32;` declares it by hand. Nothing checks it
+* `extern fn add2(x: i32) : i32;` declares it by hand. Nothing checks it
   against the definition; the linker matches symbols **by name only** — not by
   signature, not by arity, not by width.
 
@@ -1686,7 +1686,7 @@ says so.
 ## 11e. `static` locals
 
 ```aster
-fn next_id() -> i32 {
+fn next_id() : i32 {
     static let n: i32 = 0;      // one copy, for the program's whole life
     n = n + 1;
     return n;
@@ -1749,12 +1749,12 @@ struct Point { x: i32, y: i32 }
 
 let origin: Point = Point { 0, 0 };      // a struct global
 
-fn add(p: Point, q: Point) -> Point {    // passed and returned by value
+fn add(p: Point, q: Point) : Point {    // passed and returned by value
     let r: Point = Point { p.x + q.x, p.y + q.y };
     return r;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: Point = Point { 1, 2 };
     let b: Point = Point { 3, 4 };
     let c: Point = add(a, b);
@@ -1774,9 +1774,9 @@ comparison and all four arithmetic operations work, and a call carries one acros
 in the V register file.
 
 ```aster
-fn half(x: f64) -> f64 { return x / 2.0; }
+fn half(x: f64) : f64 { return x / 2.0; }
 
-fn main() -> i32 {
+fn main() : i32 {
     let a: f64 = 0.1 * 3.0;     // 0.30000000000000004, exactly as C computes it
     let b: f64 = half(a);
     if (b > 0.15 && b < 0.16) { return 1; }
@@ -1817,7 +1817,7 @@ fields directly:
 ```aster
 struct P { a: i32, b: i32 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = 5;
     let q: ptr<i32> = &n;
     *q = 9;                       // n is 9 now
@@ -1935,29 +1935,29 @@ aster link-obj app.o std.o -o app
 
 | Family | Signatures |
 | --- | --- |
-| mem (v0.23.77-dev) | `memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` |
-| str (v0.23.77-dev) | `strncmp`, `strchr(s, c) -> i32` (an offset or -1), `strstr(h, n) -> i32`, `strcat` (returns the new length) |
-| parse (v0.23.77-dev) | `atoi(s) -> i32`, `is_digit` / `is_space` / `is_alpha`; second slice: `strtoi(s, base, out) -> i32` (base 2..36 or 0 for `0x`/`0b`/decimal auto-detect, leading spaces and a sign, the value written through `out` as an i64, the answer is the bytes consumed or -1) and `atof(s, out) -> i32` (digits, an optional fraction and an optional exponent, the double written through a `ptr<f64>` — a double cannot go through a byte pointer without reinterpreting its bits, which the language does not do) |
+| mem (v0.23.77-dev) | `memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32` |
+| str (v0.23.77-dev) | `strncmp`, `strchr(s, c) : i32` (an offset or -1), `strstr(h, n) : i32`, `strcat` (returns the new length) |
+| parse (v0.23.77-dev) | `atoi(s) : i32`, `is_digit` / `is_space` / `is_alpha`; second slice: `strtoi(s, base, out) : i32` (base 2..36 or 0 for `0x`/`0b`/decimal auto-detect, leading spaces and a sign, the value written through `out` as an i64, the answer is the bytes consumed or -1) and `atof(s, out) : i32` (digits, an optional fraction and an optional exponent, the double written through a `ptr<f64>` — a double cannot go through a byte pointer without reinterpreting its bits, which the language does not do) |
 | format, second slice (v0.23.77-dev) | `fmt_i64(buf, v)` (decimal, with `INT64_MIN` producing its digits through u64 arithmetic because its magnitude does not fit an i64) and `fmt_hex64(buf, v)` (sixteen lowercase digits, two eight-digit halves) and `fmt_i32_w(buf, v, width)` (decimal, right-aligned in a field of `width` columns, space padded; a value wider than the field is written in full, so the width is a minimum) |
 | strings, second slice (v0.23.77-dev) | `streq`, `starts_with`, `ends_with`, `trim` (strips spaces **in place** and answers the first non-space byte — the argument must be writable), `next_line(line)` (terminates the line in place, strips a trailing `\r`, answers the next line or 0 — iterate `while (ln != 0) { …; ln = next_line(ln); }`), `str_dup` (a copy in the arena) |
-| format (v0.23.77-dev) | `fmt_i32(buf, v) -> i32`, `fmt_hex(buf, v, digits) -> i32` — fixed-arity writers returning the byte count, because there is no variadic call |
-| format (v0.23.77-dev) | `fmt_f64(buf, v, digits) -> i32`, `fmt_f32(buf, v, digits) -> i32` — a double in fixed point (0..9 digits, half-up, `nan`/`inf` like C), returning the byte count |
+| format (v0.23.77-dev) | `fmt_i32(buf, v) : i32`, `fmt_hex(buf, v, digits) : i32` — fixed-arity writers returning the byte count, because there is no variadic call |
+| format (v0.23.77-dev) | `fmt_f64(buf, v, digits) : i32`, `fmt_f32(buf, v, digits) : i32` — a double in fixed point (0..9 digits, half-up, `nan`/`inf` like C), returning the byte count |
 | format, third slice (v0.23.77-dev) | `fmt_hex_w(buf, v, width)` — lowercase hex, right-aligned in a field of `width` columns, **space** padded (its sibling `fmt_hex` zero pads), returning the byte count; a value wider than the field is written in full, so the width is a minimum |
 | strings, third slice (v0.23.77-dev) | `to_upper(s)` / `to_lower(s)` — ASCII case conversion **in place**, answering `s` (the buffer must be writable); `strrchr(s, c)` — the index of the *last* `c`, or -1, an index rather than a pointer like the rest of the library |
 | bytes and numbers (v0.23.77-dev) | `i32_abs(v)` (the unrepresentable value answers `INT32_MIN`, which a naive negate gets wrong); `memchr(buf, n, c)` (the first `c` in the first `n` bytes, or -1 — no terminator needed and it stops at `n`); `strncat(dst, src, room)` (appends at most `room` bytes then terminates, so `strncat(d, s, size - strlen(d) - 1)` cannot overrun) |
-| UTF-8 (v0.23.77-dev) | `utf8_encode(cp, buf) -> i32` (1..4 bytes, answering the count; 0 and nothing written for a value that is not a code point — negative, above U+10FFFF, or a surrogate); `utf8_decode(s, at) -> i32` (the code point starting at `s[at]`, or -1 for an unexpected continuation byte, a truncated sequence, an overlong encoding or a surrogate); `utf8_len(s) -> i32` (every byte that is not a continuation byte starts one) |
+| UTF-8 (v0.23.77-dev) | `utf8_encode(cp, buf) : i32` (1..4 bytes, answering the count; 0 and nothing written for a value that is not a code point — negative, above U+10FFFF, or a surrogate); `utf8_decode(s, at) : i32` (the code point starting at `s[at]`, or -1 for an unexpected continuation byte, a truncated sequence, an overlong encoding or a surrogate); `utf8_len(s) : i32` (every byte that is not a continuation byte starts one) |
 | sort (v0.23.77-dev) | `sort_bytes(base, count, width, cmp)` — an insertion sort over `count` elements of `width` bytes, ordered by a comparator that takes two element addresses and answers <0 / 0 / >0 (C's `qsort` contract, with the comparator as a function pointer); `width` is capped at 256 (the scratch buffer the swap needs) and a count below 2 is a no-op. Typed wrappers: `sort_i32`, `sort_i64`, `sort_u8`, `sort_str` (elements are `ptr` to NUL-terminated strings) |
-| map (v0.23.77-dev) | `struct Map { ents: ptr, count: i32, cap: i32 }` — string keys (a pointer the caller owns; **the map never copies a key**) to pointer values, open addressing with linear probing over a power-of-two table of 16-byte slots, growing by rehashing when the load passes a half. `map_init(m, cap)`, `map_put(m, key, val) -> i32` (1 new, 0 replaced, -1 refused), `map_get(m, key) -> ptr` (0 when absent), `map_has`, and `map_del(m, key) -> i32` (1 deleted, 0 absent) — a deleted slot becomes a **tombstone** (`ptr(1)`, never a valid key), because a probe run that passed through it has to keep going; `map_put` reuses the first tombstone on its run, and the arena's no-return rule is untouched | `sort_i32(a: ptr, n: i32) -> i32` — ascending insertion sort |
-| files (v0.23.77-dev) | `fd_open(path, flags, mode)`, `fd_read`, `fd_write`, `fd_close` (raw `openat`/`read`/`write`/`close`, -1 for failure), `write_all(fd, buf, n)` (a short write is legal, so it loops), `file_size(path) -> i64` (an `fstat`; `st_size` sits at byte 48 of the AArch64 `struct stat`), `slurp(path) -> ptr` (the whole file, NUL terminated, 0 on failure) and `slurp_bytes(path, out_len)` (the same, with the length written through a byte buffer) |
-| arena (v0.23.77-dev) | `alloc(n) -> ptr` — a **growable** bump arena: when the current mapping is full another is mapped and becomes current, nothing is returned to the kernel, so every earlier pointer stays valid; 0 for `n <= 0` or a request past 64 MiB. `ralloc(p, old_n, new_n)` copies into a fresh block. `malloc`/`free` keep their v0.23.42-dev contract (one 64 KiB mapping, 0 when exhausted) |
+| map (v0.23.77-dev) | `struct Map { ents: ptr, count: i32, cap: i32 }` — string keys (a pointer the caller owns; **the map never copies a key**) to pointer values, open addressing with linear probing over a power-of-two table of 16-byte slots, growing by rehashing when the load passes a half. `map_init(m, cap)`, `map_put(m, key, val) : i32` (1 new, 0 replaced, -1 refused), `map_get(m, key) : ptr` (0 when absent), `map_has`, and `map_del(m, key) : i32` (1 deleted, 0 absent) — a deleted slot becomes a **tombstone** (`ptr(1)`, never a valid key), because a probe run that passed through it has to keep going; `map_put` reuses the first tombstone on its run, and the arena's no-return rule is untouched | `sort_i32(a: ptr, n: i32) : i32` — ascending insertion sort |
+| files (v0.23.77-dev) | `fd_open(path, flags, mode)`, `fd_read`, `fd_write`, `fd_close` (raw `openat`/`read`/`write`/`close`, -1 for failure), `write_all(fd, buf, n)` (a short write is legal, so it loops), `file_size(path) : i64` (an `fstat`; `st_size` sits at byte 48 of the AArch64 `struct stat`), `slurp(path) : ptr` (the whole file, NUL terminated, 0 on failure) and `slurp_bytes(path, out_len)` (the same, with the length written through a byte buffer) |
+| arena (v0.23.77-dev) | `alloc(n) : ptr` — a **growable** bump arena: when the current mapping is full another is mapped and becomes current, nothing is returned to the kernel, so every earlier pointer stays valid; 0 for `n <= 0` or a request past 64 MiB. `ralloc(p, old_n, new_n)` copies into a fresh block. `malloc`/`free` keep their v0.23.42-dev contract (one 64 KiB mapping, 0 when exhausted) |
 | buffers (v0.23.77-dev) | `struct Buf { data: ptr, count: i32, cap: i32 }` with `buf_init`, `buf_free`, `buf_reserve`, `buf_append`, `buf_appends`, `buf_putc`, `buf_reset`, `buf_cstr`; `struct Vec32` and `struct VecPtr` with `init`/`push`/`get`/`set`/`free` each (two concrete types, because the language has no generics) |
-| diagnostics (v0.23.77-dev) | `eputs(s)` writes to fd 2; `panic(msg) -> i32` reports `aster: <msg>` on stderr and **answers the code the caller should return** — there is no `exit` intrinsic, a program leaves through `main` |
-| heap (v0.23.77-dev) | `malloc(n: i32) -> ptr` (a 64 KiB `mmap` bump allocator, 8-byte aligned, 0 when exhausted) and `free(p) -> i32` (the documented no-op answering 0) |
+| diagnostics (v0.23.77-dev) | `eputs(s)` writes to fd 2; `panic(msg) : i32` reports `aster: <msg>` on stderr and **answers the code the caller should return** — there is no `exit` intrinsic, a program leaves through `main` |
+| heap (v0.23.77-dev) | `malloc(n: i32) : ptr` (a 64 KiB `mmap` bump allocator, 8-byte aligned, 0 when exhausted) and `free(p) : i32` (the documented no-op answering 0) |
 | --- | --- |
-| mem | `memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` · `memset(dst: ptr<u8>, c: i32, n: i32) -> i32` · `memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32` |
-| str | `strlen(s: ptr<u8>) -> i32` · `strcmp(a: ptr<u8>, b: ptr<u8>) -> i32` · `strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32` |
-| num | `utoa(v: i64, buf: ptr<u8>) -> i32` · `itoa(v: i64, buf: ptr<u8>) -> i32` · `utohex(v: i64, buf: ptr<u8>) -> i32` |
-| hash | `hash_str(s: ptr<u8>) -> i64` · `hash_put(key: ptr<u8>, val: i64) -> i32` · `hash_get(key: ptr<u8>) -> i64` |
+| mem | `memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32` · `memset(dst: ptr<u8>, c: i32, n: i32) : i32` · `memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32` |
+| str | `strlen(s: ptr<u8>) : i32` · `strcmp(a: ptr<u8>, b: ptr<u8>) : i32` · `strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32` |
+| num | `utoa(v: i64, buf: ptr<u8>) : i32` · `itoa(v: i64, buf: ptr<u8>) : i32` · `utohex(v: i64, buf: ptr<u8>) : i32` |
+| hash | `hash_str(s: ptr<u8>) : i64` · `hash_put(key: ptr<u8>, val: i64) : i32` · `hash_get(key: ptr<u8>) : i64` |
 
 Two rules behind the table: a byte-buffer parameter is `ptr<u8>` because
 that spelling alone takes both a string literal and `&arr` of a `u8[N]`; and
@@ -1977,7 +1977,7 @@ It reads one Aster source from stdin and writes the token stream to stdout:
 aster build-obj bootstrap/aster.ast -o boot.o
 aster build-obj stdlib/aster_std.ast -o std.o
 aster link-obj boot.o std.o -o asterlex
-echo 'fn main() -> i32 { return 0; }' | ./asterlex
+echo 'fn main() : i32 { return 0; }' | ./asterlex
 # Fn 1 1
 # Main 1 4
 # LParen 1 8
@@ -2023,7 +2023,7 @@ to stdout:
 aster build-obj bootstrap/aster.ast -o boot.o
 aster build-obj stdlib/aster_std.ast -o std.o
 aster link-obj boot.o std.o -o asterparse
-echo 'fn main() -> i32 { return 0; }' | ./asterparse
+echo 'fn main() : i32 { return 0; }' | ./asterparse
 # Program 1:1
 # Function 1:1 main i32 0
 # Return 1:11
@@ -2056,7 +2056,7 @@ message wrongly carrying the assigned name. Full semantics: `docs/language-spec.
 
 let buf: i32[8] = 0;
 
-fn find(needle: i32) -> ptr {
+fn find(needle: i32) : ptr {
     let base: ptr = buf;
     let i: i32 = 0;
     while (i < 8) {
@@ -2066,7 +2066,7 @@ fn find(needle: i32) -> ptr {
     return 0;                       // null: not found
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     buf[2] = 7;
     buf[5] = 42;
     let r: i32 = 0;

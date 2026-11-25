@@ -1,6 +1,6 @@
-extern fn data_ptr() -> ptr;
-extern fn data_len() -> i32;
-fn main() -> i32 {
+extern fn data_ptr() : ptr;
+extern fn data_len() : i32;
+fn main() : i32 {
     let p: ptr = data_ptr();
     return load_u8(p) + data_len();
 }

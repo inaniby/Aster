@@ -1,7 +1,7 @@
 struct P { a: i32, b: i32 }
 let o: u8[8] = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     let s: P = P { 1, 2 };
     let p: ptr<P> = &s;
     p.a = 7;

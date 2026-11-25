@@ -19,7 +19,7 @@ Writes `--count` .ast files into `--outdir`, deterministically for a given
             those are the ones that get deep enough to reach codegen.
   soup      a random token stream. Almost all of it dies in the lexer,
             which is still worth having: the lexer is part of the surface.
-  skeleton  a syntactically valid frame (`fn main() -> i32 { ... }`) filled
+  skeleton  a syntactically valid frame (`fn main() : i32 { ... }`) filled
             with random statements and expressions. This is the kind that
             gets *past* the parser's front door and into type checking,
             which is where the interesting crashes live.
@@ -47,16 +47,16 @@ TOKENS = [
 
 # Fixed seeds: every unary/assignment path, spelled plainly.
 SEEDS = [
-    "fn main() -> i32 {\n    let x: i32 = -1;\n    return x;\n}\n",
-    "fn main() -> i32 {\n    let b: bool = !x;\n    return 0;\n}\n",
-    "fn main() -> i32 {\n    let x: i32 = 1;\n    let p: ptr<i32> = &x;\n    return 0;\n}\n",
-    "fn main() -> i32 {\n    let x: i32 = 1;\n    let p: ptr<i32> = &x;\n    *p = 5;\n    return *p;\n}\n",
-    "fn main() -> i32 {\n    let x: i32 = 1;\n    let p: ptr<i32> = &x;\n    let q: ptr<i32> = -p;\n    return 0;\n}\n",
-    "fn main() -> i32 {\n    let a: i32[4] = 0;\n    a[0] = 1;\n    return a[0];\n}\n",
-    "fn main() -> i32 {\n    let x: i32 = 1;\n    x = -x;\n    return x;\n}\n",
-    "fn main() -> i32 {\n    let x: i32 = 1;\n    return !(x > 0);\n}\n",
-    "fn main() -> i32 {\n    let p: ptr<i32> = 0;\n    *p = *p + 1;\n    return 0;\n}\n",
-    "fn main() -> i32 {\n    let x: i32 = ((((-1))));\n    return x;\n}\n",
+    "fn main() : i32 {\n    let x: i32 = -1;\n    return x;\n}\n",
+    "fn main() : i32 {\n    let b: bool = !x;\n    return 0;\n}\n",
+    "fn main() : i32 {\n    let x: i32 = 1;\n    let p: ptr<i32> = &x;\n    return 0;\n}\n",
+    "fn main() : i32 {\n    let x: i32 = 1;\n    let p: ptr<i32> = &x;\n    *p = 5;\n    return *p;\n}\n",
+    "fn main() : i32 {\n    let x: i32 = 1;\n    let p: ptr<i32> = &x;\n    let q: ptr<i32> = -p;\n    return 0;\n}\n",
+    "fn main() : i32 {\n    let a: i32[4] = 0;\n    a[0] = 1;\n    return a[0];\n}\n",
+    "fn main() : i32 {\n    let x: i32 = 1;\n    x = -x;\n    return x;\n}\n",
+    "fn main() : i32 {\n    let x: i32 = 1;\n    return !(x > 0);\n}\n",
+    "fn main() : i32 {\n    let p: ptr<i32> = 0;\n    *p = *p + 1;\n    return 0;\n}\n",
+    "fn main() : i32 {\n    let x: i32 = ((((-1))));\n    return x;\n}\n",
 ]
 
 EXPRS = [
@@ -77,12 +77,12 @@ STMTS = [
 ]
 
 HEADS = [
-    "fn main() -> i32 {",
-    "fn f() -> i32 {",
-    "fn g(a: i32, b: i32) -> i32 {",
-    "fn h(p: ptr<i32>) -> bool {",
-    "struct P {{ x: i32, y: i32 }}\nfn main() -> i32 {",
-    "fn main() -> i32 { let x: i32 = 1; let y: i32 = 2; let p: ptr<i32> = &x;",
+    "fn main() : i32 {",
+    "fn f() : i32 {",
+    "fn g(a: i32, b: i32) : i32 {",
+    "fn h(p: ptr<i32>) : bool {",
+    "struct P {{ x: i32, y: i32 }}\nfn main() : i32 {",
+    "fn main() : i32 { let x: i32 = 1; let y: i32 = 2; let p: ptr<i32> = &x;",
 ]
 
 

@@ -71,16 +71,16 @@ $CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -o "$ASTER" src/aster.cpp
 printf '  %-40s %s\n' 'compiler built' 'ok'
 
 cat > "$OUT/leaf.ast" <<'AST'
-fn leaf(a: i32) -> i32 { let x: i32 = a + 1; return x; }
-fn caller(a: i32) -> i32 { return leaf(a) + 1; }
-fn main() -> i32 { return caller(40); }
+fn leaf(a: i32) : i32 { let x: i32 = a + 1; return x; }
+fn caller(a: i32) : i32 { return leaf(a) + 1; }
+fn main() : i32 { return caller(40); }
 AST
 cat > "$OUT/rec.ast" <<'AST'
-fn f(n: i32) -> i32 { if (n == 0) { return 0; } return 1 + f(n - 1); }
-fn main() -> i32 { return f(100); }
+fn f(n: i32) : i32 { if (n == 0) { return 0; } return 1 + f(n - 1); }
+fn main() : i32 { return f(100); }
 AST
 cat > "$OUT/args.ast" <<'AST'
-fn main(argc: i32, argv: ptr) -> i32 { return argc; }
+fn main(argc: i32, argv: ptr) : i32 { return argc; }
 AST
 
 printf '%s\n' '[2/14] default: the historical frame is untouched'
@@ -109,8 +109,8 @@ pf=$(frame_of "$OUT/cmp.elf" caller)
 [ $(( pf % 16 )) = 0 ] || fail "the calling function's frame ($pf) is not 16-byte aligned"
 cat > "$OUT/agg.ast" <<'AST'
 struct S { x: i32, y: i32 }
-fn f() -> S { return S { 3, 4 }; }
-fn main() -> i32 { let s: S = f(); return s.x + s.y; }
+fn f() : S { return S { 3, 4 }; }
+fn main() : i32 { let s: S = f(); return s.x + s.y; }
 AST
 "$ASTER" build-elf --compact-frames "$OUT/agg.ast" -o "$OUT/agg.elf" >/dev/null 2>&1 || fail 'the aggregate build failed'
 af=$(frame_of "$OUT/agg.elf" f)
@@ -183,8 +183,8 @@ grep -qF 'if(want<=8191u){' src/aster.cpp \
 
 printf '%s\n' '[10/14] compact: recursion goes far deeper than the 8 KiB layout allows'
 cat > "$OUT/deep.ast" <<'AST'
-fn f(n: i32) -> i32 { if (n == 0) { return 0; } return 1 + f(n - 1); }
-fn main() -> i32 { return f(20000) & 255; }
+fn f(n: i32) : i32 { if (n == 0) { return 0; } return 1 + f(n - 1); }
+fn main() : i32 { return f(20000) & 255; }
 AST
 "$ASTER" build-elf "$OUT/deep.ast" -o "$OUT/deep-def.elf" >/dev/null 2>&1 || fail 'the default deep build failed'
 "$ASTER" build-elf --compact-frames "$OUT/deep.ast" -o "$OUT/deep-cmp.elf" >/dev/null 2>&1 || fail 'the compact deep build failed'
@@ -200,18 +200,18 @@ printf '  %-40s %s\n' "default=139 (overflow), compact=${cmp_deep} at depth 2000
 
 printf '%s\n' '[11/14] compact: a write() callee does not corrupt an ancestor frame'
 cat > "$OUT/spill.ast" <<'AST'
-fn helper(x: i32) -> i32 {
+fn helper(x: i32) : i32 {
     let a: i32 = 111111;
     let b: i32 = 222222;
     let c: i32 = a + b + x + write(1, "hi", 2);
     return c;
 }
-fn mid(v: i32) -> i32 {
+fn mid(v: i32) : i32 {
     let pad: i32[500] = 0;
     pad[499] = v;
     return helper(pad[499]);
 }
-fn big() -> i32 {
+fn big() : i32 {
     let arr: i32[600] = 0;
     let i: i32 = 0;
     while (i < 600) { arr[i] = 1000 + i; i = i + 1; }
@@ -222,7 +222,7 @@ fn big() -> i32 {
     if (bad != 0) { return 99; }
     return 42;
 }
-fn main() -> i32 { return big(); }
+fn main() : i32 { return big(); }
 AST
 "$ASTER" build-elf --compact-frames "$OUT/spill.ast" -o "$OUT/spill-cmp.elf" >/dev/null 2>&1 || fail 'the compact spill build failed'
 chmod +x "$OUT/spill-cmp.elf"
@@ -298,8 +298,8 @@ set +e; "$RUNNER" "$OUT/mid.elf" >/dev/null 2>&1; mid_rc=$?; set -e
 # arguments needs ADD #4096 + ADD #4096 (the wide second word).
 cat > "$OUT/edge.ast" <<'AST'
 struct S { x: i32, y: i32, z: i32 }
-fn f(p1: i32, p2: i32, p3: i32, p4: i32, p5: i32, p6: i32, p7: i32, p8: i32, p9: i32, p10: i32) -> S { return S { p9, p10, p1 }; }
-fn main() -> i32 {
+fn f(p1: i32, p2: i32, p3: i32, p4: i32, p5: i32, p6: i32, p7: i32, p8: i32, p9: i32, p10: i32) : S { return S { p9, p10, p1 }; }
+fn main() : i32 {
     let s: S = f(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
     if (s.x == 9) { if (s.y == 10) { if (s.z == 1) { return 0; } } }
     return 1;

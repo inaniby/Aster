@@ -2,7 +2,7 @@ struct P { a: i32, b: i32 }
 
 let o: u8[8] = 0;
 
-fn main() -> i32 {
+fn main() : i32 {
     let p: P = P { 3, 4 };
     let q: P = P { p.a + 10, p.b + 20 };
     store_u8(o, 48 + p.a);

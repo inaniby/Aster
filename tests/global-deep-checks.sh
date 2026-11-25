@@ -110,7 +110,7 @@ PY
 # --- diagnostics --------------------------------------------------------------------
 cat > tmp-align-odd.ast <<'AST'
 let x: i32 @align(24) = 1;
-fn main() -> i32 { return x; }
+fn main() : i32 { return x; }
 AST
 if ./aster build-elf tmp-align-odd.ast -o tmp-align-odd 2>tmp-align-odd.err; then
   echo 'FAIL: compiler accepted a non-power-of-two alignment' >&2; exit 1
@@ -120,7 +120,7 @@ echo 'PASS: diagnostic non-power-of-two alignment rejected'
 
 cat > tmp-align-huge.ast <<'AST'
 let x: i32 @align(8192) = 1;
-fn main() -> i32 { return x; }
+fn main() : i32 { return x; }
 AST
 if ./aster build-elf tmp-align-huge.ast -o tmp-align-huge 2>tmp-align-huge.err; then
   echo 'FAIL: compiler accepted an alignment above 4096' >&2; exit 1
@@ -130,7 +130,7 @@ echo 'PASS: diagnostic over-large alignment rejected'
 
 cat > tmp-array-zero.ast <<'AST'
 let x: i32[0] = 0;
-fn main() -> i32 { return 0; }
+fn main() : i32 { return 0; }
 AST
 if ./aster build-elf tmp-array-zero.ast -o tmp-array-zero 2>tmp-array-zero.err; then
   echo 'FAIL: compiler accepted a zero-length array' >&2; exit 1
@@ -139,9 +139,9 @@ grep -F 'array length must be between 1 and 1048576: x' tmp-array-zero.err >/dev
 echo 'PASS: diagnostic zero-length array rejected'
 
 cat > tmp-array-nonconst.ast <<'AST'
-fn seed() -> i32 { return 1; }
+fn seed() : i32 { return 1; }
 let x: i32[4] = seed();
-fn main() -> i32 { return x[0]; }
+fn main() : i32 { return x[0]; }
 AST
 if ./aster build-elf tmp-array-nonconst.ast -o tmp-array-nonconst 2>tmp-array-nonconst.err; then
   echo 'FAIL: compiler accepted a non-constant array initializer' >&2; exit 1
@@ -151,7 +151,7 @@ echo 'PASS: diagnostic non-constant array initializer rejected'
 
 cat > tmp-index-scalar.ast <<'AST'
 let x: i32 = 1;
-fn main() -> i32 { return x[0]; }
+fn main() : i32 { return x[0]; }
 AST
 if ./aster build-elf tmp-index-scalar.ast -o tmp-index-scalar 2>tmp-index-scalar.err; then
   echo 'FAIL: compiler indexed a scalar global' >&2; exit 1
@@ -161,7 +161,7 @@ echo 'PASS: diagnostic indexing a scalar global rejected'
 
 cat > tmp-array-value.ast <<'AST'
 let x: i32[4] = 0;
-fn main() -> i32 { return x; }
+fn main() : i32 { return x; }
 AST
 if ./aster build-elf tmp-array-value.ast -o tmp-array-value 2>tmp-array-value.err; then
   echo 'FAIL: compiler used an array as a scalar value' >&2; exit 1
@@ -174,7 +174,7 @@ echo 'PASS: diagnostic using an array as a value rejected'
 
 cat > tmp-array-whole.ast <<'AST'
 let x: i32[4] = 0;
-fn main() -> i32 { x = 1; return x[0]; }
+fn main() : i32 { x = 1; return x[0]; }
 AST
 if ./aster build-elf tmp-array-whole.ast -o tmp-array-whole 2>tmp-array-whole.err; then
   echo 'FAIL: compiler accepted a whole-array assignment' >&2; exit 1
@@ -183,7 +183,7 @@ grep -F 'cannot assign to an array as a whole: x' tmp-array-whole.err >/dev/null
 echo 'PASS: diagnostic whole-array assignment rejected'
 
 cat > tmp-local-array.ast <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32[4] = 0;
     x[0] = 41;
     x[1] = x[0] + 1;

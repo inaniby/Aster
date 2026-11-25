@@ -13,7 +13,7 @@
 #   3. an enum slot accepted a constant no i32 could hold;
 #   4. an auto-incremented enumerator walked out of i32 unnamed;
 #   5. a `return` accepted an implicit narrowing, so
-#      `fn f() -> u8 { return x; }` with an i64 x handed back `300 & 0xFF`.
+#      `fn f() : u8 { return x; }` with an i64 x handed back `300 & 0xFF`.
 #
 # Fix 5 covers the four positions where a value is *bound* to a declared type
 # — a `let`, a local assignment, a global assignment and a `return`. A store
@@ -109,47 +109,47 @@ check() {
 }
 if [ "$have_qemu" = yes ]; then
 # --- 1. a wide integer reaches a shift / a bitwise-not (P1-1) ---
-check "$A" 'i64 << through a sum'            12 'fn main() -> i32 { let a: i64 = 1; let b: i64 = 2; let c: i64 = (a + b) << 2; return i32(c); }'
-check "$A" 'u8 >> through a sum'             40 'fn main() -> i32 { let a: u8 = 40; let b: u8 = 40; let v: i32 = (a + b) >> 1; return v; }'
-check "$A" '~(i64 + i64)'                   252 'fn main() -> i32 { let a: i64 = 1; let b: i64 = 2; let v: i64 = ~(a + b); return i32(v & 255); }'
-check "$A" 'i64 << in a condition'            1 'fn main() -> i32 { let a: i64 = 3; if ((a << 1) == 6) { return 1; } return 0; }'
+check "$A" 'i64 << through a sum'            12 'fn main() : i32 { let a: i64 = 1; let b: i64 = 2; let c: i64 = (a + b) << 2; return i32(c); }'
+check "$A" 'u8 >> through a sum'             40 'fn main() : i32 { let a: u8 = 40; let b: u8 = 40; let v: i32 = (a + b) >> 1; return v; }'
+check "$A" '~(i64 + i64)'                   252 'fn main() : i32 { let a: i64 = 1; let b: i64 = 2; let v: i64 = ~(a + b); return i32(v & 255); }'
+check "$A" 'i64 << in a condition'            1 'fn main() : i32 { let a: i64 = 3; if ((a << 1) == 6) { return 1; } return 0; }'
 # --- 2. an enum: what a comparison still permits (P1-2) ---
 check "$A" 'same enum =='                     1 'enum Color { R, G }
-fn main() -> i32 { let c: Color = R; if (c == R) { return 1; } return 0; }'
+fn main() : i32 { let c: Color = R; if (c == R) { return 1; } return 0; }'
 check "$A" 'enum == i32 constant'             1 'enum Color { R, G }
-fn main() -> i32 { let c: Color = G; if (c == 1) { return 1; } return 0; }'
+fn main() : i32 { let c: Color = G; if (c == 1) { return 1; } return 0; }'
 check "$A" 'enum != other enumerator'         1 'enum Color { R, G }
-fn main() -> i32 { let c: Color = R; if (c != G) { return 1; } return 0; }'
+fn main() : i32 { let c: Color = R; if (c != G) { return 1; } return 0; }'
 check "$A" 'enum in i32 arithmetic'           3 'enum Color { R, G, B }
-fn main() -> i32 { let c: Color = B; return c + 1; }'
+fn main() : i32 { let c: Color = B; return c + 1; }'
 check "$A" 'enum == i32 variable'             1 'enum Color { R, G }
-fn main() -> i32 { let c: Color = G; let x: i32 = 1; if (c == x) { return 1; } return 0; }'
+fn main() : i32 { let c: Color = G; let x: i32 = 1; if (c == x) { return 1; } return 0; }'
 # --- 3. an enum inside its own range (P1-3, P1-4) ---
 check "$A" 'enum from a fitting constant'     1 'enum Color { R, G }
-fn main() -> i32 { let c: Color = 1; if (c == G) { return 1; } return 0; }'
+fn main() : i32 { let c: Color = 1; if (c == G) { return 1; } return 0; }'
 check "$A" 'enum auto-increment at the edge'  2 'enum E { A = 2147483645, B, C }
-fn main() -> i32 { return i32(C) - 2147483645; }'
+fn main() : i32 { return i32(C) - 2147483645; }'
 # --- 4. a narrowing asked for out loud (P1-5) ---
-check "$A" 'return u8(x) — the cast'         44 'fn f() -> u8 { let x: i64 = 300; return u8(x); }
-fn main() -> i32 { return i32(f()); }'
-check "$A" 'return a + b on two u8'         255 'fn add_u8(a: u8, b: u8) -> u8 { return a + b; }
-fn main() -> i32 { return i32(add_u8(200, 55)); }'
-check "$A" 'u8 element from arithmetic'      10 'fn main() -> i32 { let a: u8[4] = 0; let i: i32 = 1; a[i] = i * 7 + 3; return i32(a[1]); }'
+check "$A" 'return u8(x) — the cast'         44 'fn f() : u8 { let x: i64 = 300; return u8(x); }
+fn main() : i32 { return i32(f()); }'
+check "$A" 'return a + b on two u8'         255 'fn add_u8(a: u8, b: u8) : u8 { return a + b; }
+fn main() : i32 { return i32(add_u8(200, 55)); }'
+check "$A" 'u8 element from arithmetic'      10 'fn main() : i32 { let a: u8[4] = 0; let i: i32 = 1; a[i] = i * 7 + 3; return i32(a[1]); }'
 check "$A" 'u8 field from arithmetic'       255 'struct S { b: u8 }
-fn main() -> i32 { let s: S; s.b = 200 + 55; return i32(s.b); }'
-check "$A" 'u8 from a fitting constant'     200 'fn main() -> i32 { let b: u8 = 200; return i32(b); }'
+fn main() : i32 { let s: S; s.b = 200 + 55; return i32(s.b); }'
+check "$A" 'u8 from a fitting constant'     200 'fn main() : i32 { let b: u8 = 200; return i32(b); }'
 # --- 5. the two positions the round leaves alone. Both are *accepted*, and
 #      that is the assertion: an i64 landing in an i32 element or field keeps
 #      the container's width. `bootstrap/aster.ast` depends on the first one
 #      (it stores an i64 instruction word into an i32[262144] stream) and the
 #      bootstrap subset has no cast to spell it with. Mutants n7/n8 withdraw
 #      the exemption and must be caught; these two rows are what they catch.
-check "$A" 'i64 into an i32 element'          7 'fn main() -> i32 { let a: i32[4] = 0; let w: i64 = 7; a[0] = w; return a[0]; }'
+check "$A" 'i64 into an i32 element'          7 'fn main() : i32 { let a: i32[4] = 0; let w: i64 = 7; a[0] = w; return a[0]; }'
 check "$A" 'i64 into an i32 field'            9 'struct S { v: i32 }
-fn main() -> i32 { let s: S = S { 0 }; let w: i64 = 9; s.v = w; return s.v; }'
+fn main() : i32 { let s: S = S { 0 }; let w: i64 = 9; s.v = w; return s.v; }'
 # --- 6. the width rule this round left alone ---
 check "$A" 'ptr<i64> store keeps -5'          1 'let q: i64 = 0;
-fn main() -> i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
+fn main() : i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
 printf '%s\n' 'PASS: 17 witnesses, every legal program still legal'
 fi
 
@@ -173,20 +173,20 @@ if [ "$have_qemu" = yes ] && [ "$have_cc" = yes ] && [ -f tests/type-strictness-
             fi
             printf '  %-44s %s\n' "$dname" "$got"
         }
-        diffcase S1 'fn main() -> i32 { let a: i64 = 1; let b: i64 = 2; let c: i64 = (a + b) << 2; return i32(c); }'
-        diffcase S2 'fn main() -> i32 { let a: u8 = 40; let b: u8 = 40; let v: i32 = (a + b) >> 1; return v; }'
-        diffcase S3 'fn main() -> i32 { let a: i64 = 1; let b: i64 = 2; let v: i64 = ~(a + b); return i32(v & 255); }'
+        diffcase S1 'fn main() : i32 { let a: i64 = 1; let b: i64 = 2; let c: i64 = (a + b) << 2; return i32(c); }'
+        diffcase S2 'fn main() : i32 { let a: u8 = 40; let b: u8 = 40; let v: i32 = (a + b) >> 1; return v; }'
+        diffcase S3 'fn main() : i32 { let a: i64 = 1; let b: i64 = 2; let v: i64 = ~(a + b); return i32(v & 255); }'
         diffcase S4 'enum Color { R, G }
-fn main() -> i32 { let c: Color = R; if (c == R) { return 1; } return 0; }'
+fn main() : i32 { let c: Color = R; if (c == R) { return 1; } return 0; }'
         diffcase S5 'enum Color { R, G }
-fn main() -> i32 { let c: Color = G; if (c == 1) { return 1; } return 0; }'
-        diffcase S6 'fn f() -> u8 { let x: i64 = 300; return u8(x); }
-fn main() -> i32 { return i32(f()); }'
-        diffcase S7 'fn add_u8(a: u8, b: u8) -> u8 { return a + b; }
-fn main() -> i32 { return i32(add_u8(200, 55)); }'
-        diffcase S8 'fn main() -> i32 { let a: u8[4] = 0; let i: i32 = 1; a[i] = i * 7 + 3; return i32(a[1]); }'
+fn main() : i32 { let c: Color = G; if (c == 1) { return 1; } return 0; }'
+        diffcase S6 'fn f() : u8 { let x: i64 = 300; return u8(x); }
+fn main() : i32 { return i32(f()); }'
+        diffcase S7 'fn add_u8(a: u8, b: u8) : u8 { return a + b; }
+fn main() : i32 { return i32(add_u8(200, 55)); }'
+        diffcase S8 'fn main() : i32 { let a: u8[4] = 0; let i: i32 = 1; a[i] = i * 7 + 3; return i32(a[1]); }'
         diffcase S9 'let q: i64 = 0;
-fn main() -> i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
+fn main() : i32 { let p: ptr<i64> = &q; *p = -5; if (q == -5) { return 1; } return 0; }'
         printf '%s\n' 'PASS: 9 differential cases agree with C'
     else
         printf '  SKIP: the C twin does not build with %s\n' "$HOSTCC"
@@ -213,34 +213,34 @@ must_refuse() {   # must_refuse <name> <needle> <source>
 }
 must_refuse 'cross-enum ==' 'cannot compare two different enum types' 'enum Color { R, G }
 enum Fruit { A, B }
-fn main() -> i32 { let c: Color = R; let f: Fruit = A; if (c == f) { return 1; } return 0; }'
+fn main() : i32 { let c: Color = R; let f: Fruit = A; if (c == f) { return 1; } return 0; }'
 must_refuse 'cross-enum !=' 'cannot compare two different enum types' 'enum Color { R, G }
 enum Fruit { A, B }
-fn main() -> i32 { let c: Color = R; let f: Fruit = A; if (c != f) { return 1; } return 0; }'
+fn main() : i32 { let c: Color = R; let f: Fruit = A; if (c != f) { return 1; } return 0; }'
 must_refuse 'enum <- constant past i32' 'type mismatch initializing' 'enum Color { R, G }
-fn main() -> i32 { let c: Color = 4294967296; return 0; }'
+fn main() : i32 { let c: Color = 4294967296; return 0; }'
 must_refuse 'enum <- folded sum past i32' 'type mismatch initializing' 'enum Color { R, G }
-fn main() -> i32 { let c: Color = 4294967295 + 1; return 0; }'
+fn main() : i32 { let c: Color = 4294967295 + 1; return 0; }'
 must_refuse 'enum auto-increment past i32' 'enumerator value out of i32 range' 'enum E { A = 2147483647, B }
-fn main() -> i32 { return i32(B); }'
-must_refuse 'return narrowing i64 -> u8' 'return type mismatch' 'fn f() -> u8 { let x: i64 = 300; return x; }
-fn main() -> i32 { return i32(f()); }'
-must_refuse 'return narrowing i64 -> u16' 'return type mismatch' 'fn f() -> u16 { let x: i64 = 70000; return x; }
-fn main() -> i32 { return i32(f()); }'
+fn main() : i32 { return i32(B); }'
+must_refuse 'return narrowing i64 -> u8' 'return type mismatch' 'fn f() : u8 { let x: i64 = 300; return x; }
+fn main() : i32 { return i32(f()); }'
+must_refuse 'return narrowing i64 -> u16' 'return type mismatch' 'fn f() : u16 { let x: i64 = 70000; return x; }
+fn main() : i32 { return i32(f()); }'
 # v0.23.63-dev leaves a store through a subscript or a field alone — see the
 # header. The two rows that used to refuse it are therefore gone, and the
 # carve-out is instead (a) accepted on purpose by witnesses 18/19 below and
 # (b) withdrawn by mutants n7/n8, which must be caught. Two value positions
 # take their place in the matrix so the count still says what it said.
-must_refuse 'let narrowing i64 -> i32' 'type mismatch initializing' 'fn main() -> i32 { let x: i64 = 300; let b: i32 = x; return b; }'
-must_refuse 'return narrowing i64 -> i32' 'return type mismatch' 'fn f() -> i32 { let x: i64 = 300; return x; }
-fn main() -> i32 { return f(); }'
-must_refuse 'let narrowing i64 -> u8' 'type mismatch initializing' 'fn main() -> i32 { let x: i64 = 300; let b: u8 = x; return i32(b); }'
+must_refuse 'let narrowing i64 -> i32' 'type mismatch initializing' 'fn main() : i32 { let x: i64 = 300; let b: i32 = x; return b; }'
+must_refuse 'return narrowing i64 -> i32' 'return type mismatch' 'fn f() : i32 { let x: i64 = 300; return x; }
+fn main() : i32 { return f(); }'
+must_refuse 'let narrowing i64 -> u8' 'type mismatch initializing' 'fn main() : i32 { let x: i64 = 300; let b: u8 = x; return i32(b); }'
 must_refuse 'enum <- i64' 'type mismatch initializing' 'enum Color { R, G }
-fn main() -> i32 { let x: i64 = 1; let c: Color = x; return 0; }'
-must_refuse 'assign narrowing i64 -> u8' 'assigning variable' 'fn main() -> i32 { let b: u8 = 0; let x: i64 = 300; b = x; return i32(b); }'
+fn main() : i32 { let x: i64 = 1; let c: Color = x; return 0; }'
+must_refuse 'assign narrowing i64 -> u8' 'assigning variable' 'fn main() : i32 { let b: u8 = 0; let x: i64 = 300; b = x; return i32(b); }'
 must_refuse 'global assign narrowing i64 -> u8' 'assigning variable' 'let g: u8 = 0;
-fn main() -> i32 { let x: i64 = 300; g = x; return i32(g); }'
+fn main() : i32 { let x: i64 = 300; g = x; return i32(g); }'
 printf '%s\n' 'PASS: 13 refusals, each by its own rule'
 
 # ---------------------------------------------------------------------------
@@ -320,33 +320,33 @@ else
 mutate 'n1: Shl/Shr/BitNot leave the exemption' \
     's/\n[ ]*case Expr::Shl: case Expr::Shr: case Expr::BitNot:\n/\n/' \
     mutant_refuses 'i64 << through a sum' \
-    'fn main() -> i32 { let a: i64 = 1; let b: i64 = 2; let c: i64 = (a + b) << 2; return i32(c); }' 12
+    'fn main() : i32 { let a: i64 = 1; let b: i64 = 2; let c: i64 = (a + b) << 2; return i32(c); }' 12
 # n2: two enums compare by their bits again.
 mutate 'n2: cross-enum comparison allowed' \
     's/if\(a\.sid!=b\.sid\)[\s\S]*?throw Error\(loc\(e\.line,e\.col,"cannot compare two different enum types: "\+tyNameFull\(a\)\+" and "\+tyNameFull\(b\)\)\);/if(false)return Ty::Bool;/' \
     mutant_accepts 'cross-enum ==' 'enum Color { R, G }
 enum Fruit { A, B }
-fn main() -> i32 { let c: Color = R; let f: Fruit = A; if (c == f) { return 1; } return 0; }'
+fn main() : i32 { let c: Color = R; let f: Fruit = A; if (c == f) { return 1; } return 0; }'
 # n3: an enum slot takes any literal again.
 mutate 'n3: enum literal not range-checked' \
     's/if\(t\.k==Ty::Enum\)return enumValueFits\(\(int64_t\)e\.n\);//' \
     mutant_accepts 'enum <- constant past i32' 'enum Color { R, G }
-fn main() -> i32 { let c: Color = 4294967296; return 0; }'
+fn main() : i32 { let c: Color = 4294967296; return 0; }'
 # n4: the auto-increment walks out of i32 unnamed again.
 mutate 'n4: enum auto-increment not checked' \
     's/else if\(!enumValueFits\(val\)\)throw Error/else if(false)throw Error/' \
     mutant_accepts 'enum auto-increment past i32' 'enum E { A = 2147483647, B }
-fn main() -> i32 { return i32(B); }'
+fn main() : i32 { return i32(B); }'
 # n5: a value may narrow implicitly again.
 mutate 'n5: no assignability check on a value' \
     's/if\(!tyAssignable\(want,actual,e\)\)[\s\S]*?" \(write an explicit cast to truncate\)"\)\);/if(false)throw Error(loc(e.line,e.col,what));/' \
-    mutant_accepts 'return narrowing i64 -> u8' 'fn f() -> u8 { let x: i64 = 300; return x; }
-fn main() -> i32 { return i32(f()); }'
+    mutant_accepts 'return narrowing i64 -> u8' 'fn f() : u8 { let x: i64 = 300; return x; }
+fn main() : i32 { return i32(f()); }'
 # n6: a let may narrow implicitly again — the branch that made the rule
 # positional rather than universal.
 mutate 'n6: let no longer checks assignability' \
     's/if\(!semaTypeIsPlaceholder\(\*s\.expr\)&&!tyAssignable\(s\.ty,actual,\*s\.expr\)\)[\s\S]*?" \(write an explicit cast to truncate\)"\)\);/if(false)throw Error(loc(s.line,s.col,"mutant"));\n/' \
-    mutant_accepts 'let narrowing i64 -> u8' 'fn main() -> i32 { let x: i64 = 300; let b: u8 = x; return i32(b); }'
+    mutant_accepts 'let narrowing i64 -> u8' 'fn main() : i32 { let x: i64 = 300; let b: u8 = x; return i32(b); }'
 # n7/n8: the two positions the round leaves alone are left alone on purpose, so
 # each gets a mutant that withdraws the exemption — and both must be caught by
 # a program the real compiler *accepts*. n7 is the load-bearing one:
@@ -355,12 +355,12 @@ mutate 'n6: let no longer checks assignability' \
 mutate 'n7: element store tightened' \
     's/elem,\*s\.expr,actual,([\s\S]*?),false\);/elem,*s.expr,actual,$1);/' \
     mutant_refuses 'i64 into an i32 element' \
-    'fn main() -> i32 { let a: i32[4] = 0; let w: i64 = 7; a[0] = w; return a[0]; }' 7
+    'fn main() : i32 { let a: i32[4] = 0; let w: i64 = 7; a[0] = w; return a[0]; }' 7
 mutate 'n8: field store tightened' \
     's/field,\*s\.expr,actual,([\s\S]*?),false\);/field,*s.expr,actual,$1);/' \
     mutant_refuses 'i64 into an i32 field' \
     'struct S { v: i32 }
-fn main() -> i32 { let s: S = S { 0 }; let w: i64 = 9; s.v = w; return s.v; }' 9
+fn main() : i32 { let s: S = S { 0 }; let w: i64 = 9; s.v = w; return s.v; }' 9
 printf '%s\n' 'PASS: eight mutated compilers each lose exactly one rule, and the matrix notices'
 fi
 
@@ -413,11 +413,11 @@ shape() {   # shape <name> <source>
     done
     printf '  %-44s elf+so+pic\n' "$1"
 }
-shape 'i64 << through a sum' 'fn main() -> i32 { let a: i64 = 1; let b: i64 = 2; let c: i64 = (a + b) << 2; return i32(c); }'
+shape 'i64 << through a sum' 'fn main() : i32 { let a: i64 = 1; let b: i64 = 2; let c: i64 = (a + b) << 2; return i32(c); }'
 shape 'same-enum comparison' 'enum Color { R, G }
-fn main() -> i32 { let c: Color = R; if (c == R) { return 1; } return 0; }'
-shape 'return u8(x) — the cast' 'fn f() -> u8 { let x: i64 = 300; return u8(x); }
-fn main() -> i32 { return i32(f()); }'
-shape 'return a + b on two u8' 'fn add_u8(a: u8, b: u8) -> u8 { return a + b; }
-fn main() -> i32 { return i32(add_u8(200, 55)); }'
+fn main() : i32 { let c: Color = R; if (c == R) { return 1; } return 0; }'
+shape 'return u8(x) — the cast' 'fn f() : u8 { let x: i64 = 300; return u8(x); }
+fn main() : i32 { return i32(f()); }'
+shape 'return a + b on two u8' 'fn add_u8(a: u8, b: u8) : u8 { return a + b; }
+fn main() : i32 { return i32(add_u8(200, 55)); }'
 printf '%s\n' 'PASS: all v0.23.64-dev type-strictness checks'

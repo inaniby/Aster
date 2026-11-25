@@ -79,14 +79,14 @@ printf '%s\n' 'PASS: link-obj/link-pie/link-so reject --bounds-check; unknown op
 printf '%s\n' '[4/8] Compile-time bounds checking still wins with the flag on'
 cat > "$OUT/const-global.ast" <<'AST'
 let b: i32[4] = 0;
-fn main() -> i32 { return b[5]; }
+fn main() : i32 { return b[5]; }
 AST
 cat > "$OUT/const-local.ast" <<'AST'
-fn main() -> i32 { let a: i32[4] = 0; return a[4]; }
+fn main() : i32 { let a: i32[4] = 0; return a[4]; }
 AST
 cat > "$OUT/const-neg.ast" <<'AST'
 let b: i32[4] = 0;
-fn main() -> i32 { let r: i32 = b[-1]; return r; }
+fn main() : i32 { let r: i32 = b[-1]; return r; }
 AST
 for f in const-global const-local const-neg; do
     "$OUT/aster" build-elf "$OUT/$f.ast" -o "$OUT/x" --bounds-check 2>&1 | grep -qF 'array index out of bounds' \
@@ -97,9 +97,9 @@ printf '%s\n' 'PASS: constant indexes are still rejected by the compiler, flag o
 printf '%s\n' '[5/8] Structure: default emits no trap, --bounds-check emits one per dynamic index'
 cat > "$OUT/dyn.ast" <<'AST'
 let buf: i32[8] = 0;
-fn read(i: i32) -> i32 { return buf[i]; }
-fn write(i: i32, v: i32) -> i32 { buf[i] = v; return 0; }
-fn main() -> i32 {
+fn read(i: i32) : i32 { return buf[i]; }
+fn write(i: i32, v: i32) : i32 { buf[i] = v; return 0; }
+fn main() : i32 {
     let a: i32[4] = 0;
     let k: i32 = 2;
     a[k] = 7;
@@ -109,7 +109,7 @@ fn main() -> i32 {
 AST
 cat > "$OUT/const.ast" <<'AST'
 let buf: i32[8] = 0;
-fn main() -> i32 { buf[0] = 5; return buf[0]; }
+fn main() : i32 { buf[0] = 5; return buf[0]; }
 AST
 "$OUT/aster" build-elf "$OUT/dyn.ast" -o "$OUT/dyn-off" >/dev/null
 "$OUT/aster" build-elf "$OUT/dyn.ast" -o "$OUT/dyn-on" --bounds-check >/dev/null
@@ -150,7 +150,7 @@ st=$(run_status "$OUT/dyn-off"); [ "$st" = 16 ] || { echo "FAIL: dyn-off exit $s
 st=$(run_status "$OUT/dyn-on");  [ "$st" = 16 ] || { echo "FAIL: dyn-on exit $st, want 16" >&2; exit 1; }
 cat > "$OUT/edge.ast" <<'AST'
 let buf: i32[8] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let lo: i32 = 0;
     let hi: i32 = 7;
     buf[lo] = 3;
@@ -165,18 +165,18 @@ printf '%s\n' 'PASS: index 0 and index len-1 are accepted (3*10+4 == 34, exit 0)
 printf '%s\n' '[7/8] Acceptance: out-of-range indexes trap instead of corrupting memory (qemu self-check)'
 cat > "$OUT/oob-high.ast" <<'AST'
 let buf: i32[8] = 0;
-fn main() -> i32 { let i: i32 = 8; return buf[i]; }
+fn main() : i32 { let i: i32 = 8; return buf[i]; }
 AST
 cat > "$OUT/oob-neg.ast" <<'AST'
 let buf: i32[8] = 0;
-fn main() -> i32 { let i: i32 = 0 - 1; return buf[i]; }
+fn main() : i32 { let i: i32 = 0 - 1; return buf[i]; }
 AST
 cat > "$OUT/oob-local.ast" <<'AST'
-fn main() -> i32 { let a: i32[4] = 0; let i: i32 = 4; a[i] = 9; return a[0]; }
+fn main() : i32 { let a: i32[4] = 0; let i: i32 = 4; a[i] = 9; return a[0]; }
 AST
 cat > "$OUT/oob-global-write.ast" <<'AST'
 let buf: i32[8] = 0;
-fn main() -> i32 { let i: i32 = 9; buf[i] = 1; return buf[0]; }
+fn main() : i32 { let i: i32 = 9; buf[i] = 1; return buf[0]; }
 AST
 for f in oob-high oob-neg oob-local oob-global-write; do
     "$OUT/aster" build-elf "$OUT/$f.ast" -o "$OUT/$f-on" --bounds-check >/dev/null

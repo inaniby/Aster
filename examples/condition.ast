@@ -9,7 +9,7 @@
 // Walk n toward zero one step at a time. The loop condition is the integer
 // itself: before this round `while (n)` was a compile error, because a bare
 // integer was not a condition at all.
-fn steps(n: i32) -> i32 {
+fn steps(n: i32) : i32 {
     let c: i32 = 0;
     while (n) {
         if (n < 0) { n = n + 1; } else { n = n - 1; }
@@ -18,7 +18,7 @@ fn steps(n: i32) -> i32 {
     return c;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let on: bool = true;    // the first bool literals the language has had
     let off: bool = false;
     let r: i32 = 0;

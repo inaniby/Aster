@@ -30,7 +30,7 @@ printf '%s\n' '[4/4] Strictly compile C ABI harness'
 $HOSTCC -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror tests/c-ptr-arithmetic-host.c -ldl -o "$OUT/c-ptr-arithmetic-host"
 echo 'PASS: strict pointer arithmetic C harness compile'
 cat > "$OUT/invalid_ptr_add.ast" <<'AST'
-fn invalid(a: ptr, b: ptr) -> ptr { return a + b; }
+fn invalid(a: ptr, b: ptr) : ptr { return a + b; }
 AST
 if "$OUT/aster" build-so "$OUT/invalid_ptr_add.ast" -o "$OUT/invalid.so" >"$OUT/invalid.log" 2>&1; then
   echo 'FAIL: ptr + ptr was accepted' >&2; exit 1

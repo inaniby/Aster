@@ -246,17 +246,17 @@ cat > "$W/tls.ast" <<'AST'
 tls let a: i32 = 10;
 tls let b: i32 = 0;
 let g: i32 @align(64) = 7;
-fn main() -> i32 { return a + b + g; }
+fn main() : i32 { return a + b + g; }
 AST
 cat > "$W/data.ast" <<'AST'
 let blob: ptr = @embed("tiny.bin");
 let g: i32 @align(64) = 7;
-fn main()->i32{return g;}
+fn main():i32{return g;}
 AST
 cat > "$W/sotls.ast" <<'AST'
 tls let a: i32 = 10;
 tls let b: i32 = 0;
-fn get()->i32 { return a + b; }
+fn get():i32 { return a + b; }
 AST
 printf 'ABCD' > "$W/tiny.bin"
 "$A" build-obj "$W/tls.ast" -o "$W/tls.o" >/dev/null

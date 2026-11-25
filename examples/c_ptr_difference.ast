@@ -6,10 +6,10 @@
 // width — an arithmetic shift for a power-of-two stride, a signed divide for a
 // struct stride that is not.
 
-fn aster_ptr_diff(p: ptr, q: ptr) -> i32 { return p - q; }
-fn aster_ptr_diff_i32(p: ptr<i32>, q: ptr<i32>) -> i32 { return p - q; }
-fn aster_ptr_diff_u8(p: ptr<u8>, q: ptr<u8>) -> i32 { return p - q; }
-fn aster_ptr_diff_i64(p: ptr<i64>, q: ptr<i64>) -> i32 { return p - q; }
+fn aster_ptr_diff(p: ptr, q: ptr) : i32 { return p - q; }
+fn aster_ptr_diff_i32(p: ptr<i32>, q: ptr<i32>) : i32 { return p - q; }
+fn aster_ptr_diff_u8(p: ptr<u8>, q: ptr<u8>) : i32 { return p - q; }
+fn aster_ptr_diff_i64(p: ptr<i64>, q: ptr<i64>) : i32 { return p - q; }
 
 struct V3 { x: i32, y: i32, z: i32 }   // 12 bytes — a non-power-of-2 stride
-fn aster_ptr_diff_v3(p: ptr<V3>, q: ptr<V3>) -> i32 { return p - q; }
+fn aster_ptr_diff_v3(p: ptr<V3>, q: ptr<V3>) : i32 { return p - q; }

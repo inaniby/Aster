@@ -135,30 +135,30 @@ printf 'A'  > "$W/one.bin"
 printf 'BC' > "$W/two.bin"
 printf 'Z'  > "$W/z.bin"
 cat > "$W/default.ast" <<'AST'
-fn main() -> i32 { let p: ptr = @embed("one.bin"); return load_u8(p); }
+fn main() : i32 { let p: ptr = @embed("one.bin"); return load_u8(p); }
 AST
 cat > "$W/one.ast" <<'AST'
-fn main() -> i32 { let p: ptr = @embed("one.bin", 1); return load_u8(p); }
+fn main() : i32 { let p: ptr = @embed("one.bin", 1); return load_u8(p); }
 AST
 cat > "$W/top.ast" <<'AST'
-fn main() -> i32 { let p: ptr = @embed("one.bin", 4096); return load_u8(p); }
+fn main() : i32 { let p: ptr = @embed("one.bin", 4096); return load_u8(p); }
 AST
 cat > "$W/dup.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: ptr = @embed("one.bin", 8);
     let b: ptr = @embed("one.bin", 64);
     return load_u8(a) + load_u8(b);
 }
 AST
 cat > "$W/dup2.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: ptr = @embed("one.bin", 64);
     let b: ptr = @embed("one.bin", 8);
     return load_u8(a) + load_u8(b);
 }
 AST
 cat > "$W/plain.ast" <<'AST'
-fn extra() -> i32 { return load_u8("hi"); }
+fn extra() : i32 { return load_u8("hi"); }
 AST
 
 COVER=0
@@ -227,40 +227,40 @@ expect_fail(){ # $1 label, $2 source, $3 expected substring
     printf '  %-30s %s\n' "$1" 'refused'; bump
 }
 expect_fail 'alignment 3' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin", 3); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin", 3); return load_u8(p); }' \
     'embedded alignment must be a power of two'
 expect_fail 'alignment 0' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin", 0); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin", 0); return load_u8(p); }' \
     'embedded alignment must be a power of two'
 expect_fail 'alignment 6' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin", 6); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin", 6); return load_u8(p); }' \
     'embedded alignment must be a power of two'
 expect_fail 'hex literal 0x18' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin", 0x18); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin", 0x18); return load_u8(p); }' \
     'embedded alignment must be a power of two'
 expect_fail 'alignment 8192' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin", 8192); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin", 8192); return load_u8(p); }' \
     'embedded alignment must not exceed 4096 bytes'
 expect_fail 'alignment 65536' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin", 65536); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin", 65536); return load_u8(p); }' \
     'embedded alignment must not exceed 4096 bytes'
 expect_fail 'a variable, not a literal' \
-    'fn main() -> i32 { let n: i32 = 8; let p: ptr = @embed("one.bin", n); return load_u8(p); }' \
+    'fn main() : i32 { let n: i32 = 8; let p: ptr = @embed("one.bin", n); return load_u8(p); }' \
     'expected a power-of-two alignment'
 expect_fail 'empty second argument' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin", ); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin", ); return load_u8(p); }' \
     'expected a power-of-two alignment'
 expect_fail 'a negative literal' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin", -1); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin", -1); return load_u8(p); }' \
     'expected a power-of-two alignment'
 expect_fail 'a third argument' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin", 8, 16); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin", 8, 16); return load_u8(p); }' \
     "expected ')' after the file path"
 expect_fail 'no comma' \
-    'fn main() -> i32 { let p: ptr = @embed("one.bin" 8); return load_u8(p); }' \
+    'fn main() : i32 { let p: ptr = @embed("one.bin" 8); return load_u8(p); }' \
     "expected ')' after the file path"
 expect_fail 'embed_len with alignment' \
-    'fn main() -> i32 { let n: i32 = @embed_len("one.bin", 8); return n; }' \
+    'fn main() : i32 { let n: i32 = @embed_len("one.bin", 8); return n; }' \
     '@embed_len takes no alignment argument'
 # Two positive controls: the boundaries themselves must still compile.
 for c in default one top; do

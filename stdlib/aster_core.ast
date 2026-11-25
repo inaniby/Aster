@@ -12,7 +12,7 @@
 // nothing. `tests/library-core-checks.sh` builds it with the *host* compiler
 // and with the *self-hosted* stage and runs the same consumer against both.
 
-fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
         store_u8(dst + i, load_u8(src + i));
@@ -24,7 +24,7 @@ fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
 // Fill n bytes with c's low 8 bits (store_u8 truncates, as C's unsigned char
 // conversion does). Returns n.
 
-fn memset(dst: ptr<u8>, c: i32, n: i32) -> i32 {
+fn memset(dst: ptr<u8>, c: i32, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
         store_u8(dst + i, c);
@@ -37,7 +37,7 @@ fn memset(dst: ptr<u8>, c: i32, n: i32) -> i32 {
 // pair's difference, 0 when equal. The unsigned reading matters — a signed
 // compare would order 0x80 below 0x7F and flip the answer for high bytes.
 
-fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
+fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
         let x: i32 = load_u8(a + i);
@@ -52,7 +52,7 @@ fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
 // str — NUL-terminated text: the identifier and keyword matcher's toolkit.
 // ===========================================================================
 
-fn strlen(s: ptr<u8>) -> i32 {
+fn strlen(s: ptr<u8>) : i32 {
     let i: i32 = 0;
     while (load_u8(s + i) != 0) { i = i + 1; }
     return i;
@@ -65,7 +65,7 @@ fn strlen(s: ptr<u8>) -> i32 {
 // compiler's fall-through check (while(true) returns are not seen as
 // terminating).
 
-fn strcmp(a: ptr<u8>, b: ptr<u8>) -> i32 {
+fn strcmp(a: ptr<u8>, b: ptr<u8>) : i32 {
     let i: i32 = 0;
     while (i < 1000000) {
         let x: i32 = load_u8(a + i);
@@ -84,7 +84,7 @@ fn strcmp(a: ptr<u8>, b: ptr<u8>) -> i32 {
 // the count is taken: returning its own index would answer n for every
 // short source.)
 
-fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
+fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
         let c: i32 = load_u8(src + i);
@@ -107,7 +107,7 @@ fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32 {
 // Reverse the i digits written at buf[0..i) in place, then NUL-terminate.
 // Shared by utoa/utohex — the digits come out least-significant first.
 
-fn reverse_digits(buf: ptr<u8>, i: i32) -> i32 {
+fn reverse_digits(buf: ptr<u8>, i: i32) : i32 {
     let j: i32 = 0;
     let k: i32 = i - 1;
     while (j < k) {
@@ -124,7 +124,7 @@ fn reverse_digits(buf: ptr<u8>, i: i32) -> i32 {
 // Unsigned decimal (v is read as its value; the caller keeps it >= 0 — the
 // signed case is itoa's job). Returns the digit count.
 
-fn utoa(v: i64, buf: ptr<u8>) -> i32 {
+fn utoa(v: i64, buf: ptr<u8>) : i32 {
     if (v == 0) {
         store_u8(buf, 48);
         store_u8(buf + 1, 0);
@@ -144,7 +144,7 @@ fn utoa(v: i64, buf: ptr<u8>) -> i32 {
 // negative value is not representable, so that one input is out of contract
 // (the twin asserts the same). Returns the character count, sign included.
 
-fn itoa(v: i64, buf: ptr<u8>) -> i32 {
+fn itoa(v: i64, buf: ptr<u8>) : i32 {
     if (v < 0) {
         store_u8(buf, 45);                // '-'
         return 1 + utoa(-v, buf + 1);
@@ -156,7 +156,7 @@ fn itoa(v: i64, buf: ptr<u8>) -> i32 {
 // width an ELF dump wants is the caller's business (pad in the buffer).
 // Returns the digit count.
 
-fn utohex(v: i64, buf: ptr<u8>) -> i32 {
+fn utohex(v: i64, buf: ptr<u8>) : i32 {
     if (v == 0) {
         store_u8(buf, 48);
         store_u8(buf + 1, 0);
@@ -181,7 +181,7 @@ fn utohex(v: i64, buf: ptr<u8>) -> i32 {
 // already present updates its value instead of duplicating.
 // ===========================================================================
 
-fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
+fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
         let x: i32 = load_u8(a + i);
@@ -196,7 +196,7 @@ fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32 {
 // strchr(s, c): an offset of the first c in s, or -1. c is compared at its
 // low 8 bits, so strchr(s, 'a') and strchr(s, 97) are the same question.
 
-fn strchr(s: ptr<u8>, c: i32) -> i32 {
+fn strchr(s: ptr<u8>, c: i32) : i32 {
     let i: i32 = 0;
     let want: i32 = c & 255;
     while (1) {
@@ -211,7 +211,7 @@ fn strchr(s: ptr<u8>, c: i32) -> i32 {
 // strstr(h, n): an offset of the first occurrence of n in h, or -1. The empty
 // needle answers 0, as C's does.
 
-fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32 {
+fn strstr(h: ptr<u8>, n: ptr<u8>) : i32 {
     let nl: i32 = strlen(n);
     if (nl == 0) { return 0; }
     let i: i32 = 0;
@@ -227,7 +227,7 @@ fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32 {
 // resulting length (not d's address), because the length is what a caller
 // advancing a cursor needs.
 
-fn strcat(d: ptr<u8>, s: ptr<u8>) -> i32 {
+fn strcat(d: ptr<u8>, s: ptr<u8>) : i32 {
     let dl: i32 = strlen(d);
     let sl: i32 = strlen(s);
     let i: i32 = 0;
@@ -243,7 +243,7 @@ fn strcat(d: ptr<u8>, s: ptr<u8>) -> i32 {
 // wraps like ordinary 32-bit arithmetic past the range, which is what an
 // unchecked C atoi does with 32 bits.
 
-fn atoi(s: ptr<u8>) -> i32 {
+fn atoi(s: ptr<u8>) : i32 {
     let i: i32 = 0;
     while (load_u8(s + i) == 32) { i = i + 1; }
     let neg: i32 = 0;
@@ -264,12 +264,12 @@ fn atoi(s: ptr<u8>) -> i32 {
 // is_digit / is_space / is_alpha: 1 or 0, ASCII only (the same test set a
 // lexer needs, which is what this library is written for).
 
-fn is_digit(c: i32) -> i32 {
+fn is_digit(c: i32) : i32 {
     if (c >= 48 && c <= 57) { return 1; }
     return 0;
 }
 
-fn is_space(c: i32) -> i32 {
+fn is_space(c: i32) : i32 {
     if (c == 32 || (c >= 9 && c <= 13)) { return 1; }
     return 0;
 }
@@ -278,7 +278,7 @@ fn is_space(c: i32) -> i32 {
 // (`is_alpha(c) || c == 95`), so keeping the underscore out of here is what let
 // the library's version replace the stage's own without changing the lexer.
 
-fn is_alpha(c: i32) -> i32 {
+fn is_alpha(c: i32) : i32 {
     if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { return 1; }
     return 0;
 }
@@ -297,7 +297,7 @@ fn is_alpha(c: i32) -> i32 {
 // overflow to infinity, or one that underflows past the subnormal range)
 // answers the pattern infinity / zero respectively - the same answers the
 // hardware gives.
-fn f64_bits(m: i64, k: i32) -> i64 {
+fn f64_bits(m: i64, k: i32) : i64 {
     if (m == 0) { return 0; }
     let neg: i32 = 0;
     // No casts here: the subset has none. Assigning an i64 to a u64 keeps its
@@ -366,7 +366,7 @@ fn f64_bits(m: i64, k: i32) -> i64 {
 // Rounding is one decision at the end - round-half-to-even over
 // (kept, dropped, sticky) - rather than a rounding at every step, which is what
 // makes the result the nearest double instead of an accumulation of ties.
-fn f64_from_dec(digits: u64, exp10: i32) -> i64 {
+fn f64_from_dec(digits: u64, exp10: i32) : i64 {
     if (digits == 0) { return 0; }
     // A 128-bit window, not 64. The reason is measurable: with 53 bits kept and
     // a 64-bit window a division leaves only four bits of headroom, so a chain

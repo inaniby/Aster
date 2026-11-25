@@ -159,7 +159,7 @@ struct ImportDeclaration {
     unsigned column = 0;
 };
 
-// D-2a (W-1): `布局 名(参数): 视图 { ... }` / `layout name(params) -> View { ... }`.
+// D-2a (W-1): `布局 名(参数): 视图 { ... }` / `layout name(params) : View { ... }`.
 // The body is a statement list: node rows (expression statements whose
 // expression is a NodeRow), `如果`/`变量` and trailing statements.
 struct LayoutDeclaration {

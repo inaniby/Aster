@@ -60,7 +60,7 @@ printf '%s\n' '[3/8] aui_impl.ast builds in the bilingual frontend'
 printf '%s\n' '[4/8] generic pointers, pointer casts, memory intrinsics, deref stores, pointer indexing'
 cat > "$TMP/pointers.ast" <<'SRC'
 // aster:language=en
-fn bump(p: ptr<i32>) -> i32 { p[0] = p[0] + 1; return p[0]; }
+fn bump(p: ptr<i32>) : i32 { p[0] = p[0] + 1; return p[0]; }
 fn main(): i32 {
 let a: i32[2] = [40, 0];
 let p: ptr<i32> = a;
@@ -77,7 +77,7 @@ printf '%s\n' '[5/8] shifts, bitwise operators, else-if chains, cross-line expre
 cat > "$TMP/operators.ast" <<'EOF'
 // aster:language=en
 fn pick(x: i32,
-        y: i32) -> i32 {
+        y: i32) : i32 {
 let r: i32 = 0;
 if (x == 1) { r = 1; }
 else if (x == 2) { r = 2; }
@@ -102,12 +102,12 @@ run_expect sizeof 13
 printf '%s\n' '[7/8] calls through fn-typed locals and bare pointers, string literals decay to pointers'
 cat > "$TMP/indirect.ast" <<'SRC'
 // aster:language=en
-fn twice(x: i32) -> i32 { return x * 2; }
-fn first(p: ptr) -> i32 { return load_u8(p); }
-fn first8(p: ptr<u8>) -> i32 { return load_u8(p); }
-fn cmp2(a: ptr, b: ptr) -> i32 { return 5; }
+fn twice(x: i32) : i32 { return x * 2; }
+fn first(p: ptr) : i32 { return load_u8(p); }
+fn first8(p: ptr<u8>) : i32 { return load_u8(p); }
+fn cmp2(a: ptr, b: ptr) : i32 { return 5; }
 fn main(): i32 {
-let f: fn(i32) -> i32 = twice;
+let f: fn(i32) : i32 = twice;
 let cmp: ptr = cmp2;
 return f(20) + cmp(0, 0) - 5 + first("A") - 65 + first8("B") - 66;
 }
@@ -118,13 +118,13 @@ run_expect indirect 40
 printf '%s\n' '[8/8] __aster_cn_ is the runtime namespace (allowed); other __aster_ prefixes stay reserved'
 cat > "$TMP/cn-prefix.ast" <<'SRC'
 // aster:language=en
-fn __aster_cn_str_order(a: ptr<u8>, b: ptr<u8>) -> i32 { return 0; }
+fn __aster_cn_str_order(a: ptr<u8>, b: ptr<u8>) : i32 { return 0; }
 fn main(): i32 { return __aster_cn_str_order(0, 0); }
 SRC
 "$ASTER_BIN" build-cn-obj --language en "$TMP/cn-prefix.ast" -o "$TMP/cn-prefix.o"
 cat > "$TMP/reserved-prefix.ast" <<'SRC'
 // aster:language=en
-fn __aster_user() -> i32 { return 0; }
+fn __aster_user() : i32 { return 0; }
 fn main(): i32 { return 0; }
 SRC
 if "$ASTER_BIN" build-cn-obj --language en "$TMP/reserved-prefix.ast" \

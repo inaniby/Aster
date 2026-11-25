@@ -13,7 +13,7 @@
 #                       is gone before layout, Sema or codegen ever run. The
 #                       one thing a Ty cannot carry — a function signature —
 #                       travels in the alias record and is handed back at
-#                       every use, so `type Op = fn(i32) -> i64;` is a real
+#                       every use, so `type Op = fn(i32) : i64;` is a real
 #                       signature at every declaration that names it.
 #
 #   `const x : T = e;`  a binding no assignment may change, at file scope and
@@ -195,8 +195,8 @@ type Ptr = ptr<Point>;
 type W = u16;
 struct Pair { a: Coord, b: W }
 let gp: Coord = 4;
-fn use(q: Ptr) -> Coord { return q.x * 10 + q.y; }
-fn main() -> i32 {
+fn use(q: Ptr) : Coord { return q.x * 10 + q.y; }
+fn main() : i32 {
     let p: Point = Point { 3, 7 };
     let q: Ptr = &p;
     let pr: Pair = Pair { 5, 6 };
@@ -206,16 +206,16 @@ fn main() -> i32 {
 AST
 cat > "$W/exp_fn.ast" <<'AST'
 type I = i32;
-type Op = fn(I) -> I;
-fn inc(v: I) -> I { return v + 1; }
-fn apply(op: Op, v: I) -> I { return op(v); }
-fn main() -> i32 { return apply(inc, 41); }
+type Op = fn(I) : I;
+fn inc(v: I) : I { return v + 1; }
+fn apply(op: Op, v: I) : I { return op(v); }
+fn main() : i32 { return apply(inc, 41); }
 AST
 cat > "$W/exp_nest.ast" <<'AST'
 type I = i64;
 type J = I;
 type P = ptr<I>;
-fn main() -> i32 {
+fn main() : i32 {
     let v: J = 0;
     let p: P = &v;
     return i32(p[0]) + 5;
@@ -244,41 +244,41 @@ emit_case(){ # $1 = label
 }
 emit_case alias_scalar \
 'type I = i32;
-fn main() -> i32 { let x: I = 41; return x + 1; }' \
+fn main() : i32 { let x: I = 41; return x + 1; }' \
 'typedef int I;
 int main(void){ I x = 41; return x + 1; }'
 emit_case alias_struct_ptr \
 'struct Pt { x: i32, y: i32 }
 type PP = ptr<Pt>;
-fn main() -> i32 { let p: Pt = Pt { 3, 4 }; let q: PP = &p; return q.x + q.y; }' \
+fn main() : i32 { let p: Pt = Pt { 3, 4 }; let q: PP = &p; return q.x + q.y; }' \
 'typedef struct { int x, y; } Pt;
 typedef Pt *PP;
 int main(void){ Pt p = { 3, 4 }; PP q = &p; return q->x + q->y; }'
 emit_case alias_array_elem \
 'type W = u16;
-fn main() -> i32 { let a: W[3] = 300; return a[0] + a[2] + 1; }' \
+fn main() : i32 { let a: W[3] = 300; return a[0] + a[2] + 1; }' \
 'typedef unsigned short W;
 int main(void){ W a[3] = { 300, 300, 300 }; return a[0] + a[2] + 1; }'
 emit_case alias_field \
 'type I = i64;
 struct Box { a: I, b: i32 }
-fn main() -> i32 { let b: Box = Box { 5, 7 }; return i32(b.a) + b.b; }' \
+fn main() : i32 { let b: Box = Box { 5, 7 }; return i32(b.a) + b.b; }' \
 'typedef long I;
 typedef struct { I a; int b; } Box;
 int main(void){ Box b = { 5, 7 }; return (int)b.a + b.b; }'
 emit_case alias_param_ret \
 'type I = i32;
-fn twice(v: I) -> I { return v * 2; }
-fn main() -> i32 { return twice(21); }' \
+fn twice(v: I) : I { return v * 2; }
+fn main() : i32 { return twice(21); }' \
 'typedef int I;
 static I twice(I v){ return v * 2; }
 int main(void){ return twice(21); }'
 emit_case alias_fn_type \
 'type I = i32;
-type Op = fn(I) -> I;
-fn inc(v: I) -> I { return v + 1; }
-fn apply(op: Op, v: I) -> I { return op(v); }
-fn main() -> i32 { return apply(inc, 41); }' \
+type Op = fn(I) : I;
+fn inc(v: I) : I { return v + 1; }
+fn apply(op: Op, v: I) : I { return op(v); }
+fn main() : i32 { return apply(inc, 41); }' \
 'typedef int I;
 typedef I (*Op)(I);
 static I inc(I v){ return v + 1; }
@@ -286,16 +286,16 @@ static I apply(Op op, I v){ return op(v); }
 int main(void){ return apply(inc, 41); }'
 emit_case alias_sizeof \
 'type I = u64;
-fn main() -> i32 { return sizeof(I); }' \
+fn main() : i32 { return sizeof(I); }' \
 'typedef unsigned long I;
 int main(void){ return (int)sizeof(I); }'
 # The case that proves an alias carries a *signature* and not just the word
 # "ptr": a bare function pointer reads its result at i32 width, so an i64
 # result comes back truncated and the branch below takes the other way out.
 emit_case alias_fn_i64_ret \
-'type Op = fn(i32) -> i64;
-fn big(v: i32) -> i64 { let r: i64 = 0; r = r + 4294967296; return r + v; }
-fn main() -> i32 {
+'type Op = fn(i32) : i64;
+fn big(v: i32) : i64 { let r: i64 = 0; r = r + 4294967296; return r + v; }
+fn main() : i32 {
     let op: Op = big;
     let v: i64 = op(5);
     if (v > 2147483647) { return 11; }
@@ -305,14 +305,14 @@ fn main() -> i32 {
 static long big(int v){ return 4294967296L + v; }
 int main(void){ Op op = big; long v = op(5); if (v > 2147483647) return 11; return 22; }'
 emit_case const_local_read \
-'fn bump(v: i32) -> i32 { return v + 1; }
-fn main() -> i32 { const k: i32 = 41; return bump(k); }' \
+'fn bump(v: i32) : i32 { return v + 1; }
+fn main() : i32 { const k: i32 = 41; return bump(k); }' \
 'static int bump(int v){ return v + 1; }
 int main(void){ const int k = 41; return bump(k); }'
 emit_case const_array_struct \
 'struct Pt { x: i32, y: i32 }
 const g: i32 = 4;
-fn main() -> i32 {
+fn main() : i32 {
     const xs: i32[3] = 7;
     const p: Pt = Pt { 1, 2 };
     return g + xs[0] + xs[2] + p.x + p.y;
@@ -377,36 +377,36 @@ reject(){ # $1 = label, $2 = source, $3 = reason, $4 = C twin (empty = none)
 }
 CONST_PRE='struct Pt { x: i32, y: i32 }
 const g: i32 = 41;
-fn main() -> i32 { '
+fn main() : i32 { '
 failed=0
 rej_n=0
 r(){ reject "$@" && rej_n=$((rej_n + 1)) || failed=1; }
 r 'alias: unknown type' \
 'type P = Nope;
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
 "expected a type after '=' in the declaration of type alias P" ''
 r 'alias: duplicate name' \
 'type P = i32;
 type P = i64;
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
 'duplicate type alias: P' ''
 r 'alias: struct collision' \
 'struct P { x: i32 }
 type P = i32;
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
 'type alias conflicts with a struct: P' ''
 r 'alias: global collision' \
 'let P: i32 = 1;
 type P = i32;
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
 'type alias conflicts with a global variable: P' ''
 r 'alias: not an array' \
 'type Row = i32[4];
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
 "expected ';' after a type alias declaration" ''
 r 'alias: undeclared use' \
 'let g: P = 1;
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
 'expected i8, i16, i32, i64, u8, u16, u32, u64, ptr, ptr<S>, bool' ''
 r 'const: plain assignment' \
 "${CONST_PRE}const k: i32 = 1; k = 2; return k; }" \
@@ -448,7 +448,7 @@ r 'const: no initializer (struct)' \
 'a const must have an initializer: s' ''
 r 'const: no initializer (global)' \
 'const g2: i32;
-fn main() -> i32 { return 0; }' \
+fn main() : i32 { return 0; }' \
 "expected '=' in global variable declaration" ''
 [ "$failed" = 0 ] || exit 1
 printf '  %-30s %s\n' "refusals held" "$rej_n"
@@ -480,8 +480,8 @@ done
 # let would keep it, and a struct const is read field by field.
 cat > "$W/const_read.ast" <<'AST'
 struct Pt { x: i32, y: i32 }
-fn bump(v: i32) -> i32 { return v + 1; }
-fn main() -> i32 {
+fn bump(v: i32) : i32 { return v + 1; }
+fn main() : i32 {
     const k: i32 = bump(41);
     const p: Pt = Pt { 1, 2 };
     return k + p.x + p.y;
@@ -524,7 +524,7 @@ fi
 printf '  %-40s %s\n' 'a) every alias expands to i32' 'noticed'
 # (b) An assignment to a const is refused at a local binding.
 mutate m2 's|if(b->isConst)throw Error(loc(s.line,s.col,"cannot assign to a const: "|if(false)throw Error(loc(s.line,s.col,"cannot assign to a const: "|'
-printf '%s\n' 'fn main() -> i32 { const k: i32 = 1; k = 2; return k; }' > "$W/m2.ast"
+printf '%s\n' 'fn main() : i32 { const k: i32 = 1; k = 2; return k; }' > "$W/m2.ast"
 # The original refuses `k = 2`; the mutant accepts it, so the mutant builds.
 if "$OUT/m2" build-elf "$W/m2.ast" -o "$W/m2" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'b) a const may be assigned to' 'noticed'
@@ -533,7 +533,7 @@ else
 fi
 # (c) isConstName answers for an element store, a field store and address-of.
 mutate m3 's|        if(const Binding\* b=find(n))return b->isConst;|        if(const Binding* b=find(n))return false;|'
-printf '%s\n' 'fn main() -> i32 { const a: i32[2] = 5; a[0] = 6; return a[0]; }' > "$W/m3.ast"
+printf '%s\n' 'fn main() : i32 { const a: i32[2] = 5; a[0] = 6; return a[0]; }' > "$W/m3.ast"
 # The original refuses the element store; the mutant accepts it, so it builds.
 if "$OUT/m3" build-elf "$W/m3.ast" -o "$W/m3" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'c) a const element may be written' 'noticed'
@@ -545,9 +545,9 @@ fi
 # The witness is written here rather than taken from [4/9], because [4/9] is
 # the layer that may skip.
 cat > "$W/fnsig.ast" <<'AST'
-type Op = fn(i32) -> i64;
-fn big(v: i32) -> i64 { let r: i64 = 0; r = r + 4294967296; return r + v; }
-fn main() -> i32 {
+type Op = fn(i32) : i64;
+fn big(v: i32) : i64 { let r: i64 = 0; r = r + 4294967296; return r + v; }
+fn main() : i32 {
     let op: Op = big;
     let v: i64 = op(5);
     if (v > 2147483647) { return 11; }
@@ -569,7 +569,7 @@ fi
 # (e) A const local must be given a value.
 mutate m5 '/v0.23.67-dev: not for a const/,+4 s|if(isConst)throw Error|if(false)throw Error|'
 printf '%s\n' 'struct Pt { x: i32, y: i32 }
-fn main() -> i32 { const p: Pt; return 0; }' > "$W/m5.ast"
+fn main() : i32 { const p: Pt; return 0; }' > "$W/m5.ast"
 # The original refuses a const with no initializer; the mutant accepts it.
 if "$OUT/m5" build-elf "$W/m5.ast" -o "$W/m5" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'e) a const needs no initializer' 'noticed'
@@ -582,7 +582,7 @@ fi
 mutate m6 's|if(g_typeAlias.count(name)){|if(false){|'
 printf '%s\n' 'type P = i32;
 type P = u16;
-fn main() -> i32 { let x: P = 300; return x; }' > "$W/m6.ast"
+fn main() : i32 { let x: P = 300; return x; }' > "$W/m6.ast"
 if "$OUT/m6" build-elf "$W/m6.ast" -o "$W/m6" >/dev/null 2>&1; then
     printf '  %-40s %s\n' 'f) a name may be aliased twice' 'noticed'
 else

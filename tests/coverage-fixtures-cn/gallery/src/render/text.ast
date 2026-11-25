@@ -80,35 +80,35 @@ let g_cjk_evictions: i32 = 0;
 let g_cjk_live: i32 = 0;
 let g_cjk_missing: i32 = 0;
 
-fn ui_cjk_cache_hits() -> i32 {
+fn ui_cjk_cache_hits() : i32 {
     return g_cjk_hits;
 }
 
-fn ui_cjk_cache_misses() -> i32 {
+fn ui_cjk_cache_misses() : i32 {
     return g_cjk_misses;
 }
 
-fn ui_cjk_cache_evictions() -> i32 {
+fn ui_cjk_cache_evictions() : i32 {
     return g_cjk_evictions;
 }
 
-fn ui_cjk_cache_live() -> i32 {
+fn ui_cjk_cache_live() : i32 {
     return g_cjk_live;
 }
 
 // Missing-glyph draws: code points that fell back to the placeholder
 // box because neither atlas has them. Incremented by the rasterizer,
 // never by measurement (measuring a missing code point is not a draw).
-fn ui_cjk_missing() -> i32 {
+fn ui_cjk_missing() : i32 {
     return g_cjk_missing;
 }
 
-fn ui_cjk_note_missing() -> i32 {
+fn ui_cjk_note_missing() : i32 {
     g_cjk_missing = g_cjk_missing + 1;
     return 0;
 }
 
-fn ui_cjk_set_enabled(v: i32) -> i32 {
+fn ui_cjk_set_enabled(v: i32) : i32 {
     g_cjk_enabled = v;
     return g_cjk_enabled;
 }
@@ -118,17 +118,17 @@ fn ui_cjk_set_enabled(v: i32) -> i32 {
 // tree). The u32 form covers every valid Unicode code point (b3 is
 // always 0 below U+110000) and every offset in a blob under the
 // 16 MiB @embed limit.
-fn ui_cjk_u16(base: ptr, off: i32) -> i32 {
+fn ui_cjk_u16(base: ptr, off: i32) : i32 {
     return load_u8(base + off) + load_u8(base + off + 1) * 256;
 }
 
-fn ui_cjk_u32(base: ptr, off: i32) -> i32 {
+fn ui_cjk_u32(base: ptr, off: i32) : i32 {
     return load_u8(base + off) + load_u8(base + off + 1) * 256 + load_u8(base + off + 2) * 65536 + load_u8(base + off + 3) * 16777216;
 }
 
 // Validate the atlas header on first use. Answers 1 when the atlas is
 // usable, 0 otherwise.
-fn ui_cjk_init() -> i32 {
+fn ui_cjk_init() : i32 {
     if (g_cjk_auf != 0) {
         return g_cjk_ok;
     } else {
@@ -194,7 +194,7 @@ fn ui_cjk_init() -> i32 {
 }
 
 // Bytes consumed by the UTF-8 sequence whose lead byte is b0.
-fn ui_utf8_advance(b0: i32) -> i32 {
+fn ui_utf8_advance(b0: i32) : i32 {
     if (b0 < 128) {
         return 1;
     } else {
@@ -215,7 +215,7 @@ fn ui_utf8_advance(b0: i32) -> i32 {
 // Ideographs (0xF900..0xFAFF), fullwidth forms (0xFF00..0xFF60), and
 // the plane-2 ideographs (0x20000..0x2FA1F). ASCII and Latin-1 (e.g.
 // U+00E9) are not wide.
-fn ui_text_is_wide(cp: i32) -> i32 {
+fn ui_text_is_wide(cp: i32) : i32 {
     if (cp >= 11904) {
         if (cp <= 40959) {
             return 1;
@@ -251,7 +251,7 @@ fn ui_text_is_wide(cp: i32) -> i32 {
 // ascending) plus the 32-entry ring cache. Answers the record offset
 // relative to the atlas base, or -1. A disabled atlas (test hook) or
 // an unvalidated one answers -1 without touching the blob.
-fn ui_cjk_find(cp: i32) -> i32 {
+fn ui_cjk_find(cp: i32) : i32 {
     if (g_cjk_enabled == 0) {
         return -1;
     } else {
@@ -312,7 +312,7 @@ fn ui_cjk_find(cp: i32) -> i32 {
 // callers that need the ASCII-only test must check the range, not
 // this function (ui_font_row does; the rasterizer branches on the
 // range first, then on ui_cjk_find).
-fn ui_text_has_glyph(cp: i32) -> i32 {
+fn ui_text_has_glyph(cp: i32) : i32 {
     if (cp < 32) {
         return 0;
     } else {
@@ -335,7 +335,7 @@ fn ui_text_has_glyph(cp: i32) -> i32 {
 // ui_text_has_glyph -- a CJK code point HAS a glyph (in the CJK
 // atlas) but must never index the 8x8 font, which only holds 95
 // glyphs; reading it at (cp - 32) * 8 would run past the blob.
-fn ui_font_row(cp: i32, row: i32) -> i32 {
+fn ui_font_row(cp: i32, row: i32) : i32 {
     if (cp < 32) {
         return 0;
     } else {
@@ -362,7 +362,7 @@ fn ui_font_row(cp: i32, row: i32) -> i32 {
 // One row (0..15) of the CJK glyph for code point cp, as a 16-bit
 // value whose bit 15 is the leftmost pixel, or 0 when cp has no CJK
 // glyph. The bitmap is 16 rows x 2 bytes little-endian per glyph.
-fn ui_cjk_row(cp: i32, row: i32) -> i32 {
+fn ui_cjk_row(cp: i32, row: i32) : i32 {
     if (row < 0) {
         return 0;
     } else {
@@ -383,7 +383,7 @@ fn ui_cjk_row(cp: i32, row: i32) -> i32 {
 
 // "Is bit col set" for a glyph row byte: bit 7 is the leftmost pixel.
 // Same division math as examples/icon_text_demo.ast (glyph_bit).
-fn ui_glyph_bit(byte: i32, col: i32) -> i32 {
+fn ui_glyph_bit(byte: i32, col: i32) : i32 {
     let p: i32 = 128;
     let k: i32 = 0;
     while (k < col) {
@@ -396,7 +396,7 @@ fn ui_glyph_bit(byte: i32, col: i32) -> i32 {
 
 // "Is bit col set" for a 16-bit CJK glyph row: bit 15 is the leftmost
 // pixel. Same division math as ui_glyph_bit, starting at 32768.
-fn ui_glyph_bit16(row: i32, col: i32) -> i32 {
+fn ui_glyph_bit16(row: i32, col: i32) : i32 {
     let p: i32 = 32768;
     let k: i32 = 0;
     while (k < col) {
@@ -415,7 +415,7 @@ fn ui_glyph_bit16(row: i32, col: i32) -> i32 {
 // every code point as 8dp, which under-measured zh text (and the old
 // layout callers multiplied the BYTE length by 8, which over-measured
 // it threefold); both are fixed by summing per code point here.
-fn ui_text_width(text: ptr, tlen: i32, scale: i32) -> i32 {
+fn ui_text_width(text: ptr, tlen: i32, scale: i32) : i32 {
     let n: i32 = 0;
     let at: i32 = 0;
     while (at < tlen) {

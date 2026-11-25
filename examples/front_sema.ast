@@ -6,7 +6,7 @@
 type Word = i32;
 struct Box { v: i32 }
 enum Color { Red = 0, Green = 1, Blue = 2 }
-fn main() -> i32 {
+fn main() : i32 {
     let w: Word = 3;
     let b: Box = Box { 4 };
     let c: Color = Green;

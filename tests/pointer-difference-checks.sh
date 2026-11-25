@@ -33,8 +33,8 @@ printf '%s\n' 'PASS: pointer difference takes the byte gap and divides by the el
 printf '%s\n' '[3/6] Rejection matrix'
 # ptr + ptr is still rejected (unchanged behaviour).
 cat > "$OUT/plus.ast" <<'AST'
-fn f(a: ptr, b: ptr) -> ptr { return a + b; }
-fn main() -> i32 { return 0; }
+fn f(a: ptr, b: ptr) : ptr { return a + b; }
+fn main() : i32 { return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/plus.ast" -o "$OUT/plus" 2>&1); then
     echo 'FAIL: compiler accepted ptr + ptr' >&2; exit 1
@@ -44,8 +44,8 @@ printf '%s\n' "$out" | grep -qF 'invalid pointer arithmetic: ptr + ptr is not su
 
 # i32 - ptr is still rejected.
 cat > "$OUT/i32minusptr.ast" <<'AST'
-fn f(a: i32, b: ptr) -> i32 { return a - b; }
-fn main() -> i32 { return 0; }
+fn f(a: i32, b: ptr) : i32 { return a - b; }
+fn main() : i32 { return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/i32minusptr.ast" -o "$OUT/i32minusptr" 2>&1); then
     echo 'FAIL: compiler accepted i32 - ptr' >&2; exit 1
@@ -55,8 +55,8 @@ printf '%s\n' "$out" | grep -qF 'invalid pointer arithmetic: expected ptr - i32'
 
 # Element-type mismatch: ptr<i32> - ptr<u8> (different strides) is rejected.
 cat > "$OUT/mismatch.ast" <<'AST'
-fn f(a: ptr<i32>, b: ptr<u8>) -> i32 { return a - b; }
-fn main() -> i32 { return 0; }
+fn f(a: ptr<i32>, b: ptr<u8>) : i32 { return a - b; }
+fn main() : i32 { return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/mismatch.ast" -o "$OUT/mismatch" 2>&1); then
     echo 'FAIL: compiler accepted ptr<i32> - ptr<u8>' >&2; exit 1
@@ -67,8 +67,8 @@ printf '%s\n' "$out" | grep -qF 'pointer difference requires two pointers to the
 # Element-type mismatch: ptr<i32> - ptr<Row> (scalar vs struct) is rejected.
 cat > "$OUT/mix.ast" <<'AST'
 struct Row { a: i32, b: i32 }
-fn f(a: ptr<i32>, b: ptr<Row>) -> i32 { return a - b; }
-fn main() -> i32 { return 0; }
+fn f(a: ptr<i32>, b: ptr<Row>) : i32 { return a - b; }
+fn main() : i32 { return 0; }
 AST
 if out=$("$OUT/aster" build-elf "$OUT/mix.ast" -o "$OUT/mix" 2>&1); then
     echo 'FAIL: compiler accepted ptr<i32> - ptr<Row>' >&2; exit 1
@@ -80,7 +80,7 @@ printf '%s\n' 'PASS: ptr + ptr, i32 - ptr, and stride mismatches all rejected'
 printf '%s\n' '[4/6] Acceptance: every stride via qemu self-check (power-of-two shifts)'
 # Untyped ptr and ptr<i32> both stride 4 bytes; u8 strides 1; i64 strides 8.
 cat > "$OUT/strides.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32[8] = 0;
     let u_p: ptr = a;
     let u_q: ptr = a + 16;
@@ -112,7 +112,7 @@ struct Row { a: i32, b: i32 }
 struct V3 { x: i32, y: i32, z: i32 }
 struct WrapR { rs: Row[4] }
 struct WrapV { vs: V3[4] }
-fn main() -> i32 {
+fn main() : i32 {
     let wr: WrapR;
     let rp: ptr<Row> = &wr.rs[0];
     let rq: ptr<Row> = &wr.rs[3];
@@ -133,8 +133,8 @@ printf '%s\n' '[6/6] Acceptance: cross-category and self-contained element count
 # allowed (same stride) and equals the index gap. A self-contained count over a
 # parameter array confirms the result is usable as an ordinary i32.
 cat > "$OUT/cross.ast" <<'AST'
-fn count(p: ptr, q: ptr<i32>) -> i32 { return p - q; }
-fn main() -> i32 {
+fn count(p: ptr, q: ptr<i32>) : i32 { return p - q; }
+fn main() : i32 {
     let a: i32[8] = 0;
     let lo: ptr = a;
     let hi: ptr<i32> = &a + 20;

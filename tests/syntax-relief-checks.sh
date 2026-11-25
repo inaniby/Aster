@@ -121,7 +121,7 @@ emit_shape(){
     n="$1"
     case "$n" in
     plain_no_else)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 1;
     if (x == 1) {
         x = 2;
@@ -130,7 +130,7 @@ emit_shape(){
 }'
         c='int main(void){ int x=1; if(x==1){ x=2; } return x; }' ;;
     plain_no_else_false)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 1;
     if (x == 9) {
         x = 2;
@@ -139,7 +139,7 @@ emit_shape(){
 }'
         c='int main(void){ int x=1; if(x==9){ x=2; } return x; }' ;;
     else_if_no_tail)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 1;
     if (x == 0) {
         x = 10;
@@ -150,7 +150,7 @@ emit_shape(){
 }'
         c='int main(void){ int x=1; if(x==0){ x=10; } else if(x==1){ x=20; } return x; }' ;;
     else_if_no_tail_false)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 5;
     if (x == 0) {
         x = 10;
@@ -161,7 +161,7 @@ emit_shape(){
 }'
         c='int main(void){ int x=5; if(x==0){ x=10; } else if(x==1){ x=20; } return x; }' ;;
     else_if_tail)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 5;
     if (x == 0) {
         x = 10;
@@ -176,7 +176,7 @@ emit_shape(){
     else_block_if)
         # The explicit spelling of what `else if` desugars to. It used to be a
         # compile error whenever the inner if had no else of its own.
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 1;
     if (x == 0) {
         x = 10;
@@ -189,7 +189,7 @@ emit_shape(){
 }'
         c='int main(void){ int x=1; if(x==0){ x=10; } else { if(x==1){ x=20; } } return x; }' ;;
     else_block_if_chain)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 7;
     if (x == 0) {
         x = 10;
@@ -208,7 +208,7 @@ emit_shape(){
     empty_else)
         # The filler block examples/icon_text_demo.ast carries: still legal,
         # still emitting nothing.
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 1;
     if (x == 1) {
         x = 5;
@@ -218,7 +218,7 @@ emit_shape(){
 }'
         c='int main(void){ int x=1; if(x==1){ x=5; } else {} return x; }' ;;
     nested_if_in_then)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 3;
     if (x > 0) {
         if (x == 3) {
@@ -229,7 +229,7 @@ emit_shape(){
 }'
         c='int main(void){ int x=3; if(x>0){ if(x==3){ x=7; } } return x; }' ;;
     while_if_no_else)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let i: i32 = 0;
     let s: i32 = 0;
     while (i < 5) {
@@ -242,7 +242,7 @@ emit_shape(){
 }'
         c='int main(void){ int i=0,s=0; while(i<5){ if(i%2==0){ s=s+i; } i=i+1; } return s; }' ;;
     for_if_no_else)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let s: i32 = 0;
     for (let i: i32 = 0; i < 4; i = i + 1) {
         if (i != 2) {
@@ -253,7 +253,7 @@ emit_shape(){
 }'
         c='int main(void){ int s=0; for(int i=0;i<4;i=i+1){ if(i!=2){ s=s+i; } } return s; }' ;;
     early_return_guard)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 0;
     if (x < 0) {
         return 1;
@@ -264,7 +264,7 @@ emit_shape(){
     both_branches_return)
         # Both branches return, so the function needs no trailing return —
         # sema's definitelyReturns path, unchanged by optional else.
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 1;
     if (x == 1) {
         return 11;
@@ -317,44 +317,44 @@ emit_hex(){
     n="$1"
     case "$n" in
     hex_zero)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 0x0;
     return x % 251;
 }'
         c='int main(void){ int x=0x0; return x%251; }' ;;
     hex_small)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 0x10;
     return x % 251;
 }'
         c='int main(void){ int x=0x10; return x%251; }' ;;
     hex_upper)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 0XABCD;
     return x % 251;
 }'
         c='int main(void){ int x=0XABCD; return x%251; }' ;;
     hex_neg)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = -0x10;
     return (x + 32) % 251;
 }'
         c='int main(void){ int x=-0x10; return (x+32)%251; }' ;;
     hex_arith)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 0x10 + 0x20;
     return x % 251;
 }'
         c='int main(void){ int x=0x10+0x20; return x%251; }' ;;
     hex_mask)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let mask: i32 = 0xF0;
     let v: i32 = 0xAB & mask;
     return v % 251;
 }'
         c='int main(void){ int mask=0xF0; int v=0xAB&mask; return v%251; }' ;;
     hex_i32_max)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 0x7FFFFFFF;
     return x % 251;
 }'
@@ -363,19 +363,19 @@ emit_hex(){
         # 0x80000000 does not fit i32; it truncates to the INT_MIN bit pattern
         # exactly as the decimal 2147483648 always did — hex changes the
         # spelling, not the rule, and the C twin is the witness.
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 0x80000000;
     return x % 251;
 }'
         c='int main(void){ int x=0x80000000; return x%251; }' ;;
     hex_i64_big)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i64 = 0x0102030405060708;
     return x % 251;
 }'
         c='int main(void){ long long x=0x0102030405060708LL; return (int)(x%251); }' ;;
     hex_i64_max)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i64 = 0x7FFFFFFFFFFFFFFF;
     return x % 251;
 }'
@@ -384,7 +384,7 @@ emit_hex(){
         # A hex array length: if 0x4 lexed as anything but 4, the constant-index
         # bounds check on a[3] would reject the program.
         ast='let a: i32[0x4] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     a[3] = 77;
     return a[3];
 }'
@@ -392,23 +392,23 @@ fn main() -> i32 {
 int main(void){ a[3]=77; return a[3]; }' ;;
     hex_upper_arrlen)
         ast='let a: i32[0X2] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     a[1] = 33;
     return a[1];
 }'
         c='int a[0X2];
 int main(void){ a[1]=33; return a[1]; }' ;;
     hex_call_arg)
-        ast='fn f(v: i32) -> i32 {
+        ast='fn f(v: i32) : i32 {
     return v % 251;
 }
-fn main() -> i32 {
+fn main() : i32 {
     return f(0x1F4);
 }'
         c='static int f(int v){ return v%251; }
 int main(void){ return f(0x1F4); }' ;;
     hex_shift)
-        ast='fn main() -> i32 {
+        ast='fn main() : i32 {
     let x: i32 = 1 << 0x4;
     return x;
 }'
@@ -456,14 +456,14 @@ reject(){ # reject <name> <file> <expected message fragment>
     esac
 }
 cat > "$W/rej_bare_hex.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32 = 0x;
     return x;
 }
 AST
 reject 'a bare 0x prefix' rej_bare_hex.ast 'hexadecimal literal has no digits at 2:18'
 cat > "$W/rej_hex_overflow.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let x: i64 = 0xFFFFFFFFFFFFFFFF;
     return 0;
 }
@@ -473,7 +473,7 @@ AST
 # folded (-1) view, at the let statement rather than the literal token.
 reject 'a hex value past i64' rej_hex_overflow.ast 'local initializer does not fit in i64: x (-1) at 2:9'
 cat > "$W/rej_fallthrough.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32 = 1;
     if (x == 1) {
         return 1;
@@ -482,7 +482,7 @@ fn main() -> i32 {
 AST
 reject 'a then-only return with no way out' rej_fallthrough.ast 'may fall through without returning i32'
 cat > "$W/rej_adjacency.ast" <<'AST'
-fn main() -> i32 {
+fn main() : i32 {
     let x: i32 = 0x1G;
     return x;
 }
@@ -490,7 +490,7 @@ AST
 reject 'a hex digit run glued to an identifier' rej_adjacency.ast "expected ';' at 2:21"
 cat > "$W/rej_bare_hex_arrlen.ast" <<'AST'
 let a: i32[0x] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     return a[0];
 }
 AST

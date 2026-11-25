@@ -235,9 +235,9 @@ let msg: ptr = "elf metadata";
 tls let hits: i32 = 10;
 tls let spare: i32 = 0;
 
-fn twice(x: i32) -> i32 { return x + x; }
+fn twice(x: i32) : i32 { return x + x; }
 
-fn main() -> i32 {
+fn main() : i32 {
     buf[0] = 1;
     hits = hits + 1;
     spare = hits + twice(1);
@@ -245,15 +245,15 @@ fn main() -> i32 {
 }
 AST
 cat > "$OUT/sofull.ast" <<'AST'
-extern fn bump(x: i32) -> i32;
+extern fn bump(x: i32) : i32;
 let buf: i32[64] = 0;
 let msg: ptr = "elf metadata";
 tls let hits: i32 = 10;
 tls let spare: i32 = 0;
 
-fn twice(x: i32) -> i32 { return bump(x) + bump(x); }
+fn twice(x: i32) : i32 { return bump(x) + bump(x); }
 
-fn entry(x: i32) -> i32 {
+fn entry(x: i32) : i32 {
     buf[0] = 1;
     hits = hits + x;
     spare = hits + twice(x);
@@ -352,7 +352,7 @@ PY
 cat > "$OUT/tls.ast" <<'AST'
 tls let a: i32 = 7;
 tls let b: i32 = 0;
-fn main() -> i32 { a = a + 1; b = a; return b; }
+fn main() : i32 { a = a + 1; b = a; return b; }
 AST
 "$A" build-obj "$OUT/tls.ast" -o "$OUT/tls.o" >/dev/null
 python3 "$OUT/tamper.py" "$OUT/tls.o" "$OUT/tls.bad.o"
@@ -394,7 +394,7 @@ if [ "$have_qemu" = yes ]; then
 let buf: i32[64] = 0;
 tls let hits: i32 = 10;
 tls let spare: i32 = 0;
-fn main() -> i32 {
+fn main() : i32 {
     buf[0] = 7;
     hits = hits + 1;
     spare = hits + buf[0];

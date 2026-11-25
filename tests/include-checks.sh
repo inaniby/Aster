@@ -3,7 +3,7 @@
 #
 # `include "path";` brings another file's declarations into this one. Before it
 # existed, a multi-file program shared a signature by *retyping* it: you wrote
-# `extern fn add2(n: i32) -> i32;` in main.ast and `fn add2(n: i32) -> i32` in
+# `extern fn add2(n: i32) : i32;` in main.ast and `fn add2(n: i32) : i32` in
 # defs.ast, and nothing in the toolchain ever compared the two — get the arity
 # wrong and the linker is silent, because it matches by name. That is the class
 # of bug this suite exists to make impossible: what crosses an include is the
@@ -60,14 +60,14 @@ mkdir -p "$OUT/sub"
 cat >"$OUT/sub/defs.ast" <<'AST'
 let total: i32 = 7;
 
-fn add2(n: i32) -> i32 {
+fn add2(n: i32) : i32 {
     return n + 2;
 }
 AST
 cat >"$OUT/main.ast" <<'AST'
 include "sub/defs.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return add2(total);
 }
 AST
@@ -76,9 +76,9 @@ AST
 # two lines cannot come out identical to it.
 cat >"$OUT/hand.ast" <<'AST'
 extern let total: i32;
-extern fn add2(n: i32) -> i32;
+extern fn add2(n: i32) : i32;
 
-fn main() -> i32 {
+fn main() : i32 {
     return add2(total);
 }
 AST
@@ -128,7 +128,7 @@ mkdir -p "$OUT/elsewhere"
 cat >"$OUT/elsewhere/far.ast" <<'AST'
 include "defs.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return add2(total);
 }
 AST
@@ -149,7 +149,7 @@ include "sub/defs.ast";
 include "sub/defs.ast";
 include "./sub/defs.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return add2(total);
 }
 AST
@@ -161,20 +161,20 @@ cmp -s "$OUT/twice.o" "$OUT/hand.o" \
 # set exists for, and the one a cycle check must not mistake for a cycle —
 # d.ast is reached twice but is never part-way through being parsed.
 cat >"$OUT/sub/d.ast" <<'AST'
-extern fn add2(n: i32) -> i32;
+extern fn add2(n: i32) : i32;
 extern let total: i32;
 AST
 cat >"$OUT/b.ast" <<'AST'
 include "sub/d.ast";
 
-fn useB() -> i32 {
+fn useB() : i32 {
     return add2(total);
 }
 AST
 cat >"$OUT/c.ast" <<'AST'
 include "sub/d.ast";
 
-fn useC() -> i32 {
+fn useC() : i32 {
     return add2(total);
 }
 AST
@@ -183,7 +183,7 @@ include "b.ast";
 include "c.ast";
 include "sub/defs.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return useB() + useC();
 }
 AST
@@ -197,7 +197,7 @@ echo 'OK: a repeated include is a no-op, and a diamond is not a cycle'
 cat >"$OUT/self.ast" <<'AST'
 include "self.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return 0;
 }
 AST
@@ -210,21 +210,21 @@ esac
 cat >"$OUT/cyc-a.ast" <<'AST'
 include "cyc-b.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return 0;
 }
 AST
 cat >"$OUT/cyc-b.ast" <<'AST'
 include "cyc-c.ast";
 
-fn helper() -> i32 {
+fn helper() : i32 {
     return 1;
 }
 AST
 cat >"$OUT/cyc-c.ast" <<'AST'
 include "cyc-a.ast";
 
-fn other() -> i32 {
+fn other() : i32 {
     return 2;
 }
 AST
@@ -248,11 +248,11 @@ echo 'OK: a cycle is an error, and the message names the chain'
 cat >"$OUT/supersede.ast" <<'AST'
 include "sub/defs.ast";
 
-fn add2(n: i32) -> i32 {
+fn add2(n: i32) : i32 {
     return n + 100;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     return add2(total);
 }
 AST
@@ -263,9 +263,9 @@ readelf -sW "$OUT/sup.o" | grep -q 'UND.*add2' \
 # Two definitions of one name in one file is still an error, so this only ever
 # gives way to a declaration that arrived through an include.
 cat >"$OUT/dup.ast" <<'AST'
-fn add2(n: i32) -> i32 { return n + 1; }
-fn add2(n: i32) -> i32 { return n + 2; }
-fn main() -> i32 { return 0; }
+fn add2(n: i32) : i32 { return n + 1; }
+fn add2(n: i32) : i32 { return n + 2; }
+fn main() : i32 { return 0; }
 AST
 $ASTER build-obj "$OUT/dup.ast" -o "$OUT/dup.o" >/dev/null 2>&1 \
     && fail 'two definitions of the same function in one file were accepted'
@@ -278,14 +278,14 @@ printf '%s' 'PAYLOAD-BYTES' >"$OUT/sub/text.txt"
 cat >"$OUT/sub/with-embed.ast" <<'AST'
 let data: ptr = @embed("text.txt");
 
-fn helper() -> i32 {
+fn helper() : i32 {
     return load_u8(data);
 }
 AST
 cat >"$OUT/use-embed.ast" <<'AST'
 include "sub/with-embed.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return 1;
 }
 AST
@@ -303,7 +303,7 @@ echo 'OK: @embed bytes belong to the file that embeds them, not to a file that i
 cat >"$OUT/missing.ast" <<'AST'
 include "nowhere/nope.ast";
 
-fn main() -> i32 {
+fn main() : i32 {
     return 0;
 }
 AST

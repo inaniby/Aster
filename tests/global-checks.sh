@@ -129,7 +129,7 @@ done
 cat > tmp-dup-global.ast <<'AST'
 let x: i32 = 1;
 let x: i32 = 2;
-fn main() -> i32 { return x; }
+fn main() : i32 { return x; }
 AST
 if ./aster build-elf tmp-dup-global.ast -o tmp-dup-global 2>tmp-dup-global.err; then
   echo 'FAIL: compiler accepted a duplicate global declaration' >&2; exit 1
@@ -139,9 +139,9 @@ echo 'PASS: v0.17.0 duplicate global declaration rejected'
 
 # v0.17.0: a non-constant scalar initializer is a run-time initializer, not an error.
 cat > tmp-global-nonconst.ast <<'AST'
-fn seed() -> i32 { return 1; }
+fn seed() : i32 { return 1; }
 let g: i32 = seed();
-fn main() -> i32 { return g; }
+fn main() : i32 { return g; }
 AST
 ./aster build-elf tmp-global-nonconst.ast -o tmp-global-nonconst
 chmod +x tmp-global-nonconst
@@ -155,7 +155,7 @@ echo "PASS: v0.17.0 non-constant global initializer accepted as a run-time initi
 # Diagnostic: an unresolved global reference must fail at link time.
 cat > tmp-global-unresolved.ast <<'AST'
 extern let missing: i32;
-fn main() -> i32 { return missing; }
+fn main() : i32 { return missing; }
 AST
 ./aster build-obj tmp-global-unresolved.ast -o tmp-global-unresolved.o
 if ./aster link-obj tmp-global-unresolved.o -o tmp-global-unresolved 2>tmp-global-unresolved.err; then

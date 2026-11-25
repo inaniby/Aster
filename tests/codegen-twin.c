@@ -1102,7 +1102,7 @@ static int function_decl(int external) {
     if (cur() != TK_RParen)
         die_at("expected ')' after parameters", tok_line(p), tok_col(p));
     adv();
-    if (cur() != TK_Arrow) die_at("expected ->", tok_line(p), tok_col(p));
+    if (cur() != TK_Colon) die_at("expected ':'", tok_line(p), tok_col(p));
     adv();
     allow_struct_type = 1;
     int rty = parse_type();

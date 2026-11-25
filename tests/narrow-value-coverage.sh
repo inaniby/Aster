@@ -68,81 +68,81 @@ printf '%s\n' "PASS: $HOSTCC emits AArch64 — differential oracle available"
 printf '%s\n' '[3/4] Differential battery: narrow values, expected by gcc'
 cat > "$W/cases.txt" <<'CASES_EOF'
 11~u8_passthrough
-fn g(a: u8) -> u8 { return a; }
-fn main() -> i32 { return g(11); }
+fn g(a: u8) : u8 { return a; }
+fn main() : i32 { return g(11); }
 @C@
 unsigned char g(unsigned char a){ return a; }
 int main(void){ return g(11); }
 @@@
 12~u8_second_arg
-fn g(a: u8, b: u8) -> u8 { return b; }
-fn main() -> i32 { return g(100, 50); }
+fn g(a: u8, b: u8) : u8 { return b; }
+fn main() : i32 { return g(100, 50); }
 @C@
 unsigned char g(unsigned char a, unsigned char b){ return b; }
 int main(void){ return g(100, 50); }
 @@@
 13~u16_passthrough
-fn g(a: u16) -> u16 { return a; }
-fn main() -> i32 { return g(40000); }
+fn g(a: u16) : u16 { return a; }
+fn main() : i32 { return g(40000); }
 @C@
 unsigned short g(unsigned short a){ return a; }
 int main(void){ return g(40000); }
 @@@
 14~i64_passthrough
-fn g(a: i64) -> i64 { return a; }
-fn main() -> i32 { return i32(g(1234567890)); }
+fn g(a: i64) : i64 { return a; }
+fn main() : i32 { return i32(g(1234567890)); }
 @C@
 long long g(long long a){ return a; }
 int main(void){ return (int)g(1234567890LL); }
 @@@
 15~mixed_narrow_args_return_i64
-fn g(a: u8, b: u16, c: i64) -> i64 { return c; }
-fn main() -> i32 { return i32(g(1, 2, 1234567890)); }
+fn g(a: u8, b: u16, c: i64) : i64 { return c; }
+fn main() : i32 { return i32(g(1, 2, 1234567890)); }
 @C@
 long long g(unsigned char a, unsigned short b, long long c){ return c; }
 int main(void){ return (int)g(1, 2, 1234567890LL); }
 @@@
 16~narrow_arg_through_nested_call
-fn g(a: u8) -> u8 { return a; }
-fn h(b: i32) -> i32 { return g(200) + b * 0; }
-fn main() -> i32 { return h(0); }
+fn g(a: u8) : u8 { return a; }
+fn h(b: i32) : i32 { return g(200) + b * 0; }
+fn main() : i32 { return h(0); }
 @C@
 unsigned char g(unsigned char a){ return a; }
 int h(int b){ return g(200) + b * 0; }
 int main(void){ return h(0); }
 @@@
 17~i64_u8_combo
-fn g(a: i64, b: u8) -> i32 { return (a - 1234567800) + b; }
-fn main() -> i32 { return g(1234567890, 9); }
+fn g(a: i64, b: u8) : i32 { return (a - 1234567800) + b; }
+fn main() : i32 { return g(1234567890, 9); }
 @C@
 int g(long long a, unsigned char b){ return (int)(a - 1234567800LL) + b; }
 int main(void){ return g(1234567890LL, 9); }
 @@@
 21~u8_ninth_arg
-fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: u8) -> i32 { return i; }
-fn main() -> i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 77); }
+fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: u8) : i32 { return i; }
+fn main() : i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 77); }
 @C@
 int g(int a,int b,int c,int d,int e,int f,int gg,int h,unsigned char i){ return i; }
 int main(void){ return g(0,0,0,0,0,0,0,0,77); }
 @@@
 22~u16_ninth_arg
-fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: u16) -> i32 { return i; }
-fn main() -> i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 40000); }
+fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: u16) : i32 { return i; }
+fn main() : i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 40000); }
 @C@
 int g(int a,int b,int c,int d,int e,int f,int gg,int h,unsigned short i){ return i; }
 int main(void){ return g(0,0,0,0,0,0,0,0,40000); }
 @@@
 23~u8_u8_ninth_tenth_arg
-fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: u8, j: u8) -> i32 { return i + j; }
-fn main() -> i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 30, 40); }
+fn g(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: u8, j: u8) : i32 { return i + j; }
+fn main() : i32 { return g(0, 0, 0, 0, 0, 0, 0, 0, 30, 40); }
 @C@
 int g(int a,int b,int c,int d,int e,int f,int gg,int h,unsigned char i,unsigned char j){ return i + j; }
 int main(void){ return g(0,0,0,0,0,0,0,0,30,40); }
 @@@
 24~narrow_return_used_in_i32
-fn g(a: u8) -> u8 { return a; }
-fn h(a: u8) -> i32 { return g(a) * 2; }
-fn main() -> i32 { return h(40); }
+fn g(a: u8) : u8 { return a; }
+fn h(a: u8) : i32 { return g(a) * 2; }
+fn main() : i32 { return h(40); }
 @C@
 unsigned char g(unsigned char a){ return a; }
 int h(unsigned char a){ return g(a) * 2; }
@@ -150,33 +150,33 @@ int main(void){ return h(40); }
 @@@
 31~u8_struct_field
 struct S { a: i32, b: u8 }
-fn main() -> i32 { let s: S = S { 5, 200 }; return s.b; }
+fn main() : i32 { let s: S = S { 5, 200 }; return s.b; }
 @C@
 struct S { int a; unsigned char b; };
 int main(void){ struct S s = { 5, 200 }; return s.b; }
 @@@
 32~u8_while_loop
-fn main() -> i32 { let i: u8 = 0; let s: i32 = 0; while (i < 10) { s = s + i; i = i + 1; } return s; }
+fn main() : i32 { let i: u8 = 0; let s: i32 = 0; while (i < 10) { s = s + i; i = i + 1; } return s; }
 @C@
 int main(void){ unsigned char i = 0; int s = 0; while (i < 10) { s = s + i; i = i + 1; } return s; }
 @@@
 33~u8_recursion
-fn sum(a: u8, n: i32) -> i32 { if (n == 0) { return a; } else { return a + sum(a, n - 1); } }
-fn main() -> i32 { return sum(10, 5); }
+fn sum(a: u8, n: i32) : i32 { if (n == 0) { return a; } else { return a + sum(a, n - 1); } }
+fn main() : i32 { return sum(10, 5); }
 @C@
 int sum(unsigned char a, int n){ if (n == 0) return a; else return a + sum(a, n - 1); }
 int main(void){ return sum(10, 5); }
 @@@
 34~u8_global_array
 let a: u8[700] = 0;
-fn main() -> i32 { a[600] = 200; return a[600]; }
+fn main() : i32 { a[600] = 200; return a[600]; }
 @C@
 unsigned char a[700] = {0};
 int main(void){ a[600] = 200; return a[600]; }
 @@@
 35~u16_global_array
 let a: u16[300] = 0;
-fn main() -> i32 { a[200] = 40000; return a[200]; }
+fn main() : i32 { a[200] = 40000; return a[200]; }
 @C@
 unsigned short a[300] = {0};
 int main(void){ a[200] = 40000; return a[200]; }

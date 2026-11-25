@@ -81,7 +81,7 @@ emit_case(){
         # read(0) in 256-byte chunks -> write(1), until read returns 0 at EOF.
         cat > "$W/$n.ast" <<AST
 let buf: u8[256] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = read(0, &buf, 256);
     while (n > 0) {
         write(1, &buf, n);
@@ -108,7 +108,7 @@ CEOF
         # count — a clobbered x0 (the count's home) would corrupt the loop.
         cat > "$W/$n.ast" <<AST
 let buf: u8[7] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let n: i32 = read(0, &buf, 7);
     while (n > 0) {
         write(1, &buf, n);
@@ -134,7 +134,7 @@ CEOF
         # path is baked in at emit time; the file exists at run time.
         cat > "$W/$n.ast" <<AST
 let buf: u8[256] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let fd: i32 = openat(-100, "$ABS/data.txt", 0, 0);
     if (fd < 0) { write(1, "OPEN-ERR\n", 9); return 1; }
     let n: i32 = read(fd, &buf, 256);
@@ -164,7 +164,7 @@ CEOF
         # diverges immediately. This is the m_fstat probe's resident case.
         cat > "$W/$n.ast" <<AST
 let st: u8[144] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let fd: i32 = openat(-100, "$ABS/data.txt", 0, 0);
     if (fd < 0) { write(1, "OPEN-ERR\n", 9); return 1; }
     let r: i32 = fstat(fd, &st);
@@ -199,7 +199,7 @@ CEOF
         # the only fair oracle is the same raw SVC in C inline asm, mirroring
         # exactly what Aster's codegen emits (x8 = 57, SVC #0, result in x0).
         cat > "$W/$n.ast" <<AST
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = close(9999);
     return r;
 }
@@ -225,7 +225,7 @@ CEOF
         cat > "$W/$n.ast" <<AST
 let ts: i64[2] = 0;
 let ts2: i64[2] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = clock_gettime(1, ts);
     if (r != 0) { return 1; }
     let sec: i64 = load_i64(ts);
@@ -265,7 +265,7 @@ CEOF
         # clock_gettime would normalise both failures to -1.
         cat > "$W/$n.ast" <<AST
 let ts: i64[2] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let r1: i32 = clock_gettime(999, ts);
     if (r1 != 0 - 22) { return 1; }
     let r2: i32 = clock_gettime(1, ptr(0));
@@ -340,34 +340,34 @@ reject(){ # $1 = description, $2 = source, $3 = expected message fragment
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "read with a string fd" \
-    'fn main() -> i32 { let n: i32 = read("a", &buf, 1); return n; } let buf: u8[1] = 0;' \
+    'fn main() : i32 { let n: i32 = read("a", &buf, 1); return n; } let buf: u8[1] = 0;' \
     "read first argument must be i32"
 reject "read with an integer buffer" \
-    'fn main() -> i32 { let n: i32 = read(0, 5, 1); return n; }' \
+    'fn main() : i32 { let n: i32 = read(0, 5, 1); return n; }' \
     "read second argument must be ptr"
 reject "read with two arguments" \
-    'fn main() -> i32 { let n: i32 = read(0, &buf); return n; } let buf: u8[1] = 0;' \
+    'fn main() : i32 { let n: i32 = read(0, &buf); return n; } let buf: u8[1] = 0;' \
     "read expects (fd: i32, buf: ptr, len: i32)"
 reject "openat with three arguments (no mode)" \
-    'fn main() -> i32 { let n: i32 = openat(-100, "x", 0); return n; }' \
+    'fn main() : i32 { let n: i32 = openat(-100, "x", 0); return n; }' \
     "openat expects (fd: i32, path: ptr, flags: i32, mode: i32)"
 reject "openat with an integer path" \
-    'fn main() -> i32 { let n: i32 = openat(-100, 7, 0, 0); return n; }' \
+    'fn main() : i32 { let n: i32 = openat(-100, 7, 0, 0); return n; }' \
     "openat second argument must be ptr"
 reject "close with a pointer argument" \
-    'fn main() -> i32 { let n: i32 = close("x"); return n; }' \
+    'fn main() : i32 { let n: i32 = close("x"); return n; }' \
     "close argument must be i32"
 reject "fstat with an integer buffer" \
-    'fn main() -> i32 { let n: i32 = fstat(3, 5); return n; }' \
+    'fn main() : i32 { let n: i32 = fstat(3, 5); return n; }' \
     "fstat second argument must be ptr"
 reject "clock_gettime with one argument" \
-    'fn main() -> i32 { let n: i32 = clock_gettime(1); return n; }' \
+    'fn main() : i32 { let n: i32 = clock_gettime(1); return n; }' \
     "clock_gettime expects (clockid: i32, tp: ptr)"
 reject "clock_gettime with a pointer clockid" \
-    'fn main() -> i32 { let n: i32 = clock_gettime("x", &buf); return n; } let buf: i64[2] = 0;' \
+    'fn main() : i32 { let n: i32 = clock_gettime("x", &buf); return n; } let buf: i64[2] = 0;' \
     "clock_gettime first argument must be i32"
 reject "clock_gettime with an integer tp" \
-    'fn main() -> i32 { let n: i32 = clock_gettime(1, 5); return n; }' \
+    'fn main() : i32 { let n: i32 = clock_gettime(1, 5); return n; }' \
     "clock_gettime second argument must be ptr"
 
 # ---------------------------------------------------------------------------

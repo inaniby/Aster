@@ -68,11 +68,11 @@ ok 'demo output == printf output'
 
 printf '%s\n' '[5/8] the edge fixture'
 cat > "$OUT/edge.ast" <<'AST'
-extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
-extern fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) -> i32;
-extern fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) -> i32;
+extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32;
+extern fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) : i32;
+extern fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) : i32;
 
-fn main() -> i32 {
+fn main() : i32 {
     let b: u8[64] = 0;
     // a negative digit count is zero digits, not an error
     if (fmt_f64(b, 1.4, 0 - 3) != 1) { return 1; }
@@ -104,9 +104,9 @@ ok 'clamps, whole values, negative zero, -inf, an exact single'
 
 printf '%s\n' '[6/8] the rounding rule'
 cat > "$OUT/round.ast" <<'AST'
-extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) -> i32;
-extern fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) -> i32;
-fn main() -> i32 {
+extern fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32;
+extern fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) : i32;
+fn main() : i32 {
     let b: u8[64] = 0;
     // half-up: 0.25 is exactly halfway between 0.2 and 0.3, and goes up
     fmt_f64(b, 0.25, 1);

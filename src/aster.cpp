@@ -769,7 +769,7 @@ struct Ty {
 // return type), exactly as the element type rides beside a ptr<…>.
 struct FuncSig { std::vector<Ty> params; Ty ret=Ty::I32; };
 // v0.23.38-dev: one parameter's function type — whether it declares one at
-// all, and the signature if it does. The flag is needed because `fn() -> i32`
+// all, and the signature if it does. The flag is needed because `fn() : i32`
 // is a real signature whose parameter list is empty, and "no signature
 // declared" has to stay distinguishable from it.
 struct ParamSig { bool isFunc=false; FuncSig sig; };
@@ -834,7 +834,7 @@ struct ParamSig { bool isFunc=false; FuncSig sig; };
 // v0.23.31-dev: the field may be multi-dimensional (`xs: i32[2][3]`), and then
 // `dims` carries each length outermost first while `len` stays the total
 // element count — the number the layout already multiplies by.
-// v0.23.38-dev: a field may be a fn-pointer (`onClick: fn(i32) -> i32`), and
+// v0.23.38-dev: a field may be a fn-pointer (`onClick: fn(i32) : i32`), and
 // then `funcSig` carries the signature beside the ptr storage type, the same
 // way a variable, a parameter and a global have carried one since
 // v0.23.37-dev. The layout is untouched — a fn-pointer field is an eight-byte
@@ -1685,7 +1685,7 @@ class Parser {
                 }
                 return false;
             }
-            // v0.23.37-dev: a function type spelling `fn (P1, …, Pn) -> R`.
+            // v0.23.37-dev: a function type spelling `fn (P1, …, Pn) : R`.
             // The storage type stays Ty::Ptr (a function pointer is an address);
             // the signature is parked in pendingFuncSig for the enclosing
             // declaration to capture, exactly as the element type rides beside
@@ -1700,7 +1700,7 @@ class Parser {
                     } while(eat(TK::Comma));
                 }
             need(TK::RParen,"expected ')' after function parameter types");
-            need(TK::Arrow,"expected '->' in a function type");
+            need(TK::Colon,"expected ':' in a function type");
             sig.ret=needType("<function return type>",/*allowVoid=*/true);
                 out=Ty::Ptr; pendingFuncType=true; pendingFuncSig=std::move(sig);
                 return true;
@@ -1740,7 +1740,7 @@ class Parser {
     Ty needType(const char* what, bool allowVoid=false){
         // v0.23.37-dev: a fresh type parse starts with no pending function
         // signature. parseType sets pendingFuncType only when it consumes a
-        // fn(…)->… spelling; everything else leaves it false, so a signature
+        // fn(…):… spelling; everything else leaves it false, so a signature
         // cannot survive into an unrelated declaration.
         pendingFuncType=false;pendingFuncSig=FuncSig();
         Ty t=Ty::I32;
@@ -3780,14 +3780,14 @@ public:
                 if(f.params.size()>32)throw Error("functions support at most 32 parameters: "+f.name);
             }while(eat(TK::Comma));}
             need(TK::RParen,"expected ')' after parameters");
-            need(TK::Arrow,"expected ->");
+            need(TK::Colon,"expected ':'");
             const Ty rty=needType(kTypeExpected,/*allowVoid=*/true);
             // v0.23.38-dev: a function may return a fn-pointer. The return
             // type is still `ptr` — an address comes back, not a function
             // value — and the signature travels beside it, the same way it
             // does beside a ptr parameter. That is what lets `return inc;`
-            // inside `fn get() -> fn(i32) -> i32` be checked, and what tells
-            // a `let f: fn(i32) -> i32 = get();` what it is holding.
+            // inside `fn get() : fn(i32) : i32` be checked, and what tells
+            // a `let f: fn(i32) : i32 = get();` what it is holding.
             if(pendingFuncType){f.returnFuncSig=pendingFuncSig;f.returnIsFunc=true;pendingFuncType=false;pendingFuncSig=FuncSig();}
             // v0.23.34-dev: a function cannot return an array. C refuses it
             // for the reason Aster has to: a return value travels in the
@@ -8416,7 +8416,7 @@ struct Sema {
             if(i)r+=", ";
             r+=tyNameFull(s.params[i]);
         }
-        return r+") -> "+tyNameFull(s.ret);
+        return r+") : "+tyNameFull(s.ret);
     }
     // May a value carrying `e`'s signature be stored where `toSig` is asked
     // for? A slot with no signature takes anything (a bare ptr keeps the

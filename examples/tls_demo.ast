@@ -7,7 +7,7 @@
 // exercised by the three-thread dlopen witness in tests/tls-checks.sh.
 tls let a: i32 = 10;
 tls let b: i32 = 20;
-fn main() -> i32 {
+fn main() : i32 {
     a = a + 5;
     b = b * 2;
     return a + b;

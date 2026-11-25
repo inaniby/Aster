@@ -175,8 +175,8 @@ emit_case(){
     n="$1"
     case "$n" in
     call_local)
-        ast='fn add_one(x: i32) -> i32 { return x + 1; }
-fn main() -> i32 {
+        ast='fn add_one(x: i32) : i32 { return x + 1; }
+fn main() : i32 {
     let fp: ptr = add_one;
     let a: i32 = fp(41);
     let b: i32 = add_one(a);
@@ -192,9 +192,9 @@ int main(void){
     call_reassign)
         # One variable, two functions: the call must follow what the variable
         # holds *now*, not what it held at the declaration.
-        ast='fn inc(x: i32) -> i32 { return x + 1; }
-fn dec(x: i32) -> i32 { return x - 1; }
-fn main() -> i32 {
+        ast='fn inc(x: i32) : i32 { return x + 1; }
+fn dec(x: i32) : i32 { return x - 1; }
+fn main() : i32 {
     let fp: ptr = inc;
     let a: i32 = fp(10);
     fp = dec;
@@ -213,9 +213,9 @@ int main(void){
     call_param)
         # The trampoline: the callee arrives as a parameter. This is the
         # callback shape — the reason the round exists.
-        ast='fn double_it(x: i32) -> i32 { return x * 2; }
-fn apply(g: ptr, x: i32) -> i32 { return g(x); }
-fn main() -> i32 { return apply(double_it, 21) % 251; }'
+        ast='fn double_it(x: i32) : i32 { return x * 2; }
+fn apply(g: ptr, x: i32) : i32 { return g(x); }
+fn main() : i32 { return apply(double_it, 21) % 251; }'
         c='static int double_it(int x){ return x*2; }
 static int apply(int (*g)(int), int x){ return g(x); }
 int main(void){ return apply(double_it, 21)%251; }' ;;
@@ -224,9 +224,9 @@ int main(void){ return apply(double_it, 21)%251; }' ;;
         # The call must load the pointer the global *holds* — branching to the
         # global's own address is the bug the first cut of this round shipped
         # (caught by this very case segfaulting under mutation m6).
-        ast='fn triple(x: i32) -> i32 { return x * 3; }
+        ast='fn triple(x: i32) : i32 { return x * 3; }
 let gp: ptr = triple;
-fn main() -> i32 { return gp(14) % 251; }'
+fn main() : i32 { return gp(14) % 251; }'
         c='static int triple(int x){ return x*3; }
 static int (*gp)(int) = triple;
 int main(void){ return gp(14)%251; }' ;;
@@ -234,10 +234,10 @@ int main(void){ return gp(14)%251; }' ;;
         # Ten arguments: the first eight ride in X0-X7, the ninth and tenth
         # are copied into the outgoing stack area — the same marshalling a
         # direct call uses, now reached through a BLR.
-        ast='fn sum10(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) -> i32 {
+        ast='fn sum10(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) : i32 {
     return a + b + c + d + e + f + g + h + i + j;
 }
-fn main() -> i32 {
+fn main() : i32 {
     let fp: ptr = sum10;
     return fp(1, 2, 3, 4, 5, 6, 7, 8, 9, 10) % 251;
 }'
@@ -253,8 +253,8 @@ int main(void){
         # and the callee's i64 result is read at i32 width — the documented
         # "an indirect call answers i32" contract, which the twin models by
         # casting exactly as the Aster consumer sees it.
-        ast='fn wadd(a: i64, b: i64) -> i64 { return a + b; }
-fn main() -> i32 {
+        ast='fn wadd(a: i64, b: i64) : i64 { return a + b; }
+fn main() : i32 {
     let fp: ptr = wadd;
     let r: i32 = fp(1000000000000, 7);
     return r % 251;
@@ -272,8 +272,8 @@ int main(void){
         # the callee here shifts the argument down instead: its answer is the
         # argument's upper half itself, and a stage that truncated it answers
         # a different number (this is the case mutation m5 must fail).
-        ast='fn whigh(a: i64) -> i64 { return a >> 32; }
-fn main() -> i32 {
+        ast='fn whigh(a: i64) : i64 { return a >> 32; }
+fn main() : i32 {
     let fp: ptr = whigh;
     let r: i32 = fp(1000000000000);
     return r % 251;
@@ -290,8 +290,8 @@ int main(void){
         # register happened to hold — AAPCS64 leaves a sub-64-bit argument's
         # upper half unspecified, which is why every scalar argument of an
         # indirect call stages at 64-bit width.
-        ast='fn wadd(a: i64, b: i64) -> i64 { return a + b; }
-fn main() -> i32 {
+        ast='fn wadd(a: i64, b: i64) : i64 { return a + b; }
+fn main() : i32 {
     let x: i32 = 1000000000;
     let fp: ptr = wadd;
     let r: i32 = fp(x, 7);
@@ -309,8 +309,8 @@ int main(void){
         # per-argument-width staging would pass 0xFFFFFFF9 in a W register and
         # leave the upper half of X1 unspecified. Sign-extension at the
         # 64-bit stage is what makes this agree with the oracle.
-        ast='fn wsub(a: i64, b: i64) -> i64 { return a - b; }
-fn main() -> i32 {
+        ast='fn wsub(a: i64, b: i64) : i64 { return a - b; }
+fn main() : i32 {
     let fp: ptr = wsub;
     let r: i32 = fp(-1000000000000, -7);
     return r % 251;
@@ -324,9 +324,9 @@ int main(void){
     call_ptr_arg)
         # A pointer argument through the indirect call, and the callee reading
         # through it — the buffer arrives as the address it is.
-        ast='fn pick_first(p: ptr) -> i32 { return load_u8(p); }
+        ast='fn pick_first(p: ptr) : i32 { return load_u8(p); }
 let buf: u8[4] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = store_u8(buf, 200);
     let fp: ptr = pick_first;
     return (fp(buf) + (a % 251)) % 251;
@@ -342,8 +342,8 @@ int main(void){
         # A bool argument: 0/1 in a W register, read by the callee as an int.
         # (bool constants come from comparisons — there are no true/false
         # literals in the language.)
-        ast='fn flag(b: bool) -> i32 { if (b) { return 60; } return 6; }
-fn main() -> i32 {
+        ast='fn flag(b: bool) : i32 { if (b) { return 60; } return 6; }
+fn main() : i32 {
     let fp: ptr = flag;
     let t: bool = 1 < 2;
     let f: bool = 2 < 1;
@@ -356,8 +356,8 @@ int main(void){
     return (fp(t)+fp(f))%251;
 }' ;;
     call_loop)
-        ast='fn step(x: i32) -> i32 { return x + 3; }
-fn main() -> i32 {
+        ast='fn step(x: i32) : i32 { return x + 3; }
+fn main() : i32 {
     let fp: ptr = step;
     let i: i32 = 0;
     let s: i32 = 0;
@@ -380,9 +380,9 @@ int main(void){
         # with load_ptr into a variable, and called through that. The pointer
         # is swapped between the two calls, so both loads are observed.
         ast='struct Box { f: ptr }
-fn inc(x: i32) -> i32 { return x + 1; }
-fn dec(x: i32) -> i32 { return x - 1; }
-fn main() -> i32 {
+fn inc(x: i32) : i32 { return x + 1; }
+fn dec(x: i32) : i32 { return x - 1; }
+fn main() : i32 {
     let b: Box = Box { "x" };
     b.f = inc;
     let q: ptr = load_ptr(&b);
@@ -408,9 +408,9 @@ int main(void){
     call_nested)
         # An indirect call whose argument is another indirect call's result:
         # the second call's staging must not disturb the first's registers.
-        ast='fn twice(x: i32) -> i32 { return x * 2; }
-fn wrap(x: i32) -> i32 { return x + 5; }
-fn main() -> i32 {
+        ast='fn twice(x: i32) : i32 { return x * 2; }
+fn wrap(x: i32) : i32 { return x + 5; }
+fn main() : i32 {
     let a: ptr = twice;
     let b: ptr = wrap;
     return b(a(18)) % 251;
@@ -423,8 +423,8 @@ int main(void){
     return b(a(18))%251;
 }' ;;
     call_zero_args)
-        ast='fn answer() -> i32 { return 42; }
-fn main() -> i32 {
+        ast='fn answer() : i32 { return 42; }
+fn main() : i32 {
     let fp: ptr = answer;
     return fp() % 251;
 }'
@@ -436,9 +436,9 @@ int main(void){
     call_mixed_widths)
         # One call, four widths: i32, ptr, a wide i64 literal, i32. The wide
         # literal is what a per-argument-width staging would truncate.
-        ast='fn mix(a: i32, p: ptr, b: i64, c: i32) -> i32 { return a + load_u8(p) + (b % 100) + c; }
+        ast='fn mix(a: i32, p: ptr, b: i64, c: i32) : i32 { return a + load_u8(p) + (b % 100) + c; }
 let buf: u8[4] = 0;
-fn main() -> i32 {
+fn main() : i32 {
     let a: i32 = store_u8(buf, 30);
     let fp: ptr = mix;
     let r: i32 = fp(1, buf, 1000000000007, 2);
@@ -457,8 +457,8 @@ int main(void){
     call_neg)
         # Negative i32 values through the 32-bit half of the staging: the sign
         # bit must survive the round trip in both directions.
-        ast='fn neg(x: i32) -> i32 { return -x; }
-fn main() -> i32 {
+        ast='fn neg(x: i32) : i32 { return -x; }
+fn main() : i32 {
     let fp: ptr = neg;
     let a: i32 = fp(-5);
     let b: i32 = fp(a);
@@ -474,9 +474,9 @@ int main(void){
     call_helper)
         # A helper that calls through the pointer twice: the second call's
         # staging runs while the first call's result is still live.
-        ast='fn sq(x: i32) -> i32 { return x * x; }
-fn twice_call(g: ptr, x: i32) -> i32 { return g(x) + g(x + 1); }
-fn main() -> i32 { return twice_call(sq, 5) % 251; }'
+        ast='fn sq(x: i32) : i32 { return x * x; }
+fn twice_call(g: ptr, x: i32) : i32 { return g(x) + g(x + 1); }
+fn main() : i32 { return twice_call(sq, 5) % 251; }'
         c='static int sq(int x){ return x*x; }
 static int twice_call(int (*g)(int), int x){ return g(x)+g(x+1); }
 int main(void){ return twice_call(sq, 5)%251; }' ;;
@@ -486,9 +486,9 @@ int main(void){ return twice_call(sq, 5)%251; }' ;;
         # C's own scoping would answer the other way (the local hides the
         # function), so the twin spells the direct call explicitly — this case
         # pins Aster's documented precedence rule, not the platform ABI.
-        ast='fn f(x: i32) -> i32 { return 100; }
-fn other(x: i32) -> i32 { return 7; }
-fn main() -> i32 {
+        ast='fn f(x: i32) : i32 { return 100; }
+fn other(x: i32) : i32 { return 7; }
+fn main() : i32 {
     let f: ptr = other;
     return f(1) % 251;
 }'
@@ -535,8 +535,8 @@ for n in $CASES; do check_case "$n" || failed=1; done
 # — because the .so path's bytes are the .so writer's business, not this
 # suite's oracle.
 printf '%s\n' '[4b/7] Shared object: the indirect call builds and branches'
-printf '%s\n' 'fn add_one(x: i32) -> i32 { return x + 1; }
-fn trampoline(g: ptr, x: i32) -> i32 { return g(x); }' > "$W/so.ast"
+printf '%s\n' 'fn add_one(x: i32) : i32 { return x + 1; }
+fn trampoline(g: ptr, x: i32) : i32 { return g(x); }' > "$W/so.ast"
 if ! "$OUT/aster" build-so "$W/so.ast" -o "$W/libindirect.so" --soname libindirect.so >"$W/so.log" 2>&1; then
     echo "FAIL: build-so rejected an indirect call:" >&2; cat "$W/so.log" >&2; exit 1
 fi
@@ -583,45 +583,45 @@ reject(){ # reject <name> <source> <expected message fragment>
     printf 'PASS: rejected — %s\n' "$1"
 }
 reject "an i32 local as callee" \
-    'fn main() -> i32 { let n: i32 = 5; return n(1); }' \
+    'fn main() : i32 { let n: i32 = 5; return n(1); }' \
     "cannot call through 'n': expected a function pointer (ptr), got i32"
 reject "a bool local as callee" \
-    'fn main() -> i32 { let b: bool = 1 < 2; return b(1); }' \
+    'fn main() : i32 { let b: bool = 1 < 2; return b(1); }' \
     "cannot call through 'b': expected a function pointer (ptr), got bool"
 reject "a struct local as callee" \
     'struct Box { v: i32 }
-fn main() -> i32 { let s: Box = Box { 1 }; return s(1); }' \
+fn main() : i32 { let s: Box = Box { 1 }; return s(1); }' \
     "cannot call through 's': expected a function pointer (ptr), got Box"
 reject "a local array as callee" \
-    'fn main() -> i32 { let a: i32[4] = 0; return a(1); }' \
+    'fn main() : i32 { let a: i32[4] = 0; return a(1); }' \
     "cannot call through 'a': it is an array"
 reject "an i32 global as callee" \
     'let g: i32 = 3;
-fn main() -> i32 { return g(1); }' \
+fn main() : i32 { return g(1); }' \
     "cannot call through 'g': expected a function pointer (ptr), got i32"
 reject "a global array as callee" \
     'let ga: ptr[2] = 0;
-fn main() -> i32 { return ga(1); }' \
+fn main() : i32 { return ga(1); }' \
     "cannot call through 'ga': it is an array"
 reject "an undeclared callee" \
-    'fn main() -> i32 { return nope(1); }' \
+    'fn main() : i32 { return nope(1); }' \
     "call to undeclared function: nope"
 reject "a struct argument" \
-    'fn f(x: i32) -> i32 { return x; }
+    'fn f(x: i32) : i32 { return x; }
 struct Box { v: i32 }
-fn main() -> i32 {
+fn main() : i32 {
     let b: Box = Box { 1 };
     let fp: ptr = f;
     return fp(b);
 }' \
     "an indirect call cannot take a struct argument"
 reject "an extern function as the pointer's value" \
-    'extern fn ext(x: i32) -> i32;
-fn main() -> i32 { let fp: ptr = ext; return fp(1); }' \
+    'extern fn ext(x: i32) : i32;
+fn main() : i32 { let fp: ptr = ext; return fp(1); }' \
     "cannot take the address of extern function 'ext'"
 reject "a bool consumed from an indirect call" \
-    'fn f(x: i32) -> i32 { return x; }
-fn main() -> i32 { let fp: ptr = f; let b: bool = fp(1); return 0; }' \
+    'fn f(x: i32) : i32 { return x; }
+fn main() : i32 { let fp: ptr = f; let b: bool = fp(1); return 0; }' \
     "type mismatch initializing 'b': expected bool"
 
 # ---------------------------------------------------------------------------
@@ -709,9 +709,9 @@ must_not_compile m7 call_local
 # message ("read its fields, or pass &b"). The mutation removes sema's line
 # and requires the specific diagnostic to vanish — the message the rejection
 # battery asserts on is produced by exactly that line.
-printf '%s\n' 'fn f(x: i32) -> i32 { return x; }
+printf '%s\n' 'fn f(x: i32) : i32 { return x; }
 struct Box { v: i32 }
-fn main() -> i32 {
+fn main() : i32 {
     let b: Box = Box { 1 };
     let fp: ptr = f;
     return fp(b);

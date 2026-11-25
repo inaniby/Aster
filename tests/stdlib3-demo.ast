@@ -3,19 +3,19 @@
 // Every line pins one property, and the C twin (tests/aster-std3-twin.c) prints
 // the same lines through printf's "%.*f", so the two implementations are
 // compared byte for byte rather than against a hand-written expectation.
-extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
-extern fn strlen(s: ptr<u8>) -> i32;
-extern fn fmt_i32(buf: ptr<u8>, v: i32) -> i32;
-extern fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) -> i32;
-extern fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) -> i32;
+extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32;
+extern fn strlen(s: ptr<u8>) : i32;
+extern fn fmt_i32(buf: ptr<u8>, v: i32) : i32;
+extern fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) : i32;
+extern fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) : i32;
 
-fn put(out: ptr<u8>, at: i32, s: ptr<u8>) -> i32 {
+fn put(out: ptr<u8>, at: i32, s: ptr<u8>) : i32 {
     let n: i32 = strlen(s);
     memcpy(out + at, s, n);
     return at + n;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let ok: i32 = 0;
     let b: u8[64] = 0;
     let out: u8[512] = 0;

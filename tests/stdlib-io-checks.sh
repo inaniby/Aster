@@ -70,7 +70,7 @@ ok 'demo output == the POSIX twin'
 printf '%s\n' '[5/9] files'
 cat > "$OUT/files.ast" <<'AST'
 include "aiolib.ast";
-fn main() -> i32 {
+fn main() : i32 {
     let fd: i32 = fd_open("f.txt", 577, 420);
     if (fd < 0) { return 1; }
     if (write_all(fd, "0123456789", 10) != 10) { return 2; }
@@ -96,7 +96,7 @@ ok 'round trip, size, a missing path, the raw bytes'
 printf '%s\n' '[6/9] the growable arena'
 cat > "$OUT/arena.ast" <<'AST'
 include "aiolib.ast";
-fn main() -> i32 {
+fn main() : i32 {
     if (alloc(0) != 0) { return 1; }
     if (alloc(0 - 5) != 0) { return 2; }
     let a: ptr = alloc(100000);            // past the first 64 KiB chunk
@@ -127,11 +127,11 @@ cat > "$OUT/hdr.ast" <<'AST'
 let table: ptr<u8>[8] = 0;
 let numbers: i64[4] = 0;
 const limit: i32 = 99;
-fn helper(x: i32) -> i32 { return x + 1; }
+fn helper(x: i32) : i32 { return x + 1; }
 AST
 cat > "$OUT/usehdr.ast" <<'AST'
 include "hdr.ast";
-fn main() -> i32 {
+fn main() : i32 {
     let t: u8[8] = 0;
     table[0] = &t;               // the declaration really is an array
     numbers[1] = 7;

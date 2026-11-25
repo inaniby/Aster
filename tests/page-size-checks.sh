@@ -75,7 +75,7 @@ echo "OK: no bare 0x1000 literal in src/aster.cpp"
 printf '%s\n' '[3/7] Prepare test corpus'
 cat > "$W/source.ast" <<'AST'
 let g_factor: i32 = 6;
-fn main() -> i32 {
+fn main() : i32 {
   let x: i32 = 7;
   let label: ptr = "pg-size-rodata";
   let _u: i32 = label[0];

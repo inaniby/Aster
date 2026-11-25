@@ -12,10 +12,10 @@
 //   internal app dir : /data/data/<pkg>/files/aster.log             (needs run-as)
 // The external path is tried first; the internal path is a fallback.
 
-extern fn open(path: ptr, flags: i32, mode: i32) -> i32;
-extern fn write(fd: i32, buf: ptr, len: i32) -> i32;
-extern fn close(fd: i32) -> i32;
-extern fn mkdir(path: ptr, mode: i32) -> i32;
+extern fn open(path: ptr, flags: i32, mode: i32) : i32;
+extern fn write(fd: i32, buf: ptr, len: i32) : i32;
+extern fn close(fd: i32) : i32;
+extern fn mkdir(path: ptr, mode: i32) : i32;
 
 // O_WRONLY | O_CREAT | O_APPEND = 1 | 0x40 | 0x400 = 0x441.
 let EXT_DIR:   ptr = "/sdcard/Android/data/com.aster.lifecycle";
@@ -29,7 +29,7 @@ let g_tried:  i32 = 0;
 
 // Byte length of a NUL-terminated C string (read one byte at a time, since a
 // ptr dereference in Aster loads four bytes and would over-run short strings).
-fn slen(s: ptr) -> i32 {
+fn slen(s: ptr) : i32 {
     let n: i32 = 0;
     let p: ptr = s;
     while (1 == 1) {
@@ -44,7 +44,7 @@ fn slen(s: ptr) -> i32 {
 
 // Open the log file once, trying the external app dir first, then the internal.
 // mkdir/open results are assigned (Aster has no bare-call statements).
-fn aster_log_init() -> i32 {
+fn aster_log_init() : i32 {
     let scratch: i32 = 0;
     scratch = mkdir(EXT_DIR, 493);
     scratch = mkdir(EXT_FILES, 493);
@@ -57,7 +57,7 @@ fn aster_log_init() -> i32 {
 
 // The symbol lifecycle.ast calls. Aster routes the undefined reference here,
 // so the packaged library needs no system liblog.so — only libc.so.
-fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32 {
+fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) : i32 {
     if (g_tried == 0) {
         g_tried = 1;
         let ig: i32 = aster_log_init();

@@ -8,7 +8,7 @@
 //
 // The program is written so its return value is hand-computable and matches its
 // C twin exactly (see tests/switch-twin.c).
-fn lookup(x: i32) -> i32 {
+fn lookup(x: i32) : i32 {
     switch (x) {
         case 1: return 100;
         case 2: return 200;
@@ -17,7 +17,7 @@ fn lookup(x: i32) -> i32 {
     }
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     let total: i32 = 0;
     // Labeled double loop. `continue outer` jumps to the outer step (the for's
     // increment), so the inner `total = total + 1` runs only for i = 1 and i = 2

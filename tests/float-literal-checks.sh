@@ -56,39 +56,39 @@ $CXX -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -o "$ASTER" src/aster.cpp
 ok 'compiler built'
 
 printf '%s\n' '[2/8] the four exponent shapes'
-build_run e_up 'fn main() -> i32 { let x: f64 = 1e9; return i32(x / 1000000000.0); }' 1
-build_run e_down 'fn main() -> i32 { let x: f64 = 1.5e-3; return i32(x * 1000.0); }' 1
-build_run e_plus 'fn main() -> i32 { let x: f64 = 2E+2; return i32(x); }' 200
-build_run e_zero 'fn main() -> i32 { let x: f64 = 2.5e0; return i32(x * 2.0); }' 5
+build_run e_up 'fn main() : i32 { let x: f64 = 1e9; return i32(x / 1000000000.0); }' 1
+build_run e_down 'fn main() : i32 { let x: f64 = 1.5e-3; return i32(x * 1000.0); }' 1
+build_run e_plus 'fn main() : i32 { let x: f64 = 2E+2; return i32(x); }' 200
+build_run e_zero 'fn main() : i32 { let x: f64 = 2.5e0; return i32(x * 2.0); }' 5
 ok '1e9, 1.5e-3, 2E+2, 2.5e0'
 
 printf '%s\n' '[3/8] the same double as the long spelling'
-build_run same 'fn main() -> i32 { let a: f64 = 1e-7; let b: f64 = 0.0000001;
+build_run same 'fn main() : i32 { let a: f64 = 1e-7; let b: f64 = 0.0000001;
     if (a == b) { return 1; } return 0; }' 1
-build_run same2 'fn main() -> i32 { let a: f64 = 3.5e2; let b: f64 = 350.0;
+build_run same2 'fn main() : i32 { let a: f64 = 3.5e2; let b: f64 = 350.0;
     if (a == b) { return 41; } return 0; }' 41
 ok 'exponent and decimal spellings compare equal'
 
 printf '%s\n' '[4/8] integers keep their own lexing'
-build_run hex 'fn main() -> i32 { let x: i32 = 0x1e9; return x - 489; }' 0
-build_run bin 'fn main() -> i32 { let x: i32 = 0b1010; return x - 10; }' 0
-build_run under 'fn main() -> i32 { let x: i32 = 1_000; return x - 1000; }' 0
-build_run suffix 'fn main() -> i32 { let x: i64 = 123l; return i32(x - 123l); }' 0
+build_run hex 'fn main() : i32 { let x: i32 = 0x1e9; return x - 489; }' 0
+build_run bin 'fn main() : i32 { let x: i32 = 0b1010; return x - 10; }' 0
+build_run under 'fn main() : i32 { let x: i32 = 1_000; return x - 1000; }' 0
+build_run suffix 'fn main() : i32 { let x: i64 = 123l; return i32(x - 123l); }' 0
 ok '0x1e9 (an e digit), 0b1010, 1_000, 123l'
 
 printf '%s\n' '[5/8] what is refused'
-build_reject badsuf 'fn main() -> i32 { let x: f64 = 1e9u; return 0; }' 'cannot carry an integer suffix'
-build_reject badexp 'fn main() -> i32 { let x: f64 = 1e; return 0; }' 'malformed exponent'
-build_reject badsgn 'fn main() -> i32 { let x: f64 = 1.5e+; return 0; }' 'malformed exponent'
+build_reject badsuf 'fn main() : i32 { let x: f64 = 1e9u; return 0; }' 'cannot carry an integer suffix'
+build_reject badexp 'fn main() : i32 { let x: f64 = 1e; return 0; }' 'malformed exponent'
+build_reject badsgn 'fn main() : i32 { let x: f64 = 1.5e+; return 0; }' 'malformed exponent'
 # v0.23.77-dev (audit): the scanner used to take a fractional part and an
 # exponent any number of times, so these two glued themselves into one
 # token and compiled. One of each, at most.
-build_reject twodots 'fn main() -> i32 { let x: f64 = 1.5.2; return 0; }' '.'
-build_reject twoexps 'fn main() -> i32 { let x: f64 = 1e2e3; return 0; }' 'e3'
+build_reject twodots 'fn main() : i32 { let x: f64 = 1.5.2; return 0; }' '.'
+build_reject twoexps 'fn main() : i32 { let x: f64 = 1e2e3; return 0; }' 'e3'
 ok 'a suffix, a bare e, a sign with no digits'
 
 printf '%s\n' '[6/8] a global folds an exponent literal'
-printf 'let g: f64 = 1.5e3;\nfn main() -> i32 { return i32(g); }\n' > "$OUT/g.ast"
+printf 'let g: f64 = 1.5e3;\nfn main() : i32 { return i32(g); }\n' > "$OUT/g.ast"
 "$ASTER" build-elf "$OUT/g.ast" -o "$OUT/g.elf" >/dev/null 2>&1 || fail 'the global did not compile'
 chmod +x "$OUT/g.elf"
 set +e; "$RUNNER" "$OUT/g.elf"; rc=$?; set -e

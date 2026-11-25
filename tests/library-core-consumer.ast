@@ -5,27 +5,27 @@
 // The declarations below are what a caller writes when the core is a separate
 // object; tests/library-core-checks.sh strips them and prepends the core
 // itself for the self-hosted stage, which has no linker.
-extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) -> i32;
-extern fn strlen(s: ptr<u8>) -> i32;
-extern fn atoi(s: ptr<u8>) -> i32;
-extern fn itoa(v: i64, buf: ptr<u8>) -> i32;
-extern fn utoa(v: i64, buf: ptr<u8>) -> i32;
-extern fn strchr(s: ptr<u8>, c: i32) -> i32;
-extern fn strstr(h: ptr<u8>, n: ptr<u8>) -> i32;
-extern fn is_digit(c: i32) -> i32;
-extern fn is_space(c: i32) -> i32;
+extern fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32;
+extern fn strlen(s: ptr<u8>) : i32;
+extern fn atoi(s: ptr<u8>) : i32;
+extern fn itoa(v: i64, buf: ptr<u8>) : i32;
+extern fn utoa(v: i64, buf: ptr<u8>) : i32;
+extern fn strchr(s: ptr<u8>, c: i32) : i32;
+extern fn strstr(h: ptr<u8>, n: ptr<u8>) : i32;
+extern fn is_digit(c: i32) : i32;
+extern fn is_space(c: i32) : i32;
 
 let out: u8[128] = 0;
 let text: u8[32] = 0;
 let at: i32 = 0;
 
-fn sep() -> i32 {
+fn sep() : i32 {
     store_u8(out + at, 124);
     at = at + 1;
     return at;
 }
 
-fn main() -> i32 {
+fn main() : i32 {
     memcpy(text, "  -42 trailing", 13);
     let n: i64 = strlen(text);
     at = at + utoa(n, out + at);

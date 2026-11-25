@@ -13,21 +13,21 @@ let g_fake_clock_ns: i64 = 0;        // v1.24：可注入的单调时钟（默�
 let g_fake_density: i32 = 420;       // dpi；420 -> 2.625x
 let g_fake_night: i32 = 1;          // UI_MODE_NIGHT_NO
 
-fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) -> i32 { return 0; }
+fn __android_log_print(prio: i32, tag: ptr, fmt: ptr) : i32 { return 0; }
 
 // ---- v1.12 帧泵：无宿主测试是单线程假时钟，线程/管道全部空实现 ----
-fn pthread_create(tid: ptr, attr: ptr, start: ptr, arg: ptr) -> i32 { return -1; }
-fn pthread_join(tid: i64, ret: ptr) -> i32 { return 0; }
-fn pthread_mutex_lock(m: ptr) -> i32 { return 0; }
-fn pthread_mutex_unlock(m: ptr) -> i32 { return 0; }
-fn pipe2(fds: ptr, flags: i32) -> i32 { return -1; }
-fn poll(fds: ptr, nfds: i32, timeout: i32) -> i32 { return 0; }
+fn pthread_create(tid: ptr, attr: ptr, start: ptr, arg: ptr) : i32 { return -1; }
+fn pthread_join(tid: i64, ret: ptr) : i32 { return 0; }
+fn pthread_mutex_lock(m: ptr) : i32 { return 0; }
+fn pthread_mutex_unlock(m: ptr) : i32 { return 0; }
+fn pipe2(fds: ptr, flags: i32) : i32 { return -1; }
+fn poll(fds: ptr, nfds: i32, timeout: i32) : i32 { return 0; }
 
 // v2.7.2：libc memcpy/memmove 的 headless stub（Aster 循环；真机/.so
 // 里解析到 libc）。签名必须与 src/aui_impl.ast 的 extern 声明一致
 // （n 是 i64，对应 C 的 size_t）。注意：stdlib 的字节循环已改名
 // mem_copy_bytes/mem_move_bytes，名字不再冲突。
-fn memcpy(dst: ptr, src: ptr, n: i64) -> ptr {
+fn memcpy(dst: ptr, src: ptr, n: i64) : ptr {
     if (n <= 0) { return dst; }
     let m: i32 = i32(n);
     let i: i32 = 0;
@@ -45,7 +45,7 @@ fn memcpy(dst: ptr, src: ptr, n: i64) -> ptr {
     return dst;
 }
 
-fn memmove(dst: ptr, src: ptr, n: i64) -> ptr {
+fn memmove(dst: ptr, src: ptr, n: i64) : ptr {
     if (n <= 0 || dst == src) { return dst; }
     let m: i32 = i32(n);
     if (i64(dst) < i64(src)) {
@@ -66,13 +66,13 @@ fn memmove(dst: ptr, src: ptr, n: i64) -> ptr {
     return dst;
 }
 
-fn ANativeWindow_getWidth(w: ptr) -> i32 { return g_fake_win_w; }
-fn ANativeWindow_getHeight(w: ptr) -> i32 { return g_fake_win_h; }
-fn ANativeWindow_setBuffersGeometry(w: ptr, width: i32, height: i32, format: i32) -> i32 {
+fn ANativeWindow_getWidth(w: ptr) : i32 { return g_fake_win_w; }
+fn ANativeWindow_getHeight(w: ptr) : i32 { return g_fake_win_h; }
+fn ANativeWindow_setBuffersGeometry(w: ptr, width: i32, height: i32, format: i32) : i32 {
     return 0;
 }
 
-fn ANativeWindow_lock(w: ptr, outBuffer: ptr, inOutDirty: ptr) -> i32 {
+fn ANativeWindow_lock(w: ptr, outBuffer: ptr, inOutDirty: ptr) : i32 {
     let pp: ptr = g_fake_bits;
     if (pp == 0) { pp = g_fake_pixels; }
     *(outBuffer + 0) = g_fake_win_w;
@@ -83,18 +83,18 @@ fn ANativeWindow_lock(w: ptr, outBuffer: ptr, inOutDirty: ptr) -> i32 {
     return 0;
 }
 
-fn ANativeWindow_unlockAndPost(w: ptr) -> i32 { return 0; }
+fn ANativeWindow_unlockAndPost(w: ptr) : i32 { return 0; }
 
-fn ANativeActivity_finish(a: ptr) -> i32 {
+fn ANativeActivity_finish(a: ptr) : i32 {
     g_fake_finished = 1;
     return 0;
 }
 
-fn ALooper_forThread() -> ptr {
+fn ALooper_forThread() : ptr {
     let lp: ptr = g_fake_looper;
     return lp;
 }
-fn ALooper_prepare(opts: i32) -> ptr {
+fn ALooper_prepare(opts: i32) : ptr {
     let lp: ptr = g_fake_looper;
     return lp;
 }
@@ -118,7 +118,7 @@ let g_fake_ev_count: i32 = 1;
 let g_fake_ev_axis: i32 = 0;
 let g_fake_ev_key: i32 = 0;
 
-fn fake_post_motion(action: i32, x: i32, y: i32) -> i32 {
+fn fake_post_motion(action: i32, x: i32, y: i32) : i32 {
     g_fake_ev_type = 2;            // AINPUT_EVENT_TYPE_MOTION
     g_fake_ev_action = action;
     g_fake_ev_x = x;
@@ -130,7 +130,7 @@ fn fake_post_motion(action: i32, x: i32, y: i32) -> i32 {
 }
 
 // v2.18：压入双指 MOTION 事件（两指槽 + count=2；id 固定 0/1）。
-fn fake_post_motion2(action: i32, x0: i32, y0: i32, x1: i32, y1: i32) -> i32 {
+fn fake_post_motion2(action: i32, x0: i32, y0: i32, x1: i32, y1: i32) : i32 {
     g_fake_ev_type = 2;
     g_fake_ev_action = action;
     g_fake_ev_x = x0;
@@ -144,7 +144,7 @@ fn fake_post_motion2(action: i32, x0: i32, y0: i32, x1: i32, y1: i32) -> i32 {
 }
 
 // v1.8：KEYCODE_BACK 走 KEY 事件（AINPUT_EVENT_TYPE_KEY = 1）。
-fn fake_post_key(action: i32, code: i32) -> i32 {
+fn fake_post_key(action: i32, code: i32) : i32 {
     g_fake_ev_type = 1;
     g_fake_ev_action = action;
     g_fake_ev_key = code;
@@ -152,36 +152,36 @@ fn fake_post_key(action: i32, code: i32) -> i32 {
     return 0;
 }
 
-fn AInputQueue_attachLooper(q: ptr, looper: ptr, ident: i32, cb: ptr, data: ptr) -> i32 { return 0; }
-fn AInputQueue_detachLooper(q: ptr) -> i32 { return 0; }
-fn AInputQueue_getEvent(q: ptr, outEvent: ptr) -> i32 {
+fn AInputQueue_attachLooper(q: ptr, looper: ptr, ident: i32, cb: ptr, data: ptr) : i32 { return 0; }
+fn AInputQueue_detachLooper(q: ptr) : i32 { return 0; }
+fn AInputQueue_getEvent(q: ptr, outEvent: ptr) : i32 {
     if (g_fake_ev_pending == 0) { return -1; }
     g_fake_ev_pending = 0;
     *(outEvent) = g_fake_ev_ptr;
     return 1;
 }
-fn AInputQueue_preDispatchEvent(q: ptr, event: ptr) -> i32 { return 0; }
-fn AInputQueue_finishEvent(q: ptr, event: ptr, handled: i32) -> i32 { return 0; }
-fn AInputEvent_getType(event: ptr) -> i32 { return g_fake_ev_type; }
-fn AKeyEvent_getAction(event: ptr) -> i32 { return g_fake_ev_action; }
-fn AKeyEvent_getKeyCode(event: ptr) -> i32 { return g_fake_ev_key; }
-fn AMotionEvent_getAction(event: ptr) -> i32 { return g_fake_ev_action; }
-fn AMotionEvent_getX(event: ptr, pointerIndex: i32) -> i32 {
+fn AInputQueue_preDispatchEvent(q: ptr, event: ptr) : i32 { return 0; }
+fn AInputQueue_finishEvent(q: ptr, event: ptr, handled: i32) : i32 { return 0; }
+fn AInputEvent_getType(event: ptr) : i32 { return g_fake_ev_type; }
+fn AKeyEvent_getAction(event: ptr) : i32 { return g_fake_ev_action; }
+fn AKeyEvent_getKeyCode(event: ptr) : i32 { return g_fake_ev_key; }
+fn AMotionEvent_getAction(event: ptr) : i32 { return g_fake_ev_action; }
+fn AMotionEvent_getX(event: ptr, pointerIndex: i32) : i32 {
     // v2.18：axis 编码槽位：1/2 = 槽 0 的 X/Y，3/4 = 槽 1 的 X/Y。
     if (pointerIndex == 1) { g_fake_ev_axis = 3; } else { g_fake_ev_axis = 1; }
     return 0;
 }
-fn AMotionEvent_getY(event: ptr, pointerIndex: i32) -> i32 {
+fn AMotionEvent_getY(event: ptr, pointerIndex: i32) : i32 {
     if (pointerIndex == 1) { g_fake_ev_axis = 4; } else { g_fake_ev_axis = 2; }
     return 0;
 }
 // v2.18：指针数与指针 id（fake 里 id 固定等于 index）。
-fn AMotionEvent_getPointerCount(event: ptr) -> i32 { return g_fake_ev_count; }
-fn AMotionEvent_getPointerId(event: ptr, pointerIndex: i32) -> i32 {
+fn AMotionEvent_getPointerCount(event: ptr) : i32 { return g_fake_ev_count; }
+fn AMotionEvent_getPointerId(event: ptr, pointerIndex: i32) : i32 {
     if (pointerIndex == 1) { return 1; }
     return 0;
 }
-fn lrintf() -> i32 {
+fn lrintf() : i32 {
     if (g_fake_ev_axis == 1) { g_fake_ev_axis = 0; return g_fake_ev_x; }
     if (g_fake_ev_axis == 2) { g_fake_ev_axis = 0; return g_fake_ev_y; }
     if (g_fake_ev_axis == 3) { g_fake_ev_axis = 0; return g_fake_ev_x1; }
@@ -189,15 +189,15 @@ fn lrintf() -> i32 {
     return 0;
 }
 
-fn AConfiguration_new() -> ptr { return g_fake_looper; }
-fn AConfiguration_fromAssetManager(cfg: ptr, assets: ptr) -> i32 { return 0; }
-fn AConfiguration_getDensity(cfg: ptr) -> i32 { return g_fake_density; }
-fn AConfiguration_getUiModeNight(cfg: ptr) -> i32 { return g_fake_night; }
-fn AConfiguration_delete(cfg: ptr) -> i32 { return 0; }
+fn AConfiguration_new() : ptr { return g_fake_looper; }
+fn AConfiguration_fromAssetManager(cfg: ptr, assets: ptr) : i32 { return 0; }
+fn AConfiguration_getDensity(cfg: ptr) : i32 { return g_fake_density; }
+fn AConfiguration_getUiModeNight(cfg: ptr) : i32 { return g_fake_night; }
+fn AConfiguration_delete(cfg: ptr) : i32 { return 0; }
 
 // v1.6 惯性滚动用到的平台符号。qemu 测试不跑真定时器：时间恒为 0，
 // 惯性只通过 aui_debug_fling_start + aui_frame(t) 显式驱动。
-fn clock_gettime(clk: i32, tp: ptr) -> i32 {
+fn clock_gettime(clk: i32, tp: ptr) : i32 {
     let sec: i64 = g_fake_clock_ns / 1000000000;
     *(tp) = sec;
     *(tp + 8) = g_fake_clock_ns - sec * 1000000000;
@@ -205,7 +205,7 @@ fn clock_gettime(clk: i32, tp: ptr) -> i32 {
 }
 
 // v1.24：测试注入单调时钟，用来验证分页的速度阈值（默认 0）。
-fn fake_set_clock(t: i64) -> i32 {
+fn fake_set_clock(t: i64) : i32 {
     g_fake_clock_ns = t;
     return 0;
 }
@@ -214,7 +214,7 @@ fn fake_set_clock(t: i64) -> i32 {
 // 时用 mmap 另开一块连续位图——Aster 单个全局数组最多 1048576 个元素，
 // 1216×2688 = 3268608 像素装不进一个数组；窗口位图必须连续，
 // fb_copy_win 按 bits + y*stride 写。mmap 失败（返回 0）报 -1。
-fn fake_set_win_size(w: i32, h: i32) -> i32 {
+fn fake_set_win_size(w: i32, h: i32) : i32 {
     if (w <= 0 || h <= 0 || w > 4096 || h > 4096) { return -1; }
     g_fake_win_w = w;
     g_fake_win_h = h;
@@ -228,11 +228,11 @@ fn fake_set_win_size(w: i32, h: i32) -> i32 {
 }
 
 // v2.7.1：当前窗口位图指针（静态缓冲或 fake_set_win_size 的 mmap 块）。
-fn fake_bits() -> ptr {
+fn fake_bits() : ptr {
     if (g_fake_bits != 0) { return g_fake_bits; }
     return g_fake_pixels;
 }
-fn timerfd_create(clk: i32, flags: i32) -> i32 { return -1; }
-fn timerfd_settime(fd: i32, flags: i32, nv: ptr, ov: ptr) -> i32 { return -1; }
-fn ALooper_addFd(l: ptr, fd: i32, ident: i32, ev: i32, cb: ptr, data: ptr) -> i32 { return -1; }
-fn ALooper_removeFd(l: ptr, fd: i32) -> i32 { return 0; }
+fn timerfd_create(clk: i32, flags: i32) : i32 { return -1; }
+fn timerfd_settime(fd: i32, flags: i32, nv: ptr, ov: ptr) : i32 { return -1; }
+fn ALooper_addFd(l: ptr, fd: i32, ident: i32, ev: i32, cb: ptr, data: ptr) : i32 { return -1; }
+fn ALooper_removeFd(l: ptr, fd: i32) : i32 { return 0; }

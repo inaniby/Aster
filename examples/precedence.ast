@@ -24,7 +24,7 @@ struct S { p: ptr, v: i32, ok: bool }
 
 let buf: i32[4] = 9;
 
-fn main() -> i32 {
+fn main() : i32 {
     let r: i32 = 0;
 
     // (1) `true || (true && false)` — true, because && binds tighter.

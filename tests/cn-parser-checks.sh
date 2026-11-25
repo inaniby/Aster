@@ -724,16 +724,19 @@ cmp "$TMP/closure-type-zh.out" "$TMP/closure-type-en.out"
 grep -q '"closure(i32,string):i32"' "$TMP/closure-type-zh.out"
 grep -q '"closure(closure(i32):i32,ptr):void"' "$TMP/closure-type-zh.out"
 
-# #8: closure types accept `->` (design §2.14 canonical) as well as `:`;
-# both normalize to the same `closure(…):…` type string.
+# #8 (closed 2026-11-25): closure types take `:` only; `->` is rejected.
 cat > "$TMP/closure-type-arrow-zh.ast" <<'SRC'
 方法 启动方法(): 整数
 变量 回调: 闭包(整数)->整数
 返回 0
 结束 方法
 SRC
-"$TMP/aster-cn-parse" "$TMP/closure-type-arrow-zh.ast" > "$TMP/closure-type-arrow-zh.out"
-grep -q '"closure(i32):i32"' "$TMP/closure-type-arrow-zh.out"
+if "$TMP/aster-cn-parse" "$TMP/closure-type-arrow-zh.ast" \
+    > /dev/null 2> "$TMP/closure-type-arrow-zh.err"; then
+    echo 'FAIL: arrow closure type was accepted (zh)' >&2
+    exit 1
+fi
+grep -q "expected ':' after closure parameter types" "$TMP/closure-type-arrow-zh.err"
 
 cat > "$TMP/closure-type-arrow-en.ast" <<'SRC'
 // aster:language=en
@@ -742,8 +745,12 @@ let callback: closure(i32) -> i32;
 return 0;
 }
 SRC
-"$TMP/aster-cn-parse" "$TMP/closure-type-arrow-en.ast" > "$TMP/closure-type-arrow-en.out"
-grep -q '"closure(i32):i32"' "$TMP/closure-type-arrow-en.out"
+if "$TMP/aster-cn-parse" "$TMP/closure-type-arrow-en.ast" \
+    > /dev/null 2> "$TMP/closure-type-arrow-en.err"; then
+    echo 'FAIL: arrow closure type was accepted (en)' >&2
+    exit 1
+fi
+grep -q "expected ':' after closure parameter types" "$TMP/closure-type-arrow-en.err"
 
 cat > "$TMP/closure-type-fat-arrow-en.ast" <<'SRC'
 // aster:language=en
@@ -757,7 +764,7 @@ if "$TMP/aster-cn-parse" "$TMP/closure-type-fat-arrow-en.ast" \
     echo 'FAIL: fat-arrow closure type was accepted' >&2
     exit 1
 fi
-grep -q "expected ':' or '->' after closure parameter types" "$TMP/closure-type-fat-arrow-en.err"
+grep -q "expected ':' after closure parameter types" "$TMP/closure-type-fat-arrow-en.err"
 
 cat > "$TMP/duplicate-capture-zh.ast" <<'SRC'
 方法 启动方法(): 整数
