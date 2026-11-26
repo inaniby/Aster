@@ -245,7 +245,11 @@ static std::string loc(unsigned line,unsigned col,std::string msg){
     msg += std::to_string(col);
     return msg;
 }
-static void reportError(const std::string& msg) {
+// Render a compiler diagnostic to text — the exact bytes reportError()
+// prints. Parallel-build workers render the diagnostic in the child
+// (where the source-line globals are set) and hand the text to the
+// parent to print, so a parallel failure reads exactly like a serial one.
+static std::string renderError(const std::string& msg) {
     const std::string rendered = g_cnDiagnosticActive
         ? aster_cn::decorateDiagnostic(msg, g_cnDiagnosticLanguage) : msg;
     const std::string& diagnostic = rendered;
@@ -265,12 +269,13 @@ static void reportError(const std::string& msg) {
             if (end2 && *end2 == '\0') { ln = (unsigned)L; col = (unsigned)C; haveLoc = true; }
         }
     }
+    std::ostringstream out;
     if (haveLoc) {
-        std::cerr << "aster: " << file << ":" << ln << ":" << col << ": error: " << diagnostic << "\n";
+        out << "aster: " << file << ":" << ln << ":" << col << ": error: " << diagnostic << "\n";
         if (ln > 0 && ln - 1 < srcLines.size()) {
             const std::string& raw = srcLines[ln - 1];
             std::string disp = expandTabs(raw);
-            std::cerr << "    " << disp << "\n";
+            out << "    " << disp << "\n";
             std::string pointer = "    ";
             unsigned target = col > 0 ? col - 1 : 0;
             unsigned v = 0;
@@ -280,11 +285,15 @@ static void reportError(const std::string& msg) {
                 else { pointer.push_back(' '); ++v; }
             }
             pointer.push_back('^');
-            std::cerr << pointer << "\n";
+            out << pointer << "\n";
         }
     } else {
-        std::cerr << "aster: error: " << diagnostic << "\n";
+        out << "aster: error: " << diagnostic << "\n";
     }
+    return out.str();
+}
+static void reportError(const std::string& msg) {
+    std::cerr << renderError(msg);
 }
 // B-P4: an error raised while parsing or lowering a file that is not the
 // driver's current source must still name the file it came from.
@@ -296,15 +305,40 @@ static void reportError(const std::string& msg) {
 static void cnLoadDiagnosticLines(const std::string& path) {
     g_diagFile = path;
     g_diagLines.clear();
-    std::ifstream file(path, std::ios::binary);
-    if (!file) return;
-    std::string cur;
-    char ch;
-    while (file.get(ch)) {
-        if (ch == '\n') { g_diagLines.push_back(std::move(cur)); cur.clear(); }
-        else if (ch != '\r') cur.push_back(ch);
+    // v0.23.85-dev (parallel build): this used to re-read the file
+    // char-by-char on every call, and per-source lowering switches files
+    // once per declaration (~151 calls per TU over the same 21 files:
+    // ~144 ms of every ~385 ms TU compile, phase timers). Read in bulk
+    // like setSourceCache, and cache the split lines keyed by path +
+    // size + mtime, so a re-visit is a copy of the cached lines. A
+    // same-size same-mtime rewrite could show a stale caret echo in the
+    // (error-only) diagnostic; the message text itself is unaffected.
+    struct DiagCacheEntry { uint64_t size = 0; std::filesystem::file_time_type mtime{}; std::vector<std::string> lines; };
+    static std::map<std::string, DiagCacheEntry> diagCache;
+    std::error_code diagEc;
+    const uint64_t diagSize = std::filesystem::file_size(path, diagEc);
+    const auto diagMtime = std::filesystem::last_write_time(path, diagEc);
+    bool diagHit = false;
+    if (!diagEc) {
+        const auto it = diagCache.find(path);
+        if (it != diagCache.end() && it->second.size == diagSize && it->second.mtime == diagMtime) {
+            g_diagLines = it->second.lines;
+            diagHit = true;
+        }
     }
-    g_diagLines.push_back(std::move(cur));
+    if (!diagHit) {
+        std::string diagText;
+        try { diagText = readFile(path); } catch (const Error&) { diagText.clear(); }
+        if (!diagText.empty() || !diagEc) {
+            std::string cur;
+            for (char ch : diagText) {
+                if (ch == '\n') { g_diagLines.push_back(std::move(cur)); cur.clear(); }
+                else if (ch != '\r') cur.push_back(ch);
+            }
+            g_diagLines.push_back(std::move(cur));
+            if (!diagEc) diagCache[path] = DiagCacheEntry{diagSize, diagMtime, g_diagLines};
+        }
+    }
 }
 // Set-if-empty, for an error already propagating out of a nested parse:
 // the innermost file owns the diagnostic and an outer one must not
@@ -13889,7 +13923,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
 "       aster new [--apk] <dir>              scaffold a program or APK project\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
-"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [--verbose] [--no-gc-sections] [--no-strip] [--gc-keep NAME[,NAME...]] [-- args]\n"
+"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [--verbose] [--jobs N] [--no-gc-sections] [--no-strip] [--gc-keep NAME[,NAME...]] [-- args]\n"
 "       aster test  [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [filter]\n"
 "       aster doctor [--strict]             check the host and the project it is run in\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
@@ -13930,6 +13964,10 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "  --verbose    one line per build step with its time: per-file compile times,\n"
     "                 key/link/package/sign times, and a size summary (build,\n"
     "                 build-apk, link-so, link-obj/link-pie).\n"
+    "  --jobs N     compile sources in parallel with N forked workers\n"
+    "                 (default: online CPUs, max 32; --jobs 1 is the serial\n"
+    "                 build). Per-file .o bytes, link order, cache counts and\n"
+    "                 error text are identical to the serial build.\n"
     "  link-so    link ET_REL PIC objects into one shared object (cross-.so imports via PLT/GOT)\n"
     "  --page-size N  load-segment page size for build*/link* (4096 default; 16384 for\n"
     "               Android 15+ 16 KB-page devices, required when targetSdk >= 35)\n"
@@ -30184,6 +30222,280 @@ static std::string canonicalCliCommand(const std::string& command) {
     return command;
 }
 
+// ---- Parallel per-TU builds (v0.23.85-dev) ----
+// Why processes, not threads: one TU's compile mutates process-global
+// registries that the next TU rebuilds from scratch — g_structs /
+// g_structIndex / g_enums / g_enumConsts / g_typeAlias (the Parser and
+// cnProgramToAster clear and re-fill them per TU), g_buildDeps,
+// g_srcFile / g_srcLines, g_diagFile / g_diagLines, and dozens of g_cn*
+// tables (cnProgramToAster clears them all at its entry). Running two
+// TUs in one process would interleave those tables and cross-wire struct
+// ids. Making them all thread_local is a whole-compiler refactor; a
+// forked worker per TU is the isolation instead: the child inherits the
+// already-parsed merged program (no re-parse), compiles exactly one TU
+// through the same cached*ProjectObject entry point the serial loop
+// uses, and hands one framed record back through a pipe. The parent
+// never compiles while workers run, so no shared state is ever touched
+// concurrently; .o bytes depend only on (source, flags, pool salt), so
+// they are identical to the serial build's.
+//
+// Determinism: results are delivered to the caller in source order
+// (head-of-line: result i is delivered only after all j<i were), so
+// link order, compiled/reused counts and --verbose lines match the
+// serial run. A worker's --verbose time is measured in the child and
+// printed by the parent, one whole line at a time, so lines never
+// interleave. The first failure in source order is the one reported:
+// the child renders the diagnostic with renderError() (its own
+// source-line globals are set) and the parent prints those exact bytes
+// and exits 1, like the serial throw to main's handler. A worker that
+// dies without a record (signal, OOM) is reported as a worker failure
+// for that source. All workers are awaited before reporting, so no
+// orphan compile outlives the build; a failed build may leave .o files
+// for TUs past the failing one (valid, content-hash-checked cache
+// entries — the next build reuses them, as it reuses the ones a serial
+// failure leaves behind for earlier TUs).
+struct TuWorkResult {
+    std::string objPath;   // "" when the TU defines nothing emittable
+    bool compiled = false; // true: compiled this run; false: reused from cache
+    long long ms = 0;      // worker-side compile time, for the --verbose line
+    std::string error;     // rendered diagnostic (renderError text) when the TU failed
+};
+
+// Default worker count: online CPUs, clamped to [1, 32]. Deliberately
+// not capped at the phone's 8: a many-core host building a big project
+// wants more, and --jobs 1 restores the serial build as the escape hatch.
+static unsigned defaultJobsCount() {
+    const long n = ::sysconf(_SC_NPROCESSORS_ONLN);
+    if (n <= 1) return 1;
+    if (n > 32) return 32;
+    return (unsigned)n;
+}
+
+static bool parseJobsValue(const char* s, unsigned& out) {
+    uint64_t v = 0;
+    if (!parseCliUInt(s, 64, v) || v < 1) return false;
+    out = (unsigned)v;
+    return true;
+}
+
+namespace {
+// One framed record over a pipe: u32 LE payload length, then the payload.
+// Payload fields are length-prefixed so paths may contain any byte.
+bool tuWriteAll(int fd, const char* data, size_t len) {
+    while (len > 0) {
+        const ssize_t n = ::write(fd, data, len);
+        if (n < 0) { if (errno == EINTR) continue; return false; }
+        if (n == 0) return false;
+        data += n; len -= (size_t)n;
+    }
+    return true;
+}
+bool tuReadAll(int fd, char* data, size_t len) {
+    while (len > 0) {
+        const ssize_t n = ::read(fd, data, len);
+        if (n < 0) { if (errno == EINTR) continue; return false; }
+        if (n == 0) return false;
+        data += n; len -= (size_t)n;
+    }
+    return true;
+}
+void tuPutU32(std::string& out, uint32_t v) {
+    out.push_back((char)(v & 0xFF)); out.push_back((char)((v >> 8) & 0xFF));
+    out.push_back((char)((v >> 16) & 0xFF)); out.push_back((char)((v >> 24) & 0xFF));
+}
+void tuPutField(std::string& out, const std::string& s) {
+    tuPutU32(out, (uint32_t)s.size());
+    out += s;
+}
+uint32_t tuGetU32(const char* p) {
+    return (uint32_t)(unsigned char)p[0] | ((uint32_t)(unsigned char)p[1] << 8) |
+        ((uint32_t)(unsigned char)p[2] << 16) | ((uint32_t)(unsigned char)p[3] << 24);
+}
+std::string tuSerializeResult(const TuWorkResult& r) {
+    std::string payload;
+    tuPutField(payload, r.objPath);
+    payload.push_back(r.compiled ? '1' : '0');
+    std::string ms = std::to_string(r.ms);
+    tuPutField(payload, ms);
+    tuPutField(payload, r.error);
+    std::string framed;
+    tuPutU32(framed, (uint32_t)payload.size());
+    framed += payload;
+    return framed;
+}
+// Returns false when the record is missing, truncated or absurd (>1 MiB).
+bool tuParseResult(const std::string& payload, TuWorkResult& r) {
+    size_t off = 0;
+    auto getField = [&](std::string& s) -> bool {
+        if (payload.size() - off < 4) return false;
+        const uint32_t len = tuGetU32(payload.data() + off);
+        off += 4;
+        if (len > payload.size() - off) return false;
+        s.assign(payload.data() + off, len);
+        off += len;
+        return true;
+    };
+    if (!getField(r.objPath)) return false;
+    if (off >= payload.size()) return false;
+    r.compiled = payload[off++] == '1';
+    std::string ms;
+    if (!getField(ms)) return false;
+    try { r.ms = std::stoll(ms); } catch (...) { return false; }
+    if (!getField(r.error)) return false;
+    return off == payload.size();
+}
+} // namespace
+
+// Run jobs[i]() in forked workers, at most jobsCount at a time. onResult
+// is called in the parent, in source order, as results arrive. Returns
+// false when any TU failed; firstError then holds the first failure in
+// source order (rendered diagnostic text, or a worker-failure line).
+// names[i] names jobs[i]'s source for the worker-failure line.
+static bool runTuJobs(const std::vector<std::function<TuWorkResult()>>& jobs,
+                      unsigned jobsCount,
+                      const std::function<void(size_t, const TuWorkResult&)>& onResult,
+                      std::string& firstError,
+                      const std::vector<std::string>& names) {
+    const size_t n = jobs.size();
+    if (n == 0) return true;
+    if (jobsCount < 1) jobsCount = 1;
+    if (jobsCount > n) jobsCount = (unsigned)n;
+    if (jobsCount == 1) {
+        for (size_t i = 0; i < n; ++i) {
+            try {
+                onResult(i, jobs[i]());
+            } catch (const std::exception& e) {
+                firstError = renderError(e.what());
+                return false;
+            } catch (...) {
+                firstError = "aster: error: unknown error compiling " + names[i] + "\n";
+                return false;
+            }
+        }
+        return true;
+    }
+    std::cout.flush();
+    std::vector<TuWorkResult> results(n);
+    std::vector<char> haveResult(n, 0);
+    struct Slot { pid_t pid = -1; size_t index = 0; int readFd = -1; };
+    std::vector<Slot> slots(jobsCount);
+    std::vector<char> slotBusy(jobsCount, 0);
+    size_t next = 0, delivered = 0;
+    auto spawn = [&](size_t idx, size_t slot) -> bool {
+        int pfd[2];
+        if (::pipe(pfd) != 0) return false;
+        std::cout.flush();
+        const pid_t pid = ::fork();
+        if (pid < 0) { ::close(pfd[0]); ::close(pfd[1]); return false; }
+        if (pid == 0) {
+            // Worker: only the write end survives; stdout/stderr go to
+            // /dev/null so nothing the TU compile prints can interleave
+            // with the parent's output (diagnostics travel in the record).
+            ::close(pfd[0]);
+            for (size_t s = 0; s < slots.size(); ++s)
+                if (slotBusy[s] && slots[s].readFd >= 0) ::close(slots[s].readFd);
+            const int devNull = ::open("/dev/null", O_WRONLY);
+            if (devNull >= 0) { ::dup2(devNull, 1); ::dup2(devNull, 2); if (devNull > 2) ::close(devNull); }
+            TuWorkResult r;
+            int exitCode = 0;
+            try {
+                r = jobs[idx]();
+            } catch (const std::exception& e) {
+                r.error = renderError(e.what());
+                exitCode = 1;
+            } catch (...) {
+                r.error = "aster: error: unknown error compiling " + names[idx] + "\n";
+                exitCode = 1;
+            }
+            const std::string framed = tuSerializeResult(r);
+            tuWriteAll(pfd[1], framed.data(), framed.size());
+            ::close(pfd[1]);
+            ::_exit(exitCode);
+        }
+        ::close(pfd[1]);
+        slots[slot].pid = pid;
+        slots[slot].index = idx;
+        slots[slot].readFd = pfd[0];
+        slotBusy[slot] = 1;
+        return true;
+    };
+    // Fill the slots; a spawn failure falls back to running that TU inline
+    // in the parent (slow but correct — the build still finishes).
+    for (size_t s = 0; s < slots.size() && next < n; ++s, ++next) {
+        if (!spawn(next, s)) {
+            try { results[next] = jobs[next](); }
+            catch (const std::exception& e) { results[next].error = renderError(e.what()); }
+            catch (...) { results[next].error = "aster: error: unknown error compiling " + names[next] + "\n"; }
+            haveResult[next] = 1;
+            slotBusy[s] = 0;
+            slots[s].pid = -1;
+        }
+    }
+    size_t inFlight = 0;
+    for (size_t s = 0; s < slots.size(); ++s) if (slotBusy[s]) ++inFlight;
+    while (delivered < n) {
+        // Deliver every in-order result already in hand.
+        while (delivered < n && haveResult[delivered]) {
+            if (firstError.empty() && !results[delivered].error.empty())
+                firstError = results[delivered].error;
+            onResult(delivered, results[delivered]);
+            ++delivered;
+        }
+        if (delivered >= n) break;
+        if (inFlight == 0) break; // nothing left running; remaining results are inline-done
+        int status = 0;
+        const pid_t done = ::waitpid(-1, &status, 0);
+        if (done < 0) { if (errno == EINTR) continue; break; }
+        size_t slot = slots.size();
+        for (size_t s = 0; s < slots.size(); ++s)
+            if (slotBusy[s] && slots[s].pid == done) { slot = s; break; }
+        if (slot == slots.size()) continue;
+        const size_t idx = slots[slot].index;
+        const int fd = slots[slot].readFd;
+        TuWorkResult r;
+        bool ok = false;
+        char lenBuf[4];
+        if (tuReadAll(fd, lenBuf, 4)) {
+            const uint32_t len = tuGetU32(lenBuf);
+            if (len <= 1024 * 1024) {
+                std::string payload(len, '\0');
+                if (tuReadAll(fd, payload.data(), len)) ok = tuParseResult(payload, r);
+            }
+        }
+        ::close(fd);
+        slots[slot].readFd = -1;
+        slotBusy[slot] = 0;
+        --inFlight;
+        if (!ok) {
+            r.error = "aster: error: compilation worker for " + names[idx] +
+                " died unexpectedly (no result reported)\n";
+        } else if (r.error.empty() && (!WIFEXITED(status) || WEXITSTATUS(status) != 0)) {
+            r.error = "aster: error: compilation worker for " + names[idx] +
+                " exited abnormally\n";
+        }
+        results[idx] = std::move(r);
+        haveResult[idx] = 1;
+        if (next < n) {
+            if (!spawn(next, slot)) {
+                try { results[next] = jobs[next](); }
+                catch (const std::exception& e) { results[next].error = renderError(e.what()); }
+                catch (...) { results[next].error = "aster: error: unknown error compiling " + names[next] + "\n"; }
+                haveResult[next] = 1;
+            } else {
+                ++inFlight;
+            }
+            ++next;
+        }
+    }
+    while (delivered < n && haveResult[delivered]) {
+        if (firstError.empty() && !results[delivered].error.empty())
+            firstError = results[delivered].error;
+        onResult(delivered, results[delivered]);
+        ++delivered;
+    }
+    return firstError.empty();
+}
+
 int main(int argc,char**argv){
     const std::string cmd=canonicalCliCommand(argc>1?argv[1]:"");
     std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false,compactFrames=false,gcSections=false,stripSymtab=false,verbose=false;
@@ -31548,6 +31860,7 @@ int main(int argc,char**argv){
         if(cmd=="build"||cmd=="run"){
             const bool isRun=cmd=="run";
             std::string out; bool dbg=false,bc2=false,noCache=false,afterDash=false,verbose=false,noGcSections=false,noStrip=false;
+            unsigned jobs=0; // 0 = default (online CPUs); --jobs 1 restores the serial build
             std::vector<std::string> bilingualModuleDirs;
             uint64_t ps=4096; bool cliPageSet=false; std::vector<std::string> runArgs;
             uint64_t timeoutVal=0; bool timeoutSet=false;
@@ -31565,6 +31878,12 @@ int main(int argc,char**argv){
                 else if(a.rfind("--max-lowering-depth=",0)==0){if(!parseDepthValue(a.c_str()+21,64,3072,maxLoweringDepthOpt)){std::cerr<<"aster "<<cmd<<": --max-lowering-depth must be a decimal integer between 64 and 3072\n";return 2;}}
                 else if(a=="--no-cache")noCache=true;
                 else if(a=="--verbose")verbose=true;
+                else if(a=="--jobs"||a=="-j"){
+                    if(i+1>=argc){std::cerr<<"aster "<<cmd<<": --jobs needs a number\n";return 2;}
+                    if(!parseJobsValue(argv[++i],jobs)){std::cerr<<"aster "<<cmd<<": --jobs must be a decimal integer between 1 and 64\n";return 2;}
+                }
+                else if(a.rfind("--jobs=",0)==0){if(!parseJobsValue(a.c_str()+7,jobs)){std::cerr<<"aster "<<cmd<<": --jobs must be a decimal integer between 1 and 64\n";return 2;}}
+                else if(a.rfind("-j",0)==0&&a.size()>2){if(!parseJobsValue(a.c_str()+2,jobs)){std::cerr<<"aster "<<cmd<<": --jobs must be a decimal integer between 1 and 64\n";return 2;}}
                 else if(a=="--no-gc-sections")noGcSections=true;
                 else if(a=="--no-strip")noStrip=true;
                 else if(a=="--gc-keep"){
@@ -31600,6 +31919,10 @@ int main(int argc,char**argv){
             if(!isRun&&timeoutSet){std::cerr<<"aster build: --timeout only applies to `aster run` (and `aster test`)\n";return 2;}
             if(ps!=4096&&ps!=16384){std::cerr<<"aster "<<cmd<<": --page-size must be 4096 or 16384\n";return 2;}
             applyDepthOpts();
+            // v0.23.85-dev: parallel per-TU builds (fork workers); the
+            // default is the online CPU count (clamped to 32), --jobs 1
+            // is the serial build.
+            const unsigned jobsCount=jobs==0?defaultJobsCount():jobs;
             long timeoutSec=60;
             if(isRun&&!resolveRunTimeout(timeoutSet?(long)timeoutVal:-1,timeoutSec,"aster run"))return 2;
             if(!fileExists("aster.proj")){
@@ -31783,6 +32106,39 @@ int main(int argc,char**argv){
                 bilingualCtx.sharedObject=bilingualIsApk;
                 std::vector<std::string> bilingualObjs;
                 int bilingualCompiled=0, bilingualReused=0;
+                if(jobsCount>1){
+                    // v0.23.85-dev: parallel per-TU build (fork workers).
+                    // One job per source; the parent collects in source
+                    // order, so link order and counts match the serial loop
+                    // below, and the first failure in source order is the
+                    // one reported (see runTuJobs).
+                    std::vector<std::function<TuWorkResult()>> tuJobs;
+                    tuJobs.reserve(spec.sources.size());
+                    for(size_t i=0;i<spec.sources.size();++i){
+                        tuJobs.push_back([&,i]{
+                            const auto t0=std::chrono::steady_clock::now();
+                            int c=0,r=0;
+                            std::string obj=cachedCnProjectObject(
+                                bilingualCtx,parsedSources[i],spec.sources[i],
+                                (i+1)*1000000,c,r,noCache);
+                            TuWorkResult res;
+                            res.objPath=std::move(obj);
+                            res.compiled=c>0;
+                            res.ms=msSince(t0);
+                            return res;
+                        });
+                    }
+                    std::string firstError;
+                    const bool tuOk=runTuJobs(tuJobs,jobsCount,
+                        [&](size_t idx,const TuWorkResult& res){
+                            if(res.compiled)++bilingualCompiled; else ++bilingualReused;
+                            if(verbose)
+                                std::cout<<"aster: verbose: "<<(res.compiled?"compiled ":"reused ")
+                                         <<spec.sources[idx]<<" in "<<res.ms<<" ms\n"<<std::flush;
+                            if(!res.objPath.empty()) bilingualObjs.push_back(res.objPath);
+                        },firstError,spec.sources);
+                    if(!tuOk){std::cerr<<firstError;return 1;}
+                } else
                 for(size_t i=0;i<spec.sources.size();++i) {
                     const auto fileT0=std::chrono::steady_clock::now();
                     const int c0=bilingualCompiled;
