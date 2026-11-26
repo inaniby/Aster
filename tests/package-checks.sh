@@ -14,7 +14,7 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-echo '[1/7] pack generates a complete manifest'
+echo '[1/8] pack generates a complete manifest'
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg" > "$TMP/pack.log" 2>&1 \
     || { cat "$TMP/pack.log" >&2; fail 'aster pack failed'; }
 grep -q 'packed standard' "$TMP/pack.log" || fail 'pack did not report the package'
@@ -74,7 +74,7 @@ cmp "$TMP/pkg/std.o" "$TMP/std-ref.o" || fail 'std.o differs from build-obj outp
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg2" > /dev/null 2>&1
 cmp "$TMP/pkg/manifest.json" "$TMP/pkg2/manifest.json" || fail 'pack is not deterministic'
 
-echo '[2/7] pack --check passes on a fresh package and fails on tampering'
+echo '[2/8] pack --check passes on a fresh package and fails on tampering'
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg" > "$TMP/check-ok.log" 2>&1 \
     || { cat "$TMP/check-ok.log" >&2; fail 'pack --check failed on a fresh package'; }
 # The default source dir is the repository stdlib/ when run from the root.
@@ -89,6 +89,10 @@ if "$ASTER_BIN" pack --src-dir "$TMP/src" --check "$TMP/pkg-tamper" > "$TMP/chec
     fail 'pack --check passed after a source was tampered with'
 fi
 grep -q 'sha256 differs' "$TMP/check-tamper.log" || fail 'tamper diagnostic does not name the hash'
+# Pack leaves the directory read-only (§11.1), so restore writability
+# before tampering with it in place (a no-op when run as root, required
+# otherwise: sed/mv need the directory writable, >> needs the file).
+chmod u+w "$TMP/pkg"
 sed 's/"name": "memcpy"/"name": "memcpy_renamed"/' "$TMP/pkg/manifest.json" > "$TMP/pkg/manifest-tampered.json"
 mv "$TMP/pkg/manifest-tampered.json" "$TMP/pkg/manifest.json"
 if "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg" > "$TMP/check-manifest.log" 2>&1; then
@@ -101,6 +105,7 @@ grep -q 'exports\[0\] differs' "$TMP/check-manifest.log" || fail 'manifest-tampe
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-copy" > /dev/null 2>&1
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-copy" > /dev/null 2>&1 \
     || fail 'pack --check failed on a fresh package copy'
+chmod -R u+w "$TMP/pkg-copy"
 printf '\n// tampered\n' >> "$TMP/pkg-copy/aster_std.ast"
 if "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-copy" > "$TMP/check-copy.log" 2>&1; then
     fail 'pack --check passed after a packaged file was tampered with'
@@ -140,6 +145,7 @@ grep -q "package 'standard': files sha256 differs for \"aster_std.ast\"" \
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-copy2" > /dev/null 2>&1
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-copy2" > /dev/null 2>&1 \
     || fail 'pack --check failed on a fresh package copy (std.o case)'
+chmod -R u+w "$TMP/pkg-copy2"
 printf 'X' >> "$TMP/pkg-copy2/std.o"
 if "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-copy2" > "$TMP/check-copy2.log" 2>&1; then
     fail 'pack --check passed after the packaged std.o was tampered with'
@@ -161,14 +167,65 @@ grep -q "package 'standard': files sha256 differs for \"std.o\"" \
     "$TMP/proj-tamper2/build.log" || { cat "$TMP/proj-tamper2/build.log" >&2; fail 'tampered-std.o build diagnostic is wrong'; }
 # A package missing one of its files is incomplete and must fail --check.
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-missing" > /dev/null 2>&1
+chmod u+w "$TMP/pkg-missing/cn"
 rm "$TMP/pkg-missing/cn/string-en.ast"
 if "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-missing" > "$TMP/check-missing.log" 2>&1; then
     fail 'pack --check passed on a package missing a file'
 fi
 grep -q 'package is incomplete: missing file "cn/string-en.ast"' "$TMP/check-missing.log" \
     || fail 'missing-file diagnostic is wrong'
+# A file the manifest does not list is a modification too, even when
+# every listed file still matches: the hash check cannot see it.
+# Top level first, for --check and for a matching-version build.
+"$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-extra" > /dev/null 2>&1
+chmod u+w "$TMP/pkg-extra"
+echo 'not part of the package' > "$TMP/pkg-extra/extra.txt"
+if "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-extra" > "$TMP/check-extra.log" 2>&1; then
+    fail 'pack --check passed on a package with an extra file'
+fi
+grep -q 'package contains unexpected file "extra.txt"' "$TMP/check-extra.log" \
+    || fail 'extra-file diagnostic does not name the file'
+grep -q 'package has been modified' "$TMP/check-extra.log" \
+    || fail 'extra-file diagnostic does not say the package was modified'
+mkdir -p "$TMP/proj-extra/src" "$TMP/proj-extra/packages"
+cp -r "$TMP/pkg-extra" "$TMP/proj-extra/packages/standard"
+cp "$TMP/proj-tamper/src/main.ast" "$TMP/proj-extra/src/main.ast"
+cat > "$TMP/proj-extra/aster.proj" <<'EOF'
+name extra
+[package]
+standard = "0.23.82-dev"
+[language]
+default = "zh"
+src/main.ast
+EOF
+if (cd "$TMP/proj-extra" && "$ASTER_BIN" build > build.log 2>&1); then
+    fail 'build passed with an extra file in the package'
+fi
+grep -q "package 'standard': package contains unexpected file \"extra.txt\"" \
+    "$TMP/proj-extra/build.log" || { cat "$TMP/proj-extra/build.log" >&2; fail 'extra-file build diagnostic is wrong'; }
+# The same, one level down: the enumeration is recursive, so an extra
+# file inside cn/ is caught too, by --check and by a build.
+"$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-extra2" > /dev/null 2>&1
+chmod u+w "$TMP/pkg-extra2/cn"
+echo 'not part of the package' > "$TMP/pkg-extra2/cn/extra.ast"
+if "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-extra2" > "$TMP/check-extra2.log" 2>&1; then
+    fail 'pack --check passed on a package with an extra file under cn/'
+fi
+grep -q 'package contains unexpected file "cn/extra.ast"' "$TMP/check-extra2.log" \
+    || fail 'extra-file diagnostic does not name the file under cn/'
+mkdir -p "$TMP/proj-extra2/src" "$TMP/proj-extra2/packages"
+cp -r "$TMP/pkg-extra2" "$TMP/proj-extra2/packages/standard"
+cp "$TMP/proj-tamper/src/main.ast" "$TMP/proj-extra2/src/main.ast"
+cp "$TMP/proj-extra/aster.proj" "$TMP/proj-extra2/aster.proj"
+sed 's/name extra/name extra2/' "$TMP/proj-extra2/aster.proj" > "$TMP/proj-extra2/aster.proj.new"
+mv "$TMP/proj-extra2/aster.proj.new" "$TMP/proj-extra2/aster.proj"
+if (cd "$TMP/proj-extra2" && "$ASTER_BIN" build > build.log 2>&1); then
+    fail 'build passed with an extra file under cn/ in the package'
+fi
+grep -q "package 'standard': package contains unexpected file \"cn/extra.ast\"" \
+    "$TMP/proj-extra2/build.log" || { cat "$TMP/proj-extra2/build.log" >&2; fail 'extra-file-under-cn build diagnostic is wrong'; }
 
-echo '[3/7] complete filters by the file language'
+echo '[3/8] complete filters by the file language'
 printf '// aster:language=zh\n' > "$TMP/file-zh.ast"
 printf '// aster:language=en\n' > "$TMP/file-en.ast"
 "$ASTER_BIN" complete "$TMP/pkg2" "$TMP/file-zh.ast" > "$TMP/complete-zh.txt" 2>&1
@@ -199,7 +256,7 @@ PY
 python3 -c "import json,sys; assert len(json.load(open(sys.argv[1]))) == 141" "$TMP/complete-en.json" \
     || fail 'complete --format json (en) does not list all 141 exports'
 
-echo '[4/7] [package] version check passes, and [package] does not disturb [language]'
+echo '[4/8] [package] version check passes, and [package] does not disturb [language]'
 mkdir -p "$TMP/proj-ok/src" "$TMP/proj-ok/packages"
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/proj-ok/packages/standard" > /dev/null 2>&1
 cat > "$TMP/proj-ok/src/main.ast" <<'SRC'
@@ -220,7 +277,7 @@ EOF
 if "$RUNNER" "$TMP/proj-ok/build/ok"; then status=0; else status=$?; fi
 [ "$status" -eq 0 ] || fail "matching-version project returned $status, expected 0"
 
-echo '[5/7] version check reports a missing package and a version mismatch'
+echo '[5/8] version check reports a missing package and a version mismatch'
 mkdir -p "$TMP/proj-missing/src" "$TMP/proj-mismatch/src"
 cp "$TMP/proj-ok/src/main.ast" "$TMP/proj-missing/src/main.ast"
 cp "$TMP/proj-ok/src/main.ast" "$TMP/proj-mismatch/src/main.ast"
@@ -259,7 +316,7 @@ EOF
 (cd "$TMP/proj-mismatch" && "$ASTER_BIN" build > build.log 2>&1) \
     || { cat "$TMP/proj-mismatch/build.log" >&2; fail 'build with [package] after sources / Chinese name failed'; }
 
-echo '[6/7] version check runs for test as well, and undeclared projects are unaffected'
+echo '[6/8] version check runs for test as well, and undeclared projects are unaffected'
 mkdir -p "$TMP/proj-test/src" "$TMP/proj-test/tests"
 cp -r "$TMP/proj-ok/packages" "$TMP/proj-test/"
 cat > "$TMP/proj-test/src/main.ast" <<'SRC'
@@ -294,7 +351,7 @@ printf 'name plain\nsrc/main.ast\n' > "$TMP/proj-plain/aster.proj"
 (cd "$TMP/proj-plain" && "$ASTER_BIN" build > build.log 2>&1) \
     || { cat "$TMP/proj-plain/build.log" >&2; fail 'build without [package] broke'; }
 
-echo '[7/7] pack/complete reject bad usage'
+echo '[7/8] pack/complete reject bad usage'
 if "$ASTER_BIN" pack --nope > /dev/null 2>&1; then fail 'pack accepted an unknown option'; fi
 if "$ASTER_BIN" pack --src-dir "$TMP/does-not-exist" --out "$TMP/pkg-nope" > /dev/null 2>&1; then
     fail 'pack accepted a missing source dir'
@@ -311,5 +368,31 @@ fi
 if "$ASTER_BIN" complete --format yaml "$TMP/pkg2" > /dev/null 2>&1; then
     fail 'complete accepted an unknown format'
 fi
+
+echo '[8/8] pack leaves the package read-only, and re-pack over it works'
+"$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-ro" > /dev/null 2>&1
+# No file or directory under the package carries a write bit. Checked by
+# mode bits, not by attempting a write: the suite may run as root, and
+# root can write through a read-only mode.
+[ -z "$(find "$TMP/pkg-ro" -perm /0222 -print -quit)" ] \
+    || fail 'pack left a writable file or directory in the package'
+# Re-packing into the same directory restores writability, rewrites, and
+# locks the package again; the result still passes --check and a build.
+"$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-ro" > "$TMP/repack.log" 2>&1 \
+    || { cat "$TMP/repack.log" >&2; fail 're-pack into the same directory failed'; }
+[ -z "$(find "$TMP/pkg-ro" -perm /0222 -print -quit)" ] \
+    || fail 're-pack left a writable file or directory in the package'
+"$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-ro" > /dev/null 2>&1 \
+    || fail 'pack --check failed after re-pack'
+mkdir -p "$TMP/proj-ro/src" "$TMP/proj-ro/packages"
+cp -r "$TMP/pkg-ro" "$TMP/proj-ro/packages/standard"
+cp "$TMP/proj-ok/src/main.ast" "$TMP/proj-ro/src/main.ast"
+cp "$TMP/proj-ok/aster.proj" "$TMP/proj-ro/aster.proj"
+sed 's/name ok/name ro/' "$TMP/proj-ro/aster.proj" > "$TMP/proj-ro/aster.proj.new"
+mv "$TMP/proj-ro/aster.proj.new" "$TMP/proj-ro/aster.proj"
+(cd "$TMP/proj-ro" && "$ASTER_BIN" build > build.log 2>&1) \
+    || { cat "$TMP/proj-ro/build.log" >&2; fail 'build with a re-packed package failed'; }
+if "$RUNNER" "$TMP/proj-ro/build/ro"; then status=0; else status=$?; fi
+[ "$status" -eq 0 ] || fail "re-packed project returned $status, expected 0"
 
 echo 'package checks passed'

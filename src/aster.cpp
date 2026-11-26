@@ -28782,6 +28782,71 @@ static std::string pkgManifestDiff(const PkgManifest& expected, const PkgManifes
     return "";
 }
 
+// ---- Package directory walk (stdlib §11.1): recursive enumeration of
+// the files actually present under a package directory, as
+// package-relative paths ("" prefix = the directory itself). Directories
+// are walked, never listed as files; symlinks are reported as files
+// (never followed: a link is package content, not a directory to enter).
+// "" when the walk completed; a diagnostic otherwise.
+static std::string pkgCollectPackageFiles(const std::string& dir, const std::string& rel,
+                                          std::vector<std::string>& out) {
+    DIR* d = ::opendir(dir.c_str());
+    if (!d) return "cannot list package directory " + dir + ": " + std::strerror(errno);
+    std::string err;
+    while (struct dirent* e = ::readdir(d)) {
+        if (e->d_name[0] == '.' &&
+            (e->d_name[1] == '\0' || (e->d_name[1] == '.' && e->d_name[2] == '\0')))
+            continue;
+        const std::string name = e->d_name;
+        const std::string childRel = rel.empty() ? name : rel + "/" + name;
+        const std::string child = dir + "/" + name;
+        struct stat st;
+        if (::lstat(child.c_str(), &st) != 0) {
+            err = "cannot stat " + child + ": " + std::strerror(errno);
+            break;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            err = pkgCollectPackageFiles(child, childRel, out);
+            if (!err.empty()) break;
+        } else {
+            out.push_back(childRel);
+        }
+    }
+    ::closedir(d);
+    return err;
+}
+
+// ---- Package read-only enforcement (stdlib §11.1): pack leaves the
+// package directory read-only on disk (all write bits cleared, files and
+// directories alike, so no file can be added, removed or edited in place).
+// stripWrite=false restores the owner write bit instead, so re-packing
+// into the same directory can overwrite it; pack restores first, writes,
+// then locks again, and never deletes the output directory (a --out
+// directory may hold files pack did not create). Symlinks are skipped:
+// chmod follows links, so touching one would chmod a file outside the
+// package. Throws Error when a chmod fails: a half-locked package must
+// not pass as locked.
+static void pkgChmodTree(const std::string& path, bool stripWrite) {
+    struct stat st;
+    if (::lstat(path.c_str(), &st) != 0)
+        throw Error("cannot stat " + path + ": " + std::strerror(errno));
+    if (S_ISLNK(st.st_mode)) return;
+    if (S_ISDIR(st.st_mode)) {
+        DIR* d = ::opendir(path.c_str());
+        if (!d) throw Error("cannot list " + path + ": " + std::strerror(errno));
+        while (struct dirent* e = ::readdir(d)) {
+            if (e->d_name[0] == '.' &&
+                (e->d_name[1] == '\0' || (e->d_name[1] == '.' && e->d_name[2] == '\0')))
+                continue;
+            pkgChmodTree(path + "/" + e->d_name, stripWrite);
+        }
+        ::closedir(d);
+    }
+    const mode_t mode = stripWrite ? (st.st_mode & ~mode_t(0222)) : (st.st_mode | mode_t(0200));
+    if (::chmod(path.c_str(), mode) != 0)
+        throw Error(std::string("cannot chmod ") + path + ": " + std::strerror(errno));
+}
+
 // ---- Package-file hash verification (stdlib §11.1): a package directory
 // is read-only, so the compiler verifies every file the manifest lists
 // against the copy inside the package directory itself, not just the
@@ -28801,6 +28866,25 @@ static std::string pkgVerifyPackageFiles(const std::string& pkgDir, const PkgMan
         if (found != f.second)
             return "files sha256 differs for \"" + f.first + "\": expected " + f.second +
                 ", found " + found + " (package has been modified)";
+    }
+    // The hash loop only covers files the manifest lists: a file with no
+    // recorded hash would pass it unseen. A package must contain exactly
+    // the listed files plus the manifest itself, so enumerate the
+    // directory (recursively: the package has a cn/ subdirectory) and
+    // reject anything else. Sorted so the reported file is deterministic.
+    // This is the shared check for both callers: `pack --check` below
+    // and the [package] lookup in pkgFindPackage, so both paths reject
+    // an extra file with the same diagnostic.
+    std::set<std::string> listed;
+    for (const auto& f : manifest.files) listed.insert(f.first);
+    listed.insert("manifest.json");
+    std::vector<std::string> actual;
+    if (const std::string err = pkgCollectPackageFiles(pkgDir, "", actual); !err.empty())
+        return err;
+    std::sort(actual.begin(), actual.end());
+    for (const auto& rel : actual) {
+        if (listed.count(rel)) continue;
+        return "package contains unexpected file \"" + rel + "\" (package has been modified)";
     }
     return "";
 }
@@ -29302,6 +29386,14 @@ int main(int argc,char**argv){
                 std::cout<<"aster pack: manifest OK: "<<checkDir<<" matches the sources in "<<srcDir<<"\n";
                 return 0;
             }
+            // §11.1: the output directory is left read-only by a previous
+            // pack, so restore the owner write bit (recursively) before
+            // overwriting it; re-packing into the same directory must work.
+            // Pack never deletes the directory: it only overwrites the
+            // five files it owns. The --check scratch file above is
+            // untouched: it is a temporary file that is deleted, not
+            // package content.
+            if (dirExists(outDir)) pkgChmodTree(outDir, false);
             if(!makeDirs(outDir)){std::cerr<<"aster pack: cannot create "<<outDir<<"\n";return 1;}
             if(!makeDirs(outDir+"/cn")){std::cerr<<"aster pack: cannot create "<<outDir<<"/cn\n";return 1;}
             // Copy the four sources while manifest.files still holds only
@@ -29314,6 +29406,10 @@ int main(int argc,char**argv){
             pkgBuildStdObject(srcDir+"/aster_std.ast",outDir+"/std.o");
             pkgAppendStdObjectHash(manifest,outDir+"/std.o");
             writeFileAtomic(outDir+"/manifest.json",pkgManifestJson(manifest));
+            // §11.1: the package is read-only on disk. Lock the directory
+            // tree (files and subdirectories alike, so nothing can be
+            // added inside cn/ either) only after every write succeeded.
+            pkgChmodTree(outDir, true);
             std::cout<<"Aster v"<<kVersion<<": packed "<<manifest.name<<" ("<<manifest.nameZh<<") "
                      <<manifest.version<<" ("<<(manifest.files.size()-1)<<" sources + std.o, "
                      <<manifest.exports.size()<<" exports) into "<<outDir<<"\n";
