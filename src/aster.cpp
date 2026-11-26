@@ -13274,13 +13274,13 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         const GcStats gcStats=pruneUnreachableFunctions(parsedObjects,roots);
         if(verbose){
             if(gcStats.skipped)
-                std::cout<<"aster: verbose: link-so: gc-sections skipped ("<<(gcStats.skipReason?gcStats.skipReason:"nothing pruned")<<")\n";
+                std::cout<<"aster: verbose: link-so: gc-sections skipped ("<<(gcStats.skipReason?gcStats.skipReason:"nothing pruned")<<")\n"<<std::flush;
             else
                 std::cout<<"aster: verbose: link-so: gc-sections kept "<<gcStats.functionsKept<<"/"<<gcStats.functionsTotal
                          <<" functions ("<<gcStats.textBytesKept<<"/"<<gcStats.textBytesTotal<<" .text bytes) and "
                          <<gcStats.dataKept<<"/"<<gcStats.dataTotal<<" data objects ("
                          <<gcStats.dataBytesKept<<"/"<<gcStats.dataBytesTotal<<" file bytes, "
-                         <<gcStats.bssBytesKept<<"/"<<gcStats.bssBytesTotal<<" bss bytes)\n";
+                         <<gcStats.bssBytesKept<<"/"<<gcStats.bssBytesTotal<<" bss bytes)\n"<<std::flush;
         }
     }
     std::vector<uint8_t> mergedText,mergedData,mergedRodata,mergedTls;uint64_t mergedBss=0,mergedTbss=0,maxTlsAlign=kTlsBlockAlign,maxRodataAlign=1;
@@ -13536,7 +13536,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
     spec.ehFrame=mergedEhFrame;spec.ehFramePatches=ehPatches;spec.ehFrameFdes=ehFdes;
     writeSharedObjectDyn(output,mergedText,pending,spec,pageSize);
     std::cout<<"Aster v"<<kVersion<<": linked "<<inputs.size()<<" AArch64 ET_REL PIC object(s) into shared object ("<<spec.exports.size()<<" exports, "
-        <<spec.importFuncs.size()<<" PLT function imports, "<<spec.importObjects.size()<<" GOT data imports, "<<spec.needed.size()<<" DT_NEEDED, SONAME "<<spec.soname<<"): "<<output<<"\n";
+        <<spec.importFuncs.size()<<" PLT function imports, "<<spec.importObjects.size()<<" GOT data imports, "<<spec.needed.size()<<" DT_NEEDED, SONAME "<<spec.soname<<"): "<<output<<"\n"<<std::flush;
 }
 
 // Link one or more ET_REL objects. base 0x400000 / etype 2 (ET_EXEC) is the v0.13.1/v0.14.0
@@ -13602,13 +13602,13 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
         const GcStats gcStats=pruneUnreachableFunctions(parsedObjects,roots);
         if(verbose){
             if(gcStats.skipped)
-                std::cout<<"aster: verbose: link: gc-sections skipped ("<<(gcStats.skipReason?gcStats.skipReason:"nothing pruned")<<")\n";
+                std::cout<<"aster: verbose: link: gc-sections skipped ("<<(gcStats.skipReason?gcStats.skipReason:"nothing pruned")<<")\n"<<std::flush;
             else
                 std::cout<<"aster: verbose: link: gc-sections kept "<<gcStats.functionsKept<<"/"<<gcStats.functionsTotal
                          <<" functions ("<<gcStats.textBytesKept<<"/"<<gcStats.textBytesTotal<<" .text bytes) and "
                          <<gcStats.dataKept<<"/"<<gcStats.dataTotal<<" data objects ("
                          <<gcStats.dataBytesKept<<"/"<<gcStats.dataBytesTotal<<" file bytes, "
-                         <<gcStats.bssBytesKept<<"/"<<gcStats.bssBytesTotal<<" bss bytes)\n";
+                         <<gcStats.bssBytesKept<<"/"<<gcStats.bssBytesTotal<<" bss bytes)\n"<<std::flush;
         }
     }
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];const ParsedObject& obj=parsedObjects[i];
@@ -16826,7 +16826,7 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     // table for on-device debugging.
     auto phaseStart=std::chrono::steady_clock::now();
     auto phaseLog=[&](const std::string& what){
-        if(verbose)std::cout<<"aster: verbose: build-apk: "<<what<<" in "<<msSince(phaseStart)<<" ms\n";
+        if(verbose)std::cout<<"aster: verbose: build-apk: "<<what<<" in "<<msSince(phaseStart)<<" ms\n"<<std::flush;
         phaseStart=std::chrono::steady_clock::now();
     };
     std::vector<uint8_t> soBytes=so;
@@ -31789,9 +31789,14 @@ int main(int argc,char**argv){
                     const std::string obj=cachedCnProjectObject(
                         bilingualCtx,parsedSources[i],spec.sources[i],
                         (i+1)*1000000,bilingualCompiled,bilingualReused,noCache);
+                    // v0.23.82-dev: flush every verbose line. stdout is
+                    // block-buffered through a pipe, so without this all
+                    // 21 lines arrive in one burst at process exit and a
+                    // live log reader (e.g. the Tiecode plugin) sees
+                    // nothing while the build runs.
                     if(verbose)
                         std::cout<<"aster: verbose: "<<(bilingualCompiled>c0?"compiled ":"reused ")
-                                 <<spec.sources[i]<<" in "<<msSince(fileT0)<<" ms\n";
+                                 <<spec.sources[i]<<" in "<<msSince(fileT0)<<" ms\n"<<std::flush;
                     if(!obj.empty()) bilingualObjs.push_back(obj);
                 }
                 if(bilingualObjs.empty()){std::cerr<<"aster "<<cmd<<": no objects to link\n";return 1;}
@@ -31814,7 +31819,7 @@ int main(int argc,char**argv){
                     linkSharedObjects(bilingualObjs,bilingualSoPath,"lib"+bilingualProjectName+".so",{},bilingualPage,!noGcSections,!noStrip,verbose,gcKeep);
                     if(verbose)
                         std::cout<<"aster: verbose: linked "<<bilingualObjs.size()<<" objects into "<<bilingualSoPath
-                                 <<" in "<<msSince(linkT0)<<" ms\n";
+                                 <<" in "<<msSince(linkT0)<<" ms\n"<<std::flush;
                     std::string bilingualApkErr;
                     if(!validateApkInputs(spec.package,spec.abi,bilingualProjectName,bilingualApkErr)){
                         std::cerr<<"aster build: "<<bilingualApkErr<<"\n";return 2;
@@ -31839,7 +31844,7 @@ int main(int argc,char**argv){
                     if(verbose)
                         std::cout<<"aster: verbose: signing key "
                                  <<(spec.signMode=="release"?"loaded":(bilingualKeyExisted?"reused":"generated"))
-                                 <<" in "<<msSince(keyT0)<<" ms\n";
+                                 <<" in "<<msSince(keyT0)<<" ms\n"<<std::flush;
                     const std::string bilingualSoText=readFile(bilingualSoPath);
                     std::vector<uint8_t> bilingualSo(bilingualSoText.begin(),bilingualSoText.end());
                     const std::string bilingualLabel=spec.label.empty()?bilingualProjectName:spec.label;
@@ -31853,10 +31858,10 @@ int main(int argc,char**argv){
                         const uint64_t apkBytes=std::filesystem::file_size(target,ec);
                         std::cout<<"aster: verbose: size: "<<target<<" "<<(ec?0:apkBytes)<<" bytes; .so "
                                  <<bilingualSo.size()<<" bytes (.text "<<elfSectionSize(bilingualSo,".text")<<" bytes); "
-                                 <<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused\n";
+                                 <<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused\n"<<std::flush;
                     }
                     std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
-                             <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n";
+                             <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n"<<std::flush;
                     return 0;
                 }
                 // No GC here, like the mainline project build: GC prunes
@@ -31871,9 +31876,9 @@ int main(int argc,char**argv){
                 linkObjects(bilingualObjs,target,0x400000,2,bilingualPage,false);
                 if(verbose)
                     std::cout<<"aster: verbose: linked "<<bilingualObjs.size()<<" objects into "<<target
-                             <<" in "<<msSince(exeLinkT0)<<" ms\n";
+                             <<" in "<<msSince(exeLinkT0)<<" ms\n"<<std::flush;
                 std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
-                         <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n";
+                         <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n"<<std::flush;
                 if(isRun){
                     pid_t pid=::fork();
                     if(pid==0){execAarch64Image(target,runArgs);std::perror("aster run");::_exit(127);}
@@ -32044,11 +32049,11 @@ int main(int argc,char**argv){
                 int r=buildApk(out,spec.package,name,spec.abi,so,spec.minSdk,spec.targetSdk,label,
                                spec.versionCode,spec.versionName,{},key,true,false,false,filePage,iconBytes,!noStrip,verbose);
                 if(r!=0)return r;
-                std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n";
+                std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n"<<std::flush;
                 return 0;
             }
             linkObjects(objs,out,0x400000,2,filePage);
-            std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n";
+            std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n"<<std::flush;
             if(isRun){
                 pid_t pid=::fork();
                 if(pid==0){execAarch64Image(out,runArgs);std::perror("aster run");::_exit(127);}
@@ -32192,7 +32197,7 @@ int main(int argc,char**argv){
             const std::vector<uint8_t> iconBytes=iconPath.empty()?std::vector<uint8_t>{}:loadIconBytes(iconPath,"aster: build-apk: --icon");
             int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,debuggable,pageSize,iconBytes,strip,verboseApk);
             if(r==0)std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2+v3 triple-signed, "
-                <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n";
+                <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n"<<std::flush;
             return r;
         }
         // keygen writes the project's debug key without building anything, so
