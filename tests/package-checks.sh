@@ -4,7 +4,7 @@
 # `aster pack --check` fails when the sources and the manifest disagree,
 # `aster complete` reads the manifest (not the sources) filtered by the
 # file's language, and aster.proj `[package]` declarations are version
-# checked by build/test before any import resolves.
+# checked by build/test/build-cn-obj before any import resolves.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ASTER_BIN=${ASTER_BIN:-$ROOT/aster}
@@ -14,7 +14,7 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-echo '[1/8] pack generates a complete manifest'
+echo '[1/9] pack generates a complete manifest'
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg" > "$TMP/pack.log" 2>&1 \
     || { cat "$TMP/pack.log" >&2; fail 'aster pack failed'; }
 grep -q 'packed standard' "$TMP/pack.log" || fail 'pack did not report the package'
@@ -74,7 +74,7 @@ cmp "$TMP/pkg/std.o" "$TMP/std-ref.o" || fail 'std.o differs from build-obj outp
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg2" > /dev/null 2>&1
 cmp "$TMP/pkg/manifest.json" "$TMP/pkg2/manifest.json" || fail 'pack is not deterministic'
 
-echo '[2/8] pack --check passes on a fresh package and fails on tampering'
+echo '[2/9] pack --check passes on a fresh package and fails on tampering'
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg" > "$TMP/check-ok.log" 2>&1 \
     || { cat "$TMP/check-ok.log" >&2; fail 'pack --check failed on a fresh package'; }
 # The default source dir is the repository stdlib/ when run from the root.
@@ -225,7 +225,7 @@ fi
 grep -q "package 'standard': package contains unexpected file \"cn/extra.ast\"" \
     "$TMP/proj-extra2/build.log" || { cat "$TMP/proj-extra2/build.log" >&2; fail 'extra-file-under-cn build diagnostic is wrong'; }
 
-echo '[3/8] complete filters by the file language'
+echo '[3/9] complete filters by the file language'
 printf '// aster:language=zh\n' > "$TMP/file-zh.ast"
 printf '// aster:language=en\n' > "$TMP/file-en.ast"
 "$ASTER_BIN" complete "$TMP/pkg2" "$TMP/file-zh.ast" > "$TMP/complete-zh.txt" 2>&1
@@ -256,7 +256,7 @@ PY
 python3 -c "import json,sys; assert len(json.load(open(sys.argv[1]))) == 141" "$TMP/complete-en.json" \
     || fail 'complete --format json (en) does not list all 141 exports'
 
-echo '[4/8] [package] version check passes, and [package] does not disturb [language]'
+echo '[4/9] [package] version check passes, and [package] does not disturb [language]'
 mkdir -p "$TMP/proj-ok/src" "$TMP/proj-ok/packages"
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/proj-ok/packages/standard" > /dev/null 2>&1
 cat > "$TMP/proj-ok/src/main.ast" <<'SRC'
@@ -277,7 +277,7 @@ EOF
 if "$RUNNER" "$TMP/proj-ok/build/ok"; then status=0; else status=$?; fi
 [ "$status" -eq 0 ] || fail "matching-version project returned $status, expected 0"
 
-echo '[5/8] version check reports a missing package and a version mismatch'
+echo '[5/9] version check reports a missing package and a version mismatch'
 mkdir -p "$TMP/proj-missing/src" "$TMP/proj-mismatch/src"
 cp "$TMP/proj-ok/src/main.ast" "$TMP/proj-missing/src/main.ast"
 cp "$TMP/proj-ok/src/main.ast" "$TMP/proj-mismatch/src/main.ast"
@@ -316,7 +316,7 @@ EOF
 (cd "$TMP/proj-mismatch" && "$ASTER_BIN" build > build.log 2>&1) \
     || { cat "$TMP/proj-mismatch/build.log" >&2; fail 'build with [package] after sources / Chinese name failed'; }
 
-echo '[6/8] version check runs for test as well, and undeclared projects are unaffected'
+echo '[6/9] version check runs for test as well, and undeclared projects are unaffected'
 mkdir -p "$TMP/proj-test/src" "$TMP/proj-test/tests"
 cp -r "$TMP/proj-ok/packages" "$TMP/proj-test/"
 cat > "$TMP/proj-test/src/main.ast" <<'SRC'
@@ -351,7 +351,7 @@ printf 'name plain\nsrc/main.ast\n' > "$TMP/proj-plain/aster.proj"
 (cd "$TMP/proj-plain" && "$ASTER_BIN" build > build.log 2>&1) \
     || { cat "$TMP/proj-plain/build.log" >&2; fail 'build without [package] broke'; }
 
-echo '[7/8] pack/complete reject bad usage'
+echo '[7/9] pack/complete reject bad usage'
 if "$ASTER_BIN" pack --nope > /dev/null 2>&1; then fail 'pack accepted an unknown option'; fi
 if "$ASTER_BIN" pack --src-dir "$TMP/does-not-exist" --out "$TMP/pkg-nope" > /dev/null 2>&1; then
     fail 'pack accepted a missing source dir'
@@ -369,7 +369,7 @@ if "$ASTER_BIN" complete --format yaml "$TMP/pkg2" > /dev/null 2>&1; then
     fail 'complete accepted an unknown format'
 fi
 
-echo '[8/8] pack leaves the package read-only, and re-pack over it works'
+echo '[8/9] pack leaves the package read-only, and re-pack over it works'
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-ro" > /dev/null 2>&1
 # No file or directory under the package carries a write bit. Checked by
 # mode bits, not by attempting a write: the suite may run as root, and
@@ -394,5 +394,56 @@ mv "$TMP/proj-ro/aster.proj.new" "$TMP/proj-ro/aster.proj"
     || { cat "$TMP/proj-ro/build.log" >&2; fail 'build with a re-packed package failed'; }
 if "$RUNNER" "$TMP/proj-ro/build/ro"; then status=0; else status=$?; fi
 [ "$status" -eq 0 ] || fail "re-packed project returned $status, expected 0"
+
+echo '[9/9] build-cn-obj --project runs the same package version check'
+# The same fixtures as the build cases above, through build-cn-obj
+# --project invoked from outside the project directory: the package root
+# is the project directory, not the cwd. The mismatch fixture is built
+# fresh here because [5/9] overwrote proj-mismatch/aster.proj with a
+# matching-version declaration at the end of its section.
+mkdir -p "$TMP/proj-cnobj-mismatch/src"
+cp -r "$TMP/proj-ok/packages" "$TMP/proj-cnobj-mismatch/"
+cp "$TMP/proj-ok/src/main.ast" "$TMP/proj-cnobj-mismatch/src/main.ast"
+cat > "$TMP/proj-cnobj-mismatch/aster.proj" <<'EOF'
+name cnobj-mismatch
+[package]
+standard = "0.0.0"
+[language]
+default = "zh"
+src/main.ast
+EOF
+"$ASTER_BIN" build-cn-obj --project "$TMP/proj-ok/aster.proj" \
+    "$TMP/proj-ok/src/main.ast" -o "$TMP/proj-ok/main.o" > "$TMP/cnobj-ok.log" 2>&1 \
+    || { cat "$TMP/cnobj-ok.log" >&2; fail 'build-cn-obj --project failed with a matching [package] version'; }
+[ -f "$TMP/proj-ok/main.o" ] || fail 'build-cn-obj --project produced no object'
+if "$ASTER_BIN" build-cn-obj --project "$TMP/proj-cnobj-mismatch/aster.proj" \
+    "$TMP/proj-cnobj-mismatch/src/main.ast" -o "$TMP/cnobj-mismatch.o" > "$TMP/cnobj-mismatch.log" 2>&1; then
+    fail 'build-cn-obj --project passed with a mismatched package version'
+fi
+grep -q "aster build-cn-obj: package 'standard' version mismatch: aster.proj requires \"0.0.0\" but .* has \"0.23.82-dev\"" \
+    "$TMP/cnobj-mismatch.log" || { cat "$TMP/cnobj-mismatch.log" >&2; fail 'build-cn-obj version-mismatch diagnostic is wrong'; }
+if "$ASTER_BIN" build-cn-obj --project "$TMP/proj-missing/aster.proj" \
+    "$TMP/proj-missing/src/main.ast" -o "$TMP/cnobj-missing.o" > "$TMP/cnobj-missing.log" 2>&1; then
+    fail 'build-cn-obj --project passed with no package installed'
+fi
+grep -q "package 'standard' version \"0.23.82-dev\" required by aster.proj was not found" \
+    "$TMP/cnobj-missing.log" || { cat "$TMP/cnobj-missing.log" >&2; fail 'build-cn-obj missing-package diagnostic is wrong'; }
+if "$ASTER_BIN" build-cn-obj --project "$TMP/proj-tamper2/aster.proj" \
+    "$TMP/proj-tamper2/src/main.ast" -o "$TMP/cnobj-tamper2.o" > "$TMP/cnobj-tamper2.log" 2>&1; then
+    fail 'build-cn-obj --project passed with a tampered std.o installed'
+fi
+grep -q "aster build-cn-obj: package 'standard': files sha256 differs for \"std.o\"" \
+    "$TMP/cnobj-tamper2.log" || { cat "$TMP/cnobj-tamper2.log" >&2; fail 'build-cn-obj tampered-std.o diagnostic is wrong'; }
+if "$ASTER_BIN" build-cn-obj --project "$TMP/proj-extra/aster.proj" \
+    "$TMP/proj-extra/src/main.ast" -o "$TMP/cnobj-extra.o" > "$TMP/cnobj-extra.log" 2>&1; then
+    fail 'build-cn-obj --project passed with an extra file in the package'
+fi
+grep -q "aster build-cn-obj: package 'standard': package contains unexpected file \"extra.txt\"" \
+    "$TMP/cnobj-extra.log" || { cat "$TMP/cnobj-extra.log" >&2; fail 'build-cn-obj extra-file diagnostic is wrong'; }
+# A project that declares no package is unaffected by the hook.
+"$ASTER_BIN" build-cn-obj --project "$TMP/proj-plain/aster.proj" \
+    "$TMP/proj-plain/src/main.ast" -o "$TMP/proj-plain/main.o" > "$TMP/cnobj-plain.log" 2>&1 \
+    || { cat "$TMP/cnobj-plain.log" >&2; fail 'build-cn-obj --project failed without [package]'; }
+[ -f "$TMP/proj-plain/main.o" ] || fail 'build-cn-obj --project produced no object without [package]'
 
 echo 'package checks passed'

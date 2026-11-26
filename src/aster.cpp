@@ -31064,6 +31064,25 @@ int main(int argc,char**argv){
             if (!projectPath.empty()) {
                 try {
                     const ProjectSpec objSpec = parseProjectFile(projectPath);
+                    // Package format (§11.3): the same version check `aster
+                    // build` runs before any import resolves — a project
+                    // that declares a package version must find that exact
+                    // version, with its files unmodified, before this TU
+                    // compiles. The roots are the same ones the import
+                    // resolution below uses (--module-dir plus this
+                    // project's directory; build runs inside the project
+                    // directory, so its cwd root is the same directory).
+                    // A project that declares no package is untouched
+                    // (pkgValidateProjectPackages returns ""), and a
+                    // project file too broken to parse still falls through
+                    // to the single-file fallback below — `aster build` is
+                    // the place that reports a broken project.
+                    if (const std::string pkgErr =
+                            pkgValidateProjectPackages(objSpec, packageRoots);
+                        !pkgErr.empty()) {
+                        std::cerr << "aster build-cn-obj: " << pkgErr << "\n";
+                        return 1;
+                    }
                     const std::string projDir = dirNameOf(projectPath);
                     for (const auto& specSource : objSpec.sources)
                         objSources.push_back(projDir.empty() ? specSource
