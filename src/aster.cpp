@@ -13708,6 +13708,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "               Android 15+ 16 KB-page devices, required when targetSdk >= 35)\n"
     "  build-apk  <input.so|input.ast> -o <app.apk> --package PKG [--libname NAME] [--abi ABI]\n"
     "            [--label TXT] [--string NAME=VALUE] [--min-sdk N] [--target-sdk N] [--version-code N] [--version-name T]\n"
+    "            [--icon PNG] (a PNG file to use as the launcher icon instead of the built-in one)\n"
     "            [--emit-so PATH] (keep the .so compiled from .ast input)\n"
     "            [--sign-mode debug|release] [--keystore KEY] [--cert CRT]\n"
     "            [--keystore-dir DIR] [--key-bits N] [--no-verify] [--debuggable]\n"
@@ -13728,7 +13729,9 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "                     and an ordinary build emits byte-for-byte what it always did.\n"
     "  --label TXT is stored once, as string/app_name in resources.arsc, and android:label\n"
 "    points at it; --string NAME=VALUE (repeatable) adds further string resources. The\n"
-"    launcher icon is drawable/ic_launcher. Every resource id comes from the table\n"
+"    launcher icon is drawable/ic_launcher; --icon PNG replaces the built-in icon\n"
+"    with the given PNG file (a missing file or a non-PNG is an error), and without\n"
+"    it the built-in icon is used. Every resource id comes from the table\n"
 "    itself, so the manifest cannot name one the table does not hold.\n"
 "  Keys are read as PEM or DER: PKCS#8 or PKCS#1 private keys (unencrypted) and X.509\n"
     "  certificates, so anything openssl/keytool wrote can be used directly.\n"
@@ -14869,6 +14872,74 @@ static std::vector<uint8_t> build(int w, int h) {
     chunk(out, "IHDR", ihdr); chunk(out, "PLTE", plte); chunk(out, "tRNS", trns);
     chunk(out, "IDAT", z); chunk(out, "IEND", std::vector<uint8_t>());
     return out;
+}
+// Validate a user-supplied launcher icon: it has to be a real PNG, or the
+// launcher shows nothing and the build has silently shipped a broken icon.
+// The checks are structural — signature, IHDR fields, every chunk's CRC,
+// at least one IDAT, IEND last — which is what catches a truncated file, a
+// JPEG renamed to .png, or a corrupted download. The pixel data itself is
+// not inflated here; Android's decoder is the final judge of that, and a
+// structurally valid PNG whose chunk CRCs all check out is a correctly
+// written file. Returns the image size (width, height) for the build log.
+static std::pair<int,int> validate(const std::vector<uint8_t>& png, const std::string& what) {
+    static const uint8_t sig[8] = {0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A};
+    auto fail = [&](const std::string& why) -> void { throw Error(what + ": not a valid PNG (" + why + ")"); };
+    if (png.size() < 8 || std::memcmp(png.data(), sig, 8) != 0)
+        fail("missing PNG signature");
+    auto u32be = [&](size_t o) -> uint32_t {
+        return ((uint32_t)png[o] << 24) | ((uint32_t)png[o+1] << 16) |
+               ((uint32_t)png[o+2] << 8) | (uint32_t)png[o+3];
+    };
+    size_t pos = 8; bool seenIHDR = false, seenIDAT = false, seenIEND = false;
+    int w = 0, h = 0;
+    while (pos < png.size()) {
+        if (pos + 8 > png.size()) fail("truncated chunk header");
+        const uint32_t len = u32be(pos);
+        if (pos + 12 > png.size() || (uint64_t)len > (uint64_t)(png.size() - pos - 12))
+            fail("truncated chunk");
+        const std::string type((const char*)png.data() + pos + 4, 4);
+        // The CRC covers the chunk type plus its data.
+        std::vector<uint8_t> crcData(png.begin() + (long)(pos + 4), png.begin() + (long)(pos + 8 + len));
+        if (crc32(crcData.data(), crcData.size()) != u32be(pos + 8 + len))
+            fail(type + " chunk CRC mismatch");
+        if (!seenIHDR) {
+            if (type != "IHDR") fail("first chunk is not IHDR");
+            if (len != 13) fail("IHDR must be 13 bytes");
+            w = (int)u32be(pos + 8); h = (int)u32be(pos + 12);
+            const uint8_t bitDepth = png[pos + 16], colorType = png[pos + 17];
+            const uint8_t comp = png[pos + 18], filter = png[pos + 19], interlace = png[pos + 20];
+            if (w <= 0 || h <= 0) fail("IHDR has zero width or height");
+            if (comp != 0 || filter != 0 || (interlace != 0 && interlace != 1))
+                fail("IHDR has unsupported compression, filter or interlace method");
+            // Legal (colour type, bit depth) pairs from the PNG spec: 0, 2, 4
+            // and 6 take 8/16 (0 also 1/2/4), 3 takes 1/2/4/8; 1, 5 and 7 are
+            // not colour types at all.
+            bool legal = false;
+            switch (colorType) {
+                case 0: legal = bitDepth==1||bitDepth==2||bitDepth==4||bitDepth==8||bitDepth==16; break;
+                case 2: legal = bitDepth==8||bitDepth==16; break;
+                case 3: legal = bitDepth==1||bitDepth==2||bitDepth==4||bitDepth==8; break;
+                case 4: legal = bitDepth==8||bitDepth==16; break;
+                case 6: legal = bitDepth==8||bitDepth==16; break;
+                default: legal = false;
+            }
+            if (!legal) fail("IHDR has illegal colour type / bit depth");
+            seenIHDR = true;
+        }
+        if (type == "IDAT") seenIDAT = true;
+        if (type == "IEND") {
+            if (len != 0) fail("IEND must be empty");
+            seenIEND = true;
+            pos += 12 + len;
+            break;
+        }
+        pos += 12 + len;
+    }
+    if (!seenIHDR) fail("missing IHDR");
+    if (!seenIDAT) fail("missing IDAT");
+    if (!seenIEND) fail("missing IEND");
+    if (pos != png.size()) fail("trailing bytes after IEND");
+    return {w, h};
 }
 } // namespace PNG
 
@@ -16329,13 +16400,27 @@ static bool validateApkInputs(const std::string& pkg, const std::string& abi,
     }
     return true;
 }
+// A project-supplied launcher icon: read the file and validate it as a PNG.
+// The path is relative to the project directory (the working directory of
+// `aster build`, like `keystore`/`cert`/sources). A missing file or a file
+// that is not a valid PNG is a hard error — silently falling back to the
+// built-in icon would ship the wrong icon without anyone noticing.
+static std::vector<uint8_t> loadIconBytes(const std::string& path, const std::string& what) {
+    const std::string text = readFile(path);   // throws "cannot open input: <path>"
+    std::vector<uint8_t> bytes(text.begin(), text.end());
+    const auto size = PNG::validate(bytes, what + ": " + path);
+    std::cout << "Aster: using launcher icon " << path << " (" << size.first << "x" << size.second << ")\n";
+    return bytes;
+}
+
 // ---------------------------------------------------------------- buildApk : assemble + sign the whole APK
 static int buildApk(const std::string& out, const std::string& pkg, const std::string& libname,
                     const std::string& abi, const std::vector<uint8_t>& so, int minSdk, int targetSdk,
                     const std::string& label, int verCode, const std::string& verName,
                     const std::vector<std::pair<std::string,std::string>>& extraStrings,
                     const SigningKey& key, bool selfVerify, bool labelAsReference,
-                    bool debuggable = false, uint64_t pageSize = 4096) {
+                    bool debuggable = false, uint64_t pageSize = 4096,
+                    const std::vector<uint8_t>& iconBytes = {}) {
     // v0.23.77-dev (audit A-14): --abi has to describe the library the APK
     // ships. It used to accept any ABI-shaped name, so building with
     // `--abi x86_64` around an AArch64 shared object produced an APK that no
@@ -16444,7 +16529,10 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     }
     const uint32_t iconResId  = table.resId("drawable", iconName);    // 0x7f010000
     const uint32_t labelResId = table.resId("string",   "app_name");  // 0x7f020000
-    std::vector<uint8_t> icon = PNG::build(192, 192);
+    // A project-supplied icon replaces the built-in one byte for byte: the
+    // resource name, the table entry, the manifest reference and the ZIP
+    // path are all unchanged, so only the pixels differ.
+    std::vector<uint8_t> icon = iconBytes.empty() ? PNG::build(192, 192) : iconBytes;
     std::vector<uint8_t> arsc = ARSC::build(pkg, table);
     std::vector<uint8_t> manifest = AXML::nativeActivity(pkg, verCode, verName, minSdk, targetSdk,
                                                        libname, iconResId, labelResId,
@@ -16919,6 +17007,7 @@ struct ProjectSpec {
     uint64_t pageSize=0;             // 0 = use the command line / default
     std::string signMode="debug";    // debug | release
     std::string keystore, cert;      // release signing material
+    std::string icon;                // apk only; path to a PNG launcher icon, relative to the project dir; empty = built-in
     int keyBits=2048;                // size of a generated debug key
     std::vector<std::string> sources;
     std::vector<std::string> tests;  // `test <path>` lines
@@ -16928,7 +17017,7 @@ struct ProjectSpec {
 };
 // v0.23.77-dev: aster.proj is line-oriented. `kind`, `package`, `name`, `abi`,
 // v0.23.77-dev: aster.proj is line-oriented. `kind`, `package`, `name`, `abi`,
-// `label`, `version-code`, `version-name`, `min-sdk`, `target-sdk` and
+// `label`, `icon`, `version-code`, `version-name`, `min-sdk`, `target-sdk` and
 // `page-size` are settings; `test <path>` lines are test metadata and every
 // other non-comment line is a source path, in link order. The language
 // section may appear before either kind of path. A `[package]` section holds
@@ -17032,6 +17121,10 @@ static ProjectSpec parseProjectFile(const std::string& path){
         }
         else if(k=="abi") spec.abi=v;
         else if(k=="label") spec.label=v;
+        else if(k=="icon"){
+            if(v.empty())throw Error(path+": icon must name a PNG file (got empty)");
+            spec.icon=normalizeProjPath(v);
+        }
         else if(k=="version-code"){
             // v0.23.82-dev: an apk project has to carry its own version, or
             // `aster build` writes versionCode 1 / versionName "1.0" and a
@@ -30307,14 +30400,21 @@ int main(int argc,char**argv){
                     "[language]\n"
                     "default = \"en\"\n"
                     "package com.example." + pkgSuffix + "\n"
-                    "label " + name + "\n";
+                    "label " + name + "\n"
+                    "# icon assets/icon.png — a PNG file (relative to this project) to use\n"
+                    "# as the launcher icon instead of the built-in one; without it the\n"
+                    "# built-in icon is used.\n";
                 if(fileName!=name)proj+="name " + fileName + "\n";
                 proj+="src/main.ast\n";
                 writeFileAtomic(dir+"/aster.proj",proj);
                 writeFileAtomic(dir+"/src/main.ast",
                     "// The shared object inside the APK. `aster build` compiles these\n"
                     "// sources for Android (PIC), links them, and signs the result.\n"
-                    "fn aster_main(): i32 {\n"
+                    "// The entry must be ANativeActivity_onCreate: the manifest uses\n"
+                    "// android.app.NativeActivity, which looks up exactly this symbol\n"
+                    "// at launch — a bare aster_main is never called and the app\n"
+                    "// crashes on start without it.\n"
+                    "fn ANativeActivity_onCreate(activity: ptr, saved: ptr, savedSize: i64): i32 {\n"
                     "    return 0;\n"
                     "}\n");
             } else {
@@ -31226,7 +31326,9 @@ int main(int argc,char**argv){
                 // + foreign-source dep hashes). The exactly-one-main check
                 // stays at merged level, as before — for exe projects only:
                 // an APK project has no main (its entry is
-                // ANativeActivity_onCreate / aster_main in the sources).
+                // ANativeActivity_onCreate in the sources — the symbol
+                // android.app.NativeActivity looks up at launch; a bare
+                // aster_main is never called).
                 bool bilingualHasMain=bilingualIsApk;
                 for(const auto& method:program.methods) if(method.name=="main") bilingualHasMain=true;
                 if(!bilingualHasMain)
@@ -31327,9 +31429,10 @@ int main(int argc,char**argv){
                     const std::string bilingualSoText=readFile(bilingualSoPath);
                     std::vector<uint8_t> bilingualSo(bilingualSoText.begin(),bilingualSoText.end());
                     const std::string bilingualLabel=spec.label.empty()?bilingualProjectName:spec.label;
+                    const std::vector<uint8_t> bilingualIconBytes=spec.icon.empty()?std::vector<uint8_t>{}:loadIconBytes(spec.icon,"aster build: icon");
                     int bilingualApkResult=buildApk(target,spec.package,bilingualProjectName,spec.abi,bilingualSo,
                         spec.minSdk,spec.targetSdk,bilingualLabel,
-                        spec.versionCode,spec.versionName,{},bilingualKey,true,false,false,bilingualPage);
+                        spec.versionCode,spec.versionName,{},bilingualKey,true,false,false,bilingualPage,bilingualIconBytes);
                     if(bilingualApkResult!=0)return bilingualApkResult;
                     std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
                              <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n";
@@ -31507,8 +31610,9 @@ int main(int argc,char**argv){
                 const std::string soText=readFile(soPath);
                 std::vector<uint8_t> so(soText.begin(),soText.end());
                 const std::string label=spec.label.empty()?name:spec.label;
+                const std::vector<uint8_t> iconBytes=spec.icon.empty()?std::vector<uint8_t>{}:loadIconBytes(spec.icon,"aster build: icon");
                 int r=buildApk(out,spec.package,name,spec.abi,so,spec.minSdk,spec.targetSdk,label,
-                               spec.versionCode,spec.versionName,{},key,true,false,false,filePage);
+                               spec.versionCode,spec.versionName,{},key,true,false,false,filePage,iconBytes);
                 if(r!=0)return r;
                 std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n";
                 return 0;
@@ -31532,7 +31636,7 @@ int main(int argc,char**argv){
             return 0;
         }
         if(cmd=="build-apk"){
-            std::string inSo, package, libname, abi="arm64-v8a", label="AsterApp", verName="1.0", emitSo, soSoname;
+            std::string inSo, package, libname, abi="arm64-v8a", label="AsterApp", verName="1.0", emitSo, soSoname, iconPath;
             std::string signMode="debug", keystore, cert, keystoreDir;
             int minSdk=21, targetSdk=30, verCode=1, keyBits=2048; bool havePkg=false, selfVerify=true;
             bool labelAsReference=false, debuggable=false;
@@ -31552,6 +31656,8 @@ int main(int argc,char**argv){
                 else if(a=="--libname"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --libname requires an argument\n";return 2;} libname=v;}
                 else if(a=="--abi"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --abi requires an argument\n";return 2;} abi=v;}
                 else if(a=="--label"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --label requires an argument\n";return 2;} label=v;}
+                else if(a=="--icon"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --icon requires an argument\n";return 2;} iconPath=v;}
+                else if(a.rfind("--icon=",0)==0)iconPath=a.substr(7);
                 else if(a=="--string"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --string requires an argument\n";return 2;} addStringResource(v,extraStrings,"aster: build-apk");}
                 else if(a=="--label-as-reference")labelAsReference=true;
                 // v0.23.61-dev: android:debuggable is off unless asked for.
@@ -31647,7 +31753,8 @@ int main(int argc,char**argv){
                     std::cerr<<"aster: build-apk: input is not an ELF shared object (expected a .so or a .ast): "<<inSo<<"\n";return 2;
                 }
             }
-            int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,debuggable,pageSize);
+            const std::vector<uint8_t> iconBytes=iconPath.empty()?std::vector<uint8_t>{}:loadIconBytes(iconPath,"aster: build-apk: --icon");
+            int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,debuggable,pageSize,iconBytes);
             if(r==0)std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2+v3 triple-signed, "
                 <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n";
             return r;
