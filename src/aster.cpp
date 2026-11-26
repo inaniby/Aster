@@ -30819,6 +30819,22 @@ int main(int argc,char**argv){
                     "}\n");
             }
             writeFileAtomic(dir+"/.gitignore","build/\n");
+            // v0.23.82-dev: an APK project signs with a per-project debug key
+            // that used to be generated lazily by the first build (~3 s of
+            // RSA-2048 generation inside the build). Generate it here, while
+            // the scaffold is being laid down, so the first build only reuses
+            // it. debugKeyFor is the same generation the build and `keygen`
+            // share: it reuses an existing key pair, so a key that is already
+            // there is never regenerated. A failure here must not fail the
+            // scaffold — the build still generates lazily — so it only warns.
+            if(apk){
+                try{
+                    debugKeyFor(dir,2048);
+                }catch(const std::exception& e){
+                    std::cerr<<"aster new: warning: the debug key was not generated ("
+                             <<e.what()<<"); the first build will generate it\n";
+                }
+            }
             std::cout<<"Aster v"<<kVersion<<": created "<<(apk?"APK ":"")<<"project "<<dir
                      <<(apk?" (aster.proj, src/main.ast)":" (aster.proj, src/main.ast, src/util.ast)")<<"\n"
                      <<"  cd "<<dir<<" && aster build"
