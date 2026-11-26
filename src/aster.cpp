@@ -28911,6 +28911,79 @@ struct PkgSourceEntry {
 static std::string pkgLockPath(const std::string& projectDir) {
     return projectDir + "/packages/.aster-pkg-sources";
 }
+// Lock file format version. The lock file <project>/packages/
+// .aster-pkg-sources carries a top-level integer "version" field; the
+// current format is v1. A lock file with no "version" field predates
+// versioning and is read as v1 (backwards compatible).
+static const int kPkgLockVersion = 1;
+// Validate the top-level "version" field of a parsed lock file and
+// return the version it declares. Missing -> 1 (legacy lock). The
+// value must be a plain non-negative integer literal (digits only: no
+// decimal point, exponent or sign); 0 is out of range (versions start
+// at 1); a value above kPkgLockVersion is too new for this compiler
+// and is refused rather than silently parsed as an old format.
+static int pkgParseLockVersion(const PkgJson& root, const std::string& path) {
+    const PkgJson* version = root.field("version");
+    if (!version) return 1;
+    if (version->kind != PkgJson::Kind::Num)
+        throw Error("aster pkg: lock file " + path +
+                    ": field \"version\" must be an integer, not a " +
+                    (version->kind == PkgJson::Kind::Str ? "string" : "non-number"));
+    const std::string& text = version->str;
+    if (text.empty())
+        throw Error("aster pkg: lock file " + path + ": field \"version\" is empty");
+    for (const char c : text)
+        if (c < '0' || c > '9')
+            throw Error("aster pkg: lock file " + path + ": field \"version\" must be a plain integer, got \"" + text + "\"");
+    unsigned long long value = 0;
+    for (const char c : text) {
+        const unsigned digit = (unsigned)(c - '0');
+        if (value > (~0ULL - digit) / 10ULL)
+            throw Error("aster pkg: lock file " + path + ": field \"version\" is too large: \"" + text + "\"");
+        value = value * 10ULL + digit;
+    }
+    if (value == 0)
+        throw Error("aster pkg: lock file " + path + ": field \"version\" must be at least 1, got 0");
+    if (value > (unsigned long long)kPkgLockVersion)
+        throw Error("aster pkg: lock file " + path + " has version " + text +
+                    ", which is newer than this compiler supports (version " +
+                    std::to_string(kPkgLockVersion) +
+                    "); please upgrade the compiler (锁文件版本太新，请升级编译器)");
+    return (int)value;
+}
+// Migration hook: normalize lock entries written by an older lock
+// format to the current shape before they are returned. Today only
+// v1 exists, so this is a pass-through; when a v2 format is added,
+// bump kPkgLockVersion to 2, add a `case 2:` here that converts v2
+// entries to the current shape (and keep `case 1:` for old locks),
+// and have pkgWriteLock write the new version. pkgParseLockVersion
+// above is the only other place that needs to change (it already
+// accepts any version up to kPkgLockVersion).
+static std::vector<PkgSourceEntry> pkgMigrateLockEntries(int version,
+        std::vector<PkgSourceEntry> entries) {
+    switch (version) {
+        case 1: return entries;
+        default:
+            throw Error("aster pkg: unsupported lock file version " + std::to_string(version));
+    }
+}
+// Version-only check for callers that do not read the lock entries
+// (notably `pkg list`, which lists installed directories, not the
+// lock). A missing lock file is fine; anything else is validated
+// exactly as pkgReadLock validates it.
+static void pkgCheckLockVersion(const std::string& projectDir) {
+    const std::string path = pkgLockPath(projectDir);
+    if (!fileExists(path)) return;
+    PkgJson root;
+    try {
+        root = PkgJsonParser(readFile(path), path).parse();
+    } catch (const std::exception& e) {
+        throw Error(std::string("aster pkg: cannot read lock file ") + path + ": " + e.what());
+    }
+    if (root.kind != PkgJson::Kind::Obj)
+        throw Error("aster pkg: lock file " + path + " must be a JSON object");
+    (void)pkgParseLockVersion(root, path);
+}
 static std::vector<PkgSourceEntry> pkgReadLock(const std::string& projectDir) {
     const std::string path = pkgLockPath(projectDir);
     if (!fileExists(path)) return {};
@@ -28922,6 +28995,7 @@ static std::vector<PkgSourceEntry> pkgReadLock(const std::string& projectDir) {
     }
     if (root.kind != PkgJson::Kind::Obj)
         throw Error("aster pkg: lock file " + path + " must be a JSON object");
+    const int lockVersion = pkgParseLockVersion(root, path);
     const PkgJson* packages = root.field("packages");
     if (!packages || packages->kind != PkgJson::Kind::Arr)
         throw Error("aster pkg: lock file " + path + ": field \"packages\" is missing or not an array");
@@ -28935,13 +29009,13 @@ static std::vector<PkgSourceEntry> pkgReadLock(const std::string& projectDir) {
         entry.version = pkgJsonStringField(e, "version", path);
         out.push_back(std::move(entry));
     }
-    return out;
+    return pkgMigrateLockEntries(lockVersion, std::move(out));
 }
 static void pkgWriteLock(const std::string& projectDir,
                          const std::vector<PkgSourceEntry>& entries) {
     if (!makeDirs(projectDir + "/packages"))
         throw Error("aster pkg: cannot create " + projectDir + "/packages");
-    std::string out = "{\n  \"packages\": [";
+    std::string out = "{\n  \"version\": " + std::to_string(kPkgLockVersion) + ",\n  \"packages\": [";
     for (size_t i = 0; i < entries.size(); ++i) {
         if (i) out += ",";
         out += "\n    {\"name\": " + pkgJsonQuote(entries[i].name) +
@@ -30117,6 +30191,11 @@ int main(int argc,char**argv){
             }
             if(sub=="list"){
                 if(!operand.empty())return usageError();
+                // `list` enumerates installed directories, not the lock
+                // file, so validate the lock version explicitly: a lock
+                // written by a newer compiler must fail here too.
+                try { pkgCheckLockVersion(projectDir); }
+                catch(const std::exception& e){ std::cerr<<e.what()<<"\n"; return 1; }
                 const std::string packagesDir=projectDir+"/packages";
                 std::vector<std::string> names;
                 if(dirExists(packagesDir)){

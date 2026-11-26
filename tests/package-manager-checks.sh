@@ -33,7 +33,7 @@ PY
 # fresh project dir (no aster.proj needed except where a build is run)
 new_proj() { mkdir -p "$1"; }
 
-echo '[1/7] local install: pack the standard library, install it, build with it'
+echo '[1/8] local install: pack the standard library, install it, build with it'
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-src" > /dev/null 2>&1 \
     || fail 'aster pack failed'
 mkdir -p "$TMP/proj/src"
@@ -72,7 +72,7 @@ grep -q "\"version\": \"0.23.82-dev\"" "$TMP/proj/packages/.aster-pkg-sources" \
 if "$RUNNER" "$TMP/proj/build/pkgtest"; then status=0; else status=$?; fi
 [ "$status" -eq 0 ] || fail "installed-package project returned $status, expected 0"
 
-echo '[2/7] git install: file:// URL and plain local path, both from a local repo'
+echo '[2/8] git install: file:// URL and plain local path, both from a local repo'
 make_demo_pkg "$TMP/demo-repo" "0.1.0"
 (cd "$TMP/demo-repo" && git init -q . && git -c user.name=t -c user.email=t@t add -A \
     && git -c user.name=t -c user.email=t@t commit -qm 'demo 0.1.0')
@@ -93,7 +93,7 @@ grep -q 'installed demo (演示包) 0.1.0' "$TMP/git-path.log" || fail 'local gi
 # No clone scratch directory is left behind in /tmp.
 [ -z "$(ls -d /tmp/aster-pkg-clone.* 2>/dev/null)" ] || fail 'git install left a clone scratch directory'
 
-echo '[3/7] upgrade: a newer source version replaces the package; a second upgrade is a no-op'
+echo '[3/8] upgrade: a newer source version replaces the package; a second upgrade is a no-op'
 new_proj "$TMP/proj-up"
 make_demo_pkg "$TMP/demo-up" "0.1.0" "// v1\n"
 "$ASTER_BIN" pkg install "$TMP/demo-up" --project "$TMP/proj-up" > /dev/null 2>&1 \
@@ -126,7 +126,7 @@ grep -q 'upgraded demo (演示包) 0.1.0 -> 0.3.0' "$TMP/git-upgrade.log" \
     || fail 'git upgrade output does not show the version change'
 grep -q 'v3' "$TMP/proj-git-up/packages/demo/demo.ast" || fail 'git upgrade did not replace the package files'
 
-echo '[4/7] list shows installed packages; remove drops them from the list and the lock file'
+echo '[4/8] list shows installed packages; remove drops them from the list and the lock file'
 "$ASTER_BIN" pkg list --project "$TMP/proj-up" > "$TMP/list.log" 2>&1 \
     || fail 'pkg list failed'
 grep -q '^demo (演示包) 0.2.0$' "$TMP/list.log" || fail 'list does not show the upgraded package'
@@ -141,7 +141,7 @@ fi
 grep -q '未安装包' "$TMP/list2.log" || fail 'list after remove does not report no packages'
 if grep -q '^demo ' "$TMP/list2.log"; then fail 'list after remove still shows the package'; fi
 
-echo '[5/7] verification failure installs nothing: bad manifest, tampered std.o, extra file'
+echo '[5/8] verification failure installs nothing: bad manifest, tampered std.o, extra file'
 # A manifest that is not JSON at all.
 new_proj "$TMP/proj-badjson"
 cp -r "$TMP/pkg-src" "$TMP/pkg-badjson"
@@ -174,7 +174,7 @@ grep -q 'package contains unexpected file "extra.txt"' "$TMP/extra.log" \
     || fail 'extra-file diagnostic does not name the file'
 [ ! -e "$TMP/proj-extra/packages/standard" ] || fail 'extra-file install left a half-installed package'
 
-echo '[6/7] error cases fail with a diagnostic and a non-zero exit code'
+echo '[6/8] error cases fail with a diagnostic and a non-zero exit code'
 new_proj "$TMP/proj-err"
 if "$ASTER_BIN" pkg install "$TMP/does-not-exist" --project "$TMP/proj-err" > "$TMP/err-missing.log" 2>&1; then
     fail 'pkg install accepted a missing source'
@@ -208,7 +208,7 @@ if "$ASTER_BIN" pkg install --project "$TMP/does-not-exist-proj" "$TMP/pkg-src" 
     fail 'pkg install passed with a missing project directory'
 fi
 
-echo '[7/7] Chinese aliases: 包 安装 / 列表 / 删除'
+echo '[7/8] Chinese aliases: 包 安装 / 列表 / 删除'
 new_proj "$TMP/proj-zh"
 "$ASTER_BIN" 包 安装 "$TMP/demo-up" --project "$TMP/proj-zh" > "$TMP/zh-install.log" 2>&1 \
     || { cat "$TMP/zh-install.log" >&2; fail '包 安装 failed'; }
@@ -224,5 +224,74 @@ grep -q '已是最新 0.2.0' "$TMP/zh-upgrade.log" || fail '包 升级 did not r
 [ ! -e "$TMP/proj-zh/packages/demo" ] || fail '包 删除 left the package directory behind'
 "$ASTER_BIN" pkg list --project "$TMP/proj-zh" > "$TMP/zh-list2.log" 2>&1
 grep -q '未安装包' "$TMP/zh-list2.log" || fail 'list after 包 删除 does not report no packages'
+
+echo '[8/8] lock file version: fresh installs write "version": 1; legacy locks still work; newer or malformed versions fail'
+new_proj "$TMP/proj-lockver"
+make_demo_pkg "$TMP/demo-lv" "0.1.0" "// v1\n"
+"$ASTER_BIN" pkg install "$TMP/demo-lv" --project "$TMP/proj-lockver" > /dev/null 2>&1 \
+    || fail 'lock-version fixture install failed'
+LV_LOCK="$TMP/proj-lockver/packages/.aster-pkg-sources"
+grep -q '^  "version": 1,$' "$LV_LOCK" \
+    || fail 'fresh install did not write lock version 1'
+# A legacy lock (no top-level "version" field) still upgrades, and the
+# upgrade rewrites the lock in the new format.
+sed -i '/^  "version": 1,$/d' "$LV_LOCK"
+if grep -q '^  "version": ' "$LV_LOCK"; then fail 'legacy-lock fixture still has a version line'; fi
+make_demo_pkg "$TMP/demo-lv" "0.2.0" "// v2\n"
+"$ASTER_BIN" pkg upgrade demo --project "$TMP/proj-lockver" > "$TMP/lv-upgrade.log" 2>&1 \
+    || { cat "$TMP/lv-upgrade.log" >&2; fail 'upgrade with a legacy lock failed'; }
+grep -q 'upgraded demo (演示包) 0.1.0 -> 0.2.0' "$TMP/lv-upgrade.log" \
+    || fail 'upgrade with a legacy lock did not report the version change'
+grep -q '^  "version": 1,$' "$LV_LOCK" \
+    || fail 'upgrade from a legacy lock did not rewrite it with version 1'
+"$ASTER_BIN" pkg list --project "$TMP/proj-lockver" > "$TMP/lv-list.log" 2>&1 \
+    || fail 'list after legacy-lock upgrade failed'
+grep -q '^demo (演示包) 0.2.0$' "$TMP/lv-list.log" \
+    || fail 'list after legacy-lock upgrade does not show the upgraded package'
+# Remove works from a legacy lock too, and rewrites it with version 1.
+sed -i '/^  "version": 1,$/d' "$LV_LOCK"
+"$ASTER_BIN" pkg remove demo --project "$TMP/proj-lockver" > /dev/null 2>&1 \
+    || fail 'remove with a legacy lock failed'
+[ ! -e "$TMP/proj-lockver/packages/demo" ] || fail 'legacy-lock remove left the package directory behind'
+grep -q '^  "version": 1,$' "$LV_LOCK" \
+    || fail 'remove from a legacy lock did not rewrite it with version 1'
+# A lock with a version newer than this compiler: list and upgrade both
+# fail, and neither the lock file nor the installed package changes.
+"$ASTER_BIN" pkg install "$TMP/demo-lv" --project "$TMP/proj-lockver" > /dev/null 2>&1 \
+    || fail 'reinstall for the newer-version cases failed'
+sed -i 's/"version": 1/"version": 999/' "$LV_LOCK"
+lv_lock_before=$(sha256sum "$LV_LOCK" | awk '{print $1}')
+lv_pkg_before=$(sha256sum "$TMP/proj-lockver/packages/demo/demo.ast" | awk '{print $1}')
+if "$ASTER_BIN" pkg list --project "$TMP/proj-lockver" > "$TMP/lv-999-list.log" 2>&1; then
+    fail 'pkg list accepted a lock with version 999'
+fi
+grep -q 'has version 999' "$TMP/lv-999-list.log" \
+    || fail 'version-999 list diagnostic does not name the version'
+grep -q 'newer than this compiler supports' "$TMP/lv-999-list.log" \
+    || fail 'version-999 list diagnostic does not say the lock is too new'
+if "$ASTER_BIN" pkg upgrade demo --project "$TMP/proj-lockver" > "$TMP/lv-999-upgrade.log" 2>&1; then
+    fail 'pkg upgrade accepted a lock with version 999'
+fi
+grep -q 'has version 999' "$TMP/lv-999-upgrade.log" \
+    || fail 'version-999 upgrade diagnostic does not name the version'
+[ "$lv_lock_before" = "$(sha256sum "$LV_LOCK" | awk '{print $1}')" ] \
+    || fail 'failed version-999 commands changed the lock file'
+[ "$lv_pkg_before" = "$(sha256sum "$TMP/proj-lockver/packages/demo/demo.ast" | awk '{print $1}')" ] \
+    || fail 'failed version-999 commands changed the installed package'
+# Malformed versions: a string, a decimal, a negative number, and 0.
+for lv_ver in '"1"' '1.5' '-1' '0'; do
+    sed -i -E "s/^  \"version\": .*,/  \"version\": $lv_ver,/" "$LV_LOCK"
+    if "$ASTER_BIN" pkg list --project "$TMP/proj-lockver" > "$TMP/lv-badver.log" 2>&1; then
+        fail "pkg list accepted lock version $lv_ver"
+    fi
+    grep -q 'field "version"' "$TMP/lv-badver.log" \
+        || fail "diagnostic for lock version $lv_ver does not name the version field"
+done
+# Restoring a valid version makes the lock usable again.
+sed -i -E 's/^  "version": .*,/  "version": 1,/' "$LV_LOCK"
+"$ASTER_BIN" pkg list --project "$TMP/proj-lockver" > "$TMP/lv-list2.log" 2>&1 \
+    || fail 'list failed after restoring lock version 1'
+grep -q '^demo (演示包) 0.2.0$' "$TMP/lv-list2.log" \
+    || fail 'list after restoring lock version 1 does not show the package'
 
 echo 'package manager checks passed'
