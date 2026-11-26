@@ -31,7 +31,7 @@ assert m["name"] == "standard", m["name"]
 assert m["name_zh"] == "标准库", m["name_zh"]
 assert m["version"] == "0.23.82-dev", m["version"]
 assert [f["path"] for f in m["files"]] == [
-    "aster_std.ast", "aster_core.ast", "cn/string-zh.ast", "cn/string-en.ast"], m["files"]
+    "aster_std.ast", "aster_core.ast", "cn/string-zh.ast", "cn/string-en.ast", "std.o"], m["files"]
 kinds = {}
 for e in m["exports"]:
     kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
@@ -63,6 +63,10 @@ for f in aster_std.ast aster_core.ast cn/string-zh.ast cn/string-en.ast; do
     grep -q "\"path\": \"$f\", \"sha256\": \"$h\"" "$TMP/pkg/manifest.json" \
         || fail "manifest hash is wrong for $f"
 done
+# The manifest's std.o hash must be the packaged std.o file's real sha256.
+h=$(sha256sum "$TMP/pkg/std.o" | awk '{print $1}')
+grep -q "\"path\": \"std.o\", \"sha256\": \"$h\"" "$TMP/pkg/manifest.json" \
+    || fail 'manifest hash is wrong for std.o'
 # std.o is the object `build-obj` produces from the same source, byte for byte.
 "$ASTER_BIN" build-obj "$ROOT/stdlib/aster_std.ast" -o "$TMP/std-ref.o" > /dev/null 2>&1
 cmp "$TMP/pkg/std.o" "$TMP/std-ref.o" || fail 'std.o differs from build-obj output'
@@ -131,6 +135,30 @@ if (cd "$TMP/proj-tamper" && "$ASTER_BIN" build > build.log 2>&1); then
 fi
 grep -q "package 'standard': files sha256 differs for \"aster_std.ast\"" \
     "$TMP/proj-tamper/build.log" || { cat "$TMP/proj-tamper/build.log" >&2; fail 'tampered-package build diagnostic is wrong'; }
+# The same must hold for std.o: it is package content, so a tampered
+# std.o inside the package must fail --check and a matching-version build.
+"$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-copy2" > /dev/null 2>&1
+"$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-copy2" > /dev/null 2>&1 \
+    || fail 'pack --check failed on a fresh package copy (std.o case)'
+printf 'X' >> "$TMP/pkg-copy2/std.o"
+if "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg-copy2" > "$TMP/check-copy2.log" 2>&1; then
+    fail 'pack --check passed after the packaged std.o was tampered with'
+fi
+grep -q 'sha256 differs for "std.o"' "$TMP/check-copy2.log" \
+    || fail 'packaged std.o tamper diagnostic does not name the file hash'
+grep -q 'package has been modified' "$TMP/check-copy2.log" \
+    || fail 'packaged std.o tamper diagnostic does not say the package was modified'
+mkdir -p "$TMP/proj-tamper2/src" "$TMP/proj-tamper2/packages"
+cp -r "$TMP/pkg-copy2" "$TMP/proj-tamper2/packages/standard"
+cp "$TMP/proj-tamper/src/main.ast" "$TMP/proj-tamper2/src/main.ast"
+cp "$TMP/proj-tamper/aster.proj" "$TMP/proj-tamper2/aster.proj"
+sed 's/name tamper/name tamper2/' "$TMP/proj-tamper2/aster.proj" > "$TMP/proj-tamper2/aster.proj.new"
+mv "$TMP/proj-tamper2/aster.proj.new" "$TMP/proj-tamper2/aster.proj"
+if (cd "$TMP/proj-tamper2" && "$ASTER_BIN" build > build.log 2>&1); then
+    fail 'build passed with a tampered std.o installed'
+fi
+grep -q "package 'standard': files sha256 differs for \"std.o\"" \
+    "$TMP/proj-tamper2/build.log" || { cat "$TMP/proj-tamper2/build.log" >&2; fail 'tampered-std.o build diagnostic is wrong'; }
 # A package missing one of its files is incomplete and must fail --check.
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-missing" > /dev/null 2>&1
 rm "$TMP/pkg-missing/cn/string-en.ast"

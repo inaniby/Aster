@@ -28940,6 +28940,18 @@ static PkgManifest pkgBuildManifest(const std::string& srcDir) {
     }
     return manifest;
 }
+// std.o is package content too (stdlib §11.1): the manifest records its
+// sha256 alongside the four sources, so a tampered std.o inside a package
+// is caught by --check and by the [package] build check. The object is
+// deterministic (the same bytes on every pack), so the hash is stable.
+// The caller builds the object first and passes its path; the hash is
+// appended last, after the four sources, in both the pack and the
+// --check paths, so the two manifests agree.
+static void pkgAppendStdObjectHash(PkgManifest& manifest, const std::string& stdObjectPath) {
+    if (!fileExists(stdObjectPath))
+        throw Error("aster pack: missing standard library object: " + stdObjectPath);
+    manifest.files.emplace_back("std.o", sha256Hex(readFile(stdObjectPath)));
+}
 // std.o: the same path as `aster build-obj` for this file (mainline parser
 // + compileProgram + writeObject), so the object is byte-identical to the
 // one `build-obj` produces from the same source. aster_core.ast is NOT
@@ -29248,9 +29260,23 @@ int main(int argc,char**argv){
                 else if(a.rfind("--check=",0)==0){checkOnly=true;checkDir=a.substr(8);}
                 else return usageError();
             }
-            const PkgManifest manifest=pkgBuildManifest(srcDir);
-            const std::string manifestText=pkgManifestJson(manifest);
+            PkgManifest manifest=pkgBuildManifest(srcDir);
             if(checkOnly){
+                // --check regenerates the manifest from the canonical
+                // sources, std.o included: build the object to a scratch
+                // file (never inside the package under check), hash it
+                // into the manifest, then remove the scratch file.
+                const std::string tmpDir=std::getenv("TMPDIR")?std::getenv("TMPDIR"):"/tmp";
+                std::string tmpStdObject;
+                try {
+                    tmpStdObject=mkTempPath(tmpDir,"aster-pack-std");
+                    pkgBuildStdObject(srcDir+"/aster_std.ast",tmpStdObject);
+                    pkgAppendStdObjectHash(manifest,tmpStdObject);
+                } catch (...) {
+                    if(!tmpStdObject.empty()) std::remove(tmpStdObject.c_str());
+                    throw;
+                }
+                std::remove(tmpStdObject.c_str());
                 const std::string storedPath=pkgManifestPathFor(checkDir);
                 if(!fileExists(storedPath)){std::cerr<<"aster pack: no manifest in "<<checkDir<<"\n";return 1;}
                 const PkgManifest stored=pkgManifestFromJson(
@@ -29278,12 +29304,18 @@ int main(int argc,char**argv){
             }
             if(!makeDirs(outDir)){std::cerr<<"aster pack: cannot create "<<outDir<<"\n";return 1;}
             if(!makeDirs(outDir+"/cn")){std::cerr<<"aster pack: cannot create "<<outDir<<"/cn\n";return 1;}
+            // Copy the four sources while manifest.files still holds only
+            // them: std.o is a build product, not a file in srcDir, so it
+            // must never be read from there. It is built next and its
+            // hash appended to the manifest before manifest.json is
+            // written, so the stored manifest and the file agree.
             for(const auto& f:manifest.files)
                 writeFileAtomic(outDir+"/"+f.first,readFile(srcDir+"/"+f.first));
-            writeFileAtomic(outDir+"/manifest.json",manifestText);
             pkgBuildStdObject(srcDir+"/aster_std.ast",outDir+"/std.o");
+            pkgAppendStdObjectHash(manifest,outDir+"/std.o");
+            writeFileAtomic(outDir+"/manifest.json",pkgManifestJson(manifest));
             std::cout<<"Aster v"<<kVersion<<": packed "<<manifest.name<<" ("<<manifest.nameZh<<") "
-                     <<manifest.version<<" ("<<manifest.files.size()<<" sources, "
+                     <<manifest.version<<" ("<<(manifest.files.size()-1)<<" sources + std.o, "
                      <<manifest.exports.size()<<" exports) into "<<outDir<<"\n";
             return 0;
         }
