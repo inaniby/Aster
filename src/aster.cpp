@@ -27,6 +27,7 @@
 #include <vector>
 #include <functional>            // AXML builder uses std::function
 #include <cassert>              // Typed IR guard (P3.1 follow-up)
+#include <chrono>               // steady_clock for build --verbose timings
 #include <filesystem>
 #if __has_include("cn_parser.hpp") && __has_include("cn_lexer.hpp") && \
     __has_include("cn_lexer.cpp") && __has_include("cn_parser.cpp") && \
@@ -11682,99 +11683,265 @@ ParsedObject parseObject(const std::string& input){
     return result;
 }
 
+// Milliseconds since a steady-clock mark (build --verbose timings).
+static long long msSince(std::chrono::steady_clock::time_point t0){
+    return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now()-t0).count();
+}
+
+// Size of a named section in an in-memory ELF image (0 when absent or malformed).
+static uint64_t elfSectionSize(const std::vector<uint8_t>& elf,const char* want){
+    if(elf.size()<sizeof(Ehdr))return 0;
+    Ehdr h{};std::memcpy(&h,elf.data(),sizeof h);
+    if(std::memcmp(h.ident,"\x7f""ELF",4)!=0||h.shentsize!=sizeof(Shdr)||h.shnum==0||h.shoff==0)return 0;
+    const uint64_t shBytes=uint64_t(h.shnum)*sizeof(Shdr);
+    if(h.shoff>elf.size()||shBytes>elf.size()-h.shoff)return 0;
+    if(h.shstrndx>=h.shnum)return 0;
+    std::vector<Shdr> sections(h.shnum);
+    std::memcpy(sections.data(),elf.data()+h.shoff,(size_t)shBytes);
+    const Shdr& names=sections[h.shstrndx];
+    if(names.type!=3||names.offset>elf.size()||names.size>elf.size()-names.offset)return 0;
+    for(const auto& sh:sections){
+        if(sh.name>=names.size)continue;
+        const char* n=(const char*)elf.data()+names.offset+sh.name;
+        if(std::strcmp(n,want)==0)return sh.size;
+    }
+    return 0;
+}
+
 // v0.23.79-dev: bilingual project links carry the standard library and the
 // program in one ET_REL object. Keep only functions reachable from _start so
 // an import of a large library does not make every helper part of the image.
 // This pass is deliberately conservative: debug objects and objects whose
 // relocations cannot be mapped to a complete function are left untouched.
-static void pruneUnreachableFunctions(std::vector<ParsedObject>& objects){
-    struct FunctionRef { size_t object=0; std::string name; uint64_t start=0,size=0; bool live=false; };
-    std::vector<FunctionRef> functions;
-    std::map<std::string,size_t> owner;
+//
+// v0.23.82-dev (build transparency + slimming): the same pass now covers
+// shared objects too, and it prunes data as well as code, so it is a
+// method/field-level dead-code elimination rather than a function-only one:
+//   * Roots are the entry points the loader or the platform looks up by name
+//     (_start, main, ANativeActivity_onCreate, JNI_OnLoad) plus every
+//     object's __aster_init. An initializer is loader-called (DT_INIT /
+//     the init chain), never called from the entry, so rooting only the
+//     entry would drop a foreign TU's initializer and silently leave its
+//     globals zero — the trap the old "No GC here" comment in the project
+//     build warned about. Rooting every init keeps that sound while still
+//     pruning everything no entry and no init can reach.
+//   * Edges follow .text relocations. A PIC object addresses data and
+//     function pointers through __aster_gat_<name> GOT slots, so the prefix
+//     is stripped before the lookup; a direct CALL26 names the function.
+//     __aster_init_next is the linker's chain placeholder, not a node.
+//   * Names resolve per object first (a private string literal
+//     __aster_string_N exists in many objects at once) and only then
+//     globally; a cross-object reference to a duplicated name bails the
+//     whole pass out instead of guessing.
+//   * Data sections (.data/.rodata/.bss/.tdata/.tbss) are compacted the same
+//     way as .text: only live symbols' bytes survive, packed in order with
+//     each symbol kept at an alignment its original offset already proves
+//     (the low set bit of the original offset, capped at the section
+//     alignment). There are no .rela.data/.rela.rodata sections in Aster
+//     objects — every data reference flows through a .text relocation — so
+//     no data-to-data edge can be missed. A relocation whose addend runs
+//     past its symbol, overlapping symbols, or any local (non-global)
+//     defined symbol bails the pass out: it only runs when the object
+//     files have exactly the shape codegen emits.
+//   * Debug objects (.debug_line/.debug_info/.eh_frame) still bail out
+//     entirely: pruning .text under a line program would invalidate DWARF.
+struct GcStats {
+    size_t functionsTotal=0, functionsKept=0, dataTotal=0, dataKept=0;
+    uint64_t textBytesTotal=0, textBytesKept=0, dataBytesTotal=0, dataBytesKept=0, bssBytesTotal=0, bssBytesKept=0;
+    // v0.23.82-dev: the pass bailed out and pruned nothing (debug objects,
+    // or an object shape it does not understand). Callers report this as a
+    // skip: without it the kept counts stay 0 and --verbose would claim
+    // "kept 0/N functions" for a .so that still holds all N.
+    bool skipped=false; const char* skipReason=nullptr;
+};
+static GcStats pruneUnreachableFunctions(std::vector<ParsedObject>& objects,
+                                         const std::vector<std::string>& entryRoots){
+    GcStats stats;
+    struct Node { size_t object=0; size_t symIndex=0; std::string name; uint64_t start=0,size=0; int section=0; bool isFunc=false; bool live=false; };
+    std::vector<Node> nodes;
     std::vector<std::vector<size_t>> byObject(objects.size());
-    bool valid=true; size_t root=SIZE_MAX;
+    std::map<std::pair<size_t,std::string>,size_t> byObjName;
+    std::map<std::string,size_t> globalCount;
+    bool valid=true;
     for(size_t oi=0;oi<objects.size();++oi){
         ParsedObject& obj=objects[oi];
-        if(!obj.debugLine.empty()||!obj.debugInfo.empty()||!obj.ehFrameFdes.empty())return;
-        for(const auto& s:obj.symbols){
-            if((s.info>>4)!=1||(s.info&0xfu)!=2||s.shndx==0||s.shndx!=(uint16_t)obj.textIndex||s.name.empty())continue;
-            if(s.size==0||s.value>obj.text.size()||s.size>obj.text.size()-s.value){valid=false;continue;}
-            if(owner.count(s.name)){valid=false;continue;}
-            const size_t index=functions.size();
-            owner[s.name]=index;
-            functions.push_back({oi,s.name,s.value,s.size,false});
+        if(!obj.debugLine.empty()||!obj.debugInfo.empty()||!obj.ehFrameFdes.empty()){stats.skipped=true;stats.skipReason="debug info present, DWARF mapping preserved";return stats;}
+        for(size_t si=0;si<obj.symbols.size();++si){
+            const auto& s=obj.symbols[si];
+            if(s.shndx!=0&&(s.info>>4)==0&&!s.name.empty()&&((s.info&0xfu)==1||(s.info&0xfu)==2))valid=false;
+            if((s.info>>4)!=1||s.name.empty()||s.shndx==0)continue;
+            if(s.name=="__aster_tls_block")continue;
+            int section=-1; bool isFunc=false;
+            if(s.shndx==(uint16_t)obj.textIndex){ if((s.info&0xfu)!=2){valid=false;continue;} section=0; isFunc=true; }
+            else if(obj.dataIndex>=0&&s.shndx==(uint16_t)obj.dataIndex){ if((s.info&0xfu)!=1){valid=false;continue;} section=1; }
+            else if(obj.bssIndex>=0&&s.shndx==(uint16_t)obj.bssIndex){ if((s.info&0xfu)!=1){valid=false;continue;} section=2; }
+            else if(obj.rodataIndex>=0&&s.shndx==(uint16_t)obj.rodataIndex){ if((s.info&0xfu)!=1){valid=false;continue;} section=3; }
+            else if(obj.tlsIndex>=0&&s.shndx==(uint16_t)obj.tlsIndex){ if((s.info&0xfu)!=1){valid=false;continue;} section=4; }
+            else if(obj.tbssIndex>=0&&s.shndx==(uint16_t)obj.tbssIndex){ if((s.info&0xfu)!=1){valid=false;continue;} section=5; }
+            else {valid=false;continue;}
+            const uint64_t extent=section==0?obj.text.size():section==1?obj.data.size():section==2?obj.bssSize:
+                section==3?obj.rodata.size():section==4?obj.tdata.size():obj.tbssSize;
+            if(s.size==0||s.value>extent||s.size>extent-s.value){valid=false;continue;}
+            if(isFunc&&s.value%4){valid=false;continue;}
+            const size_t index=nodes.size();
+            nodes.push_back({oi,si,s.name,s.value,s.size,section,isFunc,false});
             byObject[oi].push_back(index);
-            if(s.name=="_start")root=index;
+            if(!byObjName.emplace(std::make_pair(oi,s.name),index).second)valid=false;
+            globalCount[s.name]++;
+            if(isFunc){stats.functionsTotal++;stats.textBytesTotal+=s.size;}
+            else {stats.dataTotal++;if(section==2||section==5)stats.bssBytesTotal+=s.size;else stats.dataBytesTotal+=s.size;}
         }
-        std::sort(byObject[oi].begin(),byObject[oi].end(),[&](size_t a,size_t b){
-            return functions[a].start<functions[b].start;
+    }
+    for(size_t oi=0;oi<objects.size();++oi){
+        auto& idxs=byObject[oi];
+        std::sort(idxs.begin(),idxs.end(),[&](size_t a,size_t b){
+            if(nodes[a].section!=nodes[b].section)return nodes[a].section<nodes[b].section;
+            return nodes[a].start<nodes[b].start;
         });
-        uint64_t end=0;
-        for(size_t fi:byObject[oi]){
-            const auto& f=functions[fi];
-            if(f.start<end){valid=false;break;}
-            end=f.start+f.size;
+        for(size_t k=1;k<idxs.size();++k){
+            const auto& p=nodes[idxs[k-1]]; const auto& c=nodes[idxs[k]];
+            if(p.section==c.section&&c.start<p.start+p.size)valid=false;
         }
-        for(const auto& r:obj.relocs){
+        for(const auto& r:objects[oi].relocs){
             bool covered=false;
-            for(size_t fi:byObject[oi]){
-                const auto& f=functions[fi];
+            for(size_t fi:idxs){
+                const auto& f=nodes[fi];
+                if(!f.isFunc)continue;
                 const uint64_t need=r.type==kRelTlsOff?8u:4u;
                 if(r.offset>=f.start&&r.offset<=f.start+f.size&&need<=f.start+f.size-r.offset){covered=true;break;}
             }
             if(!covered)valid=false;
         }
     }
-    if(!valid||root==SIZE_MAX)return;
-    std::vector<size_t> work{root};functions[root].live=true;
-    while(!work.empty()){
-        const size_t fi=work.back();work.pop_back();
-        const FunctionRef& f=functions[fi];
-        for(const auto& r:objects[f.object].relocs){
-            const uint64_t need=r.type==kRelTlsOff?8u:4u;
-            if(r.offset<f.start||r.offset>f.start+f.size||need>f.start+f.size-r.offset)continue;
-            auto it=owner.find(r.symbol);
-            if(it!=owner.end()&&!functions[it->second].live){
-                functions[it->second].live=true;
-                work.push_back(it->second);
-            }
+    if(!valid){stats.skipped=true;stats.skipReason="unexpected object shape, nothing pruned";return stats;}
+    std::map<std::string,size_t> globalOwner;
+    for(size_t i=0;i<nodes.size();++i)if(globalCount[nodes[i].name]==1)globalOwner[nodes[i].name]=i;
+    auto resolve=[&](size_t oi,const std::string& raw)->size_t{
+        std::string s=raw;
+        if(s.compare(0,12,"__aster_gat_")==0)s=s.substr(12);
+        if(s=="__aster_init_next")return SIZE_MAX;
+        auto it=byObjName.find(std::make_pair(oi,s));
+        if(it!=byObjName.end())return it->second;
+        auto go=globalOwner.find(s);
+        if(go!=globalOwner.end())return go->second;
+        if(globalCount.count(s))valid=false;
+        return SIZE_MAX;
+    };
+    std::vector<size_t> work;
+    auto markLive=[&](size_t ni){ if(!nodes[ni].live){nodes[ni].live=true;work.push_back(ni);} };
+    for(size_t i=0;i<nodes.size();++i)if(nodes[i].name=="__aster_init")markLive(i);
+    for(const auto& root:entryRoots)
+        for(size_t oi=0;oi<objects.size();++oi){
+            auto it=byObjName.find(std::make_pair(oi,root));
+            if(it!=byObjName.end())markLive(it->second);
         }
+    while(!work.empty()){
+        const size_t ni=work.back();work.pop_back();
+        const Node& n=nodes[ni];
+        if(!n.isFunc)continue;
+        for(const auto& r:objects[n.object].relocs){
+            const uint64_t need=r.type==kRelTlsOff?8u:4u;
+            if(r.offset<n.start||r.offset>n.start+n.size||need>n.start+n.size-r.offset)continue;
+            const size_t target=resolve(n.object,r.symbol);
+            if(target==SIZE_MAX)continue;
+            if(r.addend<0||(uint64_t)r.addend>nodes[target].size)valid=false;
+            markLive(target);
+        }
+    }
+    if(!valid){stats.skipped=true;stats.skipReason="unexpected object shape, nothing pruned";return stats;}
+    for(const auto& n:nodes)if(n.live){
+        if(n.isFunc){stats.functionsKept++;stats.textBytesKept+=n.size;}
+        else {stats.dataKept++;if(n.section==2||n.section==5)stats.bssBytesKept+=n.size;else stats.dataBytesKept+=n.size;}
     }
     for(size_t oi=0;oi<objects.size();++oi){
         ParsedObject& obj=objects[oi];
-        const auto& indexes=byObject[oi];
-        if(indexes.empty())continue;
-        bool changed=false;
-        for(size_t fi:indexes)if(!functions[fi].live){changed=true;break;}
-        if(!changed)continue;
-        struct Segment { uint64_t oldStart=0,oldEnd=0,newStart=0; };
-        std::vector<Segment> segments;
-        std::vector<uint8_t> text;
-        for(size_t fi:indexes){
-            const auto& f=functions[fi];
-            if(!f.live)continue;
-            segments.push_back({f.start,f.start+f.size,text.size()});
-            text.insert(text.end(),obj.text.begin()+f.start,obj.text.begin()+f.start+f.size);
-        }
-        auto remap=[&](uint64_t old)->uint64_t{
-            for(const auto& s:segments)if(old>=s.oldStart&&old<s.oldEnd)return s.newStart+(old-s.oldStart);
-            return UINT64_MAX;
-        };
-        for(auto& s:obj.symbols){
-            if((s.info>>4)==1&&(s.info&0xfu)==2&&s.shndx==(uint16_t)obj.textIndex){
-                auto it=owner.find(s.name);
-                if(it==owner.end()||!functions[it->second].live){s.shndx=0;s.value=0;s.size=0;}
-                else s.value=remap(s.value);
+        const auto& idxs=byObject[oi];
+        // --- .text: keep live functions, remap, drop dead relocations.
+        {
+            std::vector<size_t> funcs;
+            for(size_t ni:idxs)if(nodes[ni].isFunc)funcs.push_back(ni);
+            if(!funcs.empty()){
+                bool changed=false;
+                for(size_t ni:funcs)if(!nodes[ni].live){changed=true;break;}
+                if(changed){
+                    struct Segment { uint64_t oldStart=0,oldEnd=0,newStart=0; };
+                    std::vector<Segment> segments;
+                    std::vector<uint8_t> text;
+                    for(size_t ni:funcs){
+                        const auto& f=nodes[ni];
+                        if(!f.live)continue;
+                        segments.push_back({f.start,f.start+f.size,text.size()});
+                        text.insert(text.end(),obj.text.begin()+f.start,obj.text.begin()+f.start+f.size);
+                    }
+                    auto remap=[&](uint64_t old)->uint64_t{
+                        for(const auto& s:segments)if(old>=s.oldStart&&old<s.oldEnd)return s.newStart+(old-s.oldStart);
+                        return UINT64_MAX;
+                    };
+                    for(size_t ni:funcs){
+                        auto& s=obj.symbols[nodes[ni].symIndex];
+                        if(!nodes[ni].live){s.shndx=0;s.value=0;s.size=0;}
+                        else s.value=remap(s.value);
+                    }
+                    std::vector<ParsedReloc> relocs;
+                    for(const auto& r:obj.relocs){
+                        const uint64_t mapped=remap(r.offset);
+                        if(mapped==UINT64_MAX)continue;
+                        ParsedReloc copy=r;copy.offset=mapped;relocs.push_back(std::move(copy));
+                    }
+                    obj.text.swap(text);obj.relocs.swap(relocs);
+                }
             }
         }
-        std::vector<ParsedReloc> relocs;
-        for(const auto& r:obj.relocs){
-            const uint64_t mapped=remap(r.offset);
-            if(mapped==UINT64_MAX)continue;
-            ParsedReloc copy=r;copy.offset=mapped;relocs.push_back(std::move(copy));
+        // --- data sections: pack live symbols in order, keeping each at an
+        // alignment its original offset already proves.
+        auto compactData=[&](int section,std::vector<uint8_t>* bytes,uint64_t* totalSize,uint64_t sectionAlign){
+            std::vector<size_t> live;
+            for(size_t ni:idxs)if(nodes[ni].section==section&&nodes[ni].live)live.push_back(ni);
+            if(live.empty()){
+                bool any=false;
+                for(size_t ni:idxs)if(nodes[ni].section==section){any=true;break;}
+                if(!any)return;
+                for(size_t ni:idxs)if(nodes[ni].section==section){
+                    auto& s=obj.symbols[nodes[ni].symIndex];
+                    s.shndx=0;s.value=0;s.size=0;
+                }
+                if(bytes)bytes->clear();
+                if(totalSize)*totalSize=0;
+                return;
+            }
+            std::vector<uint8_t> kept;
+            uint64_t cur=0;
+            for(size_t ni:live){
+                const auto& n=nodes[ni];
+                uint64_t align=sectionAlign;
+                if(n.start>0){const uint64_t low=n.start&(~n.start+1);if(low<align)align=low;}
+                const uint64_t off=alignUp(cur,align);
+                if(bytes){
+                    if(kept.size()<off)kept.resize((size_t)off,0);
+                    kept.insert(kept.end(),bytes->begin()+n.start,bytes->begin()+n.start+n.size);
+                }
+                obj.symbols[n.symIndex].value=off;
+                cur=off+n.size;
+            }
+            for(size_t ni:idxs)if(nodes[ni].section==section&&!nodes[ni].live){
+                auto& s=obj.symbols[nodes[ni].symIndex];
+                s.shndx=0;s.value=0;s.size=0;
+            }
+            if(bytes)bytes->swap(kept);
+            if(totalSize)*totalSize=cur;
+        };
+        compactData(1,obj.dataIndex>=0?&obj.data:nullptr,nullptr,obj.dataAlign);
+        compactData(3,obj.rodataIndex>=0?&obj.rodata:nullptr,nullptr,obj.rodataAlign);
+        compactData(4,obj.tlsIndex>=0?&obj.tdata:nullptr,nullptr,obj.tdataAlign);
+        compactData(2,nullptr,obj.bssIndex>=0?&obj.bssSize:nullptr,obj.bssAlign);
+        compactData(5,nullptr,obj.tbssIndex>=0?&obj.tbssSize:nullptr,obj.tbssAlign);
+        for(auto& s:obj.symbols)if(s.name=="__aster_tls_block"){
+            if(obj.tlsIndex>=0&&s.shndx==(uint16_t)obj.tlsIndex)s.size=obj.tdata.size();
+            else if(obj.tbssIndex>=0&&s.shndx==(uint16_t)obj.tbssIndex)s.size=obj.tbssSize;
         }
-        obj.text.swap(text);obj.relocs.swap(relocs);
     }
+    return stats;
 }
 // Relocation bookkeeping shared by the executable linker and the shared-object writer.
 struct LinkPending { uint64_t patch; std::string symbol; int64_t addend; uint32_t type; size_t inputIndex=0; };
@@ -12476,6 +12643,9 @@ struct SoDynSpec {
     // owns no file bytes. Which globals are thread-local travels in `globals` as
     // kind 4 (.tdata) / kind 5 (.tbss) and the writer separates them out.
     std::vector<uint8_t> tls; uint64_t tbssSize=0;
+    // v0.23.82-dev: --strip omits the source-level .symtab/.strtab pair from
+    // the shared object (release shape; the loader binds through .dynsym).
+    bool stripSymtab=false;
     // -g: already-relocated .debug_line bytes for the whole image.
     std::vector<uint8_t> debugLine;
     // v0.23.32-dev: .debug_info, its abbreviation table, and the addresses in
@@ -12578,7 +12748,7 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     const uint16_t S_DATA=addSec(".data"),S_GOTPLT=addSec(".got.plt"),S_GOT=addSec(".got"),S_DYNAMIC=addSec(".dynamic"),S_BSS=addSec(".bss");
     uint16_t S_INITARR=0;if(hasInit)S_INITARR=addSec(".init_array");
     const uint16_t S_GNUHASH=addSec(".gnu.hash");
-    const uint16_t S_SYMTAB=addSec(".symtab"),S_STRTAB=addSec(".strtab"),S_SHSTR=addSec(".shstrtab");
+    const uint16_t S_SYMTAB=spec.stripSymtab?0:addSec(".symtab"),S_STRTAB=spec.stripSymtab?0:addSec(".strtab"),S_SHSTR=addSec(".shstrtab");
     // Last, so that adding it moves no other index.
     const uint16_t S_DEBUGLINE=hasDebugLine?addSec(".debug_line"):0;
     // v0.23.32-dev: .debug_info and its table, after .debug_line for the same
@@ -12873,7 +13043,10 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     std::vector<OutSym> outSymbols;
     for(size_t i=0;i<nExp;++i)if(spec.exports[i].name.compare(0,8,"__aster_")!=0)outSymbols.push_back({spec.exports[i].name,0,spec.exports[i].offset,spec.exports[i].size});
     for(size_t i=0;i<nDef;++i)outSymbols.push_back({globals[i].name,globals[i].kind,globals[i].offset,globals[i].size});
-    const SymTable st=buildSymbolTable(outSymbols,textVaddr,dataVaddr,bssVaddr,S_TEXT,S_DATA,S_BSS,rodataVaddr,S_RODATA);
+    // v0.23.82-dev (--strip): no source-level table at all — the layout
+    // below then places .shstrtab where .symtab would have started, and
+    // the emit writes zero table bytes before it.
+    const SymTable st=spec.stripSymtab?SymTable{}:buildSymbolTable(outSymbols,textVaddr,dataVaddr,bssVaddr,S_TEXT,S_DATA,S_BSS,rodataVaddr,S_RODATA);
     const uint64_t symOff=alignUp(hasTdata?tdataVaddr+tdataSize:relroEnd,8),symSize=uint64_t(st.syms.size())*sizeof(Sym);
     const uint64_t strOff=symOff+symSize,shstrOff=strOff+st.strtab.size();
     const uint64_t shoff=alignUp(shstrOff+shstr.size(),8);
@@ -12987,8 +13160,8 @@ void writeSharedObjectDyn(const std::string& path,std::vector<uint8_t>& text,
     if(hasTdata)setSh(S_TDATA,1,0x1|0x2|0x400,tdataVaddr,tdataVaddr,tdataSize,0,0,spec.tlsAlign,0);
     if(hasTbss) setSh(S_TBSS,8,0x1|0x2|0x400,tbssVaddr,tbssVaddr,spec.tbssSize,0,0,spec.tlsAlign,0);
     if(hasInit)setSh(S_INITARR,1,0x3,initArrVaddr,initArrVaddr,initArrSize,0,0,8,0);
-    setSh(S_SYMTAB,2,0,0,symOff,symSize,S_STRTAB,outSymbols.empty()?0u:1u,8,sizeof(Sym));
-    setSh(S_STRTAB,3,0,0,strOff,st.strtab.size(),0,0,1,0);
+    if(S_SYMTAB)setSh(S_SYMTAB,2,0,0,symOff,symSize,S_STRTAB,outSymbols.empty()?0u:1u,8,sizeof(Sym));
+    if(S_STRTAB)setSh(S_STRTAB,3,0,0,strOff,st.strtab.size(),0,0,1,0);
     setSh(S_SHSTR,3,0,0,shstrOff,shstr.size(),0,0,1,0);
     if(hasDebugLine)setSh(S_DEBUGLINE,1,0,0,debugLineOff,spec.debugLine.size(),0,0,1,0);
     if(hasDebugInfo){setSh(S_DEBUGABBREV,1,0,0,debugAbbrevOff,spec.debugAbbrev.size(),0,0,1,0);
@@ -13085,8 +13258,31 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
                        const std::string& sonameIn,const std::vector<std::string>& needed,
                        // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
                        // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
-                       uint64_t pageSize=4096){
+                       // v0.23.82-dev: --gc-sections prunes functions and data
+                       // unreachable from ANativeActivity_onCreate/main/
+                       // JNI_OnLoad (plus every __aster_init); --strip drops
+                       // the source-level .symtab/.strtab from the output.
+                       uint64_t pageSize=4096,bool gcSections=false,bool stripSymtab=false,bool verbose=false,
+                       const std::vector<std::string>& gcKeep={}){
     if(inputs.empty())throw Error("link-so requires at least one input object");
+    std::vector<ParsedObject> parsedObjects;
+    parsedObjects.reserve(inputs.size());
+    for(const auto& input:inputs)parsedObjects.push_back(parseObject(input));
+    if(gcSections){
+        std::vector<std::string> roots={"ANativeActivity_onCreate","main","JNI_OnLoad"};
+        roots.insert(roots.end(),gcKeep.begin(),gcKeep.end());
+        const GcStats gcStats=pruneUnreachableFunctions(parsedObjects,roots);
+        if(verbose){
+            if(gcStats.skipped)
+                std::cout<<"aster: verbose: link-so: gc-sections skipped ("<<(gcStats.skipReason?gcStats.skipReason:"nothing pruned")<<")\n";
+            else
+                std::cout<<"aster: verbose: link-so: gc-sections kept "<<gcStats.functionsKept<<"/"<<gcStats.functionsTotal
+                         <<" functions ("<<gcStats.textBytesKept<<"/"<<gcStats.textBytesTotal<<" .text bytes) and "
+                         <<gcStats.dataKept<<"/"<<gcStats.dataTotal<<" data objects ("
+                         <<gcStats.dataBytesKept<<"/"<<gcStats.dataBytesTotal<<" file bytes, "
+                         <<gcStats.bssBytesKept<<"/"<<gcStats.bssBytesTotal<<" bss bytes)\n";
+        }
+    }
     std::vector<uint8_t> mergedText,mergedData,mergedRodata,mergedTls;uint64_t mergedBss=0,mergedTbss=0,maxTlsAlign=kTlsBlockAlign,maxRodataAlign=1;
     struct Def{uint64_t off;uint32_t kind;uint64_t size;}; // 0 = .text, 1 = .data, 2 = .bss, 3 = .rodata, 4 = .tdata (TLS), 5 = .tbss (TLS)
     std::map<std::string,Def> definitions;
@@ -13120,7 +13316,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
         if(name.compare(0,direct.size(),direct)==0)return std::string("__aster_string_obj")+std::to_string(inputIndex)+"_"+name.substr(direct.size());
         return name;
     };
-    for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];ParsedObject obj=parseObject(input);
+    for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];const ParsedObject& obj=parsedObjects[i];
         // v0.23.79-dev (D-03): only a data symbol can be the subject of the A-21
         // order rule; a function definition is not global state an initializer reads.
         for(const auto& s:obj.symbols)if(s.shndx!=0&&!s.name.empty()&&(s.info&0xfu)!=2)ownerOf.emplace(remapPrivateStringSymbol(s.name,i),i);
@@ -13245,7 +13441,7 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
             for(auto& pr:pending)if(pr.inputIndex==initOrder[oi]&&pr.symbol==kInitNextSymbol)pr.symbol=next;}
         initEndOff=mergedText.size();for(int k=0;k<4;++k)mergedText.push_back(uint8_t(0xd65f03c0u>>(k*8)));hasInitEnd=true;
     }
-    SoDynSpec spec;spec.soname=sonameIn.empty()?baseNameOf(output):sonameIn;spec.needed=needed;
+    SoDynSpec spec;spec.soname=sonameIn.empty()?baseNameOf(output):sonameIn;spec.needed=needed;spec.stripSymtab=stripSymtab;
     spec.data=mergedData;spec.rodata=mergedRodata;spec.bssSize=mergedBss;
     spec.rodataAlign=maxRodataAlign;
     spec.tlsAlign=maxTlsAlign;
@@ -13349,7 +13545,8 @@ void linkSharedObjects(const std::vector<std::string>& inputs,const std::string&
 void linkObjects(const std::vector<std::string>& inputs,const std::string& output,uint64_t base=0x400000,uint16_t etype=2,
                   // v0.23.54-dev: page size for the loadable segments (see writeElfBytes
                   // for the Android 16 KB reasoning). Default 4096 keeps bytes identical.
-                  uint64_t pageSize=4096,bool gcSections=false){
+                  uint64_t pageSize=4096,bool gcSections=false,bool verbose=false,
+                  const std::vector<std::string>& gcKeep={}){
     if(base%pageSize)throw Error("internal error: link base must be page aligned");
     if(inputs.empty())throw Error("link-obj requires at least one input object");
     std::vector<uint8_t> mergedText,mergedData,mergedRodata;uint64_t mergedBss=0;
@@ -13399,7 +13596,21 @@ void linkObjects(const std::vector<std::string>& inputs,const std::string& outpu
     std::vector<ParsedObject> parsedObjects;
     parsedObjects.reserve(inputs.size());
     for(const auto& input:inputs)parsedObjects.push_back(parseObject(input));
-    if(gcSections)pruneUnreachableFunctions(parsedObjects);
+    if(gcSections){
+        std::vector<std::string> roots={"_start"};
+        roots.insert(roots.end(),gcKeep.begin(),gcKeep.end());
+        const GcStats gcStats=pruneUnreachableFunctions(parsedObjects,roots);
+        if(verbose){
+            if(gcStats.skipped)
+                std::cout<<"aster: verbose: link: gc-sections skipped ("<<(gcStats.skipReason?gcStats.skipReason:"nothing pruned")<<")\n";
+            else
+                std::cout<<"aster: verbose: link: gc-sections kept "<<gcStats.functionsKept<<"/"<<gcStats.functionsTotal
+                         <<" functions ("<<gcStats.textBytesKept<<"/"<<gcStats.textBytesTotal<<" .text bytes) and "
+                         <<gcStats.dataKept<<"/"<<gcStats.dataTotal<<" data objects ("
+                         <<gcStats.dataBytesKept<<"/"<<gcStats.dataBytesTotal<<" file bytes, "
+                         <<gcStats.bssBytesKept<<"/"<<gcStats.bssBytesTotal<<" bss bytes)\n";
+        }
+    }
     for(size_t i=0;i<inputs.size();++i){const std::string& input=inputs[i];const ParsedObject& obj=parsedObjects[i];
         // v0.23.79-dev (D-03): only a data symbol can be the subject of the A-21
         // order rule; a function definition is not global state an initializer reads.
@@ -13678,7 +13889,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
 "       aster new [--apk] <dir>              scaffold a program or APK project\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
-"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [-- args]\n"
+"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [--verbose] [--no-gc-sections] [--no-strip] [--gc-keep NAME[,NAME...]] [-- args]\n"
 "       aster test  [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [filter]\n"
 "       aster doctor [--strict]             check the host and the project it is run in\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
@@ -13687,7 +13898,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "       aster complete [--language zh|en] [--format json|text] [--project DIR] <package-dir|manifest.json> [file.ast]\n"
 "       aster pkg install <source> [--project DIR] | upgrade <package> [--project DIR] | list [--project DIR] | remove <package> [--project DIR]\n"
     "       aster link-obj|link-pie [--gc-sections] <input.o> [input2.o ...] -o <output>\n"
-    "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
+    "       aster link-so   [--soname NAME] [--needed LIB] [--gc-sections] [--gc-keep NAME[,NAME...]] [--strip] [--verbose] <input.o> [input2.o ...] -o <output.so>\n"
     "       aster keygen [--dir DIR] [--bits 2048] [--force]\n"
     "       aster verify-apk [--expect-sha256 <hex>] <app.apk>\n"
 "  中文别名（选项仍使用英文）：帮助=help、新建=new、添加源码=add、依赖=deps、\n"
@@ -13701,8 +13912,24 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "  build-so   shared object: AArch64 ET_DYN with SysV DT_HASH + GNU DT_GNU_HASH (link base 0)\n"
     "  link-obj   link ET_REL objects into a fixed-address ET_EXEC\n"
     "  link-pie   link ET_REL objects into a static PIE (ET_DYN)\n"
-    "  --gc-sections  keep only functions reachable from _start (link-obj/link-pie;\n"
-    "                 bilingual build/test enables this automatically without -g)\n"
+    "  --gc-sections  drop functions and data unreachable from the entry\n"
+    "                 (link-obj/link-pie: _start; link-so: ANativeActivity_onCreate /\n"
+    "                 main / JNI_OnLoad; every __aster_init is always a root, so a\n"
+    "                 foreign TU's runtime-initialized globals survive). An APK\n"
+    "                 project build enables this by default (--no-gc-sections turns\n"
+    "                 it off there). With -g the pass does nothing, so the DWARF\n"
+    "                 mapping stays valid. Never pass it when linking a library\n"
+    "                 .so whose API is many entry points.\n"
+    "  --gc-keep NAME[,NAME...]  extra GC roots (repeatable): keep the named symbols\n"
+    "                 even when unreachable from the entry. For dlopen/dlsym entry\n"
+    "                 points such as a headless test harness (headless_init,\n"
+    "                 aui_headless_render, aui_debug_rect), which GC would otherwise\n"
+    "                 drop from a .so. Unknown names are ignored.\n"
+    "  --strip      omit the source-level .symtab/.strtab from a shared object\n"
+    "                 (link-so; build-apk strips by default, --no-strip keeps it).\n"
+    "  --verbose    one line per build step with its time: per-file compile times,\n"
+    "                 key/link/package/sign times, and a size summary (build,\n"
+    "                 build-apk, link-so, link-obj/link-pie).\n"
     "  link-so    link ET_REL PIC objects into one shared object (cross-.so imports via PLT/GOT)\n"
     "  --page-size N  load-segment page size for build*/link* (4096 default; 16384 for\n"
     "               Android 15+ 16 KB-page devices, required when targetSdk >= 35)\n"
@@ -13712,6 +13939,8 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "            [--emit-so PATH] (keep the .so compiled from .ast input)\n"
     "            [--sign-mode debug|release] [--keystore KEY] [--cert CRT]\n"
     "            [--keystore-dir DIR] [--key-bits N] [--no-verify] [--debuggable]\n"
+    "            [--strip|--no-strip] [--verbose] (strip is the default: the packaged\n"
+    "            .so ships without its source-level .symtab/.strtab)\n"
     "  keygen     generate the project's RSA debug key + self-signed certificate\n"
     "  verify-apk check an APK's own v1 + v2 + v3 signatures (structure, digests, certificate)\n"
     "  build-apk signs with one of two keys, never with a key baked into aster:\n"
@@ -16413,6 +16642,92 @@ static std::vector<uint8_t> loadIconBytes(const std::string& path, const std::st
     return bytes;
 }
 
+// v0.23.82-dev (build transparency + slimming): drop the source-level
+// .symtab and its .strtab from a shared object already on disk. The loader
+// never reads them (.dynsym is the table it binds), so a packaged library
+// ships without them; the result stays a valid ELF for every other reader
+// because only non-alloc sections past the last PT_LOAD move. The shape is
+// checked, not assumed: anything that does not look like the compiler's own
+// layout (a kept section linking at a removed index, an alloc section past
+// the removed bytes, a .symtab that is not SHT_SYMTAB) leaves the bytes
+// untouched and reports 0 removed.
+static uint64_t stripElfSymtab(std::vector<uint8_t>& elf){
+    if(elf.size()<sizeof(Ehdr))return 0;
+    Ehdr h{};std::memcpy(&h,elf.data(),sizeof h);
+    if(std::memcmp(h.ident,"\x7f""ELF",4)!=0||h.ident[4]!=2||h.ident[5]!=1||h.ident[6]!=1)return 0;
+    if(h.shentsize!=sizeof(Shdr)||h.shnum==0||h.shoff==0)return 0;
+    const uint64_t shBytes=uint64_t(h.shnum)*sizeof(Shdr);
+    if(h.shoff>elf.size()||shBytes>elf.size()-h.shoff)return 0;
+    std::vector<Shdr> sections(h.shnum);
+    std::memcpy(sections.data(),elf.data()+h.shoff,(size_t)shBytes);
+    int symIdx=-1;
+    for(size_t i=0;i<sections.size();++i)if(sections[i].type==2){if(symIdx>=0)return 0;symIdx=(int)i;}
+    if(symIdx<0)return 0;
+    const uint32_t strLink=sections[symIdx].link;
+    if(strLink>=sections.size()||sections[strLink].type!=3)return 0;
+    const int strIdx=(int)strLink;
+    for(size_t i=0;i<sections.size();++i){
+        if((int)i==symIdx||(int)i==strIdx)continue;
+        if(sections[i].link==(uint32_t)symIdx||sections[i].link==(uint32_t)strIdx)return 0;
+        if(sections[i].info==(uint32_t)symIdx||sections[i].info==(uint32_t)strIdx)return 0;
+    }
+    if((sections[symIdx].flags&0x2u)||(sections[strIdx].flags&0x2u))return 0;
+    const uint64_t symOff=sections[symIdx].offset,symSize=sections[symIdx].size;
+    const uint64_t strOff=sections[strIdx].offset,strSize=sections[strIdx].size;
+    if(symSize==0||strSize==0)return 0;
+    if(symOff>elf.size()||symSize>elf.size()-symOff||strOff>elf.size()||strSize>elf.size()-strOff)return 0;
+    std::vector<std::pair<uint64_t,uint64_t>> removed={{symOff,symOff+symSize},{strOff,strOff+strSize}};
+    std::sort(removed.begin(),removed.end());
+    if(removed[0].second>removed[1].first)return 0;
+    auto removedBefore=[&](uint64_t off)->uint64_t{
+        uint64_t n=0;
+        if(off>removed[0].first)n+=std::min(removed[0].second-removed[0].first,off-removed[0].first);
+        if(off>removed[1].first)n+=std::min(removed[1].second-removed[1].first,off-removed[1].first);
+        return n;
+    };
+    for(size_t i=0;i<sections.size();++i){
+        if((int)i==symIdx||(int)i==strIdx)continue;
+        const auto& sh=sections[i];
+        if((sh.flags&0x2u)&&removedBefore(sh.offset)>0)return 0;
+        if(sh.type!=8&&sh.size>0){
+            const uint64_t end=sh.offset+sh.size;
+            if(end>elf.size())return 0;
+            for(const auto& iv:removed)if(sh.offset<iv.second&&end>iv.first)return 0;
+        }
+    }
+    std::vector<uint8_t> out;
+    out.reserve(elf.size()-symSize-strSize);
+    uint64_t pos=0;
+    for(const auto& iv:removed){out.insert(out.end(),elf.begin()+pos,elf.begin()+iv.first);pos=iv.second;}
+    out.insert(out.end(),elf.begin()+pos,elf.end());
+    const uint64_t removedTotal=symSize+strSize;
+    std::vector<Shdr> kept;
+    for(size_t i=0;i<sections.size();++i){
+        if((int)i==symIdx||(int)i==strIdx)continue;
+        Shdr sh=sections[i];
+        sh.offset-=removedBefore(sections[i].offset);
+        auto shiftIndex=[&](uint32_t v)->uint32_t{
+            uint32_t n=v;
+            if((int)v>symIdx)n--;
+            if((int)v>strIdx)n--;
+            return n;
+        };
+        if(sh.link!=0)sh.link=shiftIndex(sh.link);
+        if((sh.type==4||sh.type==9)&&sh.info!=0)sh.info=shiftIndex(sh.info);
+        kept.push_back(sh);
+    }
+    Ehdr nh=h;
+    nh.shoff=h.shoff-removedBefore(h.shoff);
+    nh.shnum=(uint16_t)kept.size();
+    if(h.shstrndx>=(uint32_t)symIdx&&h.shstrndx!=(uint32_t)symIdx)nh.shstrndx=h.shstrndx-1;
+    if(h.shstrndx>=(uint32_t)strIdx&&h.shstrndx!=(uint32_t)strIdx)nh.shstrndx--;
+    if(nh.shoff+uint64_t(kept.size())*sizeof(Shdr)>out.size())return 0;
+    std::memcpy(out.data(),&nh,sizeof nh);
+    std::memcpy(out.data()+nh.shoff,kept.data(),kept.size()*sizeof(Shdr));
+    elf.swap(out);
+    return removedTotal;
+}
+
 // ---------------------------------------------------------------- buildApk : assemble + sign the whole APK
 static int buildApk(const std::string& out, const std::string& pkg, const std::string& libname,
                     const std::string& abi, const std::vector<uint8_t>& so, int minSdk, int targetSdk,
@@ -16420,7 +16735,11 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
                     const std::vector<std::pair<std::string,std::string>>& extraStrings,
                     const SigningKey& key, bool selfVerify, bool labelAsReference,
                     bool debuggable = false, uint64_t pageSize = 4096,
-                    const std::vector<uint8_t>& iconBytes = {}) {
+                    const std::vector<uint8_t>& iconBytes = {},
+                    // v0.23.82-dev: --strip (the default) drops the .so's
+                    // source-level .symtab/.strtab before packaging; --verbose
+                    // prints one line per phase with its time.
+                    bool stripSymtab = true, bool verbose = false) {
     // v0.23.77-dev (audit A-14): --abi has to describe the library the APK
     // ships. It used to accept any ABI-shaped name, so building with
     // `--abi x86_64` around an AArch64 shared object produced an APK that no
@@ -16500,6 +16819,26 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
         if (!anyLoad)
             throw Error("build-apk: the shared object to package has no PT_LOAD segment");
     }
+    // v0.23.82-dev (--strip, the default): the packaged library does not
+    // need its source-level .symtab/.strtab — the loader binds through
+    // .dynsym — so drop them before the library becomes a ZIP entry. A
+    // .so the link already stripped is left alone; --no-strip keeps the
+    // table for on-device debugging.
+    auto phaseStart=std::chrono::steady_clock::now();
+    auto phaseLog=[&](const std::string& what){
+        if(verbose)std::cout<<"aster: verbose: build-apk: "<<what<<" in "<<msSince(phaseStart)<<" ms\n";
+        phaseStart=std::chrono::steady_clock::now();
+    };
+    std::vector<uint8_t> soBytes=so;
+    uint64_t strippedBytes=0;
+    if(stripSymtab)strippedBytes=stripElfSymtab(soBytes);
+    if(stripSymtab&&strippedBytes>0)
+        phaseLog("stripped .symtab/.strtab: .so "+std::to_string(so.size())+" -> "+std::to_string(soBytes.size())+" bytes");
+    else if(stripSymtab)
+        phaseLog("no .symtab/.strtab to strip (.so "+std::to_string(soBytes.size())+" bytes)");
+    else
+        phaseLog("kept .symtab/.strtab (--no-strip, .so "+std::to_string(soBytes.size())+" bytes)");
+    const std::vector<uint8_t>& soPacked=soBytes;
     // The icon is part of the package rather than an option: a launcher entry
     // with no icon falls back to the system default, which is the thing this
     // exists to fix. res/drawable-nodpi keeps the bitmap exact — Android will
@@ -16587,11 +16926,12 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     append(iconPath, icon, 0);
     append("resources.arsc", arsc, 4);
     std::string soname = "lib/" + abi + "/lib" + libname + ".so";
-    append(soname, so, pageSize);
+    append(soname, soPacked, pageSize);
+    phaseLog("assembled "+std::to_string(entries.size())+" ZIP entries");
     std::string mf = "Manifest-Version: 1.0\r\nCreated-By: Aster " + std::string(kVersion) + "\r\n\r\n";
     auto addMF=[&](const std::string& n, const std::vector<uint8_t>& d){ SHA256 s; s.upd(d.data(), d.size()); std::vector<uint8_t> h=s.fin(); mf += "Name: "+n+"\r\nSHA-256-Digest: "+b64(h)+"\r\n\r\n"; };
     addMF("AndroidManifest.xml", manifest); addMF(iconPath, icon);
-    addMF("resources.arsc", arsc); addMF(soname, so);
+    addMF("resources.arsc", arsc); addMF(soname, soPacked);
     std::vector<uint8_t> mfBytes(mf.begin(), mf.end());
     std::string sf = "Signature-Version: 1.0\r\nCreated-By: Aster " + std::string(kVersion) + "\r\n";
     // Anti-stripping: Android rejects an APK whose v1 signature does not
@@ -16645,6 +16985,7 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
         ZIP::Entry e; e.name=name; e.data=data; e.crc=crc; e.offset=off; entries.push_back(e);
     };
     appendSig("META-INF/MANIFEST.MF", mfBytes); appendSig("META-INF/CERT.SF", sfBytes); appendSig("META-INF/CERT.RSA", certRsa);
+    phaseLog("signed v1 (MANIFEST.MF/CERT.SF/CERT.RSA)");
     std::vector<uint8_t> cd;
     for (auto& e : entries) { auto ch=ZIP::centralHeader(e.name, e.crc, e.data.size(), e.offset, e.extra); cd.insert(cd.end(), ch.begin(), ch.end()); }
     size_t cdSize=cd.size();
@@ -16672,6 +17013,7 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     std::vector<uint8_t> eocd = makeEocd((uint32_t)(sbStart + sb.size()));
     apk.insert(apk.end(), cd.begin(), cd.end());
     apk.insert(apk.end(), eocd.begin(), eocd.end());
+    phaseLog("signed v2+v3 (APK Signing Block)");
     // Signing bugs are invisible until a device refuses to install, which is
     // the worst possible time to find out. Verify what is about to be written
     // and refuse to write it if the check fails: an APK we cannot verify is
@@ -16684,6 +17026,9 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
                       << log.str();
             return 1;
         }
+        phaseLog("self-verified v1+v2+v3 signatures");
+    } else {
+        phaseLog("skipped self-verification (--no-verify)");
     }
     std::ofstream os(out, std::ios::binary);
     if (!os) { std::cerr << "aster: build-apk: cannot open " << out << " for writing\n"; return 1; }
@@ -16696,6 +17041,7 @@ static int buildApk(const std::string& out, const std::string& pkg, const std::s
     if (!os) { std::cerr << "aster: build-apk: failed writing " << out << "\n"; return 1; }
     os.close();
     if (!os) { std::cerr << "aster: build-apk: failed closing " << out << "\n"; return 1; }
+    phaseLog("wrote "+out+" ("+std::to_string(apk.size())+" bytes)");
     return 0;
 }
 
@@ -29840,7 +30186,8 @@ static std::string canonicalCliCommand(const std::string& command) {
 
 int main(int argc,char**argv){
     const std::string cmd=canonicalCliCommand(argc>1?argv[1]:"");
-    std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false,compactFrames=false,gcSections=false;
+    std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false,compactFrames=false,gcSections=false,stripSymtab=false,verbose=false;
+    std::vector<std::string> gcKeep; // v0.23.82-dev: extra GC roots, see --gc-keep.
     // v0.23.54-dev: load-segment page size. 4096 is the default (and the historical
     // value); 16384 is required so an app with targetSdk >= 35 loads on Android 15+
     // 16 KB-page devices. Only these two are accepted.
@@ -29884,12 +30231,33 @@ int main(int argc,char**argv){
         if(!parseCliUInt(v,hi,parsed)||parsed<lo)return false;
         out=parsed; return true;
     };
+    // v0.23.82-dev: --gc-keep NAME[,NAME...], repeatable. Names an extra
+    // garbage-collection root (a function or data symbol) kept alongside the
+    // entry points: dlopen/dlsym entry points such as a headless test harness
+    // (headless_init, aui_headless_render, aui_debug_rect) are unreachable
+    // from ANativeActivity_onCreate, so a GC'd .so drops them unless named
+    // here. Unknown names are silently ignored: a root that no input object
+    // defines simply never matches.
+    auto addGcKeep=[&](const std::string& v){
+        size_t at=0;
+        while(at<=v.size()){
+            const size_t comma=v.find(',',at);
+            const std::string name=v.substr(at,comma==std::string::npos?std::string::npos:comma-at);
+            if(!name.empty())gcKeep.push_back(name);
+            if(comma==std::string::npos)break;
+            at=comma+1;
+        }
+    };
     auto parseArgs=[&](int from)->bool{
         for(int i=from;i<argc;++i){const std::string a=argv[i];
             if(a=="-o"){if(i+1>=argc)return false;output=argv[++i];haveOutput=true;}
             else if(a=="--pic")pic=true;
             else if(a=="--bounds-check")boundsCheck=true;
             else if(a=="--gc-sections")gcSections=true;
+            else if(a=="--gc-keep"){if(i+1>=argc)return false;addGcKeep(argv[++i]);}
+            else if(a.rfind("--gc-keep=",0)==0)addGcKeep(a.substr(10));
+            else if(a=="--strip")stripSymtab=true;
+            else if(a=="--verbose")verbose=true;
             else if(a=="-g"||a=="--debug-line")debugLine=true;
             else if(a=="--compact-frames")compactFrames=true;
             else if(a=="--max-nesting-depth"){if(i+1>=argc){std::cerr<<"aster: --max-nesting-depth requires an argument\n";return false;} if(!parseDepthValue(argv[++i],16,2048,maxParseDepthOpt)){std::cerr<<"aster: --max-nesting-depth must be a decimal integer between 16 and 2048\n";return false;}}
@@ -31163,7 +31531,7 @@ int main(int argc,char**argv){
         }
         if(cmd=="build"||cmd=="run"){
             const bool isRun=cmd=="run";
-            std::string out; bool dbg=false,bc2=false,noCache=false,afterDash=false;
+            std::string out; bool dbg=false,bc2=false,noCache=false,afterDash=false,verbose=false,noGcSections=false,noStrip=false;
             std::vector<std::string> bilingualModuleDirs;
             uint64_t ps=4096; bool cliPageSet=false; std::vector<std::string> runArgs;
             uint64_t timeoutVal=0; bool timeoutSet=false;
@@ -31180,6 +31548,14 @@ int main(int argc,char**argv){
                 else if(a=="--max-lowering-depth"){if(i+1>=argc||!parseDepthValue(argv[++i],64,3072,maxLoweringDepthOpt)){std::cerr<<"aster "<<cmd<<": --max-lowering-depth must be a decimal integer between 64 and 3072\n";return 2;}}
                 else if(a.rfind("--max-lowering-depth=",0)==0){if(!parseDepthValue(a.c_str()+21,64,3072,maxLoweringDepthOpt)){std::cerr<<"aster "<<cmd<<": --max-lowering-depth must be a decimal integer between 64 and 3072\n";return 2;}}
                 else if(a=="--no-cache")noCache=true;
+                else if(a=="--verbose")verbose=true;
+                else if(a=="--no-gc-sections")noGcSections=true;
+                else if(a=="--no-strip")noStrip=true;
+                else if(a=="--gc-keep"){
+                    if(i+1>=argc){std::cerr<<"aster "<<cmd<<": --gc-keep needs a symbol name\n";return 2;}
+                    addGcKeep(argv[++i]);
+                }
+                else if(a.rfind("--gc-keep=",0)==0)addGcKeep(a.substr(10));
                 else if(a=="--timeout"){
                     if(i+1>=argc||!parseCliUInt(argv[++i],86400,timeoutVal)){
                         std::cerr<<"aster "<<cmd<<": --timeout must be a decimal integer between 0 and 86400\n";return 2;
@@ -31392,9 +31768,14 @@ int main(int argc,char**argv){
                 std::vector<std::string> bilingualObjs;
                 int bilingualCompiled=0, bilingualReused=0;
                 for(size_t i=0;i<spec.sources.size();++i) {
+                    const auto fileT0=std::chrono::steady_clock::now();
+                    const int c0=bilingualCompiled;
                     const std::string obj=cachedCnProjectObject(
                         bilingualCtx,parsedSources[i],spec.sources[i],
                         (i+1)*1000000,bilingualCompiled,bilingualReused,noCache);
+                    if(verbose)
+                        std::cout<<"aster: verbose: "<<(bilingualCompiled>c0?"compiled ":"reused ")
+                                 <<spec.sources[i]<<" in "<<msSince(fileT0)<<" ms\n";
                     if(!obj.empty()) bilingualObjs.push_back(obj);
                 }
                 if(bilingualObjs.empty()){std::cerr<<"aster "<<cmd<<": no objects to link\n";return 1;}
@@ -31406,12 +31787,25 @@ int main(int argc,char**argv){
                     // accepts them (it refuses a _start definition); the
                     // __aster_init chain is rooted by the shared-object
                     // linker, as in the mainline path.
+                    // v0.23.82-dev: an APK project links with gc-sections and
+                    // --strip on by default (the .so is an app, not a library:
+                    // only ANativeActivity_onCreate is looked up by name, and
+                    // the packaged .so needs no source-level .symtab).
+                    // --no-gc-sections / --no-strip keep the whole-object
+                    // shape for debugging.
                     const std::string bilingualSoPath=cacheDir+"/"+bilingualProjectName+".so";
-                    linkSharedObjects(bilingualObjs,bilingualSoPath,"lib"+bilingualProjectName+".so",{},bilingualPage);
+                    const auto linkT0=std::chrono::steady_clock::now();
+                    linkSharedObjects(bilingualObjs,bilingualSoPath,"lib"+bilingualProjectName+".so",{},bilingualPage,!noGcSections,!noStrip,verbose,gcKeep);
+                    if(verbose)
+                        std::cout<<"aster: verbose: linked "<<bilingualObjs.size()<<" objects into "<<bilingualSoPath
+                                 <<" in "<<msSince(linkT0)<<" ms\n";
                     std::string bilingualApkErr;
                     if(!validateApkInputs(spec.package,spec.abi,bilingualProjectName,bilingualApkErr)){
                         std::cerr<<"aster build: "<<bilingualApkErr<<"\n";return 2;
                     }
+                    const std::string bilingualKeyPath=debugKeyPath(projectKeyDir(""));
+                    const bool bilingualKeyExisted=fileExists(bilingualKeyPath);
+                    const auto keyT0=std::chrono::steady_clock::now();
                     SigningKey bilingualKey;
                     if(spec.signMode=="release"){
                         if(spec.keystore.empty()||spec.cert.empty()){
@@ -31426,14 +31820,25 @@ int main(int argc,char**argv){
                         }
                         bilingualKey=debugKeyFor(projectKeyDir(""), spec.keyBits);
                     }
+                    if(verbose)
+                        std::cout<<"aster: verbose: signing key "
+                                 <<(spec.signMode=="release"?"loaded":(bilingualKeyExisted?"reused":"generated"))
+                                 <<" in "<<msSince(keyT0)<<" ms\n";
                     const std::string bilingualSoText=readFile(bilingualSoPath);
                     std::vector<uint8_t> bilingualSo(bilingualSoText.begin(),bilingualSoText.end());
                     const std::string bilingualLabel=spec.label.empty()?bilingualProjectName:spec.label;
                     const std::vector<uint8_t> bilingualIconBytes=spec.icon.empty()?std::vector<uint8_t>{}:loadIconBytes(spec.icon,"aster build: icon");
                     int bilingualApkResult=buildApk(target,spec.package,bilingualProjectName,spec.abi,bilingualSo,
                         spec.minSdk,spec.targetSdk,bilingualLabel,
-                        spec.versionCode,spec.versionName,{},bilingualKey,true,false,false,bilingualPage,bilingualIconBytes);
+                        spec.versionCode,spec.versionName,{},bilingualKey,true,false,false,bilingualPage,bilingualIconBytes,!noStrip,verbose);
                     if(bilingualApkResult!=0)return bilingualApkResult;
+                    if(verbose){
+                        std::error_code ec;
+                        const uint64_t apkBytes=std::filesystem::file_size(target,ec);
+                        std::cout<<"aster: verbose: size: "<<target<<" "<<(ec?0:apkBytes)<<" bytes; .so "
+                                 <<bilingualSo.size()<<" bytes (.text "<<elfSectionSize(bilingualSo,".text")<<" bytes); "
+                                 <<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused\n";
+                    }
                     std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
                              <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n";
                     return 0;
@@ -31446,7 +31851,11 @@ int main(int argc,char**argv){
                 // runtime-initialized global would silently stay zero.
                 // Without GC the chain survives and the A-21 order check
                 // still runs.
+                const auto exeLinkT0=std::chrono::steady_clock::now();
                 linkObjects(bilingualObjs,target,0x400000,2,bilingualPage,false);
+                if(verbose)
+                    std::cout<<"aster: verbose: linked "<<bilingualObjs.size()<<" objects into "<<target
+                             <<" in "<<msSince(exeLinkT0)<<" ms\n";
                 std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
                          <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n";
                 if(isRun){
@@ -31585,7 +31994,12 @@ int main(int argc,char**argv){
             }
             if(isApk){
                 const std::string soPath=cacheDir+"/"+name+".so";
-                linkSharedObjects(objs,soPath,"lib"+name+".so",{},filePage);
+                // v0.23.82-dev: same defaults as the bilingual path above
+                // (GC + strip on, --no-gc-sections / --no-strip to keep the
+                // whole-object shape); this path is unreachable while the
+                // bilingual frontend is the default, but it must not
+                // silently keep shipping unpruned .so files if it ever is.
+                linkSharedObjects(objs,soPath,"lib"+name+".so",{},filePage,!noGcSections,!noStrip,verbose,gcKeep);
                 std::string err;
                 if(!validateApkInputs(spec.package,spec.abi,name,err)){
                     std::cerr<<"aster build: "<<err<<"\n";return 2;
@@ -31612,7 +32026,7 @@ int main(int argc,char**argv){
                 const std::string label=spec.label.empty()?name:spec.label;
                 const std::vector<uint8_t> iconBytes=spec.icon.empty()?std::vector<uint8_t>{}:loadIconBytes(spec.icon,"aster build: icon");
                 int r=buildApk(out,spec.package,name,spec.abi,so,spec.minSdk,spec.targetSdk,label,
-                               spec.versionCode,spec.versionName,{},key,true,false,false,filePage,iconBytes);
+                               spec.versionCode,spec.versionName,{},key,true,false,false,filePage,iconBytes,!noStrip,verbose);
                 if(r!=0)return r;
                 std::cout<<"Aster v"<<kVersion<<": built "<<out<<" ("<<compiled<<" compiled, "<<reused<<" reused)\n";
                 return 0;
@@ -31639,7 +32053,7 @@ int main(int argc,char**argv){
             std::string inSo, package, libname, abi="arm64-v8a", label="AsterApp", verName="1.0", emitSo, soSoname, iconPath;
             std::string signMode="debug", keystore, cert, keystoreDir;
             int minSdk=21, targetSdk=30, verCode=1, keyBits=2048; bool havePkg=false, selfVerify=true;
-            bool labelAsReference=false, debuggable=false;
+            bool labelAsReference=false, debuggable=false, strip=true, verboseApk=false;
             auto parseNum=[&](const char* opt, const char* text, uint64_t max, uint64_t& out)->bool {
                 if (!parseCliUInt(text, max, out)) {
                     std::cerr << "aster: build-apk: " << opt << " must be a decimal integer between 0 and "
@@ -31696,6 +32110,12 @@ int main(int argc,char**argv){
                 // wrong. It never changes what is signed, only whether Aster
                 // checks its own work before writing.
                 else if(a=="--no-verify")selfVerify=false;
+                // v0.23.82-dev: --strip is the default (the packaged .so
+                // needs no source-level .symtab); --no-strip keeps it.
+                // --verbose prints one line per build-apk phase with its time.
+                else if(a=="--strip")strip=true;
+                else if(a=="--no-strip")strip=false;
+                else if(a=="--verbose")verboseApk=true;
                 else if(a=="--bounds-check")boundsCheck=true;
                 else if(a=="--max-nesting-depth"){const char* v=next(); if(!v){std::cerr<<"aster: build-apk: --max-nesting-depth requires an argument\n";return 2;} if(!parseDepthValue(v,16,2048,maxParseDepthOpt)){std::cerr<<"aster: build-apk: --max-nesting-depth must be a decimal integer between 16 and 2048\n";return 2;}}
                 else if(a.rfind("--max-nesting-depth=",0)==0){if(!parseDepthValue(a.c_str()+20,16,2048,maxParseDepthOpt)){std::cerr<<"aster: build-apk: --max-nesting-depth must be a decimal integer between 16 and 2048\n";return 2;}}
@@ -31754,7 +32174,7 @@ int main(int argc,char**argv){
                 }
             }
             const std::vector<uint8_t> iconBytes=iconPath.empty()?std::vector<uint8_t>{}:loadIconBytes(iconPath,"aster: build-apk: --icon");
-            int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,debuggable,pageSize,iconBytes);
+            int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,debuggable,pageSize,iconBytes,strip,verboseApk);
             if(r==0)std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2+v3 triple-signed, "
                 <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n";
             return r;
@@ -32178,17 +32598,23 @@ int main(int argc,char**argv){
         }
 #endif
         if(cmd=="link-obj"||cmd=="link-pie"){
-            if(!parseArgs(2)||sources.empty()||pic||boundsCheck||!soname.empty()||!needed.empty()||maxParseDepthOpt!=256||maxLoweringDepthOpt!=2048){std::cerr<<kUsage;return 2;}
-            if(cmd=="link-obj")linkObjects(sources,output,0x400000,2,pageSize,gcSections);else linkObjects(sources,output,0,3,pageSize,gcSections);
+            if(!parseArgs(2)||sources.empty()||pic||boundsCheck||stripSymtab||!soname.empty()||!needed.empty()||maxParseDepthOpt!=256||maxLoweringDepthOpt!=2048){std::cerr<<kUsage;return 2;}
+            if(cmd=="link-obj")linkObjects(sources,output,0x400000,2,pageSize,gcSections,verbose,gcKeep);else linkObjects(sources,output,0,3,pageSize,gcSections,verbose,gcKeep);
             return 0;
         }
         if(cmd=="link-so"){
-            if(!parseArgs(2)||sources.empty()||pic||boundsCheck||gcSections||maxParseDepthOpt!=256||maxLoweringDepthOpt!=2048){std::cerr<<kUsage;return 2;}
-            linkSharedObjects(sources,output,soname,needed,pageSize);
+            // v0.23.82-dev: --gc-sections and --strip reach link-so. GC roots
+            // are ANativeActivity_onCreate/main/JNI_OnLoad plus every
+            // __aster_init plus --gc-keep names; a library .so whose API is
+            // many entry points must NOT pass --gc-sections, or its public
+            // functions go away.
+            if(!parseArgs(2)||sources.empty()||pic||boundsCheck||maxParseDepthOpt!=256||maxLoweringDepthOpt!=2048){std::cerr<<kUsage;return 2;}
+            linkSharedObjects(sources,output,soname,needed,pageSize,gcSections,stripSymtab,verbose,gcKeep);
             return 0;
         }
         if(cmd!="build-elf"&&cmd!="build-pie"&&cmd!="build-obj"&&cmd!="build-so"){std::cerr<<kUsage;return 2;}
         if(gcSections&&cmd!="build-elf"&&cmd!="build-pie"){std::cerr<<kUsage;return 2;}
+        if(stripSymtab){std::cerr<<kUsage;return 2;}
         if(!parseArgs(2)||sources.empty()){std::cerr<<kUsage;return 2;}
         // v0.23.77-dev: build-elf / build-pie / build-so take one or more
         // sources (and prebuilt .o files); build-obj still compiles exactly one,
@@ -32285,8 +32711,8 @@ int main(int argc,char**argv){
                     linkerInputs.push_back(temp);
                 }
                 if(cmd=="build-so")linkSharedObjects(linkerInputs,output,soname,needed,pageSize);
-                else if(cmd=="build-pie")linkObjects(linkerInputs,output,0,3,pageSize,gcSections);
-                else linkObjects(linkerInputs,output,0x400000,2,pageSize,gcSections);
+                else if(cmd=="build-pie")linkObjects(linkerInputs,output,0,3,pageSize,gcSections,verbose,gcKeep);
+                else linkObjects(linkerInputs,output,0x400000,2,pageSize,gcSections,verbose,gcKeep);
                 removeTemps();
             }catch(...){removeTemps();throw;}
         }

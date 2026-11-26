@@ -193,14 +193,36 @@ python3 tests/validate_apk.py $TMPD/aster-direct.apk --package "$PKG" --libname 
 echo "[3/7] one-step APK must package the same code as the two-step build"
 # The one-step path compiles with DT_SONAME lib<libname>.so (matching the path the
 # .so is packaged at), so the reference is the two-step build with the same soname.
+# v0.23.82-dev: build-apk strips .symtab/.strtab from the .so it packages, so
+# the packaged .so is intentionally NOT byte-identical to the two-step
+# reference any more. The pipeline-identity check therefore compares the
+# pre-strip --emit-so output, and a second check asserts the packaged .so is
+# the stripped form of it (smaller, no .symtab/.strtab).
 "$ASTER_BIN" build-so examples/so_math.ast -o $TMPD/aster-ref.so --soname "lib$LIB.so"
 python3 - <<'PY'
 import os
 import zipfile
 a = zipfile.ZipFile(os.environ["TMPD"]+"/aster-direct.apk").read('lib/arm64-v8a/libapktest.so')
 b = open(os.environ["TMPD"]+"/aster-ref.so", 'rb').read()
-assert a == b, 'one-step .so differs from the two-step build with the same DT_SONAME'
-print('PASS: one-step .so is byte-identical to the two-step build with the same DT_SONAME')
+c = open(os.environ["TMPD"]+"/aster-direct.so", 'rb').read()
+assert c == b, 'one-step emitted .so differs from the two-step build with the same DT_SONAME'
+print('PASS: one-step emitted .so is byte-identical to the two-step build with the same DT_SONAME')
+assert len(a) < len(b), 'packaged .so should be smaller than the two-step reference (stripped)'
+print('PASS: packaged .so is the stripped form of the two-step build (%d -> %d bytes)' % (len(b), len(a)))
+PY
+# The byte-level strip removes the .symtab/.strtab sections and their headers;
+# the dead names linger in .shstrtab (a few bytes, no section behind them), so
+# the check reads section headers rather than grepping raw bytes.
+echo "[3/7] packaged .so carries no .symtab/.strtab section"
+python3 - <<'PY'
+import os, subprocess, zipfile
+a = zipfile.ZipFile(os.environ["TMPD"]+"/aster-direct.apk").read('lib/arm64-v8a/libapktest.so')
+open(os.environ["TMPD"]+"/aster-packaged.so", 'wb').write(a)
+out = subprocess.run(["aarch64-linux-gnu-readelf", "-S", os.environ["TMPD"]+"/aster-packaged.so"],
+                     capture_output=True, text=True).stdout
+names = [l.split()[1] for l in out.splitlines() if len(l.split()) > 1 and l.strip().startswith('[')]
+assert '.symtab' not in names and '.strtab' not in names, 'packaged .so still has a .symtab/.strtab section: %s' % names
+print('PASS: packaged .so has no .symtab/.strtab section')
 PY
 
 # ---------------------------------------------------------------------------
@@ -364,15 +386,45 @@ echo "PASS: build-apk is deterministic (PKCS#1 v1.5, not PSS)"
 # ---------------------------------------------------------------------------
 # [7/7] the .so inside the APK must be the .so build-so produced -- packaging
 # must not touch the code.
+# v0.23.82-dev: build-apk strips .symtab/.strtab from the .so it packages, so
+# whole-file byte identity no longer holds. The invariant is kept
+# section-wise instead: every loadable/code section of the build-so output
+# must survive byte-for-byte, and the packaged file must differ only by the
+# two stripped sections.
 # ---------------------------------------------------------------------------
-echo "[7/7] the packaged .so is byte-identical to build-so's output"
+echo "[7/7] the packaged .so is build-so's output minus .symtab/.strtab"
 python3 - <<'PY'
-import os
-import zipfile
-a = zipfile.ZipFile(os.environ["TMPD"]+"/aster-apk-test.apk").read('lib/arm64-v8a/libapktest.so')
-b = open(os.environ["TMPD"]+"/aster-apk-test.so", 'rb').read()
-assert a == b, 'the .so inside the APK differs from build-so output'
-print('PASS: packaged .so == build-so output (%d bytes)' % len(b))
+import os, struct, zipfile
+def sections(path):
+    d = open(path, 'rb').read()
+    assert d[:4] == b'\x7fELF' and d[4] == 2 and d[5] == 1, 'not a 64-bit little-endian ELF'
+    e_shoff, = struct.unpack_from('<Q', d, 0x28)
+    e_shentsize, e_shnum, e_shstrndx = struct.unpack_from('<HHH', d, 0x3A)
+    hdrs = [struct.unpack_from('<IIQQQQ', d, e_shoff + i * e_shentsize)
+            for i in range(e_shnum)]
+    shstr_off = hdrs[e_shstrndx][4]
+    def nm(n):
+        end = d.index(b'\x00', shstr_off + n)
+        return d[shstr_off + n:end].decode()
+    out = {}
+    for name, typ, flags, addr, off, size in hdrs:
+        out[nm(name)] = (typ, flags, addr, size,
+                         b'' if typ == 8 else d[off:off + size])  # 8 = SHT_NOBITS
+    return out
+tmpd = os.environ["TMPD"]
+packaged = zipfile.ZipFile(tmpd + "/aster-apk-test.apk").read('lib/arm64-v8a/libapktest.so')
+open(tmpd + "/aster-packaged.so", 'wb').write(packaged)
+a = sections(tmpd + "/aster-packaged.so")
+b = sections(tmpd + "/aster-apk-test.so")
+assert set(a) == set(b) - {'.symtab', '.strtab'}, \
+    'packaged sections %s differ from build-so sections %s' % (sorted(a), sorted(b))
+for name, val in b.items():
+    if name in ('.symtab', '.strtab'):
+        continue
+    assert a[name] == val, 'packaged section %s differs from build-so output' % name
+assert len(packaged) < len(open(tmpd + "/aster-apk-test.so", 'rb').read()), \
+    'packaged .so should be smaller than the build-so output (stripped)'
+print('PASS: packaged .so == build-so output in every section except .symtab/.strtab')
 PY
 
 echo "ALL APK CHECKS PASSED"

@@ -312,8 +312,13 @@ mkproj(){ # <dir> <kind> <page-size>
 fn main() : i32 { return 7; }
 AST
     if [ "$2" = apk ]; then
+        # v0.23.82-dev: the APK entry is ANativeActivity_onCreate (the
+        # scaffold since b9d1bf5; a bare aster_main is never called). The
+        # old aster_main entry here used to build only because nothing
+        # pruned it; with GC on by default it is dropped as unreachable
+        # and the link fails with "must export at least one function".
         cat > "$W/$1/src/main.ast" <<'AST'
-fn aster_main() : i32 { return 0; }
+fn ANativeActivity_onCreate(activity: ptr, saved: ptr, savedSize: i64) : i32 { return 0; }
 AST
     fi
     {

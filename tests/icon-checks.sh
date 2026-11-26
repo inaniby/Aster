@@ -70,7 +70,7 @@ grep -qF 'else if (kind=="ref") { dtype=0x01; data=(uint32_t)std::stoul(val, nul
     || { echo 'FAIL: android:icon is no longer encoded as TYPE_REFERENCE' >&2; exit 1; }
 grep -qF 'const uint32_t iconResId  = table.resId("drawable", iconName);    // 0x7f010000' src/aster.cpp \
     || { echo 'FAIL: the icon resource id no longer comes from the table' >&2; exit 1; }
-grep -qF 'append("resources.arsc", arsc, false);' src/aster.cpp \
+grep -qF 'append("resources.arsc", arsc, 4);' src/aster.cpp \
     || { echo 'FAIL: resources.arsc is no longer added to the APK' >&2; exit 1; }
 # The centring guard: (x - pad) / cell truncates towards zero, so without an
 # explicit x >= pad test the leftmost glyph column stretches 17px further left
@@ -288,7 +288,7 @@ printf '%s\n' '[5/6] Compiler mutations: five ways to ship an invisible icon'
 # compile a variant, let it build an APK, and require the validator to reject it
 # for the specific reason that mutation is supposed to cause.
 python3 - "$OUT" <<'PY'
-import os, sys
+import os, sys, shutil
 root = sys.argv[1]
 src = open('src/aster.cpp').read()
 
@@ -300,11 +300,19 @@ def w(name, pairs):
     d = os.path.join(root, 'mut-' + name)
     os.makedirs(d, exist_ok=True)
     open(os.path.join(d, 'aster.cpp'), 'w').write(s)
+    # aster.cpp #includes its bilingual-frontend siblings by quoted relative
+    # path (cn_*.hpp/.cpp, cn_keywords.def); a lone copy in mut-$name would
+    # fail __has_include and lose namespace aster_cn entirely, so copy them
+    # alongside. The mutation still only touches aster.cpp.
+    for f in ('cn_parser.hpp', 'cn_lexer.hpp', 'cn_lexer.cpp', 'cn_parser.cpp',
+              'cn_formatter.hpp', 'cn_formatter.cpp', 'cn_diagnostics.hpp',
+              'cn_keywords.def'):
+        shutil.copy(os.path.join('src', f), os.path.join(d, f))
 
 # 1. no resources.arsc in the APK: the id has no table to resolve against
 w('no-arsc', [
-    ('    append("resources.arsc", arsc, false);\n', '    arsc.clear();\n'),
-    ('    addMF("resources.arsc", arsc); addMF(soname, so);', '    addMF(soname, so);'),
+    ('    append("resources.arsc", arsc, 4);\n', '    arsc.clear();\n'),
+    ('    addMF("resources.arsc", arsc); addMF(soname, soPacked);', '    addMF(soname, soPacked);'),
 ])
 # 2. the icon entry is not TYPE_STRING: the file path is never read
 w('bad-datatype', [
@@ -322,18 +330,19 @@ w('bad-png-crc', [
 ])
 # 5. the table points at a file that was never added to the APK
 w('no-icon-file', [
-    ('    append(iconPath, icon, false);\n', '    icon.clear();\n'),
+    ('    append(iconPath, icon, 0);\n', '    icon.clear();\n'),
     ('addMF("AndroidManifest.xml", manifest); addMF(iconPath, icon);',
      'addMF("AndroidManifest.xml", manifest);'),
 ])
 print('\n'.join(sorted(os.listdir(root))))
 PY
 
+# Sequential: five parallel -O2 builds of this 32k-line TU OOM a 6 GB VM
+# (cc1plus killed), so build the mutants one at a time.
 for m in no-arsc bad-datatype int-hex-icon bad-png-crc no-icon-file; do
     ( cd "$OUT/mut-$m" && c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
-        -o aster aster.cpp ) &
+        -o aster aster.cpp )
 done
-wait
 for m in no-arsc bad-datatype int-hex-icon bad-png-crc no-icon-file; do
     [ -x "$OUT/mut-$m/aster" ] || { echo "FAIL: mutated compiler '$m' did not build"; exit 1; }
 done

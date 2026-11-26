@@ -38,6 +38,12 @@ cd "$ROOT"
 ASTER_BIN="${ASTER_BIN:-$TMPD/aster-apk-icon-test}"
 KEY_DIR="${KEY_DIR:-$TMPD/aster-apk-icon-keys}"
 
+# Rerun-safe: TMPD is a fixed shared directory (tests/lib/tmpdir.sh), not a
+# fresh mktemp per run, and `aster new` refuses an existing project dir —
+# so a second run died at [4/6] ("IconApp already holds a project") on the
+# previous run's leftovers. Clear only this suite's own project dirs.
+rm -rf "$TMPD/proj" "$TMPD/plain" "$TMPD/err-missing" "$TMPD/err-notpng" "$TMPD/err-badcrc" "$TMPD/err-trunc"
+
 echo "[1/6] compiling aster (strict: -Wall -Wextra -Werror)"
 ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Werror -o "$ASTER_BIN" src/aster.cpp
 
