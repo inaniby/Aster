@@ -13684,7 +13684,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
 "       aster fmt [--language zh|en] [--check|--write] <source.ast>\n"
 "       aster pack [--src-dir DIR] [--out DIR] [--check DIR]   build the standard-library package\n"
-"       aster complete [--language zh|en] [--format json|text] <package-dir|manifest.json> [file.ast]\n"
+"       aster complete [--language zh|en] [--format json|text] [--project DIR] <package-dir|manifest.json> [file.ast]\n"
 "       aster pkg install <source> [--project DIR] | upgrade <package> [--project DIR] | list [--project DIR] | remove <package> [--project DIR]\n"
     "       aster link-obj|link-pie [--gc-sections] <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
@@ -29919,10 +29919,10 @@ int main(int argc,char**argv){
             return 0;
         }
         if(cmd=="complete"){
-            std::string languageOpt, formatOpt="text", packageArg, fileArg;
-            bool hasLanguageOpt=false;
+            std::string languageOpt, formatOpt="text", packageArg, fileArg, projectOpt;
+            bool hasLanguageOpt=false, hasProjectOpt=false;
             auto usageError=[&](){
-                std::cerr<<"aster complete: usage: aster complete [--language zh|en] [--format json|text] <package-dir|manifest.json> [file.ast]\n";
+                std::cerr<<"aster complete: usage: aster complete [--language zh|en] [--format json|text] [--project DIR] <package-dir|manifest.json> [file.ast]\n";
                 return 2;
             };
             for(int i=2;i<argc;++i){
@@ -29932,6 +29932,8 @@ int main(int argc,char**argv){
                 else if(a.rfind("--language=",0)==0){languageOpt=a.substr(11);hasLanguageOpt=true;}
                 else if(a=="--format"){if(i+1>=argc)return usageError();formatOpt=argv[++i];}
                 else if(a.rfind("--format=",0)==0)formatOpt=a.substr(9);
+                else if(a=="--project"){if(i+1>=argc)return usageError();projectOpt=argv[++i];hasProjectOpt=true;}
+                else if(a.rfind("--project=",0)==0){projectOpt=a.substr(10);hasProjectOpt=true;}
                 else if(!a.empty()&&a[0]=='-')return usageError();
                 else if(packageArg.empty())packageArg=a;
                 else if(fileArg.empty())fileArg=a;
@@ -29940,21 +29942,58 @@ int main(int argc,char**argv){
             if(packageArg.empty())return usageError();
             if(hasLanguageOpt&&(languageOpt!="zh"&&languageOpt!="en"))return usageError();
             if(formatOpt!="json"&&formatOpt!="text")return usageError();
+            // --project names the project directory whose aster.proj
+            // supplies the [language] default (pkg style: a missing
+            // directory is a clear rc=1 diagnostic, not a crash).
+            // A directory without aster.proj inside is the same kind of
+            // error, naming the directory.
+            std::string projectPath;
+            if(hasProjectOpt){
+                if(!dirExists(projectOpt)){std::cerr<<"aster complete: 项目目录不存在: "<<projectOpt<<"\n";return 1;}
+                const std::string candidate=projectOpt+"/aster.proj";
+                if(!fileExists(candidate)){std::cerr<<"aster complete: no aster.proj in project directory: "<<projectOpt<<"\n";return 1;}
+                projectPath=candidate;
+            }
             const std::string manifestPath=pkgManifestPathFor(packageArg);
             if(!fileExists(manifestPath)){std::cerr<<"aster complete: no manifest: "<<manifestPath<<"\n";return 1;}
             const PkgManifest manifest=pkgManifestFromJson(
                 PkgJsonParser(readFile(manifestPath),manifestPath).parse(),manifestPath);
-            // --language is only the default when no file is given; with a
-            // file, that file's own language wins (never passed to
-            // selectLanguage as an override, so it cannot clash with the
-            // file's directive).
+            // Language chain: --language > file directive > per-file
+            // entry > project [language] default > built-in zh. The
+            // --language flag wins outright over a file directive, so it
+            // is applied first and never passed to selectLanguage as an
+            // override (an override would throw on a directive conflict,
+            // as build still does); selectLanguage is only called with
+            // hasOverride=false for the rest of the chain.
+            if(projectPath.empty()){
+                // No --project: the nearest aster.proj in the completed
+                // file's own ancestors wins over the working directory
+                // (same order as build-cn-obj's LIB8 lookup), then cwd.
+                if(!fileArg.empty()){
+                    std::string dir=parentDir(cnCanonicalPath(fileArg));
+                    while(true){
+                        const std::string candidate=dir+"/aster.proj";
+                        if(fileExists(candidate)){projectPath=candidate;break;}
+                        const std::string up=parentDir(dir);
+                        if(up==dir)break;
+                        dir=up;
+                    }
+                }
+                if(projectPath.empty()&&fileExists("aster.proj"))projectPath="aster.proj";
+            }
+            aster_cn::ProjectLanguageConfig projConfig;
+            if(!projectPath.empty())projConfig=aster_cn::readProjectLanguage(projectPath);
             aster_cn::Language language=aster_cn::Language::Zh;
-            if(!fileArg.empty()){
-                const std::string fileSrc=readFile(fileArg);
-                aster_cn::ProjectLanguageConfig emptyConfig;
-                language=aster_cn::selectLanguage(fileSrc,false,aster_cn::Language::Zh,emptyConfig,fileArg);
-            }else if(hasLanguageOpt){
+            if(hasLanguageOpt){
                 language=languageOpt=="en"?aster_cn::Language::En:aster_cn::Language::Zh;
+            }else if(!fileArg.empty()){
+                const std::string fileSrc=readFile(fileArg);
+                language=aster_cn::selectLanguage(fileSrc,false,aster_cn::Language::Zh,projConfig,fileArg);
+            }else{
+                // No file and no flag: the project default, if any, via
+                // the same selectLanguage chain (empty source, so only
+                // the project default and the allowed check apply).
+                language=aster_cn::selectLanguage(std::string(),false,aster_cn::Language::Zh,projConfig);
             }
             const bool zh=language==aster_cn::Language::Zh;
             std::vector<const PkgExport*> shown;

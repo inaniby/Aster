@@ -261,13 +261,15 @@ if grep -q '^memcpy' "$TMP/complete-zh.txt"; then fail 'zh completion leaked an 
 grep -q '^length' "$TMP/complete-en.txt" || fail 'en completion is missing length'
 grep -q '^memcpy' "$TMP/complete-en.txt" || fail 'en completion is missing memcpy'
 if grep -q '^长度' "$TMP/complete-en.txt"; then fail 'en completion leaked 长度'; fi
-# --language is the default only when no file is given; a file's own
-# directive wins over it (an en file stays en under --language zh).
+# --language wins outright over a file directive (an en file goes zh
+# under --language zh); with no file it is the default. The old
+# file-wins reading was revoked by the complete-takes-aster.proj decision.
 "$ASTER_BIN" complete --language zh "$TMP/pkg2" > "$TMP/complete-defzh.txt" 2>&1
 grep -q '^长度' "$TMP/complete-defzh.txt" || fail '--language zh did not default to zh'
 if grep -q '^length' "$TMP/complete-defzh.txt"; then fail '--language zh leaked length'; fi
-"$ASTER_BIN" complete --language zh "$TMP/pkg2" "$TMP/file-en.ast" > "$TMP/complete-filewins.txt" 2>&1
-grep -q '^length' "$TMP/complete-filewins.txt" || fail 'file language did not win over --language'
+"$ASTER_BIN" complete --language zh "$TMP/pkg2" "$TMP/file-en.ast" > "$TMP/complete-flagwins.txt" 2>&1
+grep -q '^长度' "$TMP/complete-flagwins.txt" || fail '--language zh did not win over an en file directive'
+if grep -q '^length' "$TMP/complete-flagwins.txt"; then fail '--language zh leaked length over an en file'; fi
 # JSON output carries the manifest export shape; a manifest.json path works too.
 "$ASTER_BIN" complete --language zh --format json "$TMP/pkg2/manifest.json" > "$TMP/complete-zh.json" 2>&1
 python3 - "$TMP/complete-zh.json" <<'PY' || fail 'complete --format json is wrong'
@@ -607,5 +609,94 @@ for line in open(sys.argv[1], encoding="utf-8"):
     rows[parts[0]] = parts[3]
 assert rows["长度"] == "返回字符串的长度。", rows["长度"]
 PY
+
+# complete reads the [language] default from aster.proj: --project DIR
+# (and --project=DIR), the nearest aster.proj above the completed file,
+# then aster.proj in the working directory, then the built-in zh.
+# The chain is --language > file directive > per-file entry > project
+# default > zh; --language wins over a file directive outright (unlike
+# build, which errors on that conflict).
+mkdir -p "$TMP/proj-en/src" "$TMP/noproj" "$TMP/emptycwd" "$TMP/emptyproj"
+printf 'kind = "app"\n[language]\ndefault = "en"\n' > "$TMP/proj-en/aster.proj"
+printf '// no language directive\n' > "$TMP/proj-en/src/plain.ast"
+printf '// aster:language=zh\n' > "$TMP/proj-en/src/decl-zh.ast"
+printf '// aster:language=zh\n' > "$TMP/noproj/decl-zh.ast"
+printf '// aster:language=en\n' > "$TMP/noproj/decl-en.ast"
+printf '// no language directive\n' > "$TMP/noproj/plain.ast"
+# (1) A project default of en applies to a file with no directive, via
+# --project, via --project=, and via the ancestor lookup with no flag.
+for projflag in "--project $TMP/proj-en" "--project=$TMP/proj-en" ""; do
+    # shellcheck disable=SC2086
+    "$ASTER_BIN" complete $projflag "$TMP/docpkg" "$TMP/proj-en/src/plain.ast" > "$TMP/doc-complete-proj.txt" 2>&1 \
+        || fail "complete with proj $projflag failed"
+    python3 - "$TMP/doc-complete-proj.txt" <<'PYEOF' || fail 'complete did not follow the project language default'
+import sys
+rows = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    parts = line.rstrip("\n").split("\t")
+    assert len(parts) == 4, parts
+    rows[parts[0]] = parts[3]
+assert rows["length"] == "Return the length of the string.", rows["length"]
+assert rows["one"] == "One English sentence. Continued in English.", rows["one"]
+PYEOF
+done
+# (2) --language beats a file directive, in both directions (run from an
+# empty directory so no working-directory aster.proj can interfere).
+(cd "$TMP/emptycwd" && "$ASTER_BIN" complete --language en "$TMP/docpkg" "$TMP/noproj/decl-zh.ast") > "$TMP/doc-complete-flag-en.txt" 2>&1 \
+    || fail 'complete --language en over a zh directive failed'
+grep -q "one.*One English sentence" "$TMP/doc-complete-flag-en.txt" \
+    || fail '--language en did not win over a zh file directive'
+(cd "$TMP/emptycwd" && "$ASTER_BIN" complete --language zh "$TMP/docpkg" "$TMP/noproj/decl-en.ast") > "$TMP/doc-complete-flag-zh.txt" 2>&1 \
+    || fail 'complete --language zh over an en directive failed'
+python3 - "$TMP/doc-complete-flag-zh.txt" <<'PYEOF' || fail '--language zh did not win over an en file directive'
+import sys
+rows = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    parts = line.rstrip("\n").split("\t")
+    assert len(parts) == 4, parts
+    rows[parts[0]] = parts[3]
+assert rows["长度"] == "返回字符串的长度。", rows["长度"]
+PYEOF
+# (3) A file directive beats the project default (zh directive, en project).
+"$ASTER_BIN" complete "$TMP/docpkg" "$TMP/proj-en/src/decl-zh.ast" > "$TMP/doc-complete-directive.txt" 2>&1 \
+    || fail 'complete with a directive over a project default failed'
+python3 - "$TMP/doc-complete-directive.txt" <<'PYEOF' || fail 'a file directive did not win over the project default'
+import sys
+rows = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    parts = line.rstrip("\n").split("\t")
+    assert len(parts) == 4, parts
+    rows[parts[0]] = parts[3]
+assert rows["长度"] == "返回字符串的长度。", rows["长度"]
+PYEOF
+# (4) With no project anywhere, no directive and no --language, the
+# built-in default zh applies (with and without a file argument).
+(cd "$TMP/emptycwd" && "$ASTER_BIN" complete "$TMP/docpkg" "$TMP/noproj/plain.ast") > "$TMP/doc-complete-noproj.txt" 2>&1 \
+    || fail 'complete with no project failed'
+(cd "$TMP/emptycwd" && "$ASTER_BIN" complete "$TMP/docpkg") > "$TMP/doc-complete-noproj-nofile.txt" 2>&1 \
+    || fail 'complete with no project and no file failed'
+for f in "$TMP/doc-complete-noproj.txt" "$TMP/doc-complete-noproj-nofile.txt"; do
+    python3 - "$f" <<'PYEOF' || fail 'complete did not default to zh with no project'
+import sys
+rows = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    parts = line.rstrip("\n").split("\t")
+    assert len(parts) == 4, parts
+    rows[parts[0]] = parts[3]
+assert rows["长度"] == "返回字符串的长度。", rows["长度"]
+PYEOF
+done
+# (5) --project pointing at a missing directory, or at a directory with
+# no aster.proj inside, is a clear rc=1 diagnostic, not a crash.
+if "$ASTER_BIN" complete --project "$TMP/does-not-exist" "$TMP/docpkg" > "$TMP/doc-complete-badproj.log" 2>&1; then
+    fail 'complete --project passed with a missing project directory'
+fi
+grep -q "项目目录不存在" "$TMP/doc-complete-badproj.log" \
+    || { cat "$TMP/doc-complete-badproj.log" >&2; fail 'complete --project missing-directory diagnostic is wrong'; }
+if "$ASTER_BIN" complete --project "$TMP/emptyproj" "$TMP/docpkg" > "$TMP/doc-complete-noprojfile.log" 2>&1; then
+    fail 'complete --project passed with a directory containing no aster.proj'
+fi
+grep -q "no aster.proj in project directory" "$TMP/doc-complete-noprojfile.log" \
+    || { cat "$TMP/doc-complete-noprojfile.log" >&2; fail 'complete --project no-aster.proj diagnostic is wrong'; }
 
 echo 'package checks passed'
