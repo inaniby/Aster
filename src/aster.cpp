@@ -13683,6 +13683,8 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "       aster doctor [--strict]             check the host and the project it is run in\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
 "       aster fmt [--language zh|en] [--check|--write] <source.ast>\n"
+"       aster pack [--src-dir DIR] [--out DIR] [--check DIR]   build the standard-library package\n"
+"       aster complete [--language zh|en] [--format json|text] <package-dir|manifest.json> [file.ast]\n"
     "       aster link-obj|link-pie [--gc-sections] <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
     "       aster keygen [--dir DIR] [--bits 2048] [--force]\n"
@@ -13691,7 +13693,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "    构建项目=build、运行=run、测试=test、环境检查=doctor、编译双语对象=build-cn-obj、\n"
 "    编译对象=build-obj、构建可执行文件=build-elf、构建PIE=build-pie、编译共享库=build-so、\n"
 "    构建APK=build-apk、链接可执行文件=link-obj、链接PIE=link-pie、链接共享库=link-so、\n"
-"    格式化源码=fmt、生成密钥=keygen、验证APK=verify-apk（英文命令仍可照常使用）\n"
+"    格式化源码=fmt、生成密钥=keygen、验证APK=verify-apk、打包=pack、补全=complete（英文命令仍可照常使用）\n"
     "  build-elf  fixed-address AArch64 ET_EXEC executable (link base 0x400000)\n"
     "  build-pie  static PIE: AArch64 ET_DYN executable, no interpreter (link base 0)\n"
     "  build-obj  relocatable AArch64 ET_REL object (--pic: position-independent, for link-so)\n"
@@ -16915,22 +16917,44 @@ struct ProjectSpec {
     int keyBits=2048;                // size of a generated debug key
     std::vector<std::string> sources;
     std::vector<std::string> tests;  // `test <path>` lines
+    // [package] section: (package name, expected version) pairs, e.g.
+    // `standard = "0.23.82-dev"`. Empty when the project declares no package.
+    std::vector<std::pair<std::string, std::string>> packages;
 };
 // v0.23.77-dev: aster.proj is line-oriented. `kind`, `package`, `name`, `abi`,
 // v0.23.77-dev: aster.proj is line-oriented. `kind`, `package`, `name`, `abi`,
 // `label`, `version-code`, `version-name`, `min-sdk`, `target-sdk` and
 // `page-size` are settings; `test <path>` lines are test metadata and every
 // other non-comment line is a source path, in link order. The language
-// section may appear before either kind of path.
+// section may appear before either kind of path. A `[package]` section holds
+// `name = "version"` lines; it is parsed here, while readProjectLanguage
+// (cn_lexer.cpp) only reads `[language]` and skips every other section.
 static ProjectSpec parseProjectFile(const std::string& path){
     const std::string txt=readFile(path);
-    ProjectSpec spec; std::string cur; bool inLanguage=false;
+    ProjectSpec spec; std::string cur; bool inLanguage=false, inPackage=false;
     auto handle=[&](const std::string& raw){
         const std::string l=trimWs(raw);
         if(l.empty()||l[0]=='#')return;
         if(l.front()=='['&&l.back()==']'){
-            inLanguage=trimWs(l.substr(1,l.size()-2))=="language";
+            const std::string section=trimWs(l.substr(1,l.size()-2));
+            inLanguage=section=="language";
+            inPackage=section=="package";
             return;
+        }
+        // [package] entries are `name = "version"`; a line without '=' ends
+        // the section and falls through to the ordinary handling below.
+        if(inPackage){
+            const size_t eq=l.find('=');
+            if(eq!=std::string::npos){
+                const std::string pk=trimWs(l.substr(0,eq));
+                std::string pv=trimWs(l.substr(eq+1));
+                if(pv.size()>=2&&pv.front()=='"'&&pv.back()=='"')pv=pv.substr(1,pv.size()-2);
+                if(pk.empty()||pv.empty())throw Error(path+": [package] entry needs `name = \"version\"` (got \""+l+"\")");
+                for(const auto& p:spec.packages)if(p.first==pk)throw Error(path+": duplicate [package] entry for '"+pk+"'");
+                spec.packages.emplace_back(pk,pv);
+                return;
+            }
+            inPackage=false;
         }
         const size_t sp=l.find_first_of(" \t");
         const std::string k=sp==std::string::npos?l:l.substr(0,sp);
@@ -28463,6 +28487,556 @@ static std::vector<CnStableValueWarning> cnStableValueWarnings(
 }
 #endif
 
+// ===================== Package format (stdlib §11) =====================
+// A package is a manifest (machine-readable symbol index + content
+// hashes) + the read-only canonical sources + a prebuilt object. The
+// manifest is generated from the sources by `aster pack`, never
+// hand-written, so it cannot drift from the code it describes.
+struct PkgExport {
+    std::string name;       // English name (always present)
+    std::string nameZh;     // Chinese name, "" when the routine has none
+    std::string kind;       // function | struct | enum | class | const | global
+    std::string signature;
+    std::string package;    // "standard" or "standard.text"
+    std::string doc;        // "" for now: the parser drops comments, so no doc syntax exists yet
+};
+struct PkgManifest {
+    std::string name = "standard";
+    std::string nameZh = "标准库";
+    std::string version;
+    std::vector<std::pair<std::string, std::string>> files;  // rel path -> sha256
+    std::vector<PkgExport> exports;
+};
+
+// ---- Minimal JSON: one writer (manifest/complete output) and one reader
+// (pack --check, complete, version lookup). No third-party dependency.
+static std::string pkgJsonQuote(const std::string& s) {
+    std::string out = "\"";
+    for (const unsigned char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c < 0x20) {
+            const char* hex = "0123456789abcdef";
+            out += "\\u00";
+            out.push_back(hex[(c >> 4) & 0xF]);
+            out.push_back(hex[c & 0xF]);
+        } else out.push_back((char)c);
+    }
+    out += "\"";
+    return out;
+}
+static std::string pkgExportJson(const PkgExport& e) {
+    return std::string("{\"name\": ") + pkgJsonQuote(e.name) +
+        ", \"name_zh\": " + pkgJsonQuote(e.nameZh) +
+        ", \"kind\": " + pkgJsonQuote(e.kind) +
+        ", \"signature\": " + pkgJsonQuote(e.signature) +
+        ", \"package\": " + pkgJsonQuote(e.package) +
+        ", \"doc\": " + pkgJsonQuote(e.doc) + "}";
+}
+static std::string pkgManifestJson(const PkgManifest& m) {
+    std::string out = "{\n  \"name\": " + pkgJsonQuote(m.name) +
+        ",\n  \"name_zh\": " + pkgJsonQuote(m.nameZh) +
+        ",\n  \"version\": " + pkgJsonQuote(m.version) + ",\n  \"files\": [";
+    for (size_t i = 0; i < m.files.size(); ++i) {
+        if (i) out += ",";
+        out += "\n    {\"path\": " + pkgJsonQuote(m.files[i].first) +
+            ", \"sha256\": " + pkgJsonQuote(m.files[i].second) + "}";
+    }
+    out += m.files.empty() ? "],\n  \"exports\": [" : "\n  ],\n  \"exports\": [";
+    for (size_t i = 0; i < m.exports.size(); ++i) {
+        if (i) out += ",";
+        out += "\n    " + pkgExportJson(m.exports[i]);
+    }
+    out += m.exports.empty() ? "]\n}\n" : "\n  ]\n}\n";
+    return out;
+}
+static void pkgAppendUtf8(std::string& out, unsigned cp) {
+    if (cp < 0x80) out.push_back((char)cp);
+    else if (cp < 0x800) {
+        out.push_back((char)(0xC0 | (cp >> 6)));
+        out.push_back((char)(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back((char)(0xE0 | (cp >> 12)));
+        out.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back((char)(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back((char)(0xF0 | (cp >> 18)));
+        out.push_back((char)(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back((char)(0x80 | (cp & 0x3F)));
+    }
+}
+struct PkgJson {
+    enum class Kind { Null, Bool, Num, Str, Arr, Obj };
+    Kind kind = Kind::Null;
+    bool boolean = false;
+    std::string str;  // Str value, or Num raw text
+    std::vector<PkgJson> arr;
+    std::vector<std::pair<std::string, PkgJson>> obj;
+    const PkgJson* field(const std::string& key) const {
+        if (kind != Kind::Obj) return nullptr;
+        for (const auto& kv : obj) if (kv.first == key) return &kv.second;
+        return nullptr;
+    }
+};
+struct PkgJsonParser {
+    const std::string& text;
+    std::string where;
+    size_t pos = 0;
+    PkgJsonParser(const std::string& t, std::string w) : text(t), where(std::move(w)) {}
+    [[noreturn]] void fail(const std::string& msg) const {
+        throw Error(where + ": invalid JSON: " + msg);
+    }
+    void skipWs() {
+        while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                     text[pos] == '\n' || text[pos] == '\r')) ++pos;
+    }
+    char peek() {
+        skipWs();
+        if (pos >= text.size()) fail("unexpected end of input");
+        return text[pos];
+    }
+    unsigned parseHex4() {
+        if (pos + 4 > text.size()) fail("truncated \\u escape");
+        unsigned v = 0;
+        for (int i = 0; i < 4; ++i) {
+            const char c = text[pos++];
+            v <<= 4;
+            if (c >= '0' && c <= '9') v |= (unsigned)(c - '0');
+            else if (c >= 'a' && c <= 'f') v |= (unsigned)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') v |= (unsigned)(c - 'A' + 10);
+            else fail("bad hex digit in \\u escape");
+        }
+        return v;
+    }
+    std::string parseStringRaw() {
+        if (pos >= text.size() || text[pos] != '"') fail("expected a string");
+        ++pos;
+        std::string out;
+        while (pos < text.size()) {
+            const unsigned char c = (unsigned char)text[pos++];
+            if (c == '"') return out;
+            if (c == '\\') {
+                if (pos >= text.size()) fail("truncated escape");
+                const char e = text[pos++];
+                if (e == '"') out.push_back('"');
+                else if (e == '\\') out.push_back('\\');
+                else if (e == '/') out.push_back('/');
+                else if (e == 'b') out.push_back('\b');
+                else if (e == 'f') out.push_back('\f');
+                else if (e == 'n') out.push_back('\n');
+                else if (e == 'r') out.push_back('\r');
+                else if (e == 't') out.push_back('\t');
+                else if (e == 'u') {
+                    unsigned cp = parseHex4();
+                    if (cp >= 0xD800 && cp <= 0xDBFF && pos + 1 < text.size() &&
+                        text[pos] == '\\' && text[pos + 1] == 'u') {
+                        pos += 2;
+                        const unsigned lo = parseHex4();
+                        if (lo >= 0xDC00 && lo <= 0xDFFF)
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        else fail("bad low surrogate in \\u escape");
+                    }
+                    pkgAppendUtf8(out, cp);
+                } else fail(std::string("bad escape \\") + e);
+            } else if (c < 0x20) fail("control character in string");
+            else out.push_back((char)c);
+        }
+        fail("unterminated string");
+    }
+    PkgJson parseValue() {
+        const char c = peek();
+        PkgJson v;
+        if (c == '"') { v.kind = PkgJson::Kind::Str; v.str = parseStringRaw(); return v; }
+        if (c == '{') {
+            ++pos;
+            v.kind = PkgJson::Kind::Obj;
+            if (peek() == '}') { ++pos; return v; }
+            while (true) {
+                if (peek() != '"') fail("expected an object key");
+                std::string key = parseStringRaw();
+                if (peek() != ':') fail("expected ':' after object key");
+                ++pos;
+                v.obj.emplace_back(std::move(key), parseValue());
+                const char d = peek();
+                if (d == ',') { ++pos; continue; }
+                if (d == '}') { ++pos; return v; }
+                fail("expected ',' or '}' in object");
+            }
+        }
+        if (c == '[') {
+            ++pos;
+            v.kind = PkgJson::Kind::Arr;
+            if (peek() == ']') { ++pos; return v; }
+            while (true) {
+                v.arr.push_back(parseValue());
+                const char d = peek();
+                if (d == ',') { ++pos; continue; }
+                if (d == ']') { ++pos; return v; }
+                fail("expected ',' or ']' in array");
+            }
+        }
+        if (c == 't') {
+            if (text.compare(pos, 4, "true") != 0) fail("bad literal");
+            pos += 4; v.kind = PkgJson::Kind::Bool; v.boolean = true; return v;
+        }
+        if (c == 'f') {
+            if (text.compare(pos, 5, "false") != 0) fail("bad literal");
+            pos += 5; v.kind = PkgJson::Kind::Bool; v.boolean = false; return v;
+        }
+        if (c == 'n') {
+            if (text.compare(pos, 4, "null") != 0) fail("bad literal");
+            pos += 4; v.kind = PkgJson::Kind::Null; return v;
+        }
+        const size_t start = pos;
+        if (pos < text.size() && text[pos] == '-') ++pos;
+        while (pos < text.size() && ((text[pos] >= '0' && text[pos] <= '9') ||
+               text[pos] == '.' || text[pos] == 'e' || text[pos] == 'E' ||
+               text[pos] == '+' || text[pos] == '-')) ++pos;
+        if (pos == start) fail("unexpected character");
+        v.kind = PkgJson::Kind::Num;
+        v.str = text.substr(start, pos - start);
+        return v;
+    }
+    PkgJson parse() {
+        PkgJson v = parseValue();
+        skipWs();
+        if (pos != text.size()) fail("trailing characters after value");
+        return v;
+    }
+};
+static std::string pkgJsonStringField(const PkgJson& obj, const std::string& key,
+                                      const std::string& where) {
+    const PkgJson* v = obj.field(key);
+    if (!v || v->kind != PkgJson::Kind::Str)
+        throw Error(where + ": manifest field \"" + key + "\" is missing or not a string");
+    return v->str;
+}
+static PkgManifest pkgManifestFromJson(const PkgJson& root, const std::string& where) {
+    if (root.kind != PkgJson::Kind::Obj)
+        throw Error(where + ": manifest must be a JSON object");
+    PkgManifest m;
+    m.name = pkgJsonStringField(root, "name", where);
+    m.nameZh = pkgJsonStringField(root, "name_zh", where);
+    m.version = pkgJsonStringField(root, "version", where);
+    const PkgJson* files = root.field("files");
+    if (!files || files->kind != PkgJson::Kind::Arr)
+        throw Error(where + ": manifest field \"files\" is missing or not an array");
+    for (const auto& f : files->arr) {
+        if (f.kind != PkgJson::Kind::Obj)
+            throw Error(where + ": manifest \"files\" entries must be objects");
+        m.files.emplace_back(pkgJsonStringField(f, "path", where),
+                             pkgJsonStringField(f, "sha256", where));
+    }
+    const PkgJson* exports = root.field("exports");
+    if (!exports || exports->kind != PkgJson::Kind::Arr)
+        throw Error(where + ": manifest field \"exports\" is missing or not an array");
+    for (const auto& e : exports->arr) {
+        if (e.kind != PkgJson::Kind::Obj)
+            throw Error(where + ": manifest \"exports\" entries must be objects");
+        PkgExport ex;
+        ex.name = pkgJsonStringField(e, "name", where);
+        ex.nameZh = pkgJsonStringField(e, "name_zh", where);
+        ex.kind = pkgJsonStringField(e, "kind", where);
+        ex.signature = pkgJsonStringField(e, "signature", where);
+        ex.package = pkgJsonStringField(e, "package", where);
+        const PkgJson* doc = e.field("doc");
+        ex.doc = (doc && doc->kind == PkgJson::Kind::Str) ? doc->str : std::string();
+        m.exports.push_back(std::move(ex));
+    }
+    return m;
+}
+static std::string pkgManifestDiff(const PkgManifest& expected, const PkgManifest& actual) {
+    if (expected.name != actual.name)
+        return "name differs: expected \"" + expected.name + "\", found \"" + actual.name + "\"";
+    if (expected.nameZh != actual.nameZh)
+        return "name_zh differs: expected \"" + expected.nameZh + "\", found \"" + actual.nameZh + "\"";
+    if (expected.version != actual.version)
+        return "version differs: expected \"" + expected.version + "\", found \"" + actual.version + "\"";
+    if (expected.files.size() != actual.files.size())
+        return "files differ: expected " + std::to_string(expected.files.size()) +
+            " entries, found " + std::to_string(actual.files.size());
+    for (size_t i = 0; i < expected.files.size(); ++i) {
+        if (expected.files[i].first != actual.files[i].first)
+            return "files[" + std::to_string(i) + "] path differs: expected \"" +
+                expected.files[i].first + "\", found \"" + actual.files[i].first + "\"";
+        if (expected.files[i].second != actual.files[i].second)
+            return "files[" + std::to_string(i) + "] sha256 differs for \"" +
+                expected.files[i].first + "\": expected " + expected.files[i].second +
+                ", found " + actual.files[i].second;
+    }
+    if (expected.exports.size() != actual.exports.size())
+        return "exports differ: expected " + std::to_string(expected.exports.size()) +
+            " entries, found " + std::to_string(actual.exports.size());
+    for (size_t i = 0; i < expected.exports.size(); ++i) {
+        const PkgExport& a = expected.exports[i];
+        const PkgExport& b = actual.exports[i];
+        if (a.name != b.name || a.nameZh != b.nameZh || a.kind != b.kind ||
+            a.signature != b.signature || a.package != b.package || a.doc != b.doc)
+            return "exports[" + std::to_string(i) + "] differs: expected \"" + a.name +
+                "\" (" + a.kind + "), found \"" + b.name + "\" (" + b.kind + ")";
+    }
+    return "";
+}
+
+// ---- Package-file hash verification (stdlib §11.1): a package directory
+// is read-only, so the compiler verifies every file the manifest lists
+// against the copy inside the package directory itself, not just the
+// canonical sources. "" when every listed file exists under pkgDir with
+// the recorded sha256; a human-readable diagnostic otherwise. Paths are
+// confined to the package directory: a manifest entry that escapes it
+// is rejected rather than read.
+static std::string pkgVerifyPackageFiles(const std::string& pkgDir, const PkgManifest& manifest) {
+    for (const auto& f : manifest.files) {
+        if (f.first.empty() || f.first[0] == '/' || f.first.find("..") != std::string::npos)
+            return "manifest lists a file outside the package: \"" + f.first + "\"";
+        const std::string full = pkgDir + "/" + f.first;
+        if (!fileExists(full))
+            return "package is incomplete: missing file \"" + f.first + "\" in " + pkgDir +
+                " (package has been modified)";
+        const std::string found = sha256Hex(readFile(full));
+        if (found != f.second)
+            return "files sha256 differs for \"" + f.first + "\": expected " + f.second +
+                ", found " + found + " (package has been modified)";
+    }
+    return "";
+}
+
+// ---- Manifest generation from the canonical sources (parseProgram AST,
+// public declarations only; never a text scan).
+static aster_cn::Program pkgParseSource(const std::string& path) {
+    const std::string src = readFile(path);
+    aster_cn::ProjectLanguageConfig emptyConfig;
+    const aster_cn::Language language = aster_cn::selectLanguage(
+        src, false, aster_cn::Language::Zh, emptyConfig, path);
+    try {
+        return aster_cn::parseProgram(src, language, path);
+    } catch (const std::exception& first) {
+        // The canonical sources carry no language directive when they are
+        // written in English syntax (aster_std.ast / aster_core.ast use
+        // `fn`, not `方法`); the default zh parse then fails at the first
+        // `fn`. Retry once in the other language: a file parses in
+        // exactly one of the two, so the retry cannot silently accept a
+        // broken file under the wrong language. The first error is the
+        // diagnosis when both fail.
+        const std::string firstError = first.what();
+        const aster_cn::Language other = language == aster_cn::Language::Zh
+            ? aster_cn::Language::En : aster_cn::Language::Zh;
+        try {
+            return aster_cn::parseProgram(src, other, path);
+        } catch (const std::exception&) {
+            throw Error(firstError);
+        }
+    }
+}
+static std::string pkgParamType(const aster_cn::Parameter& p) {
+    std::string t = p.typeName;
+    for (const auto& d : p.arrayDimensions) t += "[" + d + "]";
+    return t;
+}
+static std::string pkgMethodSignature(const aster_cn::MethodDeclaration& m) {
+    std::string s = m.name + "(";
+    for (size_t i = 0; i < m.parameters.size(); ++i) {
+        if (i) s += ", ";
+        s += m.parameters[i].name + ": " + pkgParamType(m.parameters[i]);
+    }
+    s += ")";
+    if (!m.returnType.empty()) s += ": " + m.returnType;
+    return s;
+}
+static std::string pkgStructSignature(const aster_cn::StructDeclaration& s) {
+    std::string out = "struct " + s.name + " { ";
+    for (size_t i = 0; i < s.fields.size(); ++i) {
+        if (i) out += ", ";
+        out += s.fields[i].name + ": " + s.fields[i].typeName;
+        for (const auto& d : s.fields[i].arrayDimensions) out += "[" + d + "]";
+    }
+    out += " }";
+    return out;
+}
+static std::string pkgEnumSignature(const aster_cn::EnumDeclaration& e) {
+    std::string out = "enum " + e.name + " { ";
+    for (size_t i = 0; i < e.members.size(); ++i) {
+        if (i) out += ", ";
+        out += e.members[i].name;
+    }
+    out += " }";
+    return out;
+}
+static std::string pkgClassSignature(const aster_cn::ClassDeclaration& c) {
+    return "class " + c.name + (c.baseName.empty() ? std::string() : ": " + c.baseName);
+}
+static std::string pkgInterfaceSignature(const aster_cn::InterfaceClassDeclaration& c) {
+    return "interface class " + c.name + (c.baseName.empty() ? std::string() : ": " + c.baseName);
+}
+static std::string pkgGlobalSignature(const aster_cn::Statement& g) {
+    std::string t = g.typeName;
+    for (const auto& d : g.arrayDimensions) t += "[" + d + "]";
+    if (g.kind == "ConstantDeclaration") return "const " + g.name + ": " + t;
+    return "let " + g.name + ": " + t;
+}
+static void pkgCollectExports(std::vector<PkgExport>& out, std::set<std::string>& seen,
+                              const aster_cn::Program& prog, const std::string& package) {
+    auto add = [&](const std::string& name, const std::string& nameZh, const std::string& kind,
+                   const std::string& sig) {
+        const std::string key = kind + "\n" + name + "\n" + nameZh;
+        if (!seen.insert(key).second) return;
+        out.push_back(PkgExport{name, nameZh, kind, sig, package, ""});
+    };
+    for (const auto& m : prog.methods)
+        if (m.visibility == "public") add(m.name, "", "function", pkgMethodSignature(m));
+    for (const auto& s : prog.structures)
+        if (s.visibility == "public") add(s.name, "", "struct", pkgStructSignature(s));
+    for (const auto& e : prog.enums)
+        if (e.visibility == "public") add(e.name, "", "enum", pkgEnumSignature(e));
+    for (const auto& c : prog.classes)
+        if (c.visibility == "public") add(c.name, "", "class", pkgClassSignature(c));
+    for (const auto& i : prog.interfaceClasses)
+        if (i.visibility == "public") add(i.name, "", "class", pkgInterfaceSignature(i));
+    for (const auto& g : prog.globals) {
+        if (g.visibility != "public") continue;
+        if (g.kind == "ConstantDeclaration") add(g.name, "", "const", pkgGlobalSignature(g));
+        else if (g.kind == "VariableDeclaration") add(g.name, "", "global", pkgGlobalSignature(g));
+    }
+}
+static PkgManifest pkgBuildManifest(const std::string& srcDir) {
+    static const char* kPkgFiles[] = {
+        "aster_std.ast", "aster_core.ast", "cn/string-zh.ast", "cn/string-en.ast"};
+    PkgManifest manifest;
+    manifest.version = ASTER_VERSION_STRING;
+    for (const char* rel : kPkgFiles) {
+        const std::string full = srcDir + "/" + rel;
+        if (!fileExists(full))
+            throw Error("aster pack: missing standard library source: " + full);
+        manifest.files.emplace_back(rel, sha256Hex(readFile(full)));
+    }
+    std::vector<aster_cn::Program> programs;
+    for (const char* rel : kPkgFiles) programs.push_back(pkgParseSource(srcDir + "/" + rel));
+    std::set<std::string> seen;
+    pkgCollectExports(manifest.exports, seen, programs[0], "standard");
+    // aster_core.ast is the bootstrap subset of aster_std.ast: its 20
+    // routines are byte-identical copies, so collecting them only adds
+    // names the full library does not already export (today: none).
+    pkgCollectExports(manifest.exports, seen, programs[1], "standard");
+    // The bilingual string files are mirrors: pair the n-th Chinese method
+    // with the n-th English method into one export with two names.
+    std::vector<const aster_cn::MethodDeclaration*> zhMethods, enMethods;
+    for (const auto& m : programs[2].methods)
+        if (m.visibility == "public") zhMethods.push_back(&m);
+    for (const auto& m : programs[3].methods)
+        if (m.visibility == "public") enMethods.push_back(&m);
+    if (zhMethods.size() != enMethods.size())
+        throw Error("aster pack: bilingual string sources disagree: cn/string-zh.ast has " +
+                    std::to_string(zhMethods.size()) + " public methods, cn/string-en.ast has " +
+                    std::to_string(enMethods.size()));
+    for (size_t i = 0; i < zhMethods.size(); ++i) {
+        const std::string key = std::string("function\n") + enMethods[i]->name + "\n" + zhMethods[i]->name;
+        if (!seen.insert(key).second) continue;
+        manifest.exports.push_back(PkgExport{enMethods[i]->name, zhMethods[i]->name, "function",
+                                             pkgMethodSignature(*enMethods[i]), "standard.text", ""});
+    }
+    return manifest;
+}
+// std.o: the same path as `aster build-obj` for this file (mainline parser
+// + compileProgram + writeObject), so the object is byte-identical to the
+// one `build-obj` produces from the same source. aster_core.ast is NOT
+// merged in: it duplicates aster_std.ast's routines and the compiler
+// refuses a file that declares memcpy twice, so a literal merge fails;
+// the core's 20 routines are already in std.o (byte-identical subset).
+static void pkgBuildStdObject(const std::string& srcPath, const std::string& outPath) {
+    const std::string src = readFile(srcPath);
+    setSourceCache(srcPath, src);
+    Parser p(src, true, dirNameOf(srcPath), nullptr, srcPath);
+    p.parse();
+    auto funcs = compileProgram(p.functions, p.globals, false, true, false, false, false);
+    writeObject(outPath, funcs, p.globals, false);
+}
+static std::string pkgManifestPathFor(const std::string& dirOrFile) {
+    if (dirExists(dirOrFile)) return dirOrFile + "/manifest.json";
+    return dirOrFile;
+}
+
+// ---- [package] version lookup (stdlib §11.3).
+static std::string pkgCanonicalPackageName(const std::string& name) {
+    if (name == "标准库") return "standard";
+    if (name == "标准库.文本") return "standard.text";
+    return name;
+}
+// 0 = found, 1 = not found, 2 = a candidate manifest exists but is unusable.
+static int pkgFindPackage(const std::string& canonical, const std::vector<std::string>& roots,
+                          std::string& manifestPath, std::string& foundVersion,
+                          std::string& error) {
+    std::vector<std::string> candidates;
+    for (const auto& root : roots) {
+        candidates.push_back(root);
+        candidates.push_back(root + "/packages/" + canonical);
+        candidates.push_back(root + "/" + canonical);
+    }
+    for (const auto& dir : candidates) {
+        const std::string path = dir + "/manifest.json";
+        if (!fileExists(path)) continue;
+        PkgJson parsed;
+        try {
+            parsed = PkgJsonParser(readFile(path), path).parse();
+        } catch (const std::exception& e) {
+            error = e.what();
+            return 2;
+        }
+        const PkgJson* name = parsed.field("name");
+        if (!name || name->kind != PkgJson::Kind::Str || name->str != canonical) continue;
+        const PkgJson* version = parsed.field("version");
+        if (!version || version->kind != PkgJson::Kind::Str) {
+            error = path + ": manifest has no string \"version\"";
+            return 2;
+        }
+        // §11.1: the package's own files must match the hashes its
+        // manifest records; a tampered or incomplete package is unusable
+        // even when the name and version look right.
+        try {
+            const PkgManifest manifest = pkgManifestFromJson(parsed, path);
+            if (const std::string fileErr = pkgVerifyPackageFiles(dir, manifest); !fileErr.empty()) {
+                error = fileErr;
+                return 2;
+            }
+        } catch (const std::exception& e) {
+            error = e.what();
+            return 2;
+        }
+        manifestPath = path;
+        foundVersion = version->str;
+        return 0;
+    }
+    return 1;
+}
+// "" when every declared package resolves to its declared version; a
+// human-readable diagnostic otherwise. Projects that declare no package
+// are untouched (no lookup, no error).
+static std::string pkgValidateProjectPackages(const ProjectSpec& spec,
+                                              const std::vector<std::string>& roots) {
+    for (const auto& req : spec.packages) {
+        const std::string canonical = pkgCanonicalPackageName(req.first);
+        std::string manifestPath, foundVersion, error;
+        const int found = pkgFindPackage(canonical, roots, manifestPath, foundVersion, error);
+        if (found == 2) return "package '" + req.first + "': " + error;
+        if (found == 1) {
+            std::string searched;
+            for (size_t i = 0; i < roots.size(); ++i) {
+                if (i) searched += ", ";
+                searched += roots[i];
+            }
+            return "package '" + req.first + "' version \"" + req.second +
+                "\" required by aster.proj was not found (searched: " + searched + ")";
+        }
+        if (foundVersion != req.second)
+            return "package '" + req.first + "' version mismatch: aster.proj requires \"" +
+                req.second + "\" but " + manifestPath + " has \"" + foundVersion + "\"";
+    }
+    return "";
+}
+
 static std::string canonicalCliCommand(const std::string& command) {
     struct Alias { const char* spelling; const char* canonical; };
     static const Alias aliases[] = {
@@ -28471,6 +29045,8 @@ static std::string canonicalCliCommand(const std::string& command) {
         {"新建", "new"},
         {"添加源码", "add"},
         {"依赖", "deps"},
+        {"打包", "pack"},
+        {"补全", "complete"},
         {"构建项目", "build"},
         {"运行", "run"},
         {"测试", "test"},
@@ -28654,6 +29230,121 @@ int main(int argc,char**argv){
             return 0;
         }
 #endif
+        if(cmd=="pack"){
+            std::string srcDir="stdlib", outDir="./packages/standard";
+            bool checkOnly=false; std::string checkDir;
+            auto usageError=[&](){
+                std::cerr<<"aster pack: usage: aster pack [--src-dir DIR] [--out DIR] [--check DIR]\n";
+                return 2;
+            };
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                else if(a=="--src-dir"){if(i+1>=argc)return usageError();srcDir=argv[++i];}
+                else if(a.rfind("--src-dir=",0)==0)srcDir=a.substr(10);
+                else if(a=="--out"){if(i+1>=argc)return usageError();outDir=argv[++i];}
+                else if(a.rfind("--out=",0)==0)outDir=a.substr(6);
+                else if(a=="--check"){if(i+1>=argc)return usageError();checkOnly=true;checkDir=argv[++i];}
+                else if(a.rfind("--check=",0)==0){checkOnly=true;checkDir=a.substr(8);}
+                else return usageError();
+            }
+            const PkgManifest manifest=pkgBuildManifest(srcDir);
+            const std::string manifestText=pkgManifestJson(manifest);
+            if(checkOnly){
+                const std::string storedPath=pkgManifestPathFor(checkDir);
+                if(!fileExists(storedPath)){std::cerr<<"aster pack: no manifest in "<<checkDir<<"\n";return 1;}
+                const PkgManifest stored=pkgManifestFromJson(
+                    PkgJsonParser(readFile(storedPath),storedPath).parse(),storedPath);
+                const std::string diff=pkgManifestDiff(manifest,stored);
+                if(!diff.empty()){
+                    std::cerr<<"aster pack: manifest check failed for "<<checkDir<<": "<<diff<<"\n";
+                    return 1;
+                }
+                // §11.1: the diff above only compares the stored manifest
+                // against the canonical sources; also verify the package
+                // directory's own files against the hashes the manifest
+                // records, so a tampered copy inside the package fails.
+                // pkgManifestPathFor accepts a directory or a manifest.json
+                // path, so the package dir is its dirname ("." when the
+                // path has no directory part).
+                const std::string pkgDir=dirNameOf(storedPath);
+                if(const std::string fileErr=pkgVerifyPackageFiles(
+                       pkgDir.empty()?std::string("."):pkgDir,stored);!fileErr.empty()){
+                    std::cerr<<"aster pack: manifest check failed for "<<checkDir<<": "<<fileErr<<"\n";
+                    return 1;
+                }
+                std::cout<<"aster pack: manifest OK: "<<checkDir<<" matches the sources in "<<srcDir<<"\n";
+                return 0;
+            }
+            if(!makeDirs(outDir)){std::cerr<<"aster pack: cannot create "<<outDir<<"\n";return 1;}
+            if(!makeDirs(outDir+"/cn")){std::cerr<<"aster pack: cannot create "<<outDir<<"/cn\n";return 1;}
+            for(const auto& f:manifest.files)
+                writeFileAtomic(outDir+"/"+f.first,readFile(srcDir+"/"+f.first));
+            writeFileAtomic(outDir+"/manifest.json",manifestText);
+            pkgBuildStdObject(srcDir+"/aster_std.ast",outDir+"/std.o");
+            std::cout<<"Aster v"<<kVersion<<": packed "<<manifest.name<<" ("<<manifest.nameZh<<") "
+                     <<manifest.version<<" ("<<manifest.files.size()<<" sources, "
+                     <<manifest.exports.size()<<" exports) into "<<outDir<<"\n";
+            return 0;
+        }
+        if(cmd=="complete"){
+            std::string languageOpt, formatOpt="text", packageArg, fileArg;
+            bool hasLanguageOpt=false;
+            auto usageError=[&](){
+                std::cerr<<"aster complete: usage: aster complete [--language zh|en] [--format json|text] <package-dir|manifest.json> [file.ast]\n";
+                return 2;
+            };
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                else if(a=="--language"){if(i+1>=argc)return usageError();languageOpt=argv[++i];hasLanguageOpt=true;}
+                else if(a.rfind("--language=",0)==0){languageOpt=a.substr(11);hasLanguageOpt=true;}
+                else if(a=="--format"){if(i+1>=argc)return usageError();formatOpt=argv[++i];}
+                else if(a.rfind("--format=",0)==0)formatOpt=a.substr(9);
+                else if(!a.empty()&&a[0]=='-')return usageError();
+                else if(packageArg.empty())packageArg=a;
+                else if(fileArg.empty())fileArg=a;
+                else return usageError();
+            }
+            if(packageArg.empty())return usageError();
+            if(hasLanguageOpt&&(languageOpt!="zh"&&languageOpt!="en"))return usageError();
+            if(formatOpt!="json"&&formatOpt!="text")return usageError();
+            const std::string manifestPath=pkgManifestPathFor(packageArg);
+            if(!fileExists(manifestPath)){std::cerr<<"aster complete: no manifest: "<<manifestPath<<"\n";return 1;}
+            const PkgManifest manifest=pkgManifestFromJson(
+                PkgJsonParser(readFile(manifestPath),manifestPath).parse(),manifestPath);
+            // --language is only the default when no file is given; with a
+            // file, that file's own language wins (never passed to
+            // selectLanguage as an override, so it cannot clash with the
+            // file's directive).
+            aster_cn::Language language=aster_cn::Language::Zh;
+            if(!fileArg.empty()){
+                const std::string fileSrc=readFile(fileArg);
+                aster_cn::ProjectLanguageConfig emptyConfig;
+                language=aster_cn::selectLanguage(fileSrc,false,aster_cn::Language::Zh,emptyConfig,fileArg);
+            }else if(hasLanguageOpt){
+                language=languageOpt=="en"?aster_cn::Language::En:aster_cn::Language::Zh;
+            }
+            const bool zh=language==aster_cn::Language::Zh;
+            std::vector<const PkgExport*> shown;
+            for(const auto& e:manifest.exports){
+                if(zh&&e.nameZh.empty())continue;
+                shown.push_back(&e);
+            }
+            if(formatOpt=="json"){
+                std::string out="[\n";
+                for(size_t i=0;i<shown.size();++i){
+                    if(i)out+=",\n";
+                    out+="  "+pkgExportJson(*shown[i]);
+                }
+                out+="\n]\n";
+                std::cout<<out;
+            }else{
+                for(const auto* e:shown)
+                    std::cout<<(zh?e->nameZh:e->name)<<"\t"<<e->kind<<"\t"<<e->signature<<"\t"<<e->doc<<"\n";
+            }
+            return 0;
+        }
         // v0.23.77-dev: a project is a directory holding aster.proj. `new`
         // scaffolds one (optionally an APK project), `add` appends a source,
         // `build` compiles it with a content-keyed object cache into an
@@ -29016,6 +29707,11 @@ int main(int argc,char**argv){
                     ? testCwdBuffer : std::string(".");
                 std::vector<std::string> packageRoots{testCwd};
                 packageRoots.insert(packageRoots.end(),bilingualModuleDirs.begin(),bilingualModuleDirs.end());
+                // Package format (§11.3): a project that declares a package
+                // version must find that exact version before any test runs.
+                if(const std::string pkgErr=pkgValidateProjectPackages(spec,packageRoots);!pkgErr.empty()){
+                    std::cerr<<"aster test: "<<pkgErr<<"\n";return 1;
+                }
                 std::map<std::string,std::string> testExecutables;
                 int ran=0,failed=0,compiled=0,reused=0;
                 for(const auto& testPath:spec.tests) {
@@ -29589,6 +30285,13 @@ int main(int argc,char**argv){
                 std::map<std::string, aster_cn::Language> bilingualSourceLanguages;
                 for(size_t i=0;i<spec.sources.size();++i)
                     bilingualSourceLanguages[cnCanonicalPath(spec.sources[i])] = parsedSources[i].language;
+                // Package format (§11.3): a project that declares a package
+                // version must find that exact version before any import is
+                // resolved, so a missing or mismatched package reports
+                // itself instead of surfacing as a missing package source.
+                if(const std::string pkgErr=pkgValidateProjectPackages(spec,packageRoots);!pkgErr.empty()){
+                    std::cerr<<"aster "<<cmd<<": "<<pkgErr<<"\n";return 1;
+                }
                 const aster_cn::Program program=cnResolvePackageImports(
                     roots,bilingualLanguage,packageRoots,bilingualKnownSources,bilingualSourceLanguages);
                 std::string bilingualProjectName=spec.name.empty()?baseNameOf(bilingualCwd):spec.name;
