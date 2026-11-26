@@ -1,19 +1,31 @@
 // aster:language=zh
 包名 标准库.文本 = standard.text
 
+/** 返回字符串的长度。
+ * @en Return the length of the string.
+ */
 方法 长度(值: 字符串): 长整数
     变量 视图: 字符串视图 = 字符串视图(值)
     返回 视图.长度
 结束 方法
 
+/** 把两个字符串拼接成一个新字符串。
+ * @en Concatenate two strings into a new string.
+ */
 方法 拼接(左: 字符串, 右: 字符串): 字符串
     返回 左 + 右
 结束 方法
 
+/** 两字符串相等返回真，否则返回假。
+ * @en Return true when the two strings are equal, false otherwise.
+ */
 方法 相等(左: 字符串, 右: 字符串): 逻辑型
     返回 左 == 右
 结束 方法
 
+/** 左字符串按字节序小于右字符串返回真，否则返回假。
+ * @en Return true when the left string is smaller than the right string in byte order, false otherwise.
+ */
 方法 更小(左: 字符串, 右: 字符串): 逻辑型
     返回 左 < 右
 结束 方法

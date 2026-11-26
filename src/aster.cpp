@@ -28499,7 +28499,8 @@ struct PkgExport {
     std::string kind;       // function | struct | enum | class | const | global
     std::string signature;
     std::string package;    // "standard" or "standard.text"
-    std::string doc;        // "" for now: the parser drops comments, so no doc syntax exists yet
+    std::string doc;        // the declaration's /** */ doc comment, Chinese text, "" when it has none
+    std::string docEn;      // the same doc comment's English text, "" when it has none
 };
 struct PkgManifest {
     std::string name = "standard";
@@ -28535,7 +28536,8 @@ static std::string pkgExportJson(const PkgExport& e) {
         ", \"kind\": " + pkgJsonQuote(e.kind) +
         ", \"signature\": " + pkgJsonQuote(e.signature) +
         ", \"package\": " + pkgJsonQuote(e.package) +
-        ", \"doc\": " + pkgJsonQuote(e.doc) + "}";
+        ", \"doc\": " + pkgJsonQuote(e.doc) +
+        ", \"doc_en\": " + pkgJsonQuote(e.docEn) + "}";
 }
 static std::string pkgManifestJson(const PkgManifest& m) {
     std::string out = "{\n  \"name\": " + pkgJsonQuote(m.name) +
@@ -28746,6 +28748,10 @@ static PkgManifest pkgManifestFromJson(const PkgJson& root, const std::string& w
         ex.package = pkgJsonStringField(e, "package", where);
         const PkgJson* doc = e.field("doc");
         ex.doc = (doc && doc->kind == PkgJson::Kind::Str) ? doc->str : std::string();
+        // doc_en is new: manifests packed before it existed have no such
+        // field, and they stay readable with an empty English doc.
+        const PkgJson* docEn = e.field("doc_en");
+        ex.docEn = (docEn && docEn->kind == PkgJson::Kind::Str) ? docEn->str : std::string();
         m.exports.push_back(std::move(ex));
     }
     return m;
@@ -28776,7 +28782,8 @@ static std::string pkgManifestDiff(const PkgManifest& expected, const PkgManifes
         const PkgExport& a = expected.exports[i];
         const PkgExport& b = actual.exports[i];
         if (a.name != b.name || a.nameZh != b.nameZh || a.kind != b.kind ||
-            a.signature != b.signature || a.package != b.package || a.doc != b.doc)
+            a.signature != b.signature || a.package != b.package || a.doc != b.doc ||
+            a.docEn != b.docEn)
             return "exports[" + std::to_string(i) + "] differs: expected \"" + a.name +
                 "\" (" + a.kind + "), found \"" + b.name + "\" (" + b.kind + ")";
     }
@@ -29177,7 +29184,189 @@ static PkgFetchedSource pkgFetchSource(const std::string& source) {
     return fetched;
 }
 
-// ---- Manifest generation from the canonical sources (parseProgram AST,
+// ---- Doc comments (/** ... */): extraction for `aster pack`.
+//
+// Only a block comment that opens with `/**` (two stars) is a doc
+// comment; `/*` (one star) is an ordinary comment. The CN lexer drops
+// comments before the parser ever sees them, so extraction runs here,
+// on the source text, keyed by declaration line: a doc comment belongs
+// to the declaration whose first line is the line right after the
+// comment's closing `*/` — no blank line and no other code in between.
+// A doc comment is cleaned line by line: surrounding whitespace is
+// trimmed, a leading `*` on a continuation line is dropped (plus one
+// following space), inner newlines are kept, and the whole text is
+// trimmed; the result is plain text (no Markdown parsing this round).
+// The scanner skips `//` line comments and string/character literals,
+// so a `/**` inside either never counts as a doc comment.
+//
+// Bilingual form: a doc comment carries Chinese first, then English
+// after an `@en` marker. The marker is either a line of its own
+// (`@en` at the start of a cleaned line, after the continuation `*`
+// is dropped) or, for a single-line comment, ` @en ` inside the line:
+//   /** 中文一句。
+//    * @en One English sentence.
+//    */
+//   /** 中文一句。 @en One English sentence. */
+// Text before the marker is the Chinese doc, text after it the English
+// doc; either side may be absent (no marker means Chinese only, a
+// leading marker means English only). `@en` is reserved inside a doc
+// comment: the first marker wins and the rest stays English text.
+struct PkgDocText {
+    std::string zh;
+    std::string en;
+};
+static std::string pkgTrimDocText(const std::string& s) {
+    size_t first = 0;
+    while (first < s.size() && (s[first] == ' ' || s[first] == '\t' ||
+                                s[first] == '\r' || s[first] == '\n')) ++first;
+    size_t last = s.size();
+    while (last > first && (s[last - 1] == ' ' || s[last - 1] == '\t' ||
+                            s[last - 1] == '\r' || s[last - 1] == '\n')) --last;
+    return s.substr(first, last - first);
+}
+static PkgDocText pkgSplitDocLanguages(const std::string& cleaned) {
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (true) {
+        const size_t nl = cleaned.find('\n', start);
+        lines.push_back(cleaned.substr(start, nl == std::string::npos ? std::string::npos : nl - start));
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    for (size_t k = 0; k < lines.size(); ++k) {
+        const std::string& line = lines[k];
+        if (line == "@en" || line.rfind("@en ", 0) == 0) {
+            std::string zh, en;
+            for (size_t j = 0; j < k; ++j) { if (j) zh += "\n"; zh += lines[j]; }
+            en = line.size() > 4 ? line.substr(4) : std::string();
+            for (size_t j = k + 1; j < lines.size(); ++j) { en += "\n"; en += lines[j]; }
+            return {pkgTrimDocText(zh), pkgTrimDocText(en)};
+        }
+    }
+    if (cleaned.rfind("@en ", 0) == 0)
+        return {"", pkgTrimDocText(cleaned.substr(4))};
+    const size_t at = cleaned.find(" @en ");
+    if (at != std::string::npos)
+        return {pkgTrimDocText(cleaned.substr(0, at)),
+                pkgTrimDocText(cleaned.substr(at + 5))};
+    return {pkgTrimDocText(cleaned), ""};
+}
+static PkgDocText pkgCleanDocComment(const std::string& raw) {
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (true) {
+        const size_t nl = raw.find('\n', start);
+        lines.push_back(raw.substr(start, nl == std::string::npos ? std::string::npos : nl - start));
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    std::string out;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string line = lines[i];
+        auto trimLine = [](std::string s) {
+            size_t first = 0;
+            while (first < s.size() && (s[first] == ' ' || s[first] == '\t' || s[first] == '\r')) ++first;
+            size_t last = s.size();
+            while (last > first && (s[last - 1] == ' ' || s[last - 1] == '\t' || s[last - 1] == '\r')) --last;
+            return s.substr(first, last - first);
+        };
+        line = trimLine(line);
+        if (!line.empty() && line[0] == '*') {
+            line = trimLine(line.substr(1));
+        }
+        if (i) out += "\n";
+        out += line;
+    }
+    return pkgSplitDocLanguages(out);
+}
+// End line (1-based, the line holding `*/`) -> bilingual doc text.
+// An unterminated block comment ends the scan: the lexer reports it
+// when the source is parsed, so extraction need not diagnose it here.
+static std::map<unsigned, PkgDocText> pkgExtractDocComments(const std::string& source) {
+    std::map<unsigned, PkgDocText> out;
+    unsigned line = 1;
+    const size_t n = source.size();
+    size_t i = 0;
+    while (i < n) {
+        const char c = source[i];
+        if (c == '\n') { ++line; ++i; continue; }
+        if (c == '/' && i + 1 < n && source[i + 1] == '/') {
+            i += 2;
+            while (i < n && source[i] != '\n') ++i;
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            const char quote = c;
+            ++i;
+            while (i < n && source[i] != quote && source[i] != '\n') {
+                if (source[i] == '\\' && i + 1 < n) i += 2;
+                else ++i;
+            }
+            if (i < n && source[i] == quote) ++i;
+            continue;
+        }
+        if (c == '/' && i + 1 < n && source[i + 1] == '*') {
+            const bool isDoc = i + 2 < n && source[i + 2] == '*';
+            size_t j = i + 2;
+            unsigned endLine = line;
+            bool closed = false;
+            while (j + 1 < n) {
+                if (source[j] == '\n') ++endLine;
+                if (source[j] == '*' && source[j + 1] == '/') { closed = true; break; }
+                ++j;
+            }
+            if (!closed) break;
+            if (isDoc) {
+                const std::string raw = j > i + 3 ? source.substr(i + 3, j - (i + 3)) : std::string();
+                const PkgDocText doc = pkgCleanDocComment(raw);
+                if (!doc.zh.empty() || !doc.en.empty()) out[endLine] = doc;
+            }
+            line = endLine;
+            i = j + 2;
+            continue;
+        }
+        ++i;
+    }
+    return out;
+}
+static std::vector<std::string> pkgSplitLines(const std::string& source) {
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (true) {
+        const size_t nl = source.find('\n', start);
+        std::string line = source.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(std::move(line));
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    return lines;
+}
+// The doc comment for the declaration starting on declLine (1-based):
+// the comment whose `*/` sits on the line directly above it. A single
+// visibility-annotation line (@private / @隐藏 / @受限) between the
+// comment and the declaration is part of the declaration, so a comment
+// ending two lines above still counts then; anything else in between
+// (a blank line, other code) means the comment documents nothing.
+static PkgDocText pkgDocForDecl(const std::map<unsigned, PkgDocText>& docs,
+                                const std::vector<std::string>& lines, unsigned declLine) {
+    if (declLine == 0) return {};
+    const auto it = docs.find(declLine - 1);
+    if (it != docs.end()) return it->second;
+    if (declLine >= 2) {
+        const auto jt = docs.find(declLine - 2);
+        if (jt != docs.end() && declLine - 1 <= lines.size()) {
+            std::string mid = lines[declLine - 2];
+            size_t first = 0;
+            while (first < mid.size() && (mid[first] == ' ' || mid[first] == '\t')) ++first;
+            size_t last = mid.size();
+            while (last > first && (mid[last - 1] == ' ' || mid[last - 1] == '\t')) --last;
+            mid = mid.substr(first, last - first);
+            if (mid == "@private" || mid == "@隐藏" || mid == "@受限") return jt->second;
+        }
+    }
+    return {};
+}
 // public declarations only; never a text scan).
 static aster_cn::Program pkgParseSource(const std::string& path) {
     const std::string src = readFile(path);
@@ -29251,27 +29440,36 @@ static std::string pkgGlobalSignature(const aster_cn::Statement& g) {
     return "let " + g.name + ": " + t;
 }
 static void pkgCollectExports(std::vector<PkgExport>& out, std::set<std::string>& seen,
-                              const aster_cn::Program& prog, const std::string& package) {
+                              const aster_cn::Program& prog, const std::string& package,
+                              const std::map<unsigned, PkgDocText>& docs,
+                              const std::vector<std::string>& lines) {
     auto add = [&](const std::string& name, const std::string& nameZh, const std::string& kind,
-                   const std::string& sig) {
+                   const std::string& sig, const PkgDocText& doc) {
         const std::string key = kind + "\n" + name + "\n" + nameZh;
         if (!seen.insert(key).second) return;
-        out.push_back(PkgExport{name, nameZh, kind, sig, package, ""});
+        out.push_back(PkgExport{name, nameZh, kind, sig, package, doc.zh, doc.en});
     };
     for (const auto& m : prog.methods)
-        if (m.visibility == "public") add(m.name, "", "function", pkgMethodSignature(m));
+        if (m.visibility == "public")
+            add(m.name, "", "function", pkgMethodSignature(m), pkgDocForDecl(docs, lines, m.line));
     for (const auto& s : prog.structures)
-        if (s.visibility == "public") add(s.name, "", "struct", pkgStructSignature(s));
+        if (s.visibility == "public")
+            add(s.name, "", "struct", pkgStructSignature(s), pkgDocForDecl(docs, lines, s.line));
     for (const auto& e : prog.enums)
-        if (e.visibility == "public") add(e.name, "", "enum", pkgEnumSignature(e));
+        if (e.visibility == "public")
+            add(e.name, "", "enum", pkgEnumSignature(e), pkgDocForDecl(docs, lines, e.line));
     for (const auto& c : prog.classes)
-        if (c.visibility == "public") add(c.name, "", "class", pkgClassSignature(c));
+        if (c.visibility == "public")
+            add(c.name, "", "class", pkgClassSignature(c), pkgDocForDecl(docs, lines, c.line));
     for (const auto& i : prog.interfaceClasses)
-        if (i.visibility == "public") add(i.name, "", "class", pkgInterfaceSignature(i));
+        if (i.visibility == "public")
+            add(i.name, "", "class", pkgInterfaceSignature(i), pkgDocForDecl(docs, lines, i.line));
     for (const auto& g : prog.globals) {
         if (g.visibility != "public") continue;
-        if (g.kind == "ConstantDeclaration") add(g.name, "", "const", pkgGlobalSignature(g));
-        else if (g.kind == "VariableDeclaration") add(g.name, "", "global", pkgGlobalSignature(g));
+        if (g.kind == "ConstantDeclaration")
+            add(g.name, "", "const", pkgGlobalSignature(g), pkgDocForDecl(docs, lines, g.line));
+        else if (g.kind == "VariableDeclaration")
+            add(g.name, "", "global", pkgGlobalSignature(g), pkgDocForDecl(docs, lines, g.line));
     }
 }
 static PkgManifest pkgBuildManifest(const std::string& srcDir) {
@@ -29286,13 +29484,20 @@ static PkgManifest pkgBuildManifest(const std::string& srcDir) {
         manifest.files.emplace_back(rel, sha256Hex(readFile(full)));
     }
     std::vector<aster_cn::Program> programs;
-    for (const char* rel : kPkgFiles) programs.push_back(pkgParseSource(srcDir + "/" + rel));
+    std::vector<std::map<unsigned, PkgDocText>> docsByFile;
+    std::vector<std::vector<std::string>> linesByFile;
+    for (const char* rel : kPkgFiles) {
+        const std::string src = readFile(srcDir + "/" + rel);
+        programs.push_back(pkgParseSource(srcDir + "/" + rel));
+        docsByFile.push_back(pkgExtractDocComments(src));
+        linesByFile.push_back(pkgSplitLines(src));
+    }
     std::set<std::string> seen;
-    pkgCollectExports(manifest.exports, seen, programs[0], "standard");
+    pkgCollectExports(manifest.exports, seen, programs[0], "standard", docsByFile[0], linesByFile[0]);
     // aster_core.ast is the bootstrap subset of aster_std.ast: its 20
     // routines are byte-identical copies, so collecting them only adds
     // names the full library does not already export (today: none).
-    pkgCollectExports(manifest.exports, seen, programs[1], "standard");
+    pkgCollectExports(manifest.exports, seen, programs[1], "standard", docsByFile[1], linesByFile[1]);
     // The bilingual string files are mirrors: pair the n-th Chinese method
     // with the n-th English method into one export with two names.
     std::vector<const aster_cn::MethodDeclaration*> zhMethods, enMethods;
@@ -29307,8 +29512,17 @@ static PkgManifest pkgBuildManifest(const std::string& srcDir) {
     for (size_t i = 0; i < zhMethods.size(); ++i) {
         const std::string key = std::string("function\n") + enMethods[i]->name + "\n" + zhMethods[i]->name;
         if (!seen.insert(key).second) continue;
+        // One bilingual doc for a bilingual pair: the Chinese text from
+        // the Chinese method and the English text from the English
+        // method, each falling back to the other file when one side
+        // carries only one language.
+        PkgDocText doc = pkgDocForDecl(docsByFile[2], linesByFile[2], zhMethods[i]->line);
+        const PkgDocText enDoc = pkgDocForDecl(docsByFile[3], linesByFile[3], enMethods[i]->line);
+        if (doc.zh.empty()) doc.zh = enDoc.zh;
+        if (doc.en.empty()) doc.en = enDoc.en;
         manifest.exports.push_back(PkgExport{enMethods[i]->name, zhMethods[i]->name, "function",
-                                             pkgMethodSignature(*enMethods[i]), "standard.text", ""});
+                                             pkgMethodSignature(*enMethods[i]), "standard.text",
+                                             doc.zh, doc.en});
     }
     return manifest;
 }
@@ -29757,8 +29971,22 @@ int main(int argc,char**argv){
                 out+="\n]\n";
                 std::cout<<out;
             }else{
-                for(const auto* e:shown)
-                    std::cout<<(zh?e->nameZh:e->name)<<"\t"<<e->kind<<"\t"<<e->signature<<"\t"<<e->doc<<"\n";
+                // Text mode is one tab-separated row per export, so a
+                // multi-line doc is flattened to one line here (JSON
+                // above keeps the raw newlines). The doc column follows
+                // the selected language: Chinese for a zh file, English
+                // for an en file, falling back to the other language
+                // when the selected one is empty.
+                for(const auto* e:shown){
+                    const std::string& docText = zh ? (e->doc.empty() ? e->docEn : e->doc)
+                                                    : (e->docEn.empty() ? e->doc : e->docEn);
+                    std::string flat;
+                    for(const char c:docText){
+                        if(c=='\n'||c=='\t')flat+=' ';
+                        else if(c!='\r')flat+=c;
+                    }
+                    std::cout<<(zh?e->nameZh:e->name)<<"\t"<<e->kind<<"\t"<<e->signature<<"\t"<<flat<<"\n";
+                }
             }
             return 0;
         }

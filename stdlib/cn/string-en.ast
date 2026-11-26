@@ -1,19 +1,31 @@
 // aster:language=en
 package 标准库.文本 = standard.text;
 
+/** 返回字符串的长度。
+ * @en Return the length of the string.
+ */
 fn length(value: string): i64 {
     let view: string_view = string_view(value);
     return view.len;
 }
 
+/** 把两个字符串拼接成一个新字符串。
+ * @en Concatenate two strings into a new string.
+ */
 fn concat(left: string, right: string): string {
     return left + right;
 }
 
+/** 两字符串相等返回真，否则返回假。
+ * @en Return true when the two strings are equal, false otherwise.
+ */
 fn equals(left: string, right: string): bool {
     return left == right;
 }
 
+/** 左字符串按字节序小于右字符串返回真，否则返回假。
+ * @en Return true when the left string is smaller than the right string in byte order, false otherwise.
+ */
 fn less(left: string, right: string): bool {
     return left < right;
 }

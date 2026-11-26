@@ -14,7 +14,7 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-echo '[1/9] pack generates a complete manifest'
+echo '[1/10] pack generates a complete manifest'
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg" > "$TMP/pack.log" 2>&1 \
     || { cat "$TMP/pack.log" >&2; fail 'aster pack failed'; }
 grep -q 'packed standard' "$TMP/pack.log" || fail 'pack did not report the package'
@@ -35,9 +35,33 @@ assert [f["path"] for f in m["files"]] == [
 kinds = {}
 for e in m["exports"]:
     kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
-    assert set(e) == {"name", "name_zh", "kind", "signature", "package", "doc"}, e
-    assert e["doc"] == "", e
+    assert set(e) == {"name", "name_zh", "kind", "signature", "package", "doc", "doc_en"}, e
+    assert e["doc"] != "", e
+    assert e["doc_en"] != "", e
 assert kinds == {"function": 113, "struct": 5, "const": 13, "global": 10}, kinds
+# Every export carries a bilingual doc comment (stdlib sources document
+# every public declaration in Chinese and in English); spot-check one
+# of each kind in both languages.
+assert [e["doc"] for e in m["exports"] if e["name"] == "memcpy"] == \
+    ["前向复制 n 字节，重叠是调用方的问题，返回 n。"]
+assert [e["doc_en"] for e in m["exports"] if e["name"] == "memcpy"] == \
+    ["Copy n bytes forward; overlapping regions are the caller's problem; return n."]
+assert [e["doc"] for e in m["exports"] if e["name"] == "Buf"] == \
+    ["字节缓冲，指针、长度与容量的三元组。"]
+assert [e["doc_en"] for e in m["exports"] if e["name"] == "Buf"] == \
+    ["A byte buffer, a triple of pointer, length and capacity."]
+assert [e["doc"] for e in m["exports"] if e["name"] == "O_RDONLY"] == \
+    ["Linux 的 O_RDONLY（0）。"]
+assert [e["doc_en"] for e in m["exports"] if e["name"] == "O_RDONLY"] == \
+    ["Linux O_RDONLY (0)."]
+assert [e["doc"] for e in m["exports"] if e["name"] == "hkeys"] == \
+    ["固定哈希表的键串，0 表示空槽。"]
+assert [e["doc_en"] for e in m["exports"] if e["name"] == "hkeys"] == \
+    ["The key strings of the fixed hash table; 0 marks an empty slot."]
+assert [e["doc"] for e in m["exports"] if e["name"] == "length"] == \
+    ["返回字符串的长度。"]
+assert [e["doc_en"] for e in m["exports"] if e["name"] == "length"] == \
+    ["Return the length of the string."]
 text = [e for e in m["exports"] if e["package"] == "standard.text"]
 assert [(e["name"], e["name_zh"]) for e in text] == [
     ("length", "长度"), ("concat", "拼接"), ("equals", "相等"), ("less", "更小")], text
@@ -74,7 +98,7 @@ cmp "$TMP/pkg/std.o" "$TMP/std-ref.o" || fail 'std.o differs from build-obj outp
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg2" > /dev/null 2>&1
 cmp "$TMP/pkg/manifest.json" "$TMP/pkg2/manifest.json" || fail 'pack is not deterministic'
 
-echo '[2/9] pack --check passes on a fresh package and fails on tampering'
+echo '[2/10] pack --check passes on a fresh package and fails on tampering'
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --check "$TMP/pkg" > "$TMP/check-ok.log" 2>&1 \
     || { cat "$TMP/check-ok.log" >&2; fail 'pack --check failed on a fresh package'; }
 # The default source dir is the repository stdlib/ when run from the root.
@@ -225,7 +249,7 @@ fi
 grep -q "package 'standard': package contains unexpected file \"cn/extra.ast\"" \
     "$TMP/proj-extra2/build.log" || { cat "$TMP/proj-extra2/build.log" >&2; fail 'extra-file-under-cn build diagnostic is wrong'; }
 
-echo '[3/9] complete filters by the file language'
+echo '[3/10] complete filters by the file language'
 printf '// aster:language=zh\n' > "$TMP/file-zh.ast"
 printf '// aster:language=en\n' > "$TMP/file-en.ast"
 "$ASTER_BIN" complete "$TMP/pkg2" "$TMP/file-zh.ast" > "$TMP/complete-zh.txt" 2>&1
@@ -256,7 +280,7 @@ PY
 python3 -c "import json,sys; assert len(json.load(open(sys.argv[1]))) == 141" "$TMP/complete-en.json" \
     || fail 'complete --format json (en) does not list all 141 exports'
 
-echo '[4/9] [package] version check passes, and [package] does not disturb [language]'
+echo '[4/10] [package] version check passes, and [package] does not disturb [language]'
 mkdir -p "$TMP/proj-ok/src" "$TMP/proj-ok/packages"
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/proj-ok/packages/standard" > /dev/null 2>&1
 cat > "$TMP/proj-ok/src/main.ast" <<'SRC'
@@ -277,7 +301,7 @@ EOF
 if "$RUNNER" "$TMP/proj-ok/build/ok"; then status=0; else status=$?; fi
 [ "$status" -eq 0 ] || fail "matching-version project returned $status, expected 0"
 
-echo '[5/9] version check reports a missing package and a version mismatch'
+echo '[5/10] version check reports a missing package and a version mismatch'
 mkdir -p "$TMP/proj-missing/src" "$TMP/proj-mismatch/src"
 cp "$TMP/proj-ok/src/main.ast" "$TMP/proj-missing/src/main.ast"
 cp "$TMP/proj-ok/src/main.ast" "$TMP/proj-mismatch/src/main.ast"
@@ -316,7 +340,7 @@ EOF
 (cd "$TMP/proj-mismatch" && "$ASTER_BIN" build > build.log 2>&1) \
     || { cat "$TMP/proj-mismatch/build.log" >&2; fail 'build with [package] after sources / Chinese name failed'; }
 
-echo '[6/9] version check runs for test as well, and undeclared projects are unaffected'
+echo '[6/10] version check runs for test as well, and undeclared projects are unaffected'
 mkdir -p "$TMP/proj-test/src" "$TMP/proj-test/tests"
 cp -r "$TMP/proj-ok/packages" "$TMP/proj-test/"
 cat > "$TMP/proj-test/src/main.ast" <<'SRC'
@@ -351,7 +375,7 @@ printf 'name plain\nsrc/main.ast\n' > "$TMP/proj-plain/aster.proj"
 (cd "$TMP/proj-plain" && "$ASTER_BIN" build > build.log 2>&1) \
     || { cat "$TMP/proj-plain/build.log" >&2; fail 'build without [package] broke'; }
 
-echo '[7/9] pack/complete reject bad usage'
+echo '[7/10] pack/complete reject bad usage'
 if "$ASTER_BIN" pack --nope > /dev/null 2>&1; then fail 'pack accepted an unknown option'; fi
 if "$ASTER_BIN" pack --src-dir "$TMP/does-not-exist" --out "$TMP/pkg-nope" > /dev/null 2>&1; then
     fail 'pack accepted a missing source dir'
@@ -369,7 +393,7 @@ if "$ASTER_BIN" complete --format yaml "$TMP/pkg2" > /dev/null 2>&1; then
     fail 'complete accepted an unknown format'
 fi
 
-echo '[8/9] pack leaves the package read-only, and re-pack over it works'
+echo '[8/10] pack leaves the package read-only, and re-pack over it works'
 "$ASTER_BIN" pack --src-dir "$ROOT/stdlib" --out "$TMP/pkg-ro" > /dev/null 2>&1
 # No file or directory under the package carries a write bit. Checked by
 # mode bits, not by attempting a write: the suite may run as root, and
@@ -395,11 +419,11 @@ mv "$TMP/proj-ro/aster.proj.new" "$TMP/proj-ro/aster.proj"
 if "$RUNNER" "$TMP/proj-ro/build/ro"; then status=0; else status=$?; fi
 [ "$status" -eq 0 ] || fail "re-packed project returned $status, expected 0"
 
-echo '[9/9] build-cn-obj --project runs the same package version check'
+echo '[9/10] build-cn-obj --project runs the same package version check'
 # The same fixtures as the build cases above, through build-cn-obj
 # --project invoked from outside the project directory: the package root
 # is the project directory, not the cwd. The mismatch fixture is built
-# fresh here because [5/9] overwrote proj-mismatch/aster.proj with a
+# fresh here because [5/10] overwrote proj-mismatch/aster.proj with a
 # matching-version declaration at the end of its section.
 mkdir -p "$TMP/proj-cnobj-mismatch/src"
 cp -r "$TMP/proj-ok/packages" "$TMP/proj-cnobj-mismatch/"
@@ -445,5 +469,143 @@ grep -q "aster build-cn-obj: package 'standard': package contains unexpected fil
     "$TMP/proj-plain/src/main.ast" -o "$TMP/proj-plain/main.o" > "$TMP/cnobj-plain.log" 2>&1 \
     || { cat "$TMP/cnobj-plain.log" >&2; fail 'build-cn-obj --project failed without [package]'; }
 [ -f "$TMP/proj-plain/main.o" ] || fail 'build-cn-obj --project produced no object without [package]'
+
+echo '[10/10] doc comments are extracted into the manifest and complete'
+# A synthetic source tree exercises the extraction rules: a bilingual
+# doc (Chinese first, English after an `@en` marker line), the same
+# split written on one line (`/** zh @en en */`), a Chinese-only doc,
+# an English-only doc, no doc, an ordinary /* */ comment, a doc
+# separated from its declaration by a blank line, a /** hidden inside
+# a // line comment, a /** inside a string literal, and doc comments on
+# a struct, a const and a global. The bilingual pair carries the same
+# pair in both files.
+mkdir -p "$TMP/docsrc/cn"
+cat > "$TMP/docsrc/aster_std.ast" <<'SRC'
+/** 中文一句。
+ * @en One English sentence.
+ * Continued in English.
+ */
+fn one(a: i32, b: i32) : i32 { return a + b; }
+
+/** 中文单行。 @en English single line. */
+fn two(a: i32, b: i32) : i32 { return a * b; }
+
+fn three(a: i32) : i32 { return a; }
+
+/* An ordinary comment, not a doc comment. */
+fn four(a: i32) : i32 { return a; }
+
+/** A doc comment separated from its declaration by a blank line. */
+
+fn five(a: i32) : i32 { return a; }
+
+// /** A doc comment hidden inside a line comment. */
+fn six(a: i32) : i32 { return a; }
+
+/** 中文结构。
+ * @en An English struct.
+ */
+struct Point { x: i32, y: i32 }
+
+/** 只有中文的常量。 */
+const kAnswer: i32 = 42;
+
+/** 中文全局。
+ * @en An English global.
+ */
+let gCounter: i32 = 0;
+
+/** Doc above a string that mentions a doc comment. */
+fn seven(a: i32) : i32 {
+    let s: ptr<u8> = "/** not a doc comment */";
+    return a;
+}
+
+/** 只有中文。 */
+fn eight(a: i32) : i32 { return a; }
+
+/** @en English only. */
+fn nine(a: i32) : i32 { return a; }
+SRC
+: > "$TMP/docsrc/aster_core.ast"
+cat > "$TMP/docsrc/cn/string-zh.ast" <<'SRC'
+// aster:language=zh
+包名 标准库.文本 = standard.text
+
+/** 返回字符串的长度。
+ * @en Return the length of the string.
+ */
+方法 长度(值: 字符串): 长整数
+    返回 0
+结束 方法
+SRC
+cat > "$TMP/docsrc/cn/string-en.ast" <<'SRC'
+// aster:language=en
+package 标准库.文本 = standard.text;
+
+/** 返回字符串的长度。
+ * @en Return the length of the string.
+ */
+fn length(value: string): i64 {
+    return 0;
+}
+SRC
+"$ASTER_BIN" pack --src-dir "$TMP/docsrc" --out "$TMP/docpkg" > /dev/null 2>&1 \
+    || fail 'aster pack failed on the doc fixture'
+python3 - "$TMP/docpkg/manifest.json" <<'PY' || fail 'doc extraction is wrong'
+import json, sys
+m = json.load(open(sys.argv[1]))
+docs = {e["name"]: (e["doc"], e["doc_en"]) for e in m["exports"]}
+assert docs["one"] == ("中文一句。", "One English sentence.\nContinued in English."), docs["one"]
+assert docs["two"] == ("中文单行。", "English single line."), docs["two"]
+assert docs["three"] == ("", ""), docs["three"]
+assert docs["four"] == ("", ""), docs["four"]
+assert docs["five"] == ("", ""), docs["five"]
+assert docs["six"] == ("", ""), docs["six"]
+assert docs["Point"] == ("中文结构。", "An English struct."), docs["Point"]
+assert docs["kAnswer"] == ("只有中文的常量。", ""), docs["kAnswer"]
+assert docs["gCounter"] == ("中文全局。", "An English global."), docs["gCounter"]
+assert docs["seven"] == ("Doc above a string that mentions a doc comment.", ""), docs["seven"]
+assert docs["eight"] == ("只有中文。", ""), docs["eight"]
+assert docs["nine"] == ("", "English only."), docs["nine"]
+assert docs["length"] == ("返回字符串的长度。", "Return the length of the string."), docs["length"]
+PY
+# complete shows the doc in the file's language in both formats; a
+# doc-less export still shows an empty doc column, and a Chinese-only
+# doc falls back to Chinese for an English file.
+"$ASTER_BIN" complete --language en "$TMP/docpkg" > "$TMP/doc-complete.txt" 2>&1
+python3 - "$TMP/doc-complete.txt" <<'PY' || fail 'complete (text) doc is wrong'
+import sys
+rows = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    parts = line.rstrip("\n").split("\t")
+    assert len(parts) == 4, parts
+    rows[parts[0]] = parts[3]
+assert rows["one"] == "One English sentence. Continued in English.", rows["one"]
+assert rows["two"] == "English single line.", rows["two"]
+assert rows["three"] == "", rows["three"]
+assert rows["eight"] == "只有中文。", rows["eight"]
+assert rows["nine"] == "English only.", rows["nine"]
+PY
+"$ASTER_BIN" complete --language en --format json "$TMP/docpkg" > "$TMP/doc-complete.json" 2>&1
+python3 - "$TMP/doc-complete.json" <<'PY' || fail 'complete (json) doc is wrong'
+import json, sys
+docs = {e["name"]: (e["doc"], e["doc_en"]) for e in json.load(open(sys.argv[1]))}
+assert docs["one"] == ("中文一句。", "One English sentence.\nContinued in English."), docs["one"]
+assert docs["two"] == ("中文单行。", "English single line."), docs["two"]
+assert docs["eight"] == ("只有中文。", ""), docs["eight"]
+assert docs["nine"] == ("", "English only."), docs["nine"]
+assert docs["three"] == ("", ""), docs["three"]
+PY
+"$ASTER_BIN" complete --language zh "$TMP/docpkg" > "$TMP/doc-complete-zh.txt" 2>&1
+python3 - "$TMP/doc-complete-zh.txt" <<'PY' || fail 'complete (zh) is missing the doc for 长度'
+import sys
+rows = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    parts = line.rstrip("\n").split("\t")
+    assert len(parts) == 4, parts
+    rows[parts[0]] = parts[3]
+assert rows["长度"] == "返回字符串的长度。", rows["长度"]
+PY
 
 echo 'package checks passed'

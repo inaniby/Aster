@@ -46,6 +46,9 @@
 
 // Copy n bytes, src and dst overlapping is the caller's problem (forward copy
 // only, exactly like C's memcpy). Returns n, so a wrong count is observable.
+/** 前向复制 n 字节，重叠是调用方的问题，返回 n。
+ * @en Copy n bytes forward; overlapping regions are the caller's problem; return n.
+ */
 fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
@@ -57,6 +60,9 @@ fn memcpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {
 
 // Fill n bytes with c's low 8 bits (store_u8 truncates, as C's unsigned char
 // conversion does). Returns n.
+/** 把 n 字节填为 c 的低 8 位，返回 n。
+ * @en Fill n bytes with the low 8 bits of c; return n.
+ */
 fn memset(dst: ptr<u8>, c: i32, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
@@ -69,6 +75,9 @@ fn memset(dst: ptr<u8>, c: i32, n: i32) : i32 {
 // Byte-wise unsigned comparison of the first n bytes: the first differing
 // pair's difference, 0 when equal. The unsigned reading matters — a signed
 // compare would order 0x80 below 0x7F and flip the answer for high bytes.
+/** 前 n 字节无符号比较，首个不同字节对的差，相等为 0。
+ * @en Compare the first n bytes as unsigned bytes: the difference of the first differing pair, 0 when equal.
+ */
 fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
@@ -84,6 +93,9 @@ fn memcmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32 {
 // str — NUL-terminated text: the identifier and keyword matcher's toolkit.
 // ===========================================================================
 
+/** 返回首个 NUL 之前的字节数。
+ * @en Return the number of bytes before the first NUL.
+ */
 fn strlen(s: ptr<u8>) : i32 {
     let i: i32 = 0;
     while (load_u8(s + i) != 0) { i = i + 1; }
@@ -96,6 +108,9 @@ fn strlen(s: ptr<u8>) : i32 {
 // million bytes returns from inside, and the tail return only satisfies the
 // compiler's fall-through check (while(true) returns are not seen as
 // terminating).
+/** 首个不同字节对的无符号差，相等为 0，NUL 参与比较。
+ * @en The unsigned difference of the first differing byte pair, 0 when equal; NUL takes part in the comparison.
+ */
 fn strcmp(a: ptr<u8>, b: ptr<u8>) : i32 {
     let i: i32 = 0;
     while (i < 1000000) {
@@ -109,6 +124,9 @@ fn strcmp(a: ptr<u8>, b: ptr<u8>) : i32 {
 }
 
 // Unsigned UTF-8 bytewise ordering. Null sorts before every non-null string.
+/** 按无符号 UTF-8 字节序比较两串，空指针排在一切非空之前。
+ * @en Compare two strings in unsigned UTF-8 byte order; a null pointer sorts before every non-null string.
+ */
 fn __aster_cn_str_order(a: ptr<u8>, b: ptr<u8>) : i32 {
     if (a == b) { return 0; }
     if (a == 0) { return 0 - 1; }
@@ -125,8 +143,14 @@ fn __aster_cn_str_order(a: ptr<u8>, b: ptr<u8>) : i32 {
     return 0;
 }
 
+/** 字符串视图，指针加 i64 长度的 16 字节值类型。
+ * @en A string view, a 16-byte value type of a pointer plus an i64 length.
+ */
 struct AsterStringView { data: ptr<u8>, len: i64 }
 
+/** 从 NUL 结尾串建字符串视图，s 为 0 时长度为 0。
+ * @en Build a string view from a NUL-terminated string; the length is 0 when s is 0.
+ */
 fn __aster_cn_str_view(s: ptr<u8>) : AsterStringView {
     let view: AsterStringView;
     view.data = s;
@@ -135,6 +159,9 @@ fn __aster_cn_str_view(s: ptr<u8>) : AsterStringView {
     return view;
 }
 
+/** 从视图建 NUL 结尾串，长度非法或视图内含 NUL 返回 0。
+ * @en Build a NUL-terminated string from a view; return 0 for an illegal length or a view containing NUL.
+ */
 fn __aster_cn_string_from_view(view: AsterStringView) : ptr<u8> {
     if (view.len < 0 || view.len > 67108863) { return 0; }
     if (view.len > 0 && view.data == 0) { return 0; }
@@ -153,6 +180,9 @@ fn __aster_cn_string_from_view(view: AsterStringView) : ptr<u8> {
 
 // The Chinese frontend's string `+` uses the growable arena. Null operands
 // act as empty strings; 0 means the allocation limit or mmap was reached.
+/** 字符串加法，空操作数视为空串，超限或分配失败返回 0。
+ * @en String addition; an empty operand counts as an empty string; return 0 when over the limit or allocation fails.
+ */
 fn __aster_cn_str_concat(a: ptr<u8>, b: ptr<u8>) : ptr<u8> {
     let a_len: i32 = 0;
     let b_len: i32 = 0;
@@ -174,6 +204,9 @@ fn __aster_cn_str_concat(a: ptr<u8>, b: ptr<u8>) : ptr<u8> {
 // the return value rather than only in the buffer. (The pad loop runs after
 // the count is taken: returning its own index would answer n for every
 // short source.)
+/** 至多复制 n 字节，源短时 NUL 填充，返回实际复制的源字符数。
+ * @en Copy at most n bytes, NUL-padding when the source is shorter; return the number of source characters actually copied.
+ */
 fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
@@ -196,6 +229,9 @@ fn strncpy(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {
 
 // Reverse the i digits written at buf[0..i) in place, then NUL-terminate.
 // Shared by utoa/utohex — the digits come out least-significant first.
+/** 把 buf 前 i 个数字原地倒序并补 NUL，返回 i。
+ * @en Reverse the first i digits of buf in place and append NUL; return i.
+ */
 fn reverse_digits(buf: ptr<u8>, i: i32) : i32 {
     let j: i32 = 0;
     let k: i32 = i - 1;
@@ -212,6 +248,9 @@ fn reverse_digits(buf: ptr<u8>, i: i32) : i32 {
 
 // Unsigned decimal (v is read as its value; the caller keeps it >= 0 — the
 // signed case is itoa's job). Returns the digit count.
+/** 把无符号整数写成十进制，返回数字个数，零写 "0" 返回 1。
+ * @en Write an unsigned integer as decimal; return the digit count; zero writes "0" and returns 1.
+ */
 fn utoa(v: i64, buf: ptr<u8>) : i32 {
     if (v == 0) {
         store_u8(buf, 48);
@@ -231,6 +270,9 @@ fn utoa(v: i64, buf: ptr<u8>) : i32 {
 // Signed decimal: '-' then the magnitude. The magnitude of i64's most
 // negative value is not representable, so that one input is out of contract
 // (the twin asserts the same). Returns the character count, sign included.
+/** 把有符号整数写成十进制，返回字符数含符号。
+ * @en Write a signed integer as decimal; return the character count including the sign.
+ */
 fn itoa(v: i64, buf: ptr<u8>) : i32 {
     if (v < 0) {
         store_u8(buf, 45);                // '-'
@@ -242,6 +284,9 @@ fn itoa(v: i64, buf: ptr<u8>) : i32 {
 // Lowercase hexadecimal, no prefix, no leading zeros ("0" for zero). The
 // width an ELF dump wants is the caller's business (pad in the buffer).
 // Returns the digit count.
+/** 把整数写成小写十六进制，无前缀无前导零，返回数字个数。
+ * @en Write an integer as lower-case hexadecimal, no prefix and no leading zeros; return the digit count.
+ */
 fn utohex(v: i64, buf: ptr<u8>) : i32 {
     if (v == 0) {
         store_u8(buf, 48);
@@ -267,7 +312,13 @@ fn utohex(v: i64, buf: ptr<u8>) : i32 {
 // already present updates its value instead of duplicating.
 // ===========================================================================
 
+/** 固定哈希表的键串，0 表示空槽。
+ * @en The key strings of the fixed hash table; 0 marks an empty slot.
+ */
 let hkeys: ptr<u8>[1024] = 0;   // key strings; 0 means empty
+/** 与 hkeys 平行的固定哈希表的值。
+ * @en The values of the fixed hash table, parallel to hkeys.
+ */
 let hvals: i64[1024] = 0;   // values, parallel to hkeys
 
 // FNV-1a over the bytes, 64-bit. The offset basis 0xcbf29ce484222325 does
@@ -275,6 +326,9 @@ let hvals: i64[1024] = 0;   // values, parallel to hkeys
 // -3750763034362895579 — the same 64 bits (14695981039346656037 - 2^64).
 // Multiplication wraps (two's complement), which is what the hash wants
 // anyway.
+/** 对字符串算 FNV-1a 64 位哈希。
+ * @en Compute the FNV-1a 64-bit hash of a string.
+ */
 fn hash_str(s: ptr<u8>) : i64 {
     let h: i64 = -3750763034362895579;
     let i: i32 = 0;
@@ -290,6 +344,9 @@ fn hash_str(s: ptr<u8>) : i64 {
 // Insert or update: returns the slot index, or -1 when all 1024 slots are
 // occupied (a table that full is a bootstrap-scale bug, not a condition to
 // grow into — the caller's input was not that large).
+/** 在固定 1024 槽表里插入或更新键值，返回槽下标，表满返回 -1。
+ * @en Insert or update a key in the fixed 1024-slot table; return the slot index, -1 when the table is full.
+ */
 fn hash_put(key: ptr<u8>, val: i64) : i32 {
     let i: i32 = hash_str(key) & 1023;
     let probes: i32 = 0;
@@ -313,6 +370,9 @@ fn hash_put(key: ptr<u8>, val: i64) : i32 {
 
 // Look up: the value, or -1 when absent. Values are therefore non-negative
 // by contract — true for the table indices and counts a compiler stores.
+/** 在固定表里查值，不存在返回 -1，值按契约非负。
+ * @en Look a value up in the fixed table; return -1 when absent; values are non-negative by contract.
+ */
 fn hash_get(key: ptr<u8>) : i64 {
     let i: i32 = hash_str(key) & 1023;
     let probes: i32 = 0;
@@ -343,6 +403,9 @@ fn hash_get(key: ptr<u8>) : i64 {
 // memmove(dst, src, n): copy n bytes, correct when the ranges overlap. A
 // forward copy is used unless dst starts above src, where it would overwrite
 // bytes it has not read yet; that case copies backwards. Returns n.
+/** 复制 n 字节，重叠也正确，返回 n。
+ * @en Copy n bytes, correctly even when the regions overlap; return n.
+ */
 fn memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {
     if (dst == src || n <= 0) { return n; }
     if (i64(dst) < i64(src)) {
@@ -363,6 +426,9 @@ fn memmove(dst: ptr<u8>, src: ptr<u8>, n: i32) : i32 {
 
 // strncmp(a, b, n): the first differing pair's difference over at most n
 // bytes, 0 when equal — unsigned bytes, the same reading memcmp uses.
+/** 至多比较 n 字节的 strcmp，n 耗尽前遇 NUL 即相等。
+ * @en strcmp over at most n bytes; equal once NUL is met before n runs out.
+ */
 fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32 {
     let i: i32 = 0;
     while (i < n) {
@@ -377,6 +443,9 @@ fn strncmp(a: ptr<u8>, b: ptr<u8>, n: i32) : i32 {
 
 // strchr(s, c): an offset of the first c in s, or -1. c is compared at its
 // low 8 bits, so strchr(s, 'a') and strchr(s, 97) are the same question.
+/** 返回首个 c 低 8 位的下标，找不到返回 -1。
+ * @en Return the index of the first c (low 8 bits); return -1 when not found.
+ */
 fn strchr(s: ptr<u8>, c: i32) : i32 {
     let i: i32 = 0;
     let want: i32 = c & 255;
@@ -391,6 +460,9 @@ fn strchr(s: ptr<u8>, c: i32) : i32 {
 
 // strstr(h, n): an offset of the first occurrence of n in h, or -1. The empty
 // needle answers 0, as C's does.
+/** 返回 n 在 h 中首次出现的下标，空针返回 0，找不到返回 -1。
+ * @en Return the index where n first occurs in h, 0 for an empty needle, -1 when not found.
+ */
 fn strstr(h: ptr<u8>, n: ptr<u8>) : i32 {
     let nl: i32 = strlen(n);
     if (nl == 0) { return 0; }
@@ -406,6 +478,9 @@ fn strstr(h: ptr<u8>, n: ptr<u8>) : i32 {
 // strcat(d, s): append s to d, NUL included; d must have room. Returns the
 // resulting length (not d's address), because the length is what a caller
 // advancing a cursor needs.
+/** 把 s 含 NUL 追加到 d 末尾，返回结果长度。
+ * @en Append s, NUL included, to the end of d; return the resulting length.
+ */
 fn strcat(d: ptr<u8>, s: ptr<u8>) : i32 {
     let dl: i32 = strlen(d);
     let sl: i32 = strlen(s);
@@ -421,6 +496,9 @@ fn strcat(d: ptr<u8>, s: ptr<u8>) : i32 {
 // first non-digit. Anything else is 0, and a lone sign is 0 too. The value
 // wraps like ordinary 32-bit arithmetic past the range, which is what an
 // unchecked C atoi does with 32 bits.
+/** 跳过前导空白与可选符号读十进制整数，其余为 0，超范围按 32 位回绕。
+ * @en Skip leading blanks and an optional sign, then read a decimal integer; anything else reads as 0, out of range wraps in 32 bits.
+ */
 fn atoi(s: ptr<u8>) : i32 {
     let i: i32 = 0;
     while (is_space(load_u8(s + i))) { i = i + 1; }
@@ -441,10 +519,16 @@ fn atoi(s: ptr<u8>) : i32 {
 
 // is_digit / is_space / is_alpha: 1 or 0, ASCII only (the same test set a
 // lexer needs, which is what this library is written for).
+/** c 是 0-9 返回 1，否则返回 0。
+ * @en Return 1 when c is 0-9, 0 otherwise.
+ */
 fn is_digit(c: i32) : i32 {
     if (c >= 48 && c <= 57) { return 1; }
     return 0;
 }
+/** c 是空格或 9..13 的空白返回 1，否则返回 0。
+ * @en Return 1 when c is a space or a blank in 9..13, 0 otherwise.
+ */
 fn is_space(c: i32) : i32 {
     if (c == 32 || (c >= 9 && c <= 13)) { return 1; }
     return 0;
@@ -453,6 +537,9 @@ fn is_space(c: i32) : i32 {
 // scanner treats an underscore as an identifier character where it needs one
 // (`is_alpha(c) || c == 95`), so keeping the underscore out of here is what let
 // the library's version replace the stage's own without changing the lexer.
+/** c 是 A-Z 或 a-z 返回 1，否则返回 0，不含下划线。
+ * @en Return 1 when c is A-Z or a-z, 0 otherwise; underscore is not included.
+ */
 fn is_alpha(c: i32) : i32 {
     if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { return 1; }
     return 0;
@@ -461,6 +548,9 @@ fn is_alpha(c: i32) : i32 {
 // fmt_i32(buf, v): v in decimal, no padding, NUL-terminated. Returns the
 // digit count (-1 aside). INT32_MIN is handled by working on the magnitude in
 // i64, where its absolute value fits.
+/** 把 i32 写成十进制并补 NUL，返回数字个数。
+ * @en Write an i32 as decimal with a NUL terminator; return the digit count.
+ */
 fn fmt_i32(buf: ptr<u8>, v: i32) : i32 {
     let at: i32 = 0;
     let w: i64 = v;
@@ -496,6 +586,9 @@ fn fmt_i32(buf: ptr<u8>, v: i32) : i32 {
 // columns, space padded, NUL terminated; answers the bytes written. A value
 // wider than the field is written in full (the field is a minimum, not a
 // truncation) - the same rule C's "%*d" with a positive width follows.
+/** 把 i32 写成十进制并右对齐于 width 列，空格填充，返回写了多少字节。
+ * @en Write an i32 as decimal, right-aligned to width columns with space padding; return the number of bytes written.
+ */
 fn fmt_i32_w(buf: ptr<u8>, v: i32, width: i32) : i32 {
     let tmp: u8[24] = 0;
     let n: i32 = fmt_i32(tmp, v);
@@ -517,6 +610,9 @@ fn fmt_i32_w(buf: ptr<u8>, v: i32, width: i32) : i32 {
 // fmt_hex_w(buf, v, width): lowercase hex, right-aligned in a field of `width`
 // columns, SPACE padded - the companion of fmt_hex (which zero pads). A value
 // wider than the field is written in full, the same rule fmt_i32_w follows.
+/** 把 i32 写成小写十六进制并右对齐于 width 列，空格填充，返回写了多少字节。
+ * @en Write an i32 as lower-case hexadecimal, right-aligned to width columns with space padding; return the number of bytes written.
+ */
 fn fmt_hex_w(buf: ptr<u8>, v: i32, width: i32) : i32 {
     // fmt_hex prints exactly the digits it is asked for, so ask for the full
     // width and drop the leading zeros here - that is the natural length.
@@ -543,6 +639,9 @@ fn fmt_hex_w(buf: ptr<u8>, v: i32, width: i32) : i32 {
     return at + n;
 }
 
+/** 把 i32 写成恰好 digits 位小写十六进制，零填充，返回位数。
+ * @en Write an i32 as exactly digits lower-case hex digits, zero-padded; return the digit count.
+ */
 fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) : i32 {
     let d: i32 = digits;
     if (d < 1) { d = 1; }
@@ -564,15 +663,30 @@ fn fmt_hex(buf: ptr<u8>, v: i32, digits: i32) : i32 {
 // below (`sort_bytes`) is what does the work; this is the typed wrapper a
 // caller reaches for, kept as the same name and contract the library has had
 // since v0.23.77-dev's second slice.
+/** 把 i32 数组升序排列。
+ * @en Sort an i32 array in ascending order.
+ */
 fn sort_i32(a: ptr, n: i32) : i32 { return sort_bytes(a, n, 4, ptr(cmp_i32_asc)); }
 // A bump allocator over one 64 KiB anonymous mapping: the shape a compiler's
 // arena wants (no free list, no metadata, 8-byte aligned). malloc answers 0
 // when the mapping is exhausted; free is the documented no-op, so a program
 // that frees is still correct and simply does not reclaim.
+/** malloc 的映射基址。
+ * @en The base address of malloc's mapping.
+ */
 let heap_base: ptr = 0;
+/** malloc 的映射已用字节数。
+ * @en The used bytes of malloc's mapping.
+ */
 let heap_used: i32 = 0;
+/** malloc 的映射大小。
+ * @en The size of malloc's mapping.
+ */
 let heap_size: i32 = 0;
 
+/** 在一次 64 KiB 匿名映射上 bump 分配并 8 字节对齐，n<=0 或耗尽返回 0。
+ * @en Bump-allocate on a single 64 KiB anonymous mapping, 8-byte aligned; return 0 when n<=0 or the mapping is exhausted.
+ */
 fn malloc(n: i32) : ptr {
     if (heap_base == 0) {
         heap_base = mmap(ptr(0), 65536, 3, 34, 0 - 1, 0);
@@ -600,6 +714,9 @@ fn malloc(n: i32) : ptr {
     return p;
 }
 
+/** 文档化的 no-op，不回收，返回 0。
+ * @en A documented no-op that never reclaims; return 0.
+ */
 fn free(p: ptr) : i32 {
     return 0;
 }
@@ -624,6 +741,9 @@ fn free(p: ptr) : i32 {
 // the point (clamped to 0..9), NUL-terminated. Returns the byte count, sign
 // included. `nan` and `inf` are spelled the way a C printf spells them, so a
 // program's output stays comparable with one.
+/** 把 f64 写成定点小数，decimals 位小数，返回字节数含符号。
+ * @en Write an f64 as a fixed-point decimal with decimals fractional digits; return the byte count including the sign.
+ */
 fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) : i32 {
     let at: i32 = 0;
     let x: f64 = v;
@@ -687,6 +807,9 @@ fn fmt_f64(buf: ptr<u8>, v: f64, decimals: i32) : i32 {
 // fmt_f32(buf, v, decimals): the single-precision sibling. The value widens to
 // a double first — one exact conversion, so the digits printed are the digits
 // the single actually holds, not a second rounding's worth of noise past them.
+/** 把 f32 拓宽为 f64 后按 fmt_f64 写成定点小数，返回字节数。
+ * @en Widen an f32 to f64 and write it as fmt_f64 does; return the byte count.
+ */
 fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) : i32 {
     return fmt_f64(buf, f64(v), decimals);
 }
@@ -714,32 +837,77 @@ fn fmt_f32(buf: ptr<u8>, v: f32, decimals: i32) : i32 {
 // --- files ---------------------------------------------------------------
 
 // Linux's AT_FDCWD, the only directory handle a program needs here.
+/** Linux 的 AT_FDCWD（-100）。
+ * @en Linux AT_FDCWD (-100).
+ */
 const kAtFdcwd: i32 = 0 - 100;
 
 // The open(2) flags, Linux values, in value order. fd_open takes these by
 // name — `O_WRONLY | O_CREAT | O_TRUNC` is 577 — instead of bare numbers.
+/** Linux 的 O_RDONLY（0）。
+ * @en Linux O_RDONLY (0).
+ */
 const O_RDONLY: i32 = 0;
+/** Linux 的 O_WRONLY（1）。
+ * @en Linux O_WRONLY (1).
+ */
 const O_WRONLY: i32 = 1;
+/** Linux 的 O_RDWR（2）。
+ * @en Linux O_RDWR (2).
+ */
 const O_RDWR: i32 = 2;
+/** Linux 的 O_CREAT（64）。
+ * @en Linux O_CREAT (64).
+ */
 const O_CREAT: i32 = 64;
+/** Linux 的 O_EXCL（128）。
+ * @en Linux O_EXCL (128).
+ */
 const O_EXCL: i32 = 128;
+/** Linux 的 O_TRUNC（512）。
+ * @en Linux O_TRUNC (512).
+ */
 const O_TRUNC: i32 = 512;
+/** Linux 的 O_APPEND（1024）。
+ * @en Linux O_APPEND (1024).
+ */
 const O_APPEND: i32 = 1024;
+/** Linux 的 O_NONBLOCK（2048）。
+ * @en Linux O_NONBLOCK (2048).
+ */
 const O_NONBLOCK: i32 = 2048;
+/** Linux 的 O_CLOEXEC（524288）。
+ * @en Linux O_CLOEXEC (524288).
+ */
 const O_CLOEXEC: i32 = 524288;
 
 // fd_open(path, flags, mode): openat(AT_FDCWD, …) with the caller's flags
 // (the `O_*` constants above, e.g. `O_WRONLY|O_CREAT|O_TRUNC` = 577).
 // Answers the fd, or -1.
+/** 打开文件，返回 fd，失败返回 -1。
+ * @en Open a file; return the fd, -1 on failure.
+ */
 fn fd_open(path: ptr<u8>, flags: i32, mode: i32) : i32 {
     return openat(kAtFdcwd, path, flags, mode);
 }
+/** read 的直通，返回读到的字节数。
+ * @en A pass-through for read; return the bytes read.
+ */
 fn fd_read(fd: i32, buf: ptr<u8>, n: i32) : i32 { return read(fd, buf, n); }
+/** write 的直通，返回写出的字节数。
+ * @en A pass-through for write; return the bytes written.
+ */
 fn fd_write(fd: i32, buf: ptr<u8>, n: i32) : i32 { return write(fd, buf, n); }
+/** close 的直通，返回内核原值。
+ * @en A pass-through for close; return the kernel's value.
+ */
 fn fd_close(fd: i32) : i32 { return close(fd); }
 
 // write_all(fd, buf, n): a short write is legal (a pipe, a tty), so a loop
 // writes the rest. Answers the bytes written, or -1 when the kernel refuses.
+/** 循环写完 n 字节，返回写了多少字节，内核拒绝返回 -1。
+ * @en Write n bytes in a loop; return the bytes written, -1 when the kernel refuses.
+ */
 fn write_all(fd: i32, buf: ptr<u8>, n: i32) : i32 {
     let done: i32 = 0;
     while (done < n) {
@@ -753,6 +921,9 @@ fn write_all(fd: i32, buf: ptr<u8>, n: i32) : i32 {
 // file_size(path): st_size out of an fstat, or -1. The AArch64 `struct stat`
 // puts st_size at byte 48, so the buffer is read at that offset rather than
 // as a typed array — the layout is the kernel's, not ours.
+/** 返回文件的 st_size，失败返回 -1。
+ * @en Return the file's st_size; return -1 on failure.
+ */
 fn file_size(path: ptr<u8>) : i64 {
     let fd: i32 = fd_open(path, 0, 0);
     if (fd < 0) { return 0 - 1; }
@@ -768,6 +939,9 @@ fn file_size(path: ptr<u8>) : i64 {
 // when the file cannot be opened or read. A length of 0 from the descriptor is
 // not trusted alone — a directory or a pipe answers 0 — so the buffer is read
 // until the kernel says there is nothing left.
+/** 整文件读进一块新的 alloc 缓冲并补 NUL，长度写进 out_len，失败返回 0。
+ * @en Read a whole file into a fresh alloc buffer with a NUL terminator, writing the length to out_len; return 0 on failure.
+ */
 fn slurp_bytes(path: ptr<u8>, out_len: ptr<u8>) : ptr {
     let fd: i32 = fd_open(path, 0, 0);
     if (fd < 0) { return 0; }
@@ -799,6 +973,9 @@ fn slurp_bytes(path: ptr<u8>, out_len: ptr<u8>) : ptr {
 }
 
 // slurp(path): the same, for text, answering only the pointer (0 on failure).
+/** 整文件读进一块新的 alloc 缓冲并补 NUL，只给指针，失败返回 0。
+ * @en Read a whole file into a fresh alloc buffer with a NUL terminator, returning only the pointer; return 0 on failure.
+ */
 fn slurp(path: ptr<u8>) : ptr {
     let n: u8[8] = 0;                 // the out-parameter is a byte buffer, so
     return slurp_bytes(path, &n);     // the length has a place to land
@@ -808,13 +985,28 @@ fn slurp(path: ptr<u8>) : ptr {
 // One chunk at a time: when the current mapping is full, a new one is mapped
 // and becomes current. Nothing is freed, so every earlier pointer stays valid.
 
+/** alloc 的当前映射基址。
+ * @en The base address of alloc's current mapping.
+ */
 let arena_base: ptr = 0;
+/** alloc 的当前映射已用字节数。
+ * @en The used bytes of alloc's current mapping.
+ */
 let arena_used: i32 = 0;
+/** alloc 的当前映射大小。
+ * @en The size of alloc's current mapping.
+ */
 let arena_size: i32 = 0;
 // A single request larger than this is refused rather than mapped: a typo in
 // a size must not ask the kernel for a gigabyte.
+/** 单次 arena 请求上限 64 MiB，超过即拒绝。
+ * @en The per-request arena limit of 64 MiB; larger requests are refused.
+ */
 const kArenaMaxChunk: i32 = 67108864;   // 64 MiB
 
+/** 内部辅助，映射一块新 chunk 并设为当前 chunk，失败返回 0。
+ * @en Internal helper that maps a new chunk and makes it the current one; return 0 on failure.
+ */
 fn arena_new_chunk(n: i32) : ptr {
     let want: i32 = n < 65536 ? 65536 : n;
     let p: ptr = mmap(ptr(0), want, 3, 34, 0 - 1, 0);
@@ -828,6 +1020,9 @@ fn arena_new_chunk(n: i32) : ptr {
 
 // alloc(n): n bytes, 8-byte aligned, from the growable arena; 0 when n <= 0 or
 // the request is beyond kArenaMaxChunk.
+/** 在 growable arena 里分配 n 字节并 8 字节对齐，失败返回 0。
+ * @en Allocate n bytes in the growable arena, 8-byte aligned; return 0 on failure.
+ */
 fn alloc(n: i32) : ptr {
     if (n <= 0) { return 0; }
     if (n > kArenaMaxChunk) { return 0; }
@@ -846,6 +1041,9 @@ fn alloc(n: i32) : ptr {
 // ralloc(p, old_n, new_n): a copy into a fresh block, which is all a grow-only
 // arena can promise. Answers the new pointer (0 on failure); the old one keeps
 // its bytes at its old address.
+/** 把旧块内容复制到新块，new_n<=old_n 时返回 p 本身，失败返回 0。
+ * @en Copy the old block into a new block; return p itself when new_n<=old_n, 0 on failure.
+ */
 fn ralloc(p: ptr, old_n: i32, new_n: i32) : ptr {
     if (new_n <= 0) { return 0; }
     if (p != 0 && new_n <= old_n) { return p; }
@@ -890,11 +1088,26 @@ fn ralloc(p: ptr, old_n: i32, new_n: i32) : ptr {
 // passed an ordinary function pointer. Only a callee that neither retains
 // nor frees the pair leaks, one pool slot per call until the pool overflows,
 // which is why registrations should go through a registry.
+/** 闭包适配器上下文大小 24 字节。
+ * @en The closure-adapter context size, 24 bytes.
+ */
 const kAsterCnAdapterContextSize: i32 = 24;
+/** 闭包适配器复用池槽数 256。
+ * @en The closure-adapter reuse pool size, 256 slots.
+ */
 const kAsterCnAdapterPoolSlots: i32 = 256;
+/** 适配器复用池基址。
+ * @en The base address of the adapter reuse pool.
+ */
 let aster_cn_adapter_pool_base: ptr = 0;
+/** 适配器复用池空闲链表头。
+ * @en The head of the adapter pool's free list.
+ */
 let aster_cn_adapter_free_head: ptr = 0;
 
+/** 从复用池取一个 24 字节闭包适配器槽，失败返回 0。
+ * @en Take a 24-byte closure-adapter slot from the reuse pool; return 0 on failure.
+ */
 fn aster_cn_adapter_alloc() : ptr {
     if (aster_cn_adapter_pool_base == 0) {
         let base: ptr = alloc(kAsterCnAdapterContextSize * kAsterCnAdapterPoolSlots);
@@ -916,6 +1129,9 @@ fn aster_cn_adapter_alloc() : ptr {
     return alloc(kAsterCnAdapterContextSize);
 }
 
+/** 把适配器槽还给复用池，成功返回 1，池外或已释放返回 0。
+ * @en Return an adapter slot to the pool; return 1 on success, 0 for a null, foreign or already-freed slot.
+ */
 fn aster_cn_adapter_free(p: ptr) : i32 {
     if (p == 0) { return 0; }
     if (aster_cn_adapter_pool_base == 0) { return 0; }
@@ -936,8 +1152,14 @@ fn aster_cn_adapter_free(p: ptr) : i32 {
 // (or in the arena), so a program decides where its buffers are; passing
 // `ptr<Buf>` keeps the ABI to one register.
 
+/** 字节缓冲，指针、长度与容量的三元组。
+ * @en A byte buffer, a triple of pointer, length and capacity.
+ */
 struct Buf { data: ptr, count: i32, cap: i32 }
 
+/** 初始化 Buf，分配至少 16 字节并把首字节写 NUL，失败返回 -1。
+ * @en Initialise a Buf, allocating at least 16 bytes and writing NUL to the first byte; return -1 on failure.
+ */
 fn buf_init(b: ptr<Buf>, cap: i32) : i32 {
     let want: i32 = cap < 16 ? 16 : cap;
     b.data = alloc(want);
@@ -948,6 +1170,9 @@ fn buf_init(b: ptr<Buf>, cap: i32) : i32 {
     return 0;
 }
 
+/** 清空 Buf 的字段，不归还 arena，返回 0。
+ * @en Clear a Buf's fields without returning memory to the arena; return 0.
+ */
 fn buf_free(b: ptr<Buf>) : i32 {
     b.data = 0;
     b.count = 0;
@@ -955,6 +1180,9 @@ fn buf_free(b: ptr<Buf>) : i32 {
     return 0;
 }
 
+/** 保证 Buf 有 count+extra+1 的容量，不够时加倍，失败返回 -1。
+ * @en Guarantee a Buf room for count+extra+1 bytes, doubling when short; return -1 on failure.
+ */
 fn buf_reserve(b: ptr<Buf>, extra: i32) : i32 {
     let need: i32 = b.count + extra + 1;
     if (need <= b.cap) { return 0; }
@@ -967,6 +1195,9 @@ fn buf_reserve(b: ptr<Buf>, extra: i32) : i32 {
     return 0;
 }
 
+/** 向 Buf 追加 n 字节并补 NUL，失败返回 -1，否则返回新 count。
+ * @en Append n bytes to a Buf and add NUL; return -1 on failure, the new count otherwise.
+ */
 fn buf_append(b: ptr<Buf>, s: ptr<u8>, n: i32) : i32 {
     if (n <= 0) { return b.count; }
     if (buf_reserve(b, n) != 0) { return 0 - 1; }
@@ -980,8 +1211,14 @@ fn buf_append(b: ptr<Buf>, s: ptr<u8>, n: i32) : i32 {
     return b.count;
 }
 
+/** 向 Buf 追加整个 NUL 结尾串。
+ * @en Append a whole NUL-terminated string to a Buf.
+ */
 fn buf_appends(b: ptr<Buf>, s: ptr<u8>) : i32 { return buf_append(b, s, strlen(s)); }
 
+/** 向 Buf 追加一个字节并补 NUL，失败返回 -1，否则返回新 count。
+ * @en Append one byte to a Buf and add NUL; return -1 on failure, the new count otherwise.
+ */
 fn buf_putc(b: ptr<Buf>, c: i32) : i32 {
     if (buf_reserve(b, 1) != 0) { return 0 - 1; }
     store_u8(b.data + b.count, c & 255);
@@ -990,6 +1227,9 @@ fn buf_putc(b: ptr<Buf>, c: i32) : i32 {
     return b.count;
 }
 
+/** 把 Buf 的 count 置 0 并保留容量，返回 0。
+ * @en Set a Buf's count to 0 while keeping its capacity; return 0.
+ */
 fn buf_reset(b: ptr<Buf>) : i32 {
     b.count = 0;
     if (b.data != 0) { store_u8(b.data, 0); }
@@ -998,6 +1238,9 @@ fn buf_reset(b: ptr<Buf>) : i32 {
 
 // buf_cstr(b): NUL terminate in place and hand back the bytes, so a buffer can
 // be passed to any `ptr<u8>` consumer.
+/** 原地补 NUL 并交回 Buf 的字节指针，data 为 0 时返回 0。
+ * @en Add NUL in place and hand back the Buf's byte pointer; return 0 when data is 0.
+ */
 fn buf_cstr(b: ptr<Buf>) : ptr<u8> {
     if (b.data == 0) { return 0; }
     store_u8(b.data + b.count, 0);
@@ -1008,9 +1251,18 @@ fn buf_cstr(b: ptr<Buf>) : ptr<u8> {
 // No generics, so the two element kinds the compiler needs are concrete types
 // built the same way: a length, a capacity, and a block of elements.
 
+/** i32 向量，指针、长度与容量的三元组。
+ * @en An i32 vector, a triple of pointer, length and capacity.
+ */
 struct Vec32 { data: ptr, count: i32, cap: i32 }
+/** 指针向量，指针、长度与容量的三元组。
+ * @en A pointer vector, a triple of pointer, length and capacity.
+ */
 struct VecPtr { data: ptr, count: i32, cap: i32 }
 
+/** 初始化 Vec32，分配至少 8 个元素，失败返回 -1。
+ * @en Initialise a Vec32, allocating at least 8 elements; return -1 on failure.
+ */
 fn vec32_init(v: ptr<Vec32>, cap: i32) : i32 {
     let want: i32 = cap < 8 ? 8 : cap;
     v.data = alloc(want * 4);
@@ -1019,7 +1271,13 @@ fn vec32_init(v: ptr<Vec32>, cap: i32) : i32 {
     v.cap = want;
     return 0;
 }
+/** 清空 Vec32 的字段，返回 0。
+ * @en Clear a Vec32's fields; return 0.
+ */
 fn vec32_free(v: ptr<Vec32>) : i32 { v.data = 0; v.count = 0; v.cap = 0; return 0; }
+/** 向 Vec32 追加一个 i32，满时容量翻倍，失败返回 -1，否则返回新 count。
+ * @en Push an i32 onto a Vec32, doubling capacity when full; return -1 on failure, the new count otherwise.
+ */
 fn vec32_push(v: ptr<Vec32>, x: i32) : i32 {
     if (v.count >= v.cap) {
         let bigger: ptr = ralloc(v.data, v.cap * 4, v.cap * 8);
@@ -1032,10 +1290,16 @@ fn vec32_push(v: ptr<Vec32>, x: i32) : i32 {
     v.count = v.count + 1;
     return v.count;
 }
+/** 返回 Vec32 第 i 个元素，越界返回 0。
+ * @en Return element i of a Vec32; return 0 when out of bounds.
+ */
 fn vec32_get(v: ptr<Vec32>, i: i32) : i32 {
     if (i < 0 || i >= v.count) { return 0; }
     return *(v.data + i * 4);
 }
+/** 设置 Vec32 第 i 个元素，越界返回 -1，成功返回 x。
+ * @en Set element i of a Vec32; return -1 when out of bounds, x on success.
+ */
 fn vec32_set(v: ptr<Vec32>, i: i32, x: i32) : i32 {
     if (i < 0 || i >= v.count) { return 0 - 1; }
     // 4 bytes, like the push: a 64-bit store would clobber the next element.
@@ -1043,6 +1307,9 @@ fn vec32_set(v: ptr<Vec32>, i: i32, x: i32) : i32 {
     return x;
 }
 
+/** 初始化 VecPtr，分配至少 8 个元素，失败返回 -1。
+ * @en Initialise a VecPtr, allocating at least 8 elements; return -1 on failure.
+ */
 fn vecptr_init(v: ptr<VecPtr>, cap: i32) : i32 {
     let want: i32 = cap < 8 ? 8 : cap;
     v.data = alloc(want * 8);
@@ -1051,7 +1318,13 @@ fn vecptr_init(v: ptr<VecPtr>, cap: i32) : i32 {
     v.cap = want;
     return 0;
 }
+/** 清空 VecPtr 的字段，返回 0。
+ * @en Clear a VecPtr's fields; return 0.
+ */
 fn vecptr_free(v: ptr<VecPtr>) : i32 { v.data = 0; v.count = 0; v.cap = 0; return 0; }
+/** 向 VecPtr 追加一个指针，满时容量翻倍，失败返回 -1，否则返回新 count。
+ * @en Push a pointer onto a VecPtr, doubling capacity when full; return -1 on failure, the new count otherwise.
+ */
 fn vecptr_push(v: ptr<VecPtr>, x: ptr) : i32 {
     if (v.count >= v.cap) {
         let bigger: ptr = ralloc(v.data, v.cap * 8, v.cap * 16);
@@ -1063,10 +1336,16 @@ fn vecptr_push(v: ptr<VecPtr>, x: ptr) : i32 {
     v.count = v.count + 1;
     return v.count;
 }
+/** 返回 VecPtr 第 i 个元素，越界返回 0。
+ * @en Return element i of a VecPtr; return 0 when out of bounds.
+ */
 fn vecptr_get(v: ptr<VecPtr>, i: i32) : ptr {
     if (i < 0 || i >= v.count) { return 0; }
     return ptr(load_i64(v.data + i * 8));
 }
+/** 设置 VecPtr 第 i 个元素，越界返回 -1，成功返回 0。
+ * @en Set element i of a VecPtr; return -1 when out of bounds, 0 on success.
+ */
 fn vecptr_set(v: ptr<VecPtr>, i: i32, x: ptr) : i32 {
     if (i < 0 || i >= v.count) { return 0 - 1; }
     store_i64(v.data + i * 8, i64(x));
@@ -1076,6 +1355,9 @@ fn vecptr_set(v: ptr<VecPtr>, i: i32, x: ptr) : i32 {
 // --- diagnostics ---------------------------------------------------------
 // There is no `exit` intrinsic: a program leaves through `main`'s return. So
 // `panic` reports on stderr and answers the code the caller should return.
+/** 把串写到 stderr，返回写了多少字节。
+ * @en Write a string to stderr; return the bytes written.
+ */
 fn eputs(s: ptr<u8>) : i32 { return write_all(2, s, strlen(s)); }
 
 // No string literal here on purpose: a literal becomes an object symbol with a
@@ -1083,6 +1365,9 @@ fn eputs(s: ptr<u8>) : i32 { return write_all(2, s, strlen(s)); }
 // at link time with every consumer that carries its own. The prefix and the
 // newline are assembled in bytes instead — see the note in
 // docs/language-reference.md and audit A-25.
+/** 向 stderr 写 aster: 加消息并换行，返回 1。
+ * @en Write "aster: " plus a message and a newline to stderr; return 1.
+ */
 fn panic(msg: ptr<u8>) : i32 {
     let prefix: u8[8] = 0;
     store_u8(prefix, 97);      // 'a'
@@ -1115,6 +1400,9 @@ fn panic(msg: ptr<u8>) : i32 {
 // fmt_i64(buf, v): decimal i64, NUL terminated. `utoa` takes an i64 but a
 // magnitude is unsigned: INT64_MIN's absolute value is 2^63, which no i64
 // holds, so the digits are produced in u64 arithmetic.
+/** 把 i64 写成十进制并补 NUL，返回字符数。
+ * @en Write an i64 as decimal with a NUL terminator; return the character count.
+ */
 fn fmt_i64(buf: ptr<u8>, v: i64) : i32 {
     let at: i32 = 0;
     let mag: u64 = 0;
@@ -1148,6 +1436,9 @@ fn fmt_i64(buf: ptr<u8>, v: i64) : i32 {
 
 // fmt_hex64(buf, v): exactly sixteen lowercase hex digits, NUL terminated.
 // The two halves go through `fmt_hex`, which already clamps to eight.
+/** 把 i64 写成恰好 16 位小写十六进制，返回 16。
+ * @en Write an i64 as exactly 16 lower-case hex digits; return 16.
+ */
 fn fmt_hex64(buf: ptr<u8>, v: i64) : i32 {
     let hi: i32 = i32(i64(u64(v) >> u64(32)));
     let lo: i32 = i32(v);
@@ -1157,6 +1448,9 @@ fn fmt_hex64(buf: ptr<u8>, v: i64) : i32 {
 }
 
 // digit_value(c): 0..35 for 0-9 / a-z / A-Z, -1 for anything else.
+/** 把 0-9/a-z/A-Z 映射为 0..35，其余返回 -1。
+ * @en Map 0-9/a-z/A-Z to 0..35; return -1 for anything else.
+ */
 fn digit_value(c: i32) : i32 {
     if (c >= 48 && c <= 57) { return c - 48; }
     if (c >= 97 && c <= 122) { return c - 87; }
@@ -1170,6 +1464,9 @@ fn digit_value(c: i32) : i32 {
 // the number of bytes consumed, or -1 when there was no digit at all. Reading
 // stops at the first character that is not a digit of the base, exactly as
 // strtol does.
+/** 按 base 读整数并把 i64 值写进 out，返回消费字节数，无数字返回 -1。
+ * @en Read an integer in the given base and store the i64 value in out; return the bytes consumed, -1 when no digits were read.
+ */
 fn strtoi(s: ptr<u8>, base: i32, out: ptr<u8>) : i32 {
     let i: i32 = 0;
     let b: i32 = base;
@@ -1207,6 +1504,9 @@ fn strtoi(s: ptr<u8>, base: i32, out: ptr<u8>) : i32 {
 // exponent — written through `out` (a `ptr<f64>`, because a double cannot be
 // stored through a byte pointer without reinterpreting its bits, which the
 // language does not do). Answers the bytes consumed, or -1 with no digits.
+/** 读 double 并写进 out，返回消费字节数，无数字返回 -1。
+ * @en Read a double and store it in out; return the bytes consumed, -1 when no digits were read.
+ */
 fn atof(s: ptr<u8>, out: ptr<f64>) : i32 {
     let i: i32 = 0;
     while (is_space(load_u8(s + i))) { i = i + 1; }
@@ -1278,14 +1578,23 @@ fn atof(s: ptr<u8>, out: ptr<f64>) : i32 {
 // --- strings -------------------------------------------------------------
 
 // streq(a, b): 1 when the two NUL-terminated strings are equal.
+/** 两串相等返回 1，否则返回 0。
+ * @en Return 1 when the two strings are equal, 0 otherwise.
+ */
 fn streq(a: ptr<u8>, b: ptr<u8>) : i32 { return strcmp(a, b) == 0 ? 1 : 0; }
 
+/** s 以 p 开头返回 1，否则返回 0。
+ * @en Return 1 when s starts with p, 0 otherwise.
+ */
 fn starts_with(s: ptr<u8>, p: ptr<u8>) : i32 {
     let n: i32 = strlen(p);
     if (n > strlen(s)) { return 0; }
     return strncmp(s, p, n) == 0 ? 1 : 0;
 }
 
+/** s 以 suf 结尾返回 1，否则返回 0。
+ * @en Return 1 when s ends with suf, 0 otherwise.
+ */
 fn ends_with(s: ptr<u8>, suf: ptr<u8>) : i32 {
     let n: i32 = strlen(suf);
     let m: i32 = strlen(s);
@@ -1297,6 +1606,9 @@ fn ends_with(s: ptr<u8>, suf: ptr<u8>) : i32 {
 // writable — not a literal) and answer the first non-space byte. Tabs are left
 // alone: a tab inside a line is data, and this helper is for configuration-
 // and source-shaped text.
+/** 原地去首尾空格，只去空格不管 Tab，返回首个非空格字节处。
+ * @en Strip leading and trailing spaces in place (spaces only, not Tab); return the first non-space byte.
+ */
 fn trim(s: ptr<u8>) : ptr<u8> {
     let i: i32 = 0;
     while (load_u8(s + i) == 32) { i = i + 1; }
@@ -1315,6 +1627,9 @@ fn trim(s: ptr<u8>) : ptr<u8> {
 //
 //     let ln: ptr = text;
 //     while (ln != 0) { use(ln); ln = next_line(ln); }
+/** 返回下一行首地址，行尾返回 0，换行符被改写为 NUL。
+ * @en Return the address of the next line, 0 at the end; the newline is rewritten to NUL.
+ */
 fn next_line(line: ptr<u8>) : ptr<u8> {
     let i: i32 = 0;
     while (1) {
@@ -1335,6 +1650,9 @@ fn next_line(line: ptr<u8>) : ptr<u8> {
 
 // to_upper(s): ASCII letters to uppercase *in place* (the buffer must be
 // writable), answering s.
+/** 原地把 ASCII 字母转大写，返回 s。
+ * @en Convert ASCII letters to upper case in place; return s.
+ */
 fn to_upper(s: ptr<u8>) : ptr<u8> {
     let i: i32 = 0;
     while (1 == 1) {
@@ -1347,6 +1665,9 @@ fn to_upper(s: ptr<u8>) : ptr<u8> {
 }
 
 // to_lower(s): ASCII letters to lowercase in place, answering s.
+/** 原地把 ASCII 字母转小写，返回 s。
+ * @en Convert ASCII letters to lower case in place; return s.
+ */
 fn to_lower(s: ptr<u8>) : ptr<u8> {
     let i: i32 = 0;
     while (1 == 1) {
@@ -1360,6 +1681,9 @@ fn to_lower(s: ptr<u8>) : ptr<u8> {
 
 // strrchr(s, c): the index of the LAST c in s, or -1. `strchr`'s companion; the
 // terminator is not searched, matching C.
+/** 返回最后一个 c 的下标，不搜终结符，找不到返回 -1。
+ * @en Return the index of the last c; the terminator is not searched; return -1 when not found.
+ */
 fn strrchr(s: ptr<u8>, c: i32) : i32 {
     let want: i32 = c & 255;
     let i: i32 = 0;
@@ -1384,6 +1708,9 @@ fn strrchr(s: ptr<u8>, c: i32) : i32 {
 // Rounding is one decision at the end - round-half-to-even over
 // (kept, dropped, sticky) - rather than a rounding at every step, which is what
 // makes the result the nearest double instead of an accumulation of ties.
+/** 用纯整数运算算 digits * 10^exp10 的 IEEE-754 binary64 位模式。
+ * @en Compute the IEEE-754 binary64 bit pattern of digits * 10^exp10 using pure integer arithmetic.
+ */
 fn f64_from_dec(digits: u64, exp10: i32) : i64 {
     if (digits == 0) { return 0; }
     // A 128-bit window, not 64. The reason is measurable: with 53 bits kept and
@@ -1490,6 +1817,9 @@ fn f64_from_dec(digits: u64, exp10: i32) : i64 {
 // overflow to infinity, or one that underflows past the subnormal range)
 // answers the pattern infinity / zero respectively - the same answers the
 // hardware gives.
+/** 用纯整数运算算 m * 2^k 的 IEEE-754 binary64 位模式。
+ * @en Compute the IEEE-754 binary64 bit pattern of m * 2^k using pure integer arithmetic.
+ */
 fn f64_bits(m: i64, k: i32) : i64 {
     if (m == 0) { return 0; }
     let neg: i32 = 0;
@@ -1588,6 +1918,9 @@ fn f64_bits(m: i64, k: i32) : i64 {
 // utf8_encode(cp, buf): write the UTF-8 form of code point cp into buf and
 // answer the bytes written (1..4). Answers 0 - writing nothing - for a value
 // that is not a code point (negative, above U+10FFFF, or a surrogate).
+/** 把码点写成 UTF-8，返回写了多少字节，非码点返回 0。
+ * @en Write a code point as UTF-8; return the bytes written, 0 for a non-code-point.
+ */
 fn utf8_encode(cp: i32, buf: ptr<u8>) : i32 {
     if (cp < 0) { return 0; }
     if (cp > 1114111) { return 0; }
@@ -1617,6 +1950,9 @@ fn utf8_encode(cp: i32, buf: ptr<u8>) : i32 {
 // utf8_decode(s, at): the code point whose first byte is s[at], or -1 when the
 // bytes there are not a valid sequence (an unexpected continuation byte, a
 // truncated sequence, an overlong form, or a surrogate).
+/** 返回 s[at] 处首字节的码点，非法序列返回 -1。
+ * @en Return the code point of the first byte at s[at]; return -1 for an illegal sequence.
+ */
 fn utf8_decode(s: ptr<u8>, at: i32) : i32 {
     let b0: i32 = load_u8(s + at);
     if (b0 < 128) {
@@ -1657,6 +1993,9 @@ fn utf8_decode(s: ptr<u8>, at: i32) : i32 {
 // utf8_len(s): the number of code points in s - every byte that is not a
 // continuation byte (top bits 10) starts one. Bytes are assumed well formed,
 // which utf8_decode is there to check.
+/** 返回字符串的码点个数，假定字节良构。
+ * @en Return the number of code points in a string; the bytes are assumed well-formed.
+ */
 fn utf8_len(s: ptr<u8>) : i32 {
     let n: i32 = 0;
     let i: i32 = 0;
@@ -1671,6 +2010,9 @@ fn utf8_len(s: ptr<u8>) : i32 {
 
 // i32_abs(v): |v|, without the INT32_MIN trap a naive negate would have -
 // the single unrepresentable value answers INT32_MIN, as C's abs() does.
+/** 返回绝对值，INT32_MIN 答 INT32_MIN。
+ * @en Return the absolute value; INT32_MIN answers INT32_MIN.
+ */
 fn i32_abs(v: i32) : i32 {
     if (v < 0) { return 0 - v; }
     return v;
@@ -1678,6 +2020,9 @@ fn i32_abs(v: i32) : i32 {
 
 // memchr(buf, n, c): the index of the first byte equal to c in the first n
 // bytes of buf, or -1. Unlike strchr it needs no terminator and stops at n.
+/** 在前 n 字节内找首个等于 c 低 8 位的字节下标，找不到返回 -1。
+ * @en Find the index of the first byte equal to the low 8 bits of c within the first n bytes; return -1 when not found.
+ */
 fn memchr(buf: ptr<u8>, n: i32, c: i32) : i32 {
     let want: i32 = c & 255;
     let i: i32 = 0;
@@ -1691,6 +2036,9 @@ fn memchr(buf: ptr<u8>, n: i32, c: i32) : i32 {
 // strncat(dst, src, room): append at most room bytes of src to dst and
 // terminate. The room counts bytes *after* dst's own end, so
 // `strncat(d, s, sizeof(d) - strlen(d) - 1)` never overruns.
+/** 至多追加 room 字节并补终结符，返回 dst。
+ * @en Append at most room bytes plus a terminator; return dst.
+ */
 fn strncat(dst: ptr<u8>, src: ptr<u8>, room: i32) : ptr<u8> {
     let d: i32 = strlen(dst);
     let i: i32 = 0;
@@ -1705,6 +2053,9 @@ fn strncat(dst: ptr<u8>, src: ptr<u8>, room: i32) : ptr<u8> {
 }
 
 // str_dup(s): a copy of s in the growable arena (0 when the arena refuses).
+/** 在 growable arena 里复制一份字符串，arena 拒绝时返回 0。
+ * @en Copy a string into the growable arena; return 0 when the arena refuses.
+ */
 fn str_dup(s: ptr<u8>) : ptr<u8> {
     let n: i32 = strlen(s);
     let p: ptr = alloc(n + 1);
@@ -1730,13 +2081,22 @@ fn str_dup(s: ptr<u8>) : ptr<u8> {
 // deletion: the arena cannot hand memory back, and a compiler's tables only
 // ever grow.
 
+/** 字符串键到指针值的可增长映射表。
+ * @en A growable map from string keys to pointer values.
+ */
 struct Map { ents: ptr, count: i32, cap: i32 }
 
 // A deleted key's slot keeps this in place of the key: linear probing needs a
 // *occupied but free* marker, or a delete would break every probe run that
 // passed through the slot. `ptr(1)` is not an address any key can have.
+/** 返回墓碑标记 ptr(1)，供删除后的探测链继续走过去。
+ * @en Return the tombstone marker ptr(1), which lets probe chains walk past a deleted slot.
+ */
 fn map_tomb() : ptr { return ptr(1); }
 
+/** 初始化 Map，容量取不小于 cap 的 2 的幂且至少 8，失败返回 -1。
+ * @en Initialise a Map with capacity the smallest power of two not less than cap, at least 8; return -1 on failure.
+ */
 fn map_init(m: ptr<Map>, cap: i32) : i32 {
     let want: i32 = cap < 8 ? 8 : cap;
     let p: i32 = 8;
@@ -1748,9 +2108,15 @@ fn map_init(m: ptr<Map>, cap: i32) : i32 {
     return 0;
 }
 
+/** 返回 Map 第 i 槽的键，不检查越界。
+ * @en Return the key of slot i of a Map; bounds are not checked.
+ */
 fn map_key_at(m: ptr<Map>, i: i32) : ptr<u8> {
     return ptr<u8>(ptr(load_i64(m.ents + i * 16)));
 }
+/** 返回 Map 第 i 槽的值，不检查越界。
+ * @en Return the value of slot i of a Map; bounds are not checked.
+ */
 fn map_val_at(m: ptr<Map>, i: i32) : ptr {
     return ptr(load_i64(m.ents + i * 16 + 8));
 }
@@ -1760,6 +2126,9 @@ fn map_val_at(m: ptr<Map>, i: i32) : ptr {
 // the first tombstone on the probe run when there is one, otherwise the first
 // empty slot. `map_find` is the read-only form: it stops at the first empty
 // slot and answers -1 for "absent".
+/** 返回持有 key 的下标，或新键可占的下标，优先复用首个墓碑。
+ * @en Return the index holding key, or the index a new key can take, preferring the first tombstone on the probe chain.
+ */
 fn map_slot(m: ptr<Map>, key: ptr<u8>) : i32 {
     let mask: i32 = m.cap - 1;
     let i: i32 = i32(hash_str(key) & i64(mask));
@@ -1788,6 +2157,9 @@ fn map_slot(m: ptr<Map>, key: ptr<u8>) : i32 {
     return 0 - 1;
 }
 
+/** 只读查找持有 key 的下标，不存在返回 -1。
+ * @en Read-only lookup of the index holding key; return -1 when absent.
+ */
 fn map_find(m: ptr<Map>, key: ptr<u8>) : i32 {
     let mask: i32 = m.cap - 1;
     let i: i32 = i32(hash_str(key) & i64(mask));
@@ -1808,6 +2180,9 @@ fn map_find(m: ptr<Map>, key: ptr<u8>) : i32 {
     return 0 - 1;
 }
 
+/** 把 Map 容量翻倍并重哈希全部 live 项，失败返回 -1 且旧表不动。
+ * @en Double a Map's capacity and rehash every live entry; return -1 on failure with the old table untouched.
+ */
 fn map_grow(m: ptr<Map>) : i32 {
     let old: ptr = m.ents;
     let oldcap: i32 = m.cap;
@@ -1837,6 +2212,9 @@ fn map_grow(m: ptr<Map>) : i32 {
 // map_put(m, key, val): 1 when the key is new, 0 when it replaced a value, -1
 // when the arena refused. A smaller val of 0 is still a stored value; only an
 // absent key reads back as 0.
+/** 向 Map 存入键值，键新返回 1、替换返回 0、失败返回 -1，负载过半时先增长。
+ * @en Store a key and value in a Map; return 1 for a new key, 0 for a replacement, -1 on failure; grow first when more than half full.
+ */
 fn map_put(m: ptr<Map>, key: ptr<u8>, val: ptr) : i32 {
     if (m.ents == 0) {
         if (map_init(m, 8) != 0) { return 0 - 1; }
@@ -1862,6 +2240,9 @@ fn map_put(m: ptr<Map>, key: ptr<u8>, val: ptr) : i32 {
     return fresh;
 }
 
+/** 返回 key 对应的值，不存在返回 0。
+ * @en Return the value for key; return 0 when absent.
+ */
 fn map_get(m: ptr<Map>, key: ptr<u8>) : ptr {
     if (m.ents == 0 || m.count == 0) { return 0; }
     let i: i32 = map_find(m, key);
@@ -1873,6 +2254,9 @@ fn map_get(m: ptr<Map>, key: ptr<u8>) : ptr {
 // The slot becomes a tombstone - not empty, because a probe run that reached
 // this slot has to keep going past it - and the count drops by one. A later
 // map_put reuses the tombstone (map_slot prefers the first one on its run).
+/** 从 Map 删除 key，在返回 1、不在返回 0，槽变墓碑。
+ * @en Delete key from a Map; return 1 when present, 0 when absent; the slot becomes a tombstone.
+ */
 fn map_del(m: ptr<Map>, key: ptr<u8>) : i32 {
     if (m.ents == 0 || m.count == 0) { return 0; }
     let i: i32 = map_find(m, key);
@@ -1883,6 +2267,9 @@ fn map_del(m: ptr<Map>, key: ptr<u8>) : i32 {
     return 1;
 }
 
+/** key 在 Map 里返回 1，否则返回 0。
+ * @en Return 1 when key is in the Map, 0 otherwise.
+ */
 fn map_has(m: ptr<Map>, key: ptr<u8>) : i32 {
     if (map_get(m, key) != 0) { return 1; }
     return 0;
@@ -1897,6 +2284,9 @@ fn map_has(m: ptr<Map>, key: ptr<u8>) : i32 {
 // once in the common (nearly sorted) case, and a compiler's tables are small.
 // The element cap is the 256-byte scratch buffer the swap needs.
 
+/** 用比较器对 count 个 width 字节元素做插入排序，width 非法返回 -1。
+ * @en Insertion-sort count elements of width bytes with a comparator; return -1 for an illegal width.
+ */
 fn sort_bytes(base: ptr, count: i32, width: i32, cmp: ptr) : i32 {
     if (width <= 0 || width > 256) { return 0 - 1; }
     if (count < 2) { return count; }
@@ -1919,6 +2309,9 @@ fn sort_bytes(base: ptr, count: i32, width: i32, cmp: ptr) : i32 {
 
 // The comparators the typed wrappers use. `*(a)` on a bare ptr reads an i32,
 // which is exactly an element of an i32 array.
+/** i32 升序比较器。
+ * @en An ascending comparator for i32.
+ */
 fn cmp_i32_asc(a: ptr, b: ptr) : i32 {
     let x: i32 = *(a);
     let y: i32 = *(b);
@@ -1926,6 +2319,9 @@ fn cmp_i32_asc(a: ptr, b: ptr) : i32 {
     if (x > y) { return 1; }
     return 0;
 }
+/** i64 升序比较器。
+ * @en An ascending comparator for i64.
+ */
 fn cmp_i64_asc(a: ptr, b: ptr) : i32 {
     let x: i64 = load_i64(a);
     let y: i64 = load_i64(b);
@@ -1933,6 +2329,9 @@ fn cmp_i64_asc(a: ptr, b: ptr) : i32 {
     if (x > y) { return 1; }
     return 0;
 }
+/** u8 升序比较器。
+ * @en An ascending comparator for u8.
+ */
 fn cmp_u8_asc(a: ptr, b: ptr) : i32 {
     let x: i32 = load_u8(a);
     let y: i32 = load_u8(b);
@@ -1942,12 +2341,24 @@ fn cmp_u8_asc(a: ptr, b: ptr) : i32 {
 }
 // An element of a `ptr[N]` is an address; the strings it points at are what a
 // caller wants ordered.
+/** 字符串升序比较器，比较指针指向的串。
+ * @en An ascending comparator for strings, comparing the strings the pointers point to.
+ */
 fn cmp_str_asc(a: ptr, b: ptr) : i32 {
     let x: ptr<u8> = ptr<u8>(ptr(load_i64(a)));
     let y: ptr<u8> = ptr<u8>(ptr(load_i64(b)));
     return strcmp(x, y);
 }
 
+/** 把 i64 数组升序排列。
+ * @en Sort an i64 array in ascending order.
+ */
 fn sort_i64(a: ptr, n: i32) : i32 { return sort_bytes(a, n, 8, ptr(cmp_i64_asc)); }
+/** 把 u8 数组升序排列。
+ * @en Sort a u8 array in ascending order.
+ */
 fn sort_u8(a: ptr, n: i32) : i32 { return sort_bytes(a, n, 1, ptr(cmp_u8_asc)); }
+/** 把字符串指针数组按指向的串升序排列。
+ * @en Sort an array of string pointers in ascending order of the strings they point to.
+ */
 fn sort_str(a: ptr, n: i32) : i32 { return sort_bytes(a, n, 8, ptr(cmp_str_asc)); }
