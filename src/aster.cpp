@@ -15566,7 +15566,11 @@ static bool readZip(const std::vector<uint8_t>& b, Zip& z, std::string& err) {
         // directory otherwise, and the signature only covers one of them.
         const size_t localNameAt = localOff + 30;
         if (nameLen > b.size() - localNameAt) { err = "entry " + ze.name + ": local header name runs past the end of the file"; return false; }
-        if (!std::equal(ze.name.begin(), ze.name.end(), b.begin() + (long)localNameAt)) {
+        // Byte-compare as unsigned bytes: ze.name is std::string (char is
+        // signed on x86_64), so a mixed signed/unsigned comparison promoted
+        // bytes >= 0x80 to negative ints and every non-ASCII (e.g. UTF-8
+        // Chinese) entry name failed the comparison.
+        if (std::memcmp(ze.name.data(), b.data() + localNameAt, nameLen) != 0) {
             err = "entry " + ze.name + ": local header and central directory disagree on the name"; return false;
         }
         if (rd32(b, localOff + 14) != ze.crc) { err = "entry " + ze.name + ": local header and central directory disagree on CRC-32"; return false; }
