@@ -11,7 +11,7 @@
 
 ## 0. Where M3c sits
 
-`SELFHOSTING-PLAN.md` M3 pipeline: **lex → parse → type check → generate
+`docs/SELFHOSTING-PLAN.md` M3 pipeline: **lex → parse → type check → generate
 AArch64 bytes → write ELF**. M3a shipped lex, M3b shipped parse + AST dump, M3c
 is the **type-check** stage. The tree M3b emits (40 node kinds over seven
 parallel `i32` arrays) is exactly what M3c reads — the plan's own shape held
@@ -190,7 +190,7 @@ semantically valid:
 | #244 | Extend `tests/parser-twin.c` with the semantic oracle | `tests/` |
 | #245 | Extend `tests/parser-checks.sh`: §13 semantic diagnostics, §14 accept/reject corpus, §15 self-semantic (byte-identical to M3b), §16 semantic mutation probes | `tests/` |
 | #246 | Verify: strict build, deliverable chain + zero-dependency (one UND), full CI, baseline byte-identical | — |
-| #247 | Docs: README / ROADMAP / FEATURE_STATUS / SELFHOSTING-PLAN / `VALIDATION-v0.23.45-dev.md`; bump version constant to `v0.23.45-dev` | root + `docs/` |
+| #247 | Docs: README / ROADMAP / FEATURE_STATUS / SELFHOSTING-PLAN / `docs/validations/VALIDATION-v0.23.45-dev.md`; bump version constant to `v0.23.45-dev` | root + `docs/` |
 
 ## 10. Verification gates (unchanged discipline)
 

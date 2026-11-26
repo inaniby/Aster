@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/layout-boundary-checks.sh — where the layout arithmetic runs out.
 #
-# AUDIT-v0.23.61-dev.md item 9 asked for the ELF/linker claims to be checked
+# docs/audits/AUDIT-v0.23.61-dev.md item 9 asked for the ELF/linker claims to be checked
 # empirically, and item 10 for `layoutStruct` to accumulate with an overflow
 # check and for the size limit to be enforced earlier. Both are the same
 # question — **what happens when layout arithmetic runs out of room** — and

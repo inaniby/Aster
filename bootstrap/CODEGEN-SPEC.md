@@ -1,6 +1,6 @@
 # M3d Codegen Specification (frozen)
 
-> **状态**：契约先行冻结（v0.23.46-dev）。本规格对齐 `SELFHOSTING-PLAN.md` M3 流水线
+> **状态**：契约先行冻结（v0.23.46-dev）。本规格对齐 `docs/SELFHOSTING-PLAN.md` M3 流水线
 > 「词法→语法→类型检查→**生成 AArch64 字节 → 写出 ELF**」的最后两段，是
 > `bootstrap/aster.ast` 代码生成趟与 `tests/codegen-twin.c` 差分孪生的共同契约。
 > 上游契约：`bootstrap/LEXER-SPEC.md`（M3a）、`bootstrap/PARSER-SPEC.md`（M3b）、

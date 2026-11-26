@@ -1,6 +1,6 @@
 // tests/layout-boundary-twin.c — the C half of tests/layout-boundary-checks.sh.
 //
-// AUDIT-v0.23.61-dev.md item 9 asked for the ELF/linker claims to be checked
+// docs/audits/AUDIT-v0.23.61-dev.md item 9 asked for the ELF/linker claims to be checked
 // empirically, and item 10 for `layoutStruct` to accumulate with an overflow
 // check. Both turned out to be about the same thing: **layout arithmetic that
 // silently wraps**. This file is the twin for the half of that which C can

@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/char-checks.sh — `char` as an unsigned 8-bit integer type.
 #
-# AUDIT-v0.23.61-dev.md's third part listed the language's gaps: `typedef`/
+# docs/audits/AUDIT-v0.23.61-dev.md's third part listed the language's gaps: `typedef`/
 # type alias (1), `const` (2), `void` (3), `char` (4), `union` (5). Rounds
 # v0.23.67-dev, v0.23.68-dev and v0.23.69-dev close the first four; `union`
 # remains. `char` is the smallest gap: a character literal already exists

@@ -1,6 +1,6 @@
 ## What this changes
 
-One version, one theme. (See CONTRIBUTING.md for the impl → tests → docs
+One version, one theme. (See docs/CONTRIBUTING.md for the impl → tests → docs
 batches.)
 
 ## Resident suite

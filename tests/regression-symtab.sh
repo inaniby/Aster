@@ -153,7 +153,7 @@ refdir, newdir = sys.argv[1], sys.argv[2]
 # fixture byte for byte. That assertion was never what this suite is for — it
 # is named for the *symbol table* — and it stopped being true when the frame
 # and spill-slot layout was redesigned around 8-byte slots (v0.23.2-dev;
-# ARCHITECTURE.md: "Scalars occupy one 8-byte slot each (slot*8 byte
+# docs/ARCHITECTURE.md: "Scalars occupy one 8-byte slot each (slot*8 byte
 # offsets)"). `examples/hello.ast` moved `str w0,[sp,#4]` to `str w0,[sp,#8]`
 # and `examples/pie_global_rw.ast` moved a spill from `str w0,[sp,#4080]` to
 # `str x0,[sp,#4032]`. Both are documented codegen changes, not regressions,

@@ -74,35 +74,35 @@ echo "OK: README.md title names $VER"
 # concludes the document is about a compiler that no longer exists. Keep the
 # claim within 10% of the real file so a major change forces a doc review.
 arch_k=$(sed -n 's/^One C++17 translation unit, ~\([0-9][0-9]*\)k lines,.*/\1/p' \
-    ARCHITECTURE.md | head -1)
+    docs/ARCHITECTURE.md | head -1)
 if [ -z "$arch_k" ]; then
-    echo "FAIL: could not read the line-count claim from ARCHITECTURE.md" >&2
+    echo "FAIL: could not read the line-count claim from docs/ARCHITECTURE.md" >&2
     exit 1
 fi
 actual_lines=$(wc -l < src/aster.cpp | tr -d ' ')
 arch_lo=$((arch_k * 900))
 arch_hi=$((arch_k * 1100))
 if [ "$actual_lines" -lt "$arch_lo" ] || [ "$actual_lines" -gt "$arch_hi" ]; then
-    echo "FAIL: ARCHITECTURE.md claims ~${arch_k}k lines; src/aster.cpp has $actual_lines (allowed ${arch_lo}-${arch_hi})" >&2
+    echo "FAIL: docs/ARCHITECTURE.md claims ~${arch_k}k lines; src/aster.cpp has $actual_lines (allowed ${arch_lo}-${arch_hi})" >&2
     exit 1
 fi
-echo "OK: ARCHITECTURE.md line-count claim (~${arch_k}k) matches src/aster.cpp ($actual_lines)"
+echo "OK: docs/ARCHITECTURE.md line-count claim (~${arch_k}k) matches src/aster.cpp ($actual_lines)"
 
 # 4) VERSION_HISTORY's newest entry must be this version (its first heading).
-top=$(grep -m1 '^## ' VERSION_HISTORY.md)
+top=$(grep -m1 '^## ' docs/VERSION_HISTORY.md)
 case "$top" in
     *"$VER"*) : ;;
-    *) echo "FAIL: newest VERSION_HISTORY.md entry is '$top', not $VER" >&2; exit 1 ;;
+    *) echo "FAIL: newest docs/VERSION_HISTORY.md entry is '$top', not $VER" >&2; exit 1 ;;
 esac
-echo "OK: VERSION_HISTORY.md's newest entry is $VER"
+echo "OK: docs/VERSION_HISTORY.md's newest entry is $VER"
 
 # 5) Every shipped version ships its own validation report (named with the
 #    version's own "v" prefix, as every report in this project is).
-if [ ! -f "VALIDATION-v$VER.md" ]; then
-    echo "FAIL: VALIDATION-v$VER.md does not exist" >&2
+if [ ! -f "docs/validations/VALIDATION-v$VER.md" ]; then
+    echo "FAIL: docs/validations/VALIDATION-v$VER.md does not exist" >&2
     exit 1
 fi
-echo "OK: VALIDATION-v$VER.md exists"
+echo "OK: docs/validations/VALIDATION-v$VER.md exists"
 
 # 6) The feature summary must not regress to the pre-Android text. It was true
 #    at v0.18 and has been false since v0.23.46-dev; a reader who lands on that
@@ -131,7 +131,7 @@ echo "OK: the retired 124-level / pointer-signature-call claims are gone"
 
 # 7) Four documents open with a "this document describes version X" status
 #    line. They are prose, not metadata, so a version bump has to edit them by
-#    hand — and v0.23.70-dev proved the point: ROADMAP.md and
+#    hand — and v0.23.70-dev proved the point: docs/ROADMAP.md and
 #    docs/language-reference.md still opened with v0.23.69-dev while everything
 #    else said v0.23.70-dev. Check the first such line in the first eight lines
 #    of each file, so a historical mention further down cannot satisfy it.
@@ -149,9 +149,9 @@ check_status_line() {
     esac
     echo "OK: $doc status line names $VER"
 }
-check_status_line ROADMAP.md              'Status as of'
-check_status_line ARCHITECTURE.md         'As of'
-check_status_line FEATURE_STATUS.md       'As of'
+check_status_line docs/ROADMAP.md              'Status as of'
+check_status_line docs/ARCHITECTURE.md         'As of'
+check_status_line docs/FEATURE_STATUS.md       'As of'
 check_status_line docs/language-reference.md 'Applies to:'
 
 # 8) The gate paragraph in README states the current suite count and the size
@@ -159,7 +159,7 @@ check_status_line docs/language-reference.md 'Applies to:'
 #    115 suites when DEFAULT_SUITES had grown to 153, and quoted a coverage
 #    measurement from the 115-suite era. The suite count is exact — it is
 #    cheap to keep in step, and the count is the thing that changed — while
-#    the line count is checked within the same 10% band as the ARCHITECTURE.md
+#    the line count is checked within the same 10% band as the docs/ARCHITECTURE.md
 #    claim above, because a one-line compiler edit must not redden this suite.
 readme_suites=$(grep -A1 'The gate now runs' README.md | tr '\n' ' ' \
     | sed -n 's/.*The gate now runs \*\*\([0-9][0-9]*\)\*\* suites.*/\1/p' | head -1)

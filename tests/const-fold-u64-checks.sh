@@ -1,6 +1,6 @@
 #!/bin/sh
 # tests/const-fold-u64-checks.sh — F-03 and F-06 of the second full source
-# audit (AUDIT-v0.23.72-dev.md), repaired in v0.23.74-dev.
+# audit (docs/audits/AUDIT-v0.23.72-dev.md), repaired in v0.23.74-dev.
 #
 # F-03: a u64 global initializer was folded with i64 signed-overflow rules.
 # `let g: u64 = 9223372036854775807 + 1;` was refused as "addition overflows

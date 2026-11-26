@@ -1,6 +1,6 @@
 #!/bin/sh
 # tests/signedness-checks.sh — F-07 of the second full source audit
-# (AUDIT-v0.23.72-dev.md), repaired in v0.23.75-dev.
+# (docs/audits/AUDIT-v0.23.72-dev.md), repaired in v0.23.75-dev.
 #
 # exprType/promoteInt answered I64 for `i64 op u32` (a signed 64-bit value
 # represents every u32), but the condition codes and UDIV/SDIV were chosen by

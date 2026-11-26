@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/elf-metadata-checks.sh — the parts of an ELF image nobody runs.
 #
-# AUDIT-v0.23.61-dev.md's second part listed seven ELF/linker findings marked
+# docs/audits/AUDIT-v0.23.61-dev.md's second part listed seven ELF/linker findings marked
 # 「待验」— located by reading the source, never reproduced. Item 9 asked for
 # them to be checked empirically, and v0.23.65-dev did the two that were
 # already known (the .eh_frame page alignment and the kRelTlsOff truncation).

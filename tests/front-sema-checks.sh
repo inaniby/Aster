@@ -1,6 +1,6 @@
 #!/bin/sh
 # tests/front-sema-checks.sh — F-04, F-05 and F-11 of the second full source
-# audit (AUDIT-v0.23.72-dev.md), repaired in v0.23.74-dev.
+# audit (docs/audits/AUDIT-v0.23.72-dev.md), repaired in v0.23.74-dev.
 #
 # F-04: the type-alias / struct / enum tag namespaces were cross-checked only
 # from typeAliasDeclaration, so whether a collision was refused depended on

@@ -1529,7 +1529,7 @@ defs.o: defs.ast
 
 Two rules of the linker apply to such a build and are worth stating where the
 build is described (both were silent before v0.23.77-dev, see A-21/A-22 in
-`AUDIT-v0.23.76-dev.md`): run-time global initializers run in **link order**, so
+`audits/AUDIT-v0.23.76-dev.md`): run-time global initializers run in **link order**, so
 an initializer that reads another object's initialized global needs that object
 listed first (the link is refused otherwise), and the initializer chain is
 entered from the object holding `_start`, so at least one runtime-initialized

@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/union-checks.sh — `union` as a byte-for-byte C ABI aggregate.
 #
-# AUDIT-v0.23.61-dev.md's third part listed five language gaps; v0.23.67-dev
+# docs/audits/AUDIT-v0.23.61-dev.md's third part listed five language gaps; v0.23.67-dev
 # through v0.23.70-dev close all five. This round closes the last one, `union`,
 # with the audit's own prescription: "reuse the struct layout (ObjectLayout),
 # only overlap the offsets". A union therefore stays a Ty::Struct in the

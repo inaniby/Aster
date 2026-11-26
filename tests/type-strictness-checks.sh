@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/type-strictness-checks.sh — the audit's P1 batch, held down.
 #
-# AUDIT-v0.23.61-dev.md found five defects of the second kind: not "computes
+# docs/audits/AUDIT-v0.23.61-dev.md found five defects of the second kind: not "computes
 # the wrong answer" but "answers the wrong thing about a program" — a legal
 # program refused, an illegal one accepted. That is a quieter failure and a
 # harder one to notice, which is exactly why it needs a suite of its own:

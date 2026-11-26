@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/alias-const-checks.sh — two declaration forms Aster never had.
 #
-# AUDIT-v0.23.61-dev.md's third part listed the language's gaps in order of
+# docs/audits/AUDIT-v0.23.61-dev.md's third part listed the language's gaps in order of
 # cost-effectiveness and asked for them to be closed: `typedef`/type alias
 # (1), `const` (2), `void` (3), `char` (4), `union` (5). This round closes the
 # first two; `void` stays queued.

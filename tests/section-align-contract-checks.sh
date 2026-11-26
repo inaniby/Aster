@@ -1,6 +1,6 @@
 #!/bin/sh
 # tests/section-align-contract-checks.sh — F-08 / F-09 / F-10 / F-12 of the
-# second full source audit (AUDIT-v0.23.72-dev.md), repaired in v0.23.77-dev.
+# second full source audit (docs/audits/AUDIT-v0.23.72-dev.md), repaired in v0.23.77-dev.
 #
 # Four ways an ELF section's declared alignment used to disagree with the
 # address the writer gave it: .tbss started at a fixed 16, .data/.bss only at

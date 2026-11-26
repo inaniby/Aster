@@ -1,6 +1,6 @@
 # v0.23.72-dev 审计证据语料
 
-本目录是 `AUDIT-v0.23.72-dev.md` 的**可复现证据**，不是常驻测试套件：
+本目录是 `docs/audits/AUDIT-v0.23.72-dev.md` 的**可复现证据**，不是常驻测试套件：
 
 - 它**不注册进** `tests/ci.sh` 的 `DEFAULT_SUITES`，也**不**出现在 `tests/smoke.sh` 里；
 - `tests/ci-protocol-checks.sh` 的孤儿检测只枚举 `tests/*.sh`（本目录在子目录里，且 `.ast`/`.bin`/`.c`/`.py` 都不是套件脚本），因此不会触发 orphan 判定；

@@ -13,14 +13,14 @@
 #
 # The exact spellings above are the ones a53ca33 actually changed — the
 # guard pin is one grep line per suite (the error message on the next line
-# still names an older version and is NOT touched), the README body keeps
-# naming the previous release in its history paragraphs (only the title
-# moves), and the baseline copy is byte-identical (393 lines at a53ca33).
+# still names an older version and is NOT touched), the version log lives in
+# logs/ (only the README title moves), and the baseline copy is byte-identical
+# (393 lines at a53ca33).
 # Every replacement is counted before it is made: a file that contains the
 # old spelling zero times or more than once aborts the run.
 #
-# The script deliberately does NOT write narrative: VERSION_HISTORY.md and
-# VALIDATION-v<new>.md are the human's job. It prints where they go at the
+# The script deliberately does NOT write narrative: docs/VERSION_HISTORY.md and
+# docs/validations/VALIDATION-v<new>.md are the human's job. It prints where they go at the
 # end. The one-sentence summary argument is only echoed back as the
 # suggested commit message — it is never written into any file.
 #
@@ -167,8 +167,8 @@ do_bump() {
     fi
     printf 'bump %s -> %s done: 4 version positions, 21 guard pins, 1 baseline.\n' "$OLD" "$NEW"
     printf 'Narrative is yours, not this script'"'"'s — write it in:\n'
-    printf '  - VERSION_HISTORY.md (new top entry for v%s)\n' "$NEW"
-    printf '  - VALIDATION-v%s.md (the validation report for this release)\n' "$NEW"
+    printf '  - docs/VERSION_HISTORY.md (new top entry for v%s)\n' "$NEW"
+    printf '  - docs/validations/VALIDATION-v%s.md (the validation report for this release)\n' "$NEW"
     printf 'Then review the diff, run: sh tests/bump-version.sh selftest\n'
     if [ -n "$SUMMARY" ]; then
         printf 'Suggested commit message:\n  Bump version to v%s\n\n  %s\n' "$NEW" "$SUMMARY"
@@ -242,10 +242,10 @@ do_selftest() {
     echo "OK: tests/baseline/v$FAKE/example-hashes.txt exists, $new_lines lines, byte-identical to v$OLD"
 
     # NOTE: tests/version-checks.sh is deliberately NOT the selftest gate.
-    # It also demands a freshly built ./aster, a VALIDATION-v<new>.md and a
-    # VERSION_HISTORY.md top entry naming the new version — none of which
+    # It also demands a freshly built ./aster, a docs/validations/VALIDATION-v<new>.md and a
+    # docs/VERSION_HISTORY.md top entry naming the new version — none of which
     # a53ca33 produced, and none of which a mechanical bump can produce.
-    # Those are the human's narrative steps in CONTRIBUTING.md; the pins
+    # Those are the human's narrative steps in docs/CONTRIBUTING.md; the pins
     # and the baseline above are this script's whole scope.
     echo "=== bump-version selftest: ALL PASSED (fake $FAKE, copy removed) ==="
 }

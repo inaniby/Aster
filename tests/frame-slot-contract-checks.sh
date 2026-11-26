@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/frame-slot-contract-checks.sh — resident gate for the three audit
 # repairs that landed on main at v0.23.77-dev (D-01 / D-02 / D-09 of
-# AUDIT-v0.23.77-dev.md), promoted to v0.23.78-dev by this round.
+# docs/audits/AUDIT-v0.23.77-dev.md), promoted to v0.23.78-dev by this round.
 #
 # v0.23.78-dev changes NO compiler behaviour: the repairs arrived in three
 # upstream commits (bootstrap char, the three externally reproduced defects,

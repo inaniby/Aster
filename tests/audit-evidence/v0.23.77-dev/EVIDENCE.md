@@ -194,4 +194,4 @@ project-checks.sh        PASS: project workflow (new, build cache, deps, error p
 - `frame-size-checks.sh:130` 的 compact 栈参数用例是 `examples/stack_arg_abi.ast`，帧小于 4096，`incomingBaseWords` 的 patch 合法；没有「紧凑帧 > 4095 + 栈上传入参数」的组合。
 - `float-checks.sh:119` 的 `a_nine` 有九个 f64 参数但**没有局部变量**，参数区自洽；没有「f64 变量 + 足够多其它 slot」的组合。
 - 全部 132 个 `examples/*.ast` 中使用 `f64`/`f32` 的数量为 **0**，393 行字节基线对这两个缺陷没有任何钉子。
-- `--compact-frames` 未出现在 `aster` 的 usage 帮助里，但文档（`docs/language-reference.md`、`FEATURE_STATUS.md`、`VERSION_HISTORY.md`）已有记载。
+- `--compact-frames` 未出现在 `aster` 的 usage 帮助里，但文档（`docs/language-reference.md`、`docs/FEATURE_STATUS.md`、`docs/VERSION_HISTORY.md`）已有记载。

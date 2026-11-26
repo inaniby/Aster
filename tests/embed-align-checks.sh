@@ -2,7 +2,7 @@
 # tests/embed-align-checks.sh — @embed("path", N) and the .rodata alignment
 # contract.
 #
-# ROADMAP.md's unscheduled backlog has been down to two open items since
+# docs/ROADMAP.md's unscheduled backlog has been down to two open items since
 # v0.23.66-dev: ".rodata carries addralign 1 where GNU ld uses 8, so @embed
 # data cannot ask for more than byte alignment", and the ET_REL branch of
 # regression-symtab.sh never running. v0.23.71-dev closes the first here.

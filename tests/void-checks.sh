@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/void-checks.sh — `void` as a function return type.
 #
-# AUDIT-v0.23.61-dev.md's third part listed the language's gaps: `typedef`/
+# docs/audits/AUDIT-v0.23.61-dev.md's third part listed the language's gaps: `typedef`/
 # type alias (1), `const` (2), `void` (3), `char` (4), `union` (5). Rounds
 # v0.23.67-dev and v0.23.68-dev close the first three. `void` is the one that
 # unlocks C-ABI interop: an Aster void function must link against, and be

@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/link-project-contract-checks.sh — resident 9-layer gate for the three
 # v0.23.79-dev "link & project-config contract" repairs (D-03 / D-04 / D-05 of
-# AUDIT-v0.23.77-dev.md §3, queued together in §7).
+# docs/audits/AUDIT-v0.23.77-dev.md §3, queued together in §7).
 #
 #   D-03  checkInitOrder treated every relocation inside __aster_init as a read
 #         of another object's global state, and every defined symbol (including
