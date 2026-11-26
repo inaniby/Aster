@@ -13685,6 +13685,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "       aster fmt [--language zh|en] [--check|--write] <source.ast>\n"
 "       aster pack [--src-dir DIR] [--out DIR] [--check DIR]   build the standard-library package\n"
 "       aster complete [--language zh|en] [--format json|text] <package-dir|manifest.json> [file.ast]\n"
+"       aster pkg install <source> [--project DIR] | upgrade <package> [--project DIR] | list [--project DIR] | remove <package> [--project DIR]\n"
     "       aster link-obj|link-pie [--gc-sections] <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] <input.o> [input2.o ...] -o <output.so>\n"
     "       aster keygen [--dir DIR] [--bits 2048] [--force]\n"
@@ -13693,7 +13694,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "    构建项目=build、运行=run、测试=test、环境检查=doctor、编译双语对象=build-cn-obj、\n"
 "    编译对象=build-obj、构建可执行文件=build-elf、构建PIE=build-pie、编译共享库=build-so、\n"
 "    构建APK=build-apk、链接可执行文件=link-obj、链接PIE=link-pie、链接共享库=link-so、\n"
-"    格式化源码=fmt、生成密钥=keygen、验证APK=verify-apk、打包=pack、补全=complete（英文命令仍可照常使用）\n"
+"    格式化源码=fmt、生成密钥=keygen、验证APK=verify-apk、打包=pack、补全=complete、包=pkg（英文命令仍可照常使用）\n"
     "  build-elf  fixed-address AArch64 ET_EXEC executable (link base 0x400000)\n"
     "  build-pie  static PIE: AArch64 ET_DYN executable, no interpreter (link base 0)\n"
     "  build-obj  relocatable AArch64 ET_REL object (--pic: position-independent, for link-so)\n"
@@ -28889,6 +28890,293 @@ static std::string pkgVerifyPackageFiles(const std::string& pkgDir, const PkgMan
     return "";
 }
 
+// ---- `aster pkg` (package manager): install / upgrade / list / remove
+// a package from a local directory or a git repository into
+// <project>/packages/<name>/, recording the source in the lock file
+// <project>/packages/.aster-pkg-sources so `upgrade` can re-fetch it.
+// The lock file lives beside the packages, never inside one, so it can
+// never trip the extra-file check; and it is never part of a manifest.
+struct PkgSourceEntry {
+    std::string name;
+    std::string source;
+    std::string version;
+};
+static std::string pkgLockPath(const std::string& projectDir) {
+    return projectDir + "/packages/.aster-pkg-sources";
+}
+static std::vector<PkgSourceEntry> pkgReadLock(const std::string& projectDir) {
+    const std::string path = pkgLockPath(projectDir);
+    if (!fileExists(path)) return {};
+    PkgJson root;
+    try {
+        root = PkgJsonParser(readFile(path), path).parse();
+    } catch (const std::exception& e) {
+        throw Error(std::string("aster pkg: cannot read lock file ") + path + ": " + e.what());
+    }
+    if (root.kind != PkgJson::Kind::Obj)
+        throw Error("aster pkg: lock file " + path + " must be a JSON object");
+    const PkgJson* packages = root.field("packages");
+    if (!packages || packages->kind != PkgJson::Kind::Arr)
+        throw Error("aster pkg: lock file " + path + ": field \"packages\" is missing or not an array");
+    std::vector<PkgSourceEntry> out;
+    for (const auto& e : packages->arr) {
+        if (e.kind != PkgJson::Kind::Obj)
+            throw Error("aster pkg: lock file " + path + ": \"packages\" entries must be objects");
+        PkgSourceEntry entry;
+        entry.name = pkgJsonStringField(e, "name", path);
+        entry.source = pkgJsonStringField(e, "source", path);
+        entry.version = pkgJsonStringField(e, "version", path);
+        out.push_back(std::move(entry));
+    }
+    return out;
+}
+static void pkgWriteLock(const std::string& projectDir,
+                         const std::vector<PkgSourceEntry>& entries) {
+    if (!makeDirs(projectDir + "/packages"))
+        throw Error("aster pkg: cannot create " + projectDir + "/packages");
+    std::string out = "{\n  \"packages\": [";
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i) out += ",";
+        out += "\n    {\"name\": " + pkgJsonQuote(entries[i].name) +
+            ", \"source\": " + pkgJsonQuote(entries[i].source) +
+            ", \"version\": " + pkgJsonQuote(entries[i].version) + "}";
+    }
+    out += entries.empty() ? "]\n}\n" : "\n  ]\n}\n";
+    writeFileAtomic(pkgLockPath(projectDir), out);
+}
+static void pkgUpsertLock(const std::string& projectDir, const PkgSourceEntry& entry) {
+    std::vector<PkgSourceEntry> entries = pkgReadLock(projectDir);
+    for (auto& e : entries) {
+        if (e.name == entry.name) {
+            e.source = entry.source;
+            e.version = entry.version;
+            pkgWriteLock(projectDir, entries);
+            return;
+        }
+    }
+    entries.push_back(entry);
+    pkgWriteLock(projectDir, entries);
+}
+static void pkgRemoveLockEntry(const std::string& projectDir, const std::string& name) {
+    std::vector<PkgSourceEntry> entries = pkgReadLock(projectDir);
+    std::vector<PkgSourceEntry> kept;
+    for (const auto& e : entries)
+        if (e.name != name) kept.push_back(e);
+    if (kept.size() != entries.size()) pkgWriteLock(projectDir, kept);
+}
+
+// Recursive delete. There is no such helper elsewhere in the file, so
+// this one walks with opendir and removes files bottom-up. The caller
+// must restore write permission first (pkgChmodTree(dir, false)): a
+// read-only directory cannot be rmdir'd, and an installed package is
+// read-only on disk. Symlinks are removed as links, never followed.
+static void pkgRemoveTree(const std::string& path) {
+    struct stat st;
+    if (::lstat(path.c_str(), &st) != 0) return;  // already gone
+    if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+        DIR* d = ::opendir(path.c_str());
+        if (!d) throw Error("aster pkg: cannot list " + path + ": " + std::strerror(errno));
+        std::vector<std::string> names;
+        while (struct dirent* e = ::readdir(d)) {
+            if (e->d_name[0] == '.' &&
+                (e->d_name[1] == '\0' || (e->d_name[1] == '.' && e->d_name[2] == '\0')))
+                continue;
+            names.push_back(e->d_name);
+        }
+        ::closedir(d);
+        for (const auto& n : names) pkgRemoveTree(path + "/" + n);
+        if (::rmdir(path.c_str()) != 0)
+            throw Error("aster pkg: cannot remove directory " + path + ": " + std::strerror(errno));
+    } else {
+        if (std::remove(path.c_str()) != 0)
+            throw Error("aster pkg: cannot remove " + path + ": " + std::strerror(errno));
+    }
+}
+
+// Install the package in srcDir (already verified to be a package
+// directory) into <projectDir>/packages/<manifest name>/. The source is
+// verified before anything is written, the installed copy is verified
+// again before it is locked read-only, and a failure at any point after
+// the target was created removes the target (and restores the lock
+// file) so no half-installed package is left behind. Returns the
+// installed manifest.
+static PkgManifest pkgInstallFromDir(const std::string& srcDir, const std::string& projectDir,
+                                     const std::string& sourceForLock) {
+    const std::string manifestPath = srcDir + "/manifest.json";
+    if (!fileExists(manifestPath))
+        throw Error("aster pkg: no manifest.json in " + srcDir);
+    const PkgManifest manifest = pkgManifestFromJson(
+        PkgJsonParser(readFile(manifestPath), manifestPath).parse(), manifestPath);
+    if (manifest.name.empty() || manifest.name == "." || manifest.name == ".." ||
+        manifest.name.find('/') != std::string::npos ||
+        manifest.name.find('\\') != std::string::npos)
+        throw Error("aster pkg: manifest has an invalid package name \"" + manifest.name + "\"");
+    if (const std::string err = pkgVerifyPackageFiles(srcDir, manifest); !err.empty())
+        throw Error("aster pkg: package verification failed for " + srcDir + ": " + err);
+    const std::string lockPath = pkgLockPath(projectDir);
+    const bool lockExisted = fileExists(lockPath);
+    const std::vector<PkgSourceEntry> oldLock = pkgReadLock(projectDir);
+    const std::string target = projectDir + "/packages/" + manifest.name;
+    if (dirExists(target) || fileExists(target)) {
+        pkgChmodTree(target, false);
+        pkgRemoveTree(target);
+    }
+    auto cleanupTarget = [&]() {
+        if (dirExists(target) || fileExists(target)) {
+            try { pkgChmodTree(target, false); } catch (...) {}
+            try { pkgRemoveTree(target); } catch (...) {}
+        }
+    };
+    try {
+        if (!makeDirs(target))
+            throw Error("aster pkg: cannot create " + target);
+        // Copy exactly the files the manifest lists, plus the manifest
+        // itself; never a whole-tree copy, so stray files in the source
+        // never reach the installed package.
+        for (const auto& f : manifest.files) {
+            const std::string relDir = dirNameOf(f.first);
+            if (!relDir.empty() && !makeDirs(target + "/" + relDir))
+                throw Error("aster pkg: cannot create " + target + "/" + relDir);
+            writeFileAtomic(target + "/" + f.first, readFile(srcDir + "/" + f.first));
+        }
+        writeFileAtomic(target + "/manifest.json", readFile(manifestPath));
+    } catch (...) {
+        cleanupTarget();
+        throw;
+    }
+    pkgUpsertLock(projectDir, PkgSourceEntry{manifest.name, sourceForLock, manifest.version});
+    if (const std::string err = pkgVerifyPackageFiles(target, manifest); !err.empty()) {
+        cleanupTarget();
+        if (lockExisted) pkgWriteLock(projectDir, oldLock);
+        else std::remove(lockPath.c_str());
+        throw Error("aster pkg: installed package failed verification: " + err);
+    }
+    pkgChmodTree(target, true);
+    return manifest;
+}
+
+// Clone a git source into a fresh temporary directory and return its
+// path. The caller owns the directory (including on failure: a failed
+// clone may leave a partial tree). git is found on PATH first, so a
+// missing git is a clear diagnostic instead of a silent fork failure.
+static std::string pkgGitCloneToTemp(const std::string& source) {
+    if (!haveProgram("git"))
+        throw Error("aster pkg: 找不到 git: git is not installed or not on PATH");
+    const std::string tmpDir = std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp";
+    std::string cloneDir = mkTempPath(tmpDir, "aster-pkg-clone");
+    std::remove(cloneDir.c_str());  // mkTempPath made a file; git clone needs a fresh path
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+        const int saved = errno;
+        std::remove(cloneDir.c_str());
+        throw Error(std::string("aster pkg: cannot fork to run git: ") + std::strerror(saved));
+    }
+    if (pid == 0) {
+        const char* args[] = {"git", "clone", "--depth", "1",
+                              source.c_str(), cloneDir.c_str(), nullptr};
+        ::execvp("git", const_cast<char* const*>(args));
+        std::cerr << "aster pkg: 找不到 git: failed to run git: " << std::strerror(errno) << "\n";
+        ::_exit(127);
+    }
+    int st = 0;
+    const int waited = waitChildWithTimeout(pid, st, 120, "aster pkg: git clone");
+    if (waited != 0 || !WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+        if (dirExists(cloneDir) || fileExists(cloneDir)) {
+            try { pkgRemoveTree(cloneDir); } catch (...) {}
+        }
+        if (waited == 1)
+            throw Error("aster pkg: git clone timed out for " + source);
+        throw Error("aster pkg: git clone failed for " + source +
+                    (WIFEXITED(st) ? " (git exited with status " + std::to_string(WEXITSTATUS(st)) + ")"
+                                   : " (git did not exit normally)"));
+    }
+    return cloneDir;
+}
+
+// Install from a git source: clone, drop the .git directory (a clone is
+// not package content: its files would fail the extra-file check), then
+// install from the clone exactly like a local directory source. The
+// clone is removed whether the install succeeds or fails. Only a
+// repository whose root holds a package is supported this round:
+// sub-directory packages are not attempted.
+static PkgManifest pkgInstallFromGit(const std::string& source, const std::string& projectDir) {
+    const std::string cloneDir = pkgGitCloneToTemp(source);
+    try {
+        const std::string gitDir = cloneDir + "/.git";
+        if (dirExists(gitDir) || fileExists(gitDir)) pkgRemoveTree(gitDir);
+        if (!fileExists(cloneDir + "/manifest.json"))
+            throw Error("aster pkg: cloned repository has no manifest.json at its root: " + source);
+        const PkgManifest manifest = pkgInstallFromDir(cloneDir, projectDir, source);
+        pkgRemoveTree(cloneDir);
+        return manifest;
+    } catch (...) {
+        if (dirExists(cloneDir) || fileExists(cloneDir)) {
+            try { pkgRemoveTree(cloneDir); } catch (...) {}
+        }
+        throw;
+    }
+}
+
+// Source classification, in order: a URL or git@ address is git; a
+// local path holding .git is git (cloned, never copied in place); a
+// local directory holding manifest.json is a directory source; anything
+// else is an error naming which case it fell into.
+static bool pkgSourceLooksGit(const std::string& source) {
+    return source.find("://") != std::string::npos || source.rfind("git@", 0) == 0;
+}
+static PkgManifest pkgInstallSource(const std::string& source, const std::string& projectDir) {
+    if (pkgSourceLooksGit(source)) return pkgInstallFromGit(source, projectDir);
+    if (!dirExists(source) && !fileExists(source))
+        throw Error("aster pkg: 源不存在: " + source);
+    if (!dirExists(source))
+        throw Error("aster pkg: 源不是合法的包目录也不是 git 仓库: " + source);
+    if (dirExists(source + "/.git") || fileExists(source + "/.git"))
+        return pkgInstallFromGit(source, projectDir);
+    if (!fileExists(source + "/manifest.json"))
+        throw Error("aster pkg: 源不是合法的包目录也不是 git 仓库: " + source);
+    return pkgInstallFromDir(source, projectDir, source);
+}
+
+// Fetch only the manifest of a source, for `upgrade`'s version
+// comparison. A git source is cloned to a temporary directory the
+// caller must remove (tempDir is empty for a local source).
+struct PkgFetchedSource {
+    PkgManifest manifest;
+    std::string dir;      // the package directory to install from
+    std::string tempDir;  // non-empty only for a git source
+};
+static PkgFetchedSource pkgFetchSource(const std::string& source) {
+    if (pkgSourceLooksGit(source) ||
+        (dirExists(source) && (dirExists(source + "/.git") || fileExists(source + "/.git")))) {
+        PkgFetchedSource fetched;
+        fetched.tempDir = pkgGitCloneToTemp(source);
+        fetched.dir = fetched.tempDir;
+        try {
+            const std::string gitDir = fetched.tempDir + "/.git";
+            if (dirExists(gitDir) || fileExists(gitDir)) pkgRemoveTree(gitDir);
+            const std::string manifestPath = fetched.dir + "/manifest.json";
+            if (!fileExists(manifestPath))
+                throw Error("aster pkg: cloned repository has no manifest.json at its root: " + source);
+            fetched.manifest = pkgManifestFromJson(
+                PkgJsonParser(readFile(manifestPath), manifestPath).parse(), manifestPath);
+        } catch (...) {
+            pkgRemoveTree(fetched.tempDir);
+            throw;
+        }
+        return fetched;
+    }
+    if (!dirExists(source) && !fileExists(source))
+        throw Error("aster pkg: 源不存在: " + source);
+    if (!dirExists(source) || !fileExists(source + "/manifest.json"))
+        throw Error("aster pkg: 源不是合法的包目录也不是 git 仓库: " + source);
+    PkgFetchedSource fetched;
+    fetched.dir = source;
+    const std::string manifestPath = source + "/manifest.json";
+    fetched.manifest = pkgManifestFromJson(
+        PkgJsonParser(readFile(manifestPath), manifestPath).parse(), manifestPath);
+    return fetched;
+}
+
 // ---- Manifest generation from the canonical sources (parseProgram AST,
 // public declarations only; never a text scan).
 static aster_cn::Program pkgParseSource(const std::string& path) {
@@ -29143,6 +29431,7 @@ static std::string canonicalCliCommand(const std::string& command) {
         {"依赖", "deps"},
         {"打包", "pack"},
         {"补全", "complete"},
+        {"包", "pkg"},
         {"构建项目", "build"},
         {"运行", "run"},
         {"测试", "test"},
@@ -29471,6 +29760,145 @@ int main(int argc,char**argv){
                 for(const auto* e:shown)
                     std::cout<<(zh?e->nameZh:e->name)<<"\t"<<e->kind<<"\t"<<e->signature<<"\t"<<e->doc<<"\n";
             }
+            return 0;
+        }
+        if(cmd=="pkg"){
+            auto usageError=[&](){
+                std::cerr<<"aster pkg: usage: aster pkg install <source> [--project DIR]\n"
+                    "       aster pkg upgrade <package> [--project DIR]\n"
+                    "       aster pkg list [--project DIR]\n"
+                    "       aster pkg remove <package> [--project DIR]\n";
+                return 2;
+            };
+            if(argc<3)return usageError();
+            std::string sub=argv[2];
+            if(sub=="-h"||sub=="--help"){std::cout<<kUsage;return 0;}
+            if(sub=="安装")sub="install";
+            else if(sub=="升级")sub="upgrade";
+            else if(sub=="列表")sub="list";
+            else if(sub=="删除")sub="remove";
+            if(sub!="install"&&sub!="upgrade"&&sub!="list"&&sub!="remove")return usageError();
+            std::string projectDir=".", operand;
+            for(int i=3;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                else if(a=="--project"){if(i+1>=argc)return usageError();projectDir=argv[++i];}
+                else if(a.rfind("--project=",0)==0)projectDir=a.substr(10);
+                else if(!a.empty()&&a[0]=='-')return usageError();
+                else if(operand.empty())operand=a;
+                else return usageError();
+            }
+            if(!dirExists(projectDir)){
+                std::cerr<<"aster pkg: 项目目录不存在: "<<projectDir<<"\n";return 1;
+            }
+            if(sub=="install"){
+                if(operand.empty())return usageError();
+                const PkgManifest manifest=pkgInstallSource(operand,projectDir);
+                std::cout<<"aster pkg: installed "<<manifest.name<<" ("<<manifest.nameZh<<") "
+                         <<manifest.version<<" from "<<operand<<"\n";
+                return 0;
+            }
+            if(sub=="upgrade"){
+                if(operand.empty())return usageError();
+                const std::vector<PkgSourceEntry> entries=pkgReadLock(projectDir);
+                const PkgSourceEntry* entry=nullptr;
+                for(const auto& e:entries)if(e.name==operand)entry=&e;
+                if(!entry){
+                    std::cerr<<"aster pkg: 未记录来源，请用 install 重新安装: "<<operand<<"\n";
+                    return 1;
+                }
+                const std::string target=projectDir+"/packages/"+operand;
+                const std::string installedManifestPath=target+"/manifest.json";
+                if(!fileExists(installedManifestPath)){
+                    std::cerr<<"aster pkg: 包未安装: "<<operand<<"\n";return 1;
+                }
+                const PkgManifest installed=pkgManifestFromJson(
+                    PkgJsonParser(readFile(installedManifestPath),installedManifestPath).parse(),
+                    installedManifestPath);
+                PkgFetchedSource fetched=pkgFetchSource(entry->source);
+                const std::string fetchedDir=fetched.dir;
+                const std::string fetchedTemp=fetched.tempDir;
+                const std::string fetchedVersion=fetched.manifest.version;
+                const std::string fetchedName=fetched.manifest.name;
+                const std::string fetchedNameZh=fetched.manifest.nameZh;
+                auto cleanupFetched=[&](){
+                    if(!fetchedTemp.empty()&&(dirExists(fetchedTemp)||fileExists(fetchedTemp))){
+                        try{pkgRemoveTree(fetchedTemp);}catch(...){}
+                    }
+                };
+                if(fetchedName!=operand){
+                    cleanupFetched();
+                    std::cerr<<"aster pkg: 源里的包名是 \""<<fetchedName<<"\"，不是 \""<<operand<<"\"\n";
+                    return 1;
+                }
+                if(fetchedVersion==installed.version){
+                    cleanupFetched();
+                    std::cout<<"aster pkg: "<<operand<<" ("<<installed.nameZh<<") 已是最新 "
+                             <<installed.version<<" (already up to date)\n";
+                    return 0;
+                }
+                try{
+                    pkgInstallFromDir(fetchedDir,projectDir,entry->source);
+                }catch(...){
+                    cleanupFetched();
+                    throw;
+                }
+                cleanupFetched();
+                std::cout<<"aster pkg: upgraded "<<operand<<" ("<<fetchedNameZh<<") "
+                         <<installed.version<<" -> "<<fetchedVersion<<"\n";
+                return 0;
+            }
+            if(sub=="list"){
+                if(!operand.empty())return usageError();
+                const std::string packagesDir=projectDir+"/packages";
+                std::vector<std::string> names;
+                if(dirExists(packagesDir)){
+                    DIR* d=::opendir(packagesDir.c_str());
+                    if(!d){std::cerr<<"aster pkg: cannot list "<<packagesDir<<"\n";return 1;}
+                    while(struct dirent* e=::readdir(d)){
+                        if(e->d_name[0]=='.'&&(e->d_name[1]=='\0'||(e->d_name[1]=='.'&&e->d_name[2]=='\0')))
+                            continue;
+                        if(e->d_name[0]=='.')continue;  // the lock file, never a package
+                        names.push_back(e->d_name);
+                    }
+                    ::closedir(d);
+                }
+                std::sort(names.begin(),names.end());
+                size_t shown=0;
+                for(const auto& name:names){
+                    const std::string dir=packagesDir+"/"+name;
+                    if(!dirExists(dir))continue;
+                    const std::string manifestPath=dir+"/manifest.json";
+                    PkgManifest manifest;
+                    try{
+                        if(!fileExists(manifestPath))
+                            throw Error("no manifest.json");
+                        manifest=pkgManifestFromJson(
+                            PkgJsonParser(readFile(manifestPath),manifestPath).parse(),manifestPath);
+                    }catch(const std::exception& e){
+                        std::cerr<<"aster pkg: 警告: 跳过 "<<name<<": "<<e.what()<<"\n";
+                        continue;
+                    }
+                    std::cout<<manifest.name<<" ("<<manifest.nameZh<<") "<<manifest.version<<"\n";
+                    ++shown;
+                }
+                if(shown==0)std::cout<<"aster pkg: 未安装包 (no packages installed)\n";
+                return 0;
+            }
+            // remove
+            if(operand.empty())return usageError();
+            const std::string target=projectDir+"/packages/"+operand;
+            if(!dirExists(target)){
+                std::cerr<<"aster pkg: 包未安装: "<<operand<<"\n";return 1;
+            }
+            pkgChmodTree(target,false);
+            pkgRemoveTree(target);
+            try{
+                pkgRemoveLockEntry(projectDir,operand);
+            }catch(const std::exception& e){
+                std::cerr<<"aster pkg: 警告: 锁文件未更新: "<<e.what()<<"\n";
+            }
+            std::cout<<"aster pkg: removed "<<operand<<" (已删除)\n";
             return 0;
         }
         // v0.23.77-dev: a project is a directory holding aster.proj. `new`
