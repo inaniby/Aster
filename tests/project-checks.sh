@@ -209,6 +209,18 @@ for nm in '../x' '' 'foo bar' 'a/b' '.'; do
         echo "FAIL: the hand-edited name [$nm] was refused for the wrong reason:" >&2; cat badprojname.log >&2; exit 1; }
 done
 printf 'kind exe\nsrc/main.ast\nsrc/util.ast\n[language]\ndefault = "en"\n' > aster.proj
+# The rewrites above changed aster.proj itself (the scaffold's comment
+# header and `test` line are gone), so the next build must recompile
+# everything: Phase 2 decl invalidation treats any aster.proj change as
+# all-dirty ("aster.proj changed", fail-closed; the design pins "aster.proj
+# 改动 → 全部失效"). Settle that here, so [9/19]'s counts measure the
+# meta tampering alone instead of the pending config invalidation --
+# without this, [9/19]'s first build reports (2 compiled, 0 reused)
+# even with no tampering at all. The recompile is byte-identical
+# (same sources, deterministic codegen).
+"$ASTER" build > settle8.log 2>&1
+grep -q '(2 compiled, 0 reused)' settle8.log || {
+    echo 'FAIL: the build after the aster.proj rewrite did not recompile both objects:' >&2; cat settle8.log >&2; exit 1; }
 printf '  %-40s %s\n' 'no project / missing source / unknown option / new name rules / bad name line refused / apk build skipped (C-1)' 'ok'
 
 printf '%s\n' '[9/19] mutation: tampered meta / poisoned object / old-format meta are not reused'

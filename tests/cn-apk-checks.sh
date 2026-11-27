@@ -8,8 +8,15 @@
 #       defined in another source is the same symbol, not a duplicate.
 #   [2] a Chinese Counter (compiler default zh, no [language] config)
 #       builds to a signed APK via `aster build`; the rebuild reuses both
-#       per-source objects; a counter-source change recompiles both, a
-#       main-source change recompiles one.
+#       per-source objects. Both source changes below are comment-only, so
+#       under Phase 2 declaration-level invalidation (default on since
+#       e40d164) neither recompiles anything: a comment changes no
+#       declaration, so 0 decls change and 0 of 2 TUs are dirty. The old
+#       Phase 1 file-hash counts (counter change: 2 compiled; main change:
+#       1 compiled) are still what `--no-decl-invalidation` produces; that
+#       contrast is covered by tests/decl-invalidation-checks.sh [5/6].
+#       Real-change invalidation (body/signature/global) is covered there
+#       too ([3/6] deterministic cases), not here.
 #   [3] an English Counter (explicit en, colon returns, extern fn) builds
 #       to a signed APK the same way.
 #   [4] both APKs verify: `aster verify-apk` plus tests/validate_apk.py
@@ -151,13 +158,16 @@ grep -q '(0 compiled, 2 reused)' "$TMP/zhcounter/build2.log" || {
 printf '\n// a comment change\n' >> "$TMP/zhcounter/src/counter.ast"
 (cd "$TMP/zhcounter" && "$ASTER_BIN" build > build3.log 2>&1) || {
     echo 'FAIL: the Chinese build after a counter change failed:' >&2; cat "$TMP/zhcounter/build3.log" >&2; exit 1; }
-grep -q '(2 compiled, 0 reused)' "$TMP/zhcounter/build3.log" || {
-    echo 'FAIL: a counter-source change did not recompile both objects:' >&2; cat "$TMP/zhcounter/build3.log" >&2; exit 1; }
+# Comment-only: Phase 2 decl-invalidation (default on) changes no
+# declaration, so nothing recompiles (old Phase 1 file-hash count was 2).
+grep -q '(0 compiled, 2 reused)' "$TMP/zhcounter/build3.log" || {
+    echo 'FAIL: a counter comment-only change recompiled objects:' >&2; cat "$TMP/zhcounter/build3.log" >&2; exit 1; }
 printf '\n// another comment change\n' >> "$TMP/zhcounter/src/main.ast"
 (cd "$TMP/zhcounter" && "$ASTER_BIN" build > build4.log 2>&1) || {
     echo 'FAIL: the Chinese build after a main change failed:' >&2; cat "$TMP/zhcounter/build4.log" >&2; exit 1; }
-grep -q '(1 compiled, 1 reused)' "$TMP/zhcounter/build4.log" || {
-    echo 'FAIL: a main-source change did not recompile exactly one object:' >&2; cat "$TMP/zhcounter/build4.log" >&2; exit 1; }
+# Comment-only: same Phase 2 rule, nothing recompiles (old Phase 1 count was 1).
+grep -q '(0 compiled, 2 reused)' "$TMP/zhcounter/build4.log" || {
+    echo 'FAIL: a main comment-only change recompiled objects:' >&2; cat "$TMP/zhcounter/build4.log" >&2; exit 1; }
 printf '  %-40s %s\n' 'zh Counter builds; per-source cache counts hold' 'ok'
 
 printf '%s\n' '[3/6] English Counter APK (explicit en, colon returns + extern fn)'
