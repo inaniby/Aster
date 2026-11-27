@@ -4278,14 +4278,19 @@ struct Codegen {
     // v0.23.2-dev (P3.2): declared types. These used to be a pile of booleans
     // (boolGlobals, functionParamPointers, functionParamBools, pointerReturn-
     // Functions, boolReturnFunctions); the maps below carry the same facts plus
-    // the new widths. They are filled in by compileProgram right after
-    // construction, which keeps the constructor's parameter list unchanged.
-    std::map<std::string,Ty> globalTypes;                 // global name -> type (element type for an array)
-    std::map<std::string,std::vector<Ty>> argTypes;       // function name -> parameter types
-    std::map<std::string,Ty> returnTypes;                 // function name -> return type
+    // the new widths. Phase 4 seg A: they used to be value members, copied
+    // from compileProgram's per-TU tables once per emitted function
+    // (~1.4 ms/file on the greeting template); they are now const references
+    // to those tables, like Sema's and like every other table Codegen already
+    // holds by reference. The tables outlive every Codegen instance
+    // (compileProgram locals), and nothing in Codegen writes to them — every
+    // use is a find/count/at read.
+    const std::map<std::string,Ty>& globalTypes;          // global name -> type (element type for an array)
+    const std::map<std::string,std::vector<Ty>>& argTypes; // function name -> parameter types
+    const std::map<std::string,Ty>& returnTypes;          // function name -> return type
     // v0.23.37-dev: the signature of every fn-pointer global, so a call
     // through a global callee can be checked and staged like a typed one.
-    std::map<std::string,FuncSig> globalFuncSig;
+    const std::map<std::string,FuncSig>& globalFuncSig;
     std::map<int,Ty> slotTypes;                           // frame slot -> declared type
     // v0.23.37-dev: a fn-pointer local/parameter carries its signature beside
     // the storage type Ty::Ptr, keyed by its frame slot; slotIsFunc marks which
@@ -4360,6 +4365,10 @@ struct Codegen {
             const std::map<std::string,std::vector<bool>>& paramBoolMap,
             const std::map<std::string,uint32_t>& arrayLengthMap,
             const std::map<std::string,std::vector<uint32_t>>& arrayDimsMap,
+            const std::map<std::string,Ty>& globalTypeMap,
+            const std::map<std::string,std::vector<Ty>>& argTypeMap,
+            const std::map<std::string,Ty>& returnTypeMap,
+            const std::map<std::string,FuncSig>& globalFuncSigMap,
             const std::set<std::string>& tlsGlobalNames,
             bool sharedObject,bool injectInitCall,std::string initSym,bool runtimeBoundsCheck=false,bool debugLine=false,bool compactFrames=false)
         :functionName(std::move(name)),isMain(functionName=="main"&&!sharedObject),functionArities(arities),globals(globalNames),
@@ -4368,6 +4377,7 @@ struct Codegen {
          pointerReturnFunctions(pointerReturnFunctionNames),boolReturnFunctions(boolReturnFunctionNames),
          functionParamPointers(paramPointerMap),functionParamBools(paramBoolMap),arrayLengths(arrayLengthMap),
          globalArrayDims(arrayDimsMap),tlsGlobals(tlsGlobalNames),hasTls(!tlsGlobalNames.empty()),
+         globalTypes(globalTypeMap),argTypes(argTypeMap),returnTypes(returnTypeMap),globalFuncSig(globalFuncSigMap),
          shared(sharedObject),
          injectInit(injectInitCall),initSymbol(std::move(initSym)),boundsCheck(runtimeBoundsCheck),emitLineInfo(debugLine),compact(compactFrames) {}
     std::vector<std::map<std::string,int>> scopes;
@@ -10404,8 +10414,7 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
     std::vector<CompiledFunction> out;out.reserve(order.size()+1);
     for(const Function* f:order){
         sema.check(*f);
-        Codegen cg(f->name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,tlsGlobalNames,sharedObject,needInit&&f->name=="main",kInitSymbol,boundsCheck,debugLine,compactFrames);
-        cg.globalTypes=globalTypeMap;cg.argTypes=argTypeMap;cg.returnTypes=returnTypeMap;cg.globalFuncSig=globalFuncSigMap;
+        Codegen cg(f->name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,globalTypeMap,argTypeMap,returnTypeMap,globalFuncSigMap,tlsGlobalNames,sharedObject,needInit&&f->name=="main",kInitSymbol,boundsCheck,debugLine,compactFrames);
         CompiledFunction cf;cf.name=f->name;cf.code=cg.run(*f);cf.relocs=std::move(cg.relocations);cf.lineRows=std::move(cg.lineRows);cf.debugVars=std::move(cg.debugVars);cf.frameBytes=cg.frameBytesUsed;cf.frameWords=cg.frameWordsUsed;
         cf.preservesRa=!cg.isMain;out.push_back(std::move(cf));}
     if(needInit){
@@ -10435,8 +10444,7 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
         else r.expr=E(new Expr(Expr::Num,0));
         init.body.push_back(std::move(r));
         sema.check(init);   // the synthetic initializer is type-checked too
-        Codegen cg(init.name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,tlsGlobalNames,sharedObject,false,kInitSymbol,boundsCheck,debugLine,compactFrames);
-        cg.globalTypes=globalTypeMap;cg.argTypes=argTypeMap;cg.returnTypes=returnTypeMap;cg.globalFuncSig=globalFuncSigMap;
+        Codegen cg(init.name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,globalTypeMap,argTypeMap,returnTypeMap,globalFuncSigMap,tlsGlobalNames,sharedObject,false,kInitSymbol,boundsCheck,debugLine,compactFrames);
         CompiledFunction cf;cf.name=init.name;cf.code=cg.run(init);cf.relocs=std::move(cg.relocations);cf.lineRows=std::move(cg.lineRows);cf.debugVars=std::move(cg.debugVars);cf.frameBytes=cg.frameBytesUsed;cf.frameWords=cg.frameWordsUsed;
         cf.preservesRa=!cg.isMain;
         out.push_back(std::move(cf));
@@ -26643,11 +26651,17 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             signature.parameterFuncSigs.push_back(parameterSignature);
             signature.parameterIsFunc.push_back(isFunc);
         }
-        g_cnFunctionSignatures[method.name] = signature;
         // C-IMP-4 (§3.6): a foreign TU's lowered call names the ABI symbol,
         // so the stub lookup (by emitted name) needs the signature under the
         // mangled name too — under the mangled source name, and, for an
         // external declaration, under the mangled external name as well.
+        // Phase 4 seg B: those two inserts still copy (they need their own
+        // value), but the source-name insert below is now last and moves:
+        // it used to be a third copy of the same five vectors (~4-5 heap
+        // allocs per method, 2021 methods per TU on the greeting template).
+        // The three keys are distinct (guarded by the != checks), so the
+        // final map state is unchanged; a repeated name (extern decl +
+        // definition) still overwrites with a fresh signature each time.
         const std::string abiName = cnMangleAbiSymbol(method.name);
         if (abiName != method.name) g_cnFunctionSignatures[abiName] = signature;
         if (method.isExternal) {
@@ -26655,6 +26669,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             if (externAbi != method.name && externAbi != abiName)
                 g_cnFunctionSignatures[externAbi] = signature;
         }
+        g_cnFunctionSignatures[method.name] = std::move(signature);
     }
     g_cnInterfaceBase.clear();
     for (const auto& declaration : program.interfaceClasses) {
