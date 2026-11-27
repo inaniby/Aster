@@ -316,7 +316,7 @@ stdlib2-checks.sh
 lang-completion-checks.sh
 complete-checks.sh
 project-checks.sh
-apk-checks.sh array-bounds-checks.sh bool-checks.sh comment-checks.sh
+apk-checks.sh fast-path-checks.sh serve-checks.sh array-bounds-checks.sh bool-checks.sh comment-checks.sh
 condition-checks.sh
 null-ptr-checks.sh
 embed-checks.sh error-checks.sh for-loop-checks.sh global-checks.sh

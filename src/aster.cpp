@@ -15,6 +15,9 @@
 #include <ctime>
 #include <fstream>
 #include <fcntl.h>              // open/mkstemp flags for key files
+#include <sys/socket.h>          // Phase 1 daemon: Unix domain socket
+#include <sys/un.h>              // Phase 1 daemon: sockaddr_un
+#include <poll.h>                // Phase 1 daemon: poll() for worker pipes
 #include <iostream>
 #include <iterator>
 #include <map>
@@ -13923,7 +13926,9 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
 "       aster new [--apk] <dir>              scaffold a program or APK project\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
-"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [--verbose] [--jobs N] [--no-gc-sections] [--no-strip] [--gc-keep NAME[,NAME...]] [-- args]\n"
+"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [--verbose] [--jobs N] [--no-gc-sections] [--no-strip] [--gc-keep NAME[,NAME...]] [--daemon] [--no-daemon] [--socket-dir DIR] [-- args]\n"
+"       aster serve [--project DIR] [--socket-dir DIR]   start the build daemon for one project\n"
+"       aster serve stop|status [--project DIR] [--socket-dir DIR]\n"
 "       aster test  [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [filter]\n"
 "       aster doctor [--strict]             check the host and the project it is run in\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
@@ -13940,6 +13945,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "    构建项目=build、运行=run、测试=test、环境检查=doctor、编译双语对象=build-cn-obj、\n"
 "    编译对象=build-obj、构建可执行文件=build-elf、构建PIE=build-pie、编译共享库=build-so、\n"
 "    构建APK=build-apk、链接可执行文件=link-obj、链接PIE=link-pie、链接共享库=link-so、\n"
+"    服务=serve\n"
 "    格式化源码=fmt、生成密钥=keygen、验证APK=verify-apk、打包=pack、补全=complete、包=pkg（英文命令仍可照常使用）\n"
     "  build-elf  fixed-address AArch64 ET_EXEC executable (link base 0x400000)\n"
     "  build-pie  static PIE: AArch64 ET_DYN executable, no interpreter (link base 0)\n"
@@ -14012,6 +14018,10 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "                 every dynamic index into a fixed-size array is compared against the\n"
 "                 array's length and raises BRK #1 (SIGTRAP) when it is out of range.\n"
 "                 Constant indexes are still rejected at compile time either way.\n"
+"  --daemon / --no-daemon  route `aster build` through the daemon (`aster serve`,\n"
+"                 opt-in: ASTER_DAEMON=1). The daemon only accelerates: any\n"
+"                 daemon failure falls back to a cold build, and `aster serve\n"
+"                 stop` / `aster serve status` manage it per project.\n"
 "  --timeout SECONDS  how long `aster run`/`aster test` wait for the child before\n"
 "                 killing it (SIGTERM, then SIGKILL after 5s): default 60, 0 disables;\n"
 "                 --timeout wins over $ASTER_RUN_TIMEOUT.\n"
@@ -17569,7 +17579,7 @@ static ProjectSpec parseProjectFile(const std::string& path){
 // being trusted.
 static bool readProjectCacheMetaForReuse(const std::string& metaPath, const std::string& objPath,
                                          const std::string& flags, const std::string& sp,
-                                         const std::string& srcHash) {
+                                         const std::string& srcHash, std::string* objHashOut = nullptr) {
     const std::string meta = readFile(metaPath);
     // v0.23.81-dev (CLI-P2-1): the cached object itself is hashed, so a
     // planted or damaged .o is never trusted on the meta alone. An
@@ -17605,6 +17615,11 @@ static bool readProjectCacheMetaForReuse(const std::string& metaPath, const std:
             if (!fileExists(q) || sha256Hex(readFile(q)) != h) ok = false;
         }
     }
+    // Phase 0 (no-change APK fast path): the reuse check already hashed the
+    // object, so hand that hash back instead of making the caller re-read
+    // the file. It is the hash of the actual bytes on disk, whether or not
+    // the meta validated (the caller only uses it on the reuse path).
+    if (objHashOut) *objHashOut = objHash;
     return ok && sawSrc && sawObj;
 }
 
@@ -17615,6 +17630,273 @@ static std::string projectCacheMetaText(const std::string& flags, const std::str
         srcHash + "\nobj " + objHash + "\n";
     for (const auto& kv : deps) meta += "dep " + kv.second + " " + kv.first + "\n";
     return meta;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 0: no-change APK fast path (incremental-design §7.1, §3.2).
+//
+// `build` (and `build-apk`) compute a fingerprint of everything the
+// link+package+sign steps consume, and compare it with
+// `build/.cache/last-apk.json`. On a match — and only when the recorded APK
+// is still on disk byte for byte — the link, packaging, signing and
+// self-verification are skipped and the previous APK is reused.
+//
+// Safety: link and signing are deterministic functions of their inputs
+// (fixed 1980 ZIP timestamps, deterministic ZIP order, deterministic RSA
+// PKCS#1 v1.5 signatures), so identical inputs give an identical APK.
+// The fast path is only an accelerator: any doubt (unknown sidecar
+// version, corrupt sidecar, missing APK, hash mismatch, an input the
+// fingerprint could not capture) fails closed to the normal path, and the
+// sidecar is never a correctness dependency. When a new input type is
+// added to the fingerprint, bump kApkFastPathVersion below and old
+// sidecars are ignored instead of trusted.
+static const int kApkFastPathVersion = 1;
+
+struct ApkFastPathInputs {
+    // Link inputs, in aster.proj order: (source path, sha256 of the .o).
+    // The hashes come out of the per-TU reuse check / fresh compile, never
+    // from a second read of the objects.
+    std::vector<std::pair<std::string, std::string>> objects;
+    // The packaged library itself (build-apk only). Empty for `aster
+    // build`, where the .o list + link flags determine the .so.
+    std::string soSha256;
+    bool gcSections = true;
+    bool stripSymtab = true;
+    uint64_t pageSize = 4096;
+    std::vector<std::string> gcKeep;  // link order
+    std::string signMode;             // "debug" | "release"
+    std::string certSha256;           // sha256 of the signing certificate (DER)
+    std::string packageName, libname, abi, label, versionName;
+    int versionCode = 1, minSdk = 21, targetSdk = 30;
+    bool debuggable = false, labelAsReference = false;
+    std::vector<std::pair<std::string, std::string>> extraStrings;  // build-apk --string k=v
+    std::string iconSha256;  // "" when no icon
+    bool hasIcon = false;
+};
+
+static std::string apkFpEscape(const std::string& s) {
+    std::string o;
+    for (char c : s) {
+        if (c == '\\') o += "\\\\";
+        else if (c == '\n') o += "\\n";
+        else if (c == '\r') o += "\\r";
+        else o += c;
+    }
+    return o;
+}
+
+// The canonical fingerprint text. Every input the link+package+sign steps
+// consume appears here, one labelled line each; the fingerprint is the
+// sha256 of this text. Values are escaped so no input can blur a line
+// boundary (labels and paths come from aster.proj / argv, not all of them
+// are newline-free by construction).
+static std::string apkFastPathCanonicalText(const ApkFastPathInputs& in) {
+    std::string t = "apk-fast-path-v1\n";
+    t += "compiler=" + std::string(kVersion) + "\n";
+    t += "so=" + in.soSha256 + "\n";
+    for (const auto& o : in.objects)
+        t += "obj " + apkFpEscape(o.first) + " " + o.second + "\n";
+    t += "link gc=" + std::string(in.gcSections ? "1" : "0") +
+        " strip=" + std::string(in.stripSymtab ? "1" : "0") +
+        " page=" + std::to_string(in.pageSize);
+    for (const auto& k : in.gcKeep) t += " gc-keep=" + apkFpEscape(k);
+    t += "\n";
+    t += "key mode=" + apkFpEscape(in.signMode) + " cert=" + in.certSha256 + "\n";
+    t += "manifest package=" + apkFpEscape(in.packageName) +
+        " libname=" + apkFpEscape(in.libname) +
+        " abi=" + apkFpEscape(in.abi) +
+        " label=" + apkFpEscape(in.label) +
+        " version-code=" + std::to_string(in.versionCode) +
+        " version-name=" + apkFpEscape(in.versionName) +
+        " min-sdk=" + std::to_string(in.minSdk) +
+        " target-sdk=" + std::to_string(in.targetSdk) +
+        " debuggable=" + std::string(in.debuggable ? "1" : "0") +
+        " label-ref=" + std::string(in.labelAsReference ? "1" : "0") + "\n";
+    for (const auto& kv : in.extraStrings)
+        t += "string " + apkFpEscape(kv.first) + "=" + apkFpEscape(kv.second) + "\n";
+    t += "icon=" + std::string(in.hasIcon ? in.iconSha256 : "none") + "\n";
+    return t;
+}
+
+static std::string apkFastPathFingerprint(const ApkFastPathInputs& in) {
+    return sha256Hex(apkFastPathCanonicalText(in));
+}
+
+// Every fingerprint input must be present and well-formed, or the
+// fingerprint is not trustworthy and the caller takes the normal path.
+static bool apkFastPathInputsReady(const ApkFastPathInputs& in) {
+    if (in.certSha256.size() != 64) return false;
+    if (in.objects.empty() && in.soSha256.empty()) return false;
+    for (const auto& o : in.objects) if (o.second.size() != 64) return false;
+    if (!in.soSha256.empty() && in.soSha256.size() != 64) return false;
+    if (in.hasIcon && in.iconSha256.size() != 64) return false;
+    return true;
+}
+
+// sha256 of a signing certificate's DER bytes, read straight from the cert
+// file (PEM or DER) without loading the private key: loading the key parses
+// RSA integers (~150 ms on this VM) and the fast path exists to skip that
+// kind of cost. A private key swapped without its certificate cannot sign
+// a usable APK anyway (loadSigningKey self-checks that the certificate
+// carries this key's public half), so the certificate alone detects a key
+// change. Returns false when the file is missing or undecodable — the
+// caller then treats the fingerprint as unavailable and takes the normal
+// path, which loads (or generates) the key and reports the real error.
+static bool apkFastPathCertSha256(const std::string& certPath, std::string& out) {
+    try {
+        if (!fileExists(certPath)) return false;
+        const std::vector<uint8_t> der = derFromMaybePem(
+            certPath, {"CERTIFICATE", "X509 CERTIFICATE"}, "certificate");
+        out = sha256Hex(der);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+// --- sidecar: build/.cache/last-apk.json (version 1) ---
+// "inputs" names the fingerprint's input classes, so a future input type
+// bumps the version and old sidecars are ignored instead of trusted.
+static std::string apkSidecarJsonEscape(const std::string& s) {
+    std::string o;
+    for (char c : s) {
+        if (c == '"') o += "\\\"";
+        else if (c == '\\') o += "\\\\";
+        else if (c == '\n') o += "\\n";
+        else if (c == '\r') o += "\\r";
+        else if (c == '\t') o += "\\t";
+        else if ((unsigned char)c < 0x20) {
+            const char* hex = "0123456789abcdef";
+            o += "\\u00";
+            o += hex[((unsigned char)c >> 4) & 0xF];
+            o += hex[(unsigned char)c & 0xF];
+        } else o += c;
+    }
+    return o;
+}
+
+static bool apkSidecarWrite(const std::string& path, const std::string& target,
+                            const std::string& fingerprint, const std::string& apkSha256,
+                            uint64_t apkSize) {
+    try {
+        std::string j = "{\n  \"version\": " + std::to_string(kApkFastPathVersion) + ",\n  \"inputs\": [\"objects\", \"so\", \"link\", \"key\", \"manifest\", \"icon\", \"strings\", \"compiler\"],\n";
+        j += "  \"target\": \"" + apkSidecarJsonEscape(target) + "\",\n";
+        j += "  \"fingerprint\": \"" + fingerprint + "\",\n";
+        j += "  \"apk_sha256\": \"" + apkSha256 + "\",\n";
+        j += "  \"apk_size\": " + std::to_string(apkSize) + "\n}\n";
+        writeFileAtomic(path, j, false);  // cache entry, not durable (like .meta)
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+static bool apkSidecarJsonString(const std::string& json, const std::string& key, std::string& out) {
+    const std::string pat = "\"" + key + "\"";
+    size_t p = json.find(pat);
+    if (p == std::string::npos) return false;
+    p = json.find(':', p + pat.size());
+    if (p == std::string::npos) return false;
+    ++p;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t' || json[p] == '\n' || json[p] == '\r')) ++p;
+    if (p >= json.size() || json[p] != '"') return false;
+    ++p;
+    std::string o;
+    for (; p < json.size(); ++p) {
+        const char c = json[p];
+        if (c == '"') { out = o; return true; }
+        if (c == '\\' && p + 1 < json.size()) {
+            const char e = json[++p];
+            if (e == 'n') o += '\n';
+            else if (e == 'r') o += '\r';
+            else if (e == 't') o += '\t';
+            else if (e == 'u' && p + 4 < json.size()) {
+                auto hexVal = [](char h) -> int {
+                    if (h >= '0' && h <= '9') return h - '0';
+                    if (h >= 'a' && h <= 'f') return h - 'a' + 10;
+                    if (h >= 'A' && h <= 'F') return h - 'A' + 10;
+                    return -1;
+                };
+                int v = 0;
+                bool ok = true;
+                for (int i = 1; i <= 4; ++i) {
+                    const int d = hexVal(json[p + i]);
+                    if (d < 0) { ok = false; break; }
+                    v = v * 16 + d;
+                }
+                if (!ok || v > 0xFF) return false;
+                o += (char)v;
+                p += 4;
+            } else o += e;
+        } else o += c;
+    }
+    return false;
+}
+
+// Unknown version, missing field or malformed JSON: the sidecar is treated
+// as absent (fail-closed), never an error.
+static bool apkSidecarRead(const std::string& path, std::string& target, std::string& fingerprint,
+                           std::string& apkSha256) {
+    try {
+        if (!fileExists(path)) return false;
+        const std::string json = readFile(path);
+        size_t p = json.find("\"version\"");
+        if (p == std::string::npos) return false;
+        p = json.find(':', p + 9);
+        if (p == std::string::npos) return false;
+        ++p;
+        while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) ++p;
+        // Unknown version: the sidecar is from a newer (or older) schema
+        // and is treated as absent, never trusted.
+        long ver = 0;
+        bool sawDigit = false;
+        while (p < json.size() && json[p] >= '0' && json[p] <= '9') {
+            ver = ver * 10 + (json[p] - '0');
+            sawDigit = true;
+            ++p;
+            if (ver > 1000000) return false;
+        }
+        if (!sawDigit || ver != kApkFastPathVersion) return false;
+        if (!apkSidecarJsonString(json, "target", target)) return false;
+        if (!apkSidecarJsonString(json, "fingerprint", fingerprint)) return false;
+        if (!apkSidecarJsonString(json, "apk_sha256", apkSha256)) return false;
+        if (fingerprint.size() != 64 || apkSha256.size() != 64) return false;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+// True when the sidecar matches this build and the recorded APK is still
+// the file on disk, byte for byte. Anything unexpected is false, never an
+// error: the caller then takes the normal link+sign path.
+static bool apkFastPathHit(const std::string& sidecarPath, const std::string& target,
+                           const std::string& fingerprint) {
+    std::string wantTarget, wantFp, wantApkSha;
+    if (!apkSidecarRead(sidecarPath, wantTarget, wantFp, wantApkSha)) return false;
+    if (wantTarget != target || wantFp != fingerprint) return false;
+    try {
+        if (!fileExists(target)) return false;
+        return sha256Hex(readFile(target)) == wantApkSha;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+// Record a freshly built APK in the sidecar. Best-effort: a cache write
+// must never fail a build that already succeeded, so every failure here
+// is swallowed (the next build simply misses the fast path).
+static void apkFastPathRecord(const std::string& sidecarPath, const std::string& target,
+                              const std::string& fingerprint) {
+    try {
+        if (!fileExists(target)) return;
+        const std::string bytes = readFile(target);
+        std::error_code ec;
+        const uint64_t size = std::filesystem::file_size(target, ec);
+        apkSidecarWrite(sidecarPath, target, fingerprint, sha256Hex(bytes),
+                        ec ? bytes.size() : size);
+    } catch (const std::exception&) {
+    }
 }
 
 // v0.23.77-dev: one source through the project object cache. The key hashes
@@ -28811,7 +29093,8 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
 static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
                                          const aster_cn::Program& ownParsed,
                                          const std::string& sp, uint64_t poolSalt,
-                                         int& compiled, int& reused, bool noCache) {
+                                         int& compiled, int& reused, bool noCache,
+                                         std::string* objHashOut = nullptr) {
     const std::string src = readFile(sp);
     const std::string srcHash = sha256Hex(src);
     // C-1: the shared-object flag is part of the cache flags (like the
@@ -28828,7 +29111,7 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
     const std::string metaPath = ctx.cacheDir + "/cn-" + key + ".meta";
     bool reuse = false;
     if (!noCache && fileExists(objPath) && fileExists(metaPath))
-        reuse = readProjectCacheMetaForReuse(metaPath, objPath, flags, sp, srcHash);
+        reuse = readProjectCacheMetaForReuse(metaPath, objPath, flags, sp, srcHash, objHashOut);
     if (reuse) {
         ++reused;
         return readFile(objPath).empty() ? std::string() : objPath;
@@ -28890,6 +29173,9 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
                                                        depHashes),
                         false);  // Step 4: cache meta, not durable (hash-gated reuse).
         ++compiled;
+        // Phase 0: an empty TU still owns an (empty) object whose hash the
+        // fast-path fingerprint needs.
+        if (objHashOut) *objHashOut = sha256Hex(std::string());
         return std::string();
     }
     DebugLineBlob debugLine;
@@ -28916,9 +29202,13 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
         std::remove(tmp.c_str());
         throw Error("cannot move " + tmp + " into place: " + std::strerror(e));
     }
-    writeFileAtomic(metaPath, projectCacheMetaText(flags, sp, srcHash, sha256Hex(objBytes), depHashes),
+    // Phase 0: the object bytes are hashed once for the meta; the same hash
+    // is handed back so the fast-path fingerprint does not re-read the file.
+    const std::string objHash = sha256Hex(objBytes);
+    writeFileAtomic(metaPath, projectCacheMetaText(flags, sp, srcHash, objHash, depHashes),
                     false);  // Step 4: cache meta, not durable (hash-gated reuse).
     ++compiled;
+    if (objHashOut) *objHashOut = objHash;
     return objPath;
 }
 
@@ -30368,6 +30658,7 @@ static std::string canonicalCliCommand(const std::string& command) {
         {"构建PIE", "build-pie"},
         {"编译共享库", "build-so"},
         {"构建APK", "build-apk"},
+        {"服务", "serve"},
         {"链接可执行文件", "link-obj"},
         {"链接PIE", "link-pie"},
         {"链接共享库", "link-so"},
@@ -30416,6 +30707,11 @@ struct TuWorkResult {
     bool compiled = false; // true: compiled this run; false: reused from cache
     long long ms = 0;      // worker-side compile time, for the --verbose line
     std::string error;     // rendered diagnostic (renderError text) when the TU failed
+    // Phase 0: sha256 of the .o bytes (reused from the cache check or the
+    // fresh compile above), for the no-change APK fingerprint. "" when the
+    // worker reported no result (e.g. it died) — the parent then treats
+    // the fingerprint as unavailable and takes the normal path.
+    std::string objHash;
 };
 
 // Default worker count: online CPUs, clamped to [1, 32]. Deliberately
@@ -30475,6 +30771,7 @@ std::string tuSerializeResult(const TuWorkResult& r) {
     std::string ms = std::to_string(r.ms);
     tuPutField(payload, ms);
     tuPutField(payload, r.error);
+    tuPutField(payload, r.objHash);
     std::string framed;
     tuPutU32(framed, (uint32_t)payload.size());
     framed += payload;
@@ -30499,6 +30796,9 @@ bool tuParseResult(const std::string& payload, TuWorkResult& r) {
     if (!getField(ms)) return false;
     try { r.ms = std::stoll(ms); } catch (...) { return false; }
     if (!getField(r.error)) return false;
+    // Phase 0: the objHash field is trailing, so a record without it (an
+    // older worker, or a truncated frame) still parses — objHash stays "".
+    if (off < payload.size() && !getField(r.objHash)) return false;
     return off == payload.size();
 }
 } // namespace
@@ -31489,6 +31789,1909 @@ static int cmpCompleteWithCursor(const PkgManifest& manifest, bool zh,
     }
     return 0;
 }
+// ---- Bilingual project build (extracted from main(), Phase 1) ----
+// The former inline block of main()'s `build`/`run` branch, moved verbatim:
+// the daemon's forked worker runs this same body over the daemon's cached
+// parses, while the cold CLI parses fresh and calls it the same way, so the
+// two paths cannot drift. main()'s locals arrive as BilingualBuildOpts
+// fields, re-aliased to their old names at the top, so the body reads
+// exactly as it did inline. The body still returns main()'s exit codes and
+// still throws Error for the caller's handler; it never touches the daemon.
+struct BilingualBuildReport {
+    int compiled=0, reused=0;
+    // (source, .o sha256) in aster.proj order — the Phase 0 fingerprint input.
+    std::vector<std::pair<std::string, std::string>> objInputs;
+    std::vector<long long> tuMs;        // per-TU verbose ms, aster.proj order
+    std::vector<std::string> objPaths;  // per-TU .o path ("" when nothing emittable)
+    std::string target;                 // output path (APK or exe)
+    std::string fingerprint;            // Phase 0 APK fingerprint, "" when unavailable / exe
+};
+struct BilingualBuildOpts {
+    std::string cmd="build";
+    std::string out;
+    bool dbg=false, bc2=false, noCache=false, verbose=false, noGcSections=false, noStrip=false;
+    unsigned jobsCount=0;
+    std::vector<std::string> moduleDirs;
+    std::vector<std::string> gcKeep;
+    std::vector<std::string> runArgs;
+    uint64_t pageSize=4096;
+    bool cliPageSet=false;
+    bool isRun=false;
+    long timeoutSec=60;
+    uint64_t maxParseDepth=256, maxLoweringDepth=2048;
+    BilingualBuildReport* report=nullptr;  // null on the cold CLI path
+};
+static int runBilingualProjectBuild(const ProjectSpec& spec,
+                                    const aster_cn::ProjectLanguageConfig& bilingualLanguage,
+                                    const std::vector<aster_cn::Program>& parsedSources,
+                                    const BilingualBuildOpts& opts) {
+    // Local aliases: the body below is the former inline block in main().
+    const std::string& cmd=opts.cmd;
+    const std::string& out=opts.out;
+    const bool dbg=opts.dbg;
+    const bool bc2=opts.bc2;
+    const bool noCache=opts.noCache;
+    const bool verbose=opts.verbose;
+    const bool noGcSections=opts.noGcSections;
+    const bool noStrip=opts.noStrip;
+    const unsigned jobsCount=opts.jobsCount;
+    const std::vector<std::string>& bilingualModuleDirs=opts.moduleDirs;
+    const std::vector<std::string>& gcKeep=opts.gcKeep;
+    const std::vector<std::string>& runArgs=opts.runArgs;
+    const uint64_t ps=opts.pageSize;
+    const bool cliPageSet=opts.cliPageSet;
+    const bool isRun=opts.isRun;
+    const long timeoutSec=opts.timeoutSec;
+    const uint64_t maxParseDepthOpt=opts.maxParseDepth;
+    const uint64_t maxLoweringDepthOpt=opts.maxLoweringDepth;
+    // C-1: a bilingual APK project now follows the same flow
+    // as the mainline project build below (per-source PIC
+    // objects -> one shared object -> buildApk) instead of
+    // being refused. The rejection was itself an uncommitted
+    // P0-10 addition, so this merges with that change rather
+    // than conflicting with it.
+    const bool bilingualIsApk = spec.kind=="apk";
+    char bilingualCwdBuffer[4096];
+    const std::string bilingualCwd=getcwd(bilingualCwdBuffer,sizeof bilingualCwdBuffer)
+        ? bilingualCwdBuffer : std::string(".");
+    if(bilingualIsApk&&spec.package.empty()){
+        std::cerr<<"aster "<<cmd<<": an apk project needs `package <android.package>` in aster.proj\n";
+        return 2;
+    }
+    if(isRun&&bilingualIsApk){
+        std::cerr<<"aster run: this is an apk project — `aster build` writes build/"
+                 <<(spec.name.empty()?baseNameOf(bilingualCwd):spec.name)
+                 <<".apk; `aster run` runs an executable project\n";
+        return 2;
+    }
+    const uint64_t bilingualPage = cliPageSet ? ps : (spec.pageSize ? spec.pageSize : ps);
+    std::vector<std::string> packageRoots{bilingualCwd};
+    packageRoots.insert(packageRoots.end(),bilingualModuleDirs.begin(),bilingualModuleDirs.end());
+    aster_cn::Program roots;
+    roots.language=parsedSources.front().language;
+    roots.sourceFile=parsedSources.front().sourceFile;
+    for(const auto& parsed:parsedSources) {
+        roots.structures.insert(roots.structures.end(),parsed.structures.begin(),parsed.structures.end());
+        roots.enums.insert(roots.enums.end(),parsed.enums.begin(),parsed.enums.end());
+        roots.classes.insert(roots.classes.end(),parsed.classes.begin(),parsed.classes.end());
+        roots.interfaceClasses.insert(roots.interfaceClasses.end(),parsed.interfaceClasses.begin(),parsed.interfaceClasses.end());
+        roots.globals.insert(roots.globals.end(),parsed.globals.begin(),parsed.globals.end());
+        roots.methods.insert(roots.methods.end(),parsed.methods.begin(),parsed.methods.end());
+        roots.imports.insert(roots.imports.end(),parsed.imports.begin(),parsed.imports.end());
+        roots.aliases.insert(roots.aliases.end(),parsed.aliases.begin(),parsed.aliases.end());
+        roots.fileImports.insert(roots.fileImports.end(),parsed.fileImports.begin(),parsed.fileImports.end());
+    }
+    // P1-3: listed sources are known sources for file imports:
+    // an imported file that is itself listed is supplied by its
+    // own TU instead of being merged again.
+    std::set<std::string> bilingualKnownSources;
+    for(const auto& sourcePath:spec.sources)
+        bilingualKnownSources.insert(cnCanonicalPath(sourcePath));
+    // B-P1: each listed source's resolved language, so its file
+    // imports inherit it (not the merged root's, which only
+    // carries the first TU's language).
+    std::map<std::string, aster_cn::Language> bilingualSourceLanguages;
+    for(size_t i=0;i<spec.sources.size();++i)
+        bilingualSourceLanguages[cnCanonicalPath(spec.sources[i])] = parsedSources[i].language;
+    // Package format (§11.3): a project that declares a package
+    // version must find that exact version before any import is
+    // resolved, so a missing or mismatched package reports
+    // itself instead of surfacing as a missing package source.
+    if(const std::string pkgErr=pkgValidateProjectPackages(spec,packageRoots);!pkgErr.empty()){
+        std::cerr<<"aster "<<cmd<<": "<<pkgErr<<"\n";return 1;
+    }
+    aster_cn::Program program=cnResolvePackageImports(
+        roots,bilingualLanguage,packageRoots,bilingualKnownSources,bilingualSourceLanguages);
+    std::string bilingualProjectName=spec.name.empty()?baseNameOf(bilingualCwd):spec.name;
+    if(bilingualProjectName.empty()||bilingualProjectName=="."||bilingualProjectName=="..")
+        bilingualProjectName="app";
+    // C-1: an APK project's default output is build/<name>.apk,
+    // like the mainline project build; the .so name below is
+    // derived from the same name, so sanitise it the way the
+    // mainline build does (a cwd fallback may contain spaces).
+    if(bilingualIsApk){
+        bilingualProjectName=sanitizeFileName(bilingualProjectName);
+        if(bilingualProjectName.find_first_not_of('_')==std::string::npos)
+            bilingualProjectName="app";
+    }
+    const std::string target=out.empty()
+        ? "build/"+bilingualProjectName+(bilingualIsApk?".apk":"")
+        : out;
+    const std::string targetDir=dirNameOf(target);
+    if(!targetDir.empty()&&!makeDirs(targetDir)){std::cerr<<"aster build: cannot create "<<targetDir<<"\n";return 1;}
+    const std::string cacheDir="build/.cache";
+    if(!makeDirs(cacheDir)){std::cerr<<"aster "<<cmd<<": cannot create "<<cacheDir<<"\n";return 1;}
+    // Per-source build: one cached object per deduplicated
+    // source, linked in aster.proj order. The whole-project
+    // fingerprint and its fileExists-only reuse are gone: each
+    // TU's validity comes from its own meta (src + obj hashes
+    // + foreign-source dep hashes). The exactly-one-main check
+    // stays at merged level, as before — for exe projects only:
+    // an APK project has no main (its entry is
+    // ANativeActivity_onCreate in the sources — the symbol
+    // android.app.NativeActivity looks up at launch; a bare
+    // aster_main is never called).
+    bool bilingualHasMain=bilingualIsApk;
+    for(const auto& method:program.methods) if(method.name=="main") bilingualHasMain=true;
+    if(!bilingualHasMain)
+        throw Error(program.language==aster_cn::Language::Zh
+            ? "程序必须定义 启动方法" : "program must define main");
+    std::map<std::string, std::string> bilingualTypeToSource;
+    for(const auto& parsed:parsedSources) {
+        for(const auto& s:parsed.structures) bilingualTypeToSource[s.name]=parsed.sourceFile;
+        for(const auto& e:parsed.enums) {
+            bilingualTypeToSource[e.name]=parsed.sourceFile;
+            for(const auto& m:e.members) bilingualTypeToSource[m.name]=parsed.sourceFile;
+        }
+        for(const auto& c:parsed.classes) bilingualTypeToSource[c.name]=parsed.sourceFile;
+        for(const auto& i:parsed.interfaceClasses) bilingualTypeToSource[i.name]=parsed.sourceFile;
+        // P1-3: aliases are type names too (see testAddTypes).
+        for(const auto& a:parsed.aliases) bilingualTypeToSource[a.name]=parsed.sourceFile;
+    }
+    std::string bilingualLangText=std::string("default=")+
+        (bilingualLanguage.hasDefault
+            ? (bilingualLanguage.defaultLanguage==aster_cn::Language::Zh?"zh":"en") : "-")+
+        ";zhAllowed="+(bilingualLanguage.zhAllowed?"1":"0")+
+        ";enAllowed="+(bilingualLanguage.enAllowed?"1":"0");
+    // B-P1: per-file entries change how sources parse, so they
+    // are part of the cache key.
+    bilingualLangText+=aster_cn::projectLanguageFileEntries(bilingualLanguage);
+    for(const auto& moduleDir:bilingualModuleDirs)
+        bilingualLangText+=";module-dir="+moduleDir;
+    const std::set<std::string> bilingualPackageFiles=g_cnPackageFilesLoaded;
+    CnPerSourceContext bilingualCtx;
+    bilingualCtx.program=&program;
+    {
+        // Package declarations are emitted by the first
+        // source importing each file's module, so a source
+        // that neither imports nor references a package
+        // records no package dep.
+        std::vector<std::pair<std::string, const aster_cn::Program*>> bilingualLinkSet;
+        for (size_t i = 0; i < spec.sources.size(); ++i)
+            bilingualLinkSet.emplace_back(spec.sources[i], &parsedSources[i]);
+        bilingualCtx.packageFileOwners = cnPackageFileOwners(bilingualLinkSet);
+        bilingualCtx.fileImportOwners = cnFileImportOwners(bilingualLinkSet);
+        bilingualCtx.ownersHash = cnCombinedOwnersHash(bilingualCtx.packageFileOwners,
+                                                       bilingualCtx.fileImportOwners);
+    }
+    bilingualCtx.packageFiles=&bilingualPackageFiles;
+    bilingualCtx.forceConstructedClasses=cnFindConstructedClasses(program);
+    {
+        std::string constructedText;
+        for(const auto& name:bilingualCtx.forceConstructedClasses){constructedText+=name;constructedText+='\n';}
+        bilingualCtx.constructedHash=sha256Hex(constructedText);
+    }
+    bilingualCtx.typeNameToSource=bilingualTypeToSource;
+    bilingualCtx.langHash=sha256Hex(bilingualLangText);
+    bilingualCtx.keySalt="";
+    bilingualCtx.cacheDir=cacheDir;
+    bilingualCtx.dbg=dbg;
+    bilingualCtx.bc=bc2;
+    bilingualCtx.page=bilingualPage;
+    bilingualCtx.maxParseDepth=(unsigned)maxParseDepthOpt;
+    bilingualCtx.maxLoweringDepth=(unsigned)std::max(maxLoweringDepthOpt,maxParseDepthOpt);
+    bilingualCtx.sharedObject=bilingualIsApk;
+    // Step 1: D2a + string-literal validation once for the merged
+    // program (after cnFindConstructedClasses above, which must
+    // see the raw program — see cnPreprocessMergedProgram).
+    // Runs even when every TU is cached: one pass (~80 ms) is
+    // the price of not re-doing it 21 times on a clean build.
+    cnPreprocessMergedProgram(program);
+    bilingualCtx.programPreprocessed=true;
+    std::vector<std::string> bilingualObjs;
+    // Phase 1: per-TU timings and .o paths, in aster.proj order, for
+    // the daemon's fast-path replay and .o/.meta stat checks. Filled
+    // by both TU loops below; reported through opts.report.
+    std::vector<long long> bilingualTuMs(spec.sources.size(),0);
+    std::vector<std::string> bilingualObjPaths(spec.sources.size());
+    int bilingualCompiled=0, bilingualReused=0;
+    // Phase 0: (source, .o sha256) in aster.proj order, for the
+    // no-change APK fingerprint. The hashes are the ones the
+    // per-TU reuse check / fresh compile already computed.
+    std::vector<std::pair<std::string, std::string>> bilingualObjInputs;
+    if(jobsCount>1){
+        // v0.23.85-dev: parallel per-TU build (fork workers).
+        // One job per source; the parent collects in source
+        // order, so link order and counts match the serial loop
+        // below, and the first failure in source order is the
+        // one reported (see runTuJobs).
+        std::vector<std::function<TuWorkResult()>> tuJobs;
+        tuJobs.reserve(spec.sources.size());
+        for(size_t i=0;i<spec.sources.size();++i){
+            tuJobs.push_back([&,i]{
+                const auto t0=std::chrono::steady_clock::now();
+                int c=0,r=0;
+                std::string objHash;
+                std::string obj=cachedCnProjectObject(
+                    bilingualCtx,parsedSources[i],spec.sources[i],
+                    (i+1)*1000000,c,r,noCache,&objHash);
+                TuWorkResult res;
+                res.objPath=std::move(obj);
+                res.compiled=c>0;
+                res.ms=msSince(t0);
+                res.objHash=std::move(objHash);
+                return res;
+            });
+        }
+        std::string firstError;
+        const bool tuOk=runTuJobs(tuJobs,jobsCount,
+            [&](size_t idx,const TuWorkResult& res){
+                if(res.compiled)++bilingualCompiled; else ++bilingualReused;
+                if(verbose)
+                    std::cout<<"aster: verbose: "<<(res.compiled?"compiled ":"reused ")
+                             <<spec.sources[idx]<<" in "<<res.ms<<" ms\n"<<std::flush;
+                bilingualObjInputs.emplace_back(spec.sources[idx], res.objHash);
+                if(!res.objPath.empty()) bilingualObjs.push_back(res.objPath);
+                bilingualTuMs[idx]=res.ms; bilingualObjPaths[idx]=res.objPath;
+            },firstError,spec.sources);
+        if(!tuOk){std::cerr<<firstError;return 1;}
+    } else
+    for(size_t i=0;i<spec.sources.size();++i) {
+        const auto fileT0=std::chrono::steady_clock::now();
+        const int c0=bilingualCompiled;
+        std::string objHash;
+        const std::string obj=cachedCnProjectObject(
+            bilingualCtx,parsedSources[i],spec.sources[i],
+            (i+1)*1000000,bilingualCompiled,bilingualReused,noCache,&objHash);
+        // v0.23.82-dev: flush every verbose line. stdout is
+        // block-buffered through a pipe, so without this all
+        // 21 lines arrive in one burst at process exit and a
+        // live log reader (e.g. the Tiecode plugin) sees
+        // nothing while the build runs.
+        if(verbose)
+            std::cout<<"aster: verbose: "<<(bilingualCompiled>c0?"compiled ":"reused ")
+                     <<spec.sources[i]<<" in "<<msSince(fileT0)<<" ms\n"<<std::flush;
+        bilingualObjInputs.emplace_back(spec.sources[i], objHash);
+        if(!obj.empty()) bilingualObjs.push_back(obj);
+        bilingualTuMs[i]=msSince(fileT0); bilingualObjPaths[i]=obj;
+    }
+    if(bilingualObjs.empty()){std::cerr<<"aster "<<cmd<<": no objects to link\n";return 1;}
+    if(bilingualIsApk){
+        // C-1: the same packaging as the mainline project build
+        // below — one shared object, then buildApk (v1 + v2 + v3
+        // triple-signed, self-verified). The per-source objects
+        // are PIC (ctx.sharedObject), so linkSharedObjects
+        // accepts them (it refuses a _start definition); the
+        // __aster_init chain is rooted by the shared-object
+        // linker, as in the mainline path.
+        // v0.23.82-dev: an APK project links with gc-sections and
+        // --strip on by default (the .so is an app, not a library:
+        // only ANativeActivity_onCreate is looked up by name, and
+        // the packaged .so needs no source-level .symtab).
+        // --no-gc-sections / --no-strip keep the whole-object
+        // shape for debugging.
+        const std::string bilingualSoPath=cacheDir+"/"+bilingualProjectName+".so";
+        std::string bilingualApkErr;
+        if(!validateApkInputs(spec.package,spec.abi,bilingualProjectName,bilingualApkErr)){
+            std::cerr<<"aster build: "<<bilingualApkErr<<"\n";return 2;
+        }
+        // Phase 0: no-change APK fast path. The fingerprint
+        // covers every input of the link+package+sign steps
+        // (see apkFastPathCanonicalText); the .o hashes are
+        // the ones the TU loop already computed. The icon is
+        // loaded here, once, and reused for buildApk below.
+        // The certificate hash comes from the cert file, not
+        // from loading the key (that parse costs ~150 ms).
+        const std::string bilingualLabel=spec.label.empty()?bilingualProjectName:spec.label;
+        const std::vector<uint8_t> bilingualIconBytes=spec.icon.empty()?std::vector<uint8_t>{}:loadIconBytes(spec.icon,"aster build: icon");
+        const std::string bilingualSidecarPath=cacheDir+"/last-apk.json";
+        auto computeBilingualFingerprint=[&]() -> std::string {
+            ApkFastPathInputs fp;
+            fp.objects=bilingualObjInputs;
+            fp.gcSections=!noGcSections;
+            fp.stripSymtab=!noStrip;
+            fp.pageSize=bilingualPage;
+            fp.gcKeep=gcKeep;
+            fp.signMode=spec.signMode;
+            std::string certSha;
+            const std::string certPath=spec.signMode=="release"
+                ? spec.cert : debugCertPath(projectKeyDir(""));
+            if(apkFastPathCertSha256(certPath,certSha)) fp.certSha256=certSha;
+            fp.packageName=spec.package;
+            fp.libname=bilingualProjectName;
+            fp.abi=spec.abi;
+            fp.label=bilingualLabel;
+            fp.versionCode=spec.versionCode;
+            fp.versionName=spec.versionName;
+            fp.minSdk=spec.minSdk;
+            fp.targetSdk=spec.targetSdk;
+            fp.hasIcon=!spec.icon.empty();
+            if(fp.hasIcon) fp.iconSha256=sha256Hex(bilingualIconBytes);
+            if(!apkFastPathInputsReady(fp)) return std::string();
+            return apkFastPathFingerprint(fp);
+        };
+        std::string bilingualFingerprint=computeBilingualFingerprint();
+        // Phase 1: report the build's identity to the caller (the daemon
+        // records it for its no-change fast path); a null report is the cold CLI.
+        auto fillBilingualReport=[&](){
+            if(!opts.report)return;
+            opts.report->compiled=bilingualCompiled;
+            opts.report->reused=bilingualReused;
+            opts.report->objInputs=bilingualObjInputs;
+            opts.report->tuMs=bilingualTuMs;
+            opts.report->objPaths=bilingualObjPaths;
+            opts.report->target=target;
+            opts.report->fingerprint=bilingualFingerprint;
+        };
+        if(!bilingualFingerprint.empty()){
+            const auto fpT0=std::chrono::steady_clock::now();
+            if(apkFastPathHit(bilingualSidecarPath,target,bilingualFingerprint)){
+                if(verbose)
+                    std::cout<<"aster: verbose: fast-path: reused "<<target
+                             <<" (fingerprint match) in "<<msSince(fpT0)<<" ms\n"<<std::flush;
+                std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
+                         <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n"<<std::flush;
+                fillBilingualReport();
+                return 0;
+            }
+        }
+        const auto linkT0=std::chrono::steady_clock::now();
+        linkSharedObjects(bilingualObjs,bilingualSoPath,"lib"+bilingualProjectName+".so",{},bilingualPage,!noGcSections,!noStrip,verbose,gcKeep);
+        if(verbose)
+            std::cout<<"aster: verbose: linked "<<bilingualObjs.size()<<" objects into "<<bilingualSoPath
+                     <<" in "<<msSince(linkT0)<<" ms\n"<<std::flush;
+        const std::string bilingualKeyPath=debugKeyPath(projectKeyDir(""));
+        const bool bilingualKeyExisted=fileExists(bilingualKeyPath);
+        const auto keyT0=std::chrono::steady_clock::now();
+        SigningKey bilingualKey;
+        if(spec.signMode=="release"){
+            if(spec.keystore.empty()||spec.cert.empty()){
+                std::cerr<<"aster build: sign-mode release needs `keystore <path>` and `cert <path>` in aster.proj\n";
+                return 2;
+            }
+            bilingualKey=releaseKey(spec.keystore,spec.cert);
+        } else {
+            if(!spec.keystore.empty()||!spec.cert.empty()){
+                std::cerr<<"aster build: keystore/cert are release settings — add `sign-mode release` or remove them\n";
+                return 2;
+            }
+            bilingualKey=debugKeyFor(projectKeyDir(""), spec.keyBits);
+        }
+        if(verbose)
+            std::cout<<"aster: verbose: signing key "
+                     <<(spec.signMode=="release"?"loaded":(bilingualKeyExisted?"reused":"generated"))
+                     <<" in "<<msSince(keyT0)<<" ms\n"<<std::flush;
+        const std::string bilingualSoText=readFile(bilingualSoPath);
+        std::vector<uint8_t> bilingualSo(bilingualSoText.begin(),bilingualSoText.end());
+        int bilingualApkResult=buildApk(target,spec.package,bilingualProjectName,spec.abi,bilingualSo,
+            spec.minSdk,spec.targetSdk,bilingualLabel,
+            spec.versionCode,spec.versionName,{},bilingualKey,true,false,false,bilingualPage,bilingualIconBytes,!noStrip,verbose);
+        if(bilingualApkResult!=0)return bilingualApkResult;
+        // Phase 0: record the fresh APK. The fingerprint may
+        // have been unavailable before the link (e.g. the debug
+        // key did not exist yet and this build generated it),
+        // so recompute it now that the key is on disk.
+        if(bilingualFingerprint.empty()) bilingualFingerprint=computeBilingualFingerprint();
+        if(!bilingualFingerprint.empty())
+            apkFastPathRecord(bilingualSidecarPath,target,bilingualFingerprint);
+        if(verbose){
+            std::error_code ec;
+            const uint64_t apkBytes=std::filesystem::file_size(target,ec);
+            std::cout<<"aster: verbose: size: "<<target<<" "<<(ec?0:apkBytes)<<" bytes; .so "
+                     <<bilingualSo.size()<<" bytes (.text "<<elfSectionSize(bilingualSo,".text")<<" bytes); "
+                     <<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused\n"<<std::flush;
+        }
+        std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
+                 <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n"<<std::flush;
+        fillBilingualReport();
+        return 0;
+    }
+    // No GC here, like the mainline project build: GC prunes
+    // from _start, and a foreign TU's __aster_init is unreachable
+    // from main (only the entry TU's own init is called from its
+    // prologue), so GC drops it before the linker can synthesize
+    // the entry stub that walks the chain — every foreign
+    // runtime-initialized global would silently stay zero.
+    // Without GC the chain survives and the A-21 order check
+    // still runs.
+    const auto exeLinkT0=std::chrono::steady_clock::now();
+    linkObjects(bilingualObjs,target,0x400000,2,bilingualPage,false);
+    if(verbose)
+        std::cout<<"aster: verbose: linked "<<bilingualObjs.size()<<" objects into "<<target
+                 <<" in "<<msSince(exeLinkT0)<<" ms\n"<<std::flush;
+    std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
+             <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n"<<std::flush;
+    // Phase 1: report (no fingerprint: the exe path has no fast path).
+    if(opts.report){opts.report->compiled=bilingualCompiled; opts.report->reused=bilingualReused; opts.report->objInputs=bilingualObjInputs; opts.report->tuMs=bilingualTuMs; opts.report->objPaths=bilingualObjPaths; opts.report->target=target;}
+    if(isRun){
+        pid_t pid=::fork();
+        if(pid==0){execAarch64Image(target,runArgs);std::perror("aster run");::_exit(127);}
+        int st=0;
+        if(pid<0){std::cerr<<"aster run: cannot fork\n";return 1;}
+        // v0.23.82-dev (bilingual): the same bounded wait as the
+        // original-parser run path below; a hanging program is
+        // killed and reported instead of hanging aster.
+        const int wr=waitChildWithTimeout(pid,st,timeoutSec,"aster run");
+        if(wr<0)return 1;
+        if(wr==1)return 124;
+        if(WIFEXITED(st))return WEXITSTATUS(st);
+        if(WIFSIGNALED(st))return 128+WTERMSIG(st);
+        return 1;
+    }
+    return 0;
+}
+
+// ---- Phase 1 daemon: `aster serve` + Unix socket + NDJSON (DESIGN.md §2, §7.2) ----
+// The daemon is an accelerator, never a correctness dependency (DESIGN.md §0):
+// it holds per-file parses in memory and forks one worker per build request;
+// the worker runs runBilingualProjectBuild(), the same body the cold CLI
+// runs. Any doubt fails closed: the client cold-runs, the worker's .o/.meta
+// cache is the authority on disk, and the daemon never invents output.
+//
+// Protocol (DESIGN.md §2.3): Unix domain socket, one request per connection.
+// First line: {"method":"hello","params":{"protocol":1,"bin":"<exe stat identity>",
+// "project":"<dir>"}} — a mismatch closes the connection and the client
+// cold-runs. Second line: one method call: ping | stats | shutdown | build.
+// The identity is the exe's stat identity (dev:ino:size:mtime), not the full
+// sha256: hashing the 3 MB binary costs ~50 ms per side on this VM (measured
+// 2026-11-27), which alone would blow the 10-50 ms no-change budget. The full
+// sha256 is still recorded in the lock file at daemon startup, and any normal
+// rebuild/reinstall changes the inode or mtime.
+// The build's stdout/stderr stream back as progress notifications
+// ({"method":"progress","params":{"stream":"stdout"|"stderr","line":"...",
+// "nl":true}}), then a final {"result":{"exitCode":N,...}}.
+//
+// Honest scope note: the daemon's no-change fast path replays the last
+// build's per-TU `--verbose` timings from memory (no TU ran, so there are no
+// fresh timings); the summary line, the counts and the APK are exact. Any
+// output comparison must normalise timings, exactly as cold-vs-cold does.
+// Two clients are served sequentially: one build at a time, the next
+// connection waits in the listen backlog (Phase 1 keeps the parent
+// single-threaded so its cached state is never raced).
+//
+// Lifecycle (DESIGN.md §2.2): one service per project, socket + lock in
+// <project>/build/.cache (or --socket-dir: the plugin's private dir, where
+// the project dir cannot hold a socket). The lock holds pid + binary sha256
+// + start time. A changed binary kills the old service; a dead parent
+// (getppid()==1, non-detached only) or 10 idle minutes exits the daemon.
+static volatile std::sig_atomic_t g_daemonStopFlag=0;
+static void daemonOnSignal(int){ g_daemonStopFlag=1; }
+static void daemonLog(const std::string& msg){
+    const std::time_t t=std::time(nullptr);
+    char buf[32];
+    std::strftime(buf,sizeof buf,"%Y-%m-%d %H:%M:%S",std::localtime(&t));
+    std::cerr<<"["<<buf<<"] asterd: "<<msg<<"\n"<<std::flush;
+}
+
+// ---- Minimal JSON (our own protocol; both sides are this file) ----
+static std::string daemonJsonEscape(const std::string& s){
+    std::string out;
+    out.reserve(s.size()+2);
+    for(unsigned char ch : s){
+        switch(ch){
+            case '"': out+="\\\""; break;
+            case '\\': out+="\\\\"; break;
+            case '\n': out+="\\n"; break;
+            case '\r': out+="\\r"; break;
+            case '\t': out+="\\t"; break;
+            case '\b': out+="\\b"; break;
+            case '\f': out+="\\f"; break;
+            default:
+                if(ch<0x20){ char buf[8]; std::snprintf(buf,sizeof buf,"\\u%04x",ch); out+=buf; }
+                else out.push_back((char)ch);
+        }
+    }
+    return out;
+}
+static std::string daemonJsonString(const std::string& s){ return "\""+daemonJsonEscape(s)+"\""; }
+// Locate `"key": <value>` (keys are unique in our messages) and return the
+// value's start offset. False when absent or malformed.
+static bool daemonJsonFindValue(const std::string& json, const std::string& key, size_t& valuePos){
+    const std::string pat="\""+key+"\"";
+    size_t at=json.find(pat);
+    if(at==std::string::npos) return false;
+    at=json.find(':',at+pat.size());
+    if(at==std::string::npos) return false;
+    ++at;
+    while(at<json.size()&&(json[at]==' '||json[at]=='\t')) ++at;
+    if(at>=json.size()) return false;
+    valuePos=at;
+    return true;
+}
+static bool daemonJsonReadStringAt(const std::string& json, size_t& at, std::string& out){
+    if(at>=json.size()||json[at]!='"') return false;
+    ++at;
+    out.clear();
+    for(;at<json.size();++at){
+        const char ch=json[at];
+        if(ch=='"'){ ++at; return true; }
+        if(ch=='\\'&&at+1<json.size()){
+            const char e=json[++at];
+            switch(e){
+                case 'n': out.push_back('\n'); break;
+                case 'r': out.push_back('\r'); break;
+                case 't': out.push_back('\t'); break;
+                case 'b': out.push_back('\b'); break;
+                case 'f': out.push_back('\f'); break;
+                case '/': out.push_back('/'); break;
+                case '\\': out.push_back('\\'); break;
+                case '"': out.push_back('"'); break;
+                case 'u': {
+                    if(at+4>=json.size()) return false;
+                    unsigned cp=0;
+                    for(int k=0;k<4;++k){ const char h=json[++at]; cp<<=4; cp+=(h>='0'&&h<='9')?h-'0':(h>='a'&&h<='f')?h-'a'+10:(h>='A'&&h<='F')?h-'A'+10:0; }
+                    if(cp<0x80) out.push_back((char)cp);
+                    else if(cp<0x800){ out.push_back((char)(0xC0|(cp>>6))); out.push_back((char)(0x80|(cp&0x3F))); }
+                    else { out.push_back((char)(0xE0|(cp>>12))); out.push_back((char)(0x80|((cp>>6)&0x3F))); out.push_back((char)(0x80|(cp&0x3F))); }
+                    break;
+                }
+                default: return false;
+            }
+        } else out.push_back(ch);
+    }
+    return false;
+}
+static bool daemonJsonGetString(const std::string& json, const std::string& key, std::string& out){
+    size_t at=0;
+    if(!daemonJsonFindValue(json,key,at)) return false;
+    return daemonJsonReadStringAt(json,at,out);
+}
+static bool daemonJsonGetInt(const std::string& json, const std::string& key, long long& out){
+    size_t at=0;
+    if(!daemonJsonFindValue(json,key,at)) return false;
+    char* end=nullptr;
+    const long long v=std::strtoll(json.c_str()+at,&end,10);
+    if(end==json.c_str()+at) return false;
+    out=v;
+    return true;
+}
+static bool daemonJsonGetBool(const std::string& json, const std::string& key, bool& out){
+    size_t at=0;
+    if(!daemonJsonFindValue(json,key,at)) return false;
+    if(json.compare(at,4,"true")==0){ out=true; return true; }
+    if(json.compare(at,5,"false")==0){ out=false; return true; }
+    return false;
+}
+static bool daemonJsonGetStringArray(const std::string& json, const std::string& key, std::vector<std::string>& out){
+    size_t at=0;
+    if(!daemonJsonFindValue(json,key,at)) return false;
+    if(json[at]!='[') return false;
+    ++at;
+    out.clear();
+    auto skipWs=[&](){ while(at<json.size()&&(json[at]==' '||json[at]=='\t'||json[at]=='\n'||json[at]=='\r')) ++at; };
+    skipWs();
+    if(at<json.size()&&json[at]==']'){ ++at; return true; }
+    for(;;){
+        std::string one;
+        if(!daemonJsonReadStringAt(json,at,one)) return false;
+        out.push_back(one);
+        skipWs();
+        if(at<json.size()&&json[at]==','){ ++at; skipWs(); continue; }
+        if(at<json.size()&&json[at]==']'){ ++at; return true; }
+        return false;
+    }
+}
+
+// ---- Socket line I/O ----
+static bool daemonWriteAll(int fd, const std::string& data){
+    size_t off=0;
+    while(off<data.size()){
+        const ssize_t n=::write(fd,data.data()+off,data.size()-off);
+        if(n<0){ if(errno==EINTR) continue; return false; }
+        if(n==0) return false;
+        off+=(size_t)n;
+    }
+    return true;
+}
+// Buffered '\n'-terminated line reader. Returns 1 = line read (without the
+// newline), 0 = clean EOF, -1 = timeout / error / line over maxLen.
+struct DaemonLineReader {
+    int fd=-1;
+    std::string pending;
+    int readLine(std::string& line, int timeoutMs, size_t maxLen=4*1024*1024){
+        line.clear();
+        for(;;){
+            const size_t nl=pending.find('\n');
+            if(nl!=std::string::npos){
+                line=pending.substr(0,nl);
+                pending.erase(0,nl+1);
+                return 1;
+            }
+            if(pending.size()>maxLen) return -1;
+            struct pollfd pfd; pfd.fd=fd; pfd.events=POLLIN; pfd.revents=0;
+            const int pr=::poll(&pfd,1,timeoutMs);
+            if(pr<0){ if(errno==EINTR) continue; return -1; }
+            if(pr==0) return -1;
+            if(pfd.revents&POLLNVAL) return -1;
+            char buf[65536];
+            const ssize_t n=::read(fd,buf,sizeof buf);
+            if(n<0){ if(errno==EINTR) continue; return -1; }
+            if(n==0){
+                if(pending.empty()) return 0;
+                line=pending;
+                pending.clear();
+                return 1;
+            }
+            pending.append(buf,(size_t)n);
+        }
+    }
+};
+
+// Existence regardless of file type: fileExists() requires S_ISREG, so it
+// is always false for a Unix socket. The socket checks must use this.
+static bool daemonPathExists(const std::string& path){
+    struct stat st;
+    return ::stat(path.c_str(),&st)==0;
+}
+// ---- Paths, binary identity, lock file ----
+static std::string daemonExePath(){
+    char buf[4096];
+    const ssize_t n=::readlink("/proc/self/exe",buf,sizeof buf-1);
+    if(n<0) return std::string();
+    buf[n]='\0';
+    return std::string(buf);
+}
+// stat identity (dev:ino:size:mtime) — cheap; the full hash below is the
+// authoritative identity and costs ~2 ms for this binary (measured).
+static bool daemonStatIdentity(const std::string& path, std::string& out){
+    struct stat sb;
+    if(::stat(path.c_str(),&sb)!=0) return false;
+    std::ostringstream o;
+    o<<sb.st_dev<<':'<<sb.st_ino<<':'<<sb.st_size<<':'<<sb.st_mtim.tv_sec<<'.'<<sb.st_mtim.tv_nsec;
+    out=o.str();
+    return true;
+}
+static std::string daemonBinaryIdentity(){
+    const std::string exe=daemonExePath();
+    std::string id;
+    if(exe.empty()||!daemonStatIdentity(exe,id)) return std::string();
+    return id;
+}
+static std::string daemonBinarySha256(){
+    const std::string exe=daemonExePath();
+    if(exe.empty()) return std::string();
+    try { return sha256Hex(readFile(exe)); } catch(const std::exception&){ return std::string(); }
+}
+static std::string daemonCanonicalDir(const std::string& path){
+    char* resolved=::realpath(path.c_str(),nullptr);
+    if(!resolved) return path;
+    std::string out(resolved);
+    std::free(resolved);
+    return out;
+}
+static std::string daemonHash16(const std::string& s){ return sha256Hex(s).substr(0,16); }
+// Socket directory: --socket-dir when given, else <project>/build/.cache.
+// `create` is false for `serve stop`/`status`, which must never create
+// directories in a project that has no service.
+static std::string daemonSocketDir(const std::string& projectDir, const std::string& socketDirOpt, bool create=true){
+    const std::string dir=socketDirOpt.empty()?projectDir+"/build/.cache":daemonCanonicalDir(socketDirOpt);
+    if(create&&!makeDirs(dir)) return std::string();
+    if(!create&&!dirExists(dir)) return std::string();
+    return dir;
+}
+static std::string daemonSocketPath(const std::string& socketDir, const std::string& projectDir){
+    const std::string name="asterd-"+daemonHash16(projectDir)+".sock";
+    std::string p=socketDir+"/"+name;
+    if(p.size()>=sizeof(((struct sockaddr_un*)0)->sun_path)){
+        // AF_UNIX sun_path is 108 bytes: a deep project path does not fit.
+        // Fall back to TMPDIR under the same hash, so one project still
+        // maps to one socket; the lock file follows the socket.
+        const char* tmp=std::getenv("TMPDIR");
+        const std::string td=tmp&&*tmp?tmp:"/tmp";
+        p=td+"/"+name;
+    }
+    return p;
+}
+static std::string daemonSiblingPath(const std::string& socketPath, const std::string& suffix){
+    const size_t slash=socketPath.rfind('/');
+    const std::string dir=slash==std::string::npos?std::string("."):socketPath.substr(0,slash);
+    const std::string base=socketPath.substr(slash==std::string::npos?0:slash+1);
+    const std::string stem=base.size()>5&&base.compare(base.size()-5,5,".sock")==0
+        ? base.substr(0,base.size()-5) : base;
+    return dir+"/"+stem+suffix;
+}
+static std::string daemonLockPath(const std::string& socketPath){ return daemonSiblingPath(socketPath,".lock"); }
+static std::string daemonLogPath(const std::string& socketPath){ return daemonSiblingPath(socketPath,".log"); }
+struct DaemonLockInfo { long pid=0; std::string binIdentity, binSha; long long started=0; std::string project; };
+static bool daemonReadLock(const std::string& lockPath, DaemonLockInfo& info){
+    if(!fileExists(lockPath)) return false;
+    std::string text;
+    try { text=readFile(lockPath); } catch(const std::exception&){ return false; }
+    std::istringstream in(text);
+    std::string line;
+    bool any=false;
+    while(std::getline(in,line)){
+        if(line.rfind("pid ",0)==0){ info.pid=std::strtol(line.c_str()+4,nullptr,10); any=true; }
+        else if(line.rfind("bin ",0)==0){ info.binIdentity=line.substr(4); any=true; }
+        else if(line.rfind("binSha256 ",0)==0){ info.binSha=line.substr(10); any=true; }
+        else if(line.rfind("started ",0)==0){ info.started=std::strtoll(line.c_str()+8,nullptr,10); any=true; }
+        else if(line.rfind("project ",0)==0){ info.project=line.substr(8); any=true; }
+    }
+    return any;
+}
+static void daemonWriteLock(const std::string& lockPath, const DaemonLockInfo& info){
+    std::ostringstream o;
+    o<<"pid "<<info.pid<<"\nbin "<<info.binIdentity<<"\nbinSha256 "<<info.binSha
+     <<"\nstarted "<<info.started<<"\nproject "<<info.project<<"\n";
+    try { writeFileAtomic(lockPath,o.str()); } catch(const std::exception&){}
+}
+static bool daemonPidAlive(long pid){
+    if(pid<=0) return false;
+    if(::kill((pid_t)pid,0)==0) return true;
+    return errno==EPERM;
+}
+static bool daemonConnect(const std::string& socketPath, int& fdOut){
+    const int fd=::socket(AF_UNIX,SOCK_STREAM,0);
+    if(fd<0) return false;
+    struct sockaddr_un addr;
+    std::memset(&addr,0,sizeof addr);
+    addr.sun_family=AF_UNIX;
+    if(socketPath.size()>=sizeof(addr.sun_path)){ ::close(fd); return false; }
+    std::strncpy(addr.sun_path,socketPath.c_str(),sizeof(addr.sun_path)-1);
+    if(::connect(fd,(struct sockaddr*)&addr,sizeof addr)!=0){ ::close(fd); return false; }
+    fdOut=fd;
+    return true;
+}
+// The key directory the *client* would use: its ASTER_KEY_DIR when set,
+// else the projectKeyDir("") upward walk from the project dir. The daemon
+// parent must not use its own environment here — it may have been launched
+// under a different ASTER_KEY_DIR than the client calling it.
+static std::string daemonKeyDirForClient(const std::string& keyDir, const std::string& projectDir){
+    if(!keyDir.empty()) return keyDir;
+    std::string dir=projectDir;
+    for(;;){
+        if(dirExists(dir+"/.git")||dirExists(dir+"/.aster")) return dir;
+        const std::string up=parentDir(dir);
+        if(up==dir) break;
+        dir=up;
+    }
+    return projectDir;
+}
+
+// ---- Daemon state: per-file parses + last build identity ----
+// Disk (.o/.meta + sidecar) stays the authority; this memory only accelerates.
+// The merged program is rebuilt per request from these parses (a vector
+// splice, ~ms); the preprocess step still runs per request in the worker
+// (DESIGN.md §4.1: Phase 1 accepts that ~80 ms).
+struct DaemonFileMeta {
+    std::string path;   // as listed in aster.proj, relative to the project dir
+    std::string canon;  // cnCanonicalPath(path)
+    std::string sha256;
+    uint64_t size=0;
+    int64_t mtimeSec=0, mtimeNsec=0;
+    aster_cn::Language language=aster_cn::Language::Zh;
+};
+struct DaemonObjStat {
+    std::string path;   // .o or .meta path, relative to the project dir
+    uint64_t size=0;
+    int64_t mtimeSec=0, mtimeNsec=0;
+    std::string sha256;
+};
+struct DaemonDepRec {
+    std::string path;   // a TU dependency from a .meta "dep <hash> <path>" line
+    std::string hash;
+    uint64_t size=0;
+    int64_t mtimeSec=0, mtimeNsec=0;
+};
+struct DaemonState {
+    std::string projectDir;  // canonical
+    std::string projHash;    // sha256 of the aster.proj content
+    std::string binIdentity;
+    unsigned parseMaxDepth=256, parseMaxLowering=2048;
+    std::vector<DaemonFileMeta> metas;  // parallel to progs, spec.sources order
+    std::vector<aster_cn::Program> progs;
+    // Last successful build, for the no-change fast path (DESIGN.md §5.1:
+    // the .o hashes are already in memory here).
+    bool haveLastBuild=false;
+    std::vector<std::pair<std::string,std::string>> objInputs;
+    std::vector<long long> lastTuMs;
+    std::vector<std::string> lastObjPaths;
+    std::vector<DaemonObjStat> lastObjStats;  // .o + .meta, per TU order
+    std::vector<std::string> lastSources;
+    std::vector<std::string> lastSourceHashes;  // st.metas' sha256 at the last build
+    std::vector<DaemonDepRec> lastDeps;         // merged TU deps, deduped by path
+    std::string lastOptsKey, lastTarget;
+    int lastCompiled=0, lastReused=0;
+    uint64_t requests=0;       // build requests served
+    uint64_t sinceFullHash=0;  // requests since the last full-hash check
+    std::chrono::steady_clock::time_point startedAt=std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point lastActivity=std::chrono::steady_clock::now();
+};
+static bool daemonStatFile(const std::string& path, uint64_t& size, int64_t& mSec, int64_t& mNsec){
+    struct stat sb;
+    if(::stat(path.c_str(),&sb)!=0) return false;
+    size=(uint64_t)sb.st_size;
+    mSec=(int64_t)sb.st_mtim.tv_sec;
+    mNsec=(int64_t)sb.st_mtim.tv_nsec;
+    return true;
+}
+// A .meta dep path is relative to the project dir unless absolute.
+static std::string daemonResolveDepPath(const std::string& dep, const std::string& projectDir){
+    if(!dep.empty()&&dep[0]=='/') return dep;
+    return projectDir+"/"+dep;
+}
+// The project name exactly as runBilingualProjectBuild derives it (spec.name
+// or the project dir's basename, sanitised for APK projects).
+static std::string daemonProjectName(const ProjectSpec& spec, const std::string& projectDir){
+    std::string name=spec.name.empty()?baseNameOf(projectDir):spec.name;
+    if(name.empty()||name=="."||name=="..") name="app";
+    if(spec.kind=="apk"){
+        name=sanitizeFileName(name);
+        if(name.find_first_not_of('_')==std::string::npos) name="app";
+    }
+    return name;
+}
+// CLI-side flags that change .o bytes but are NOT in the Phase 0 fingerprint
+// (the fingerprint is built from .o hashes, so a flag change is invisible to
+// it until the .o files are rebuilt). The daemon fast path requires the
+// last build's key to match, or it runs the worker. `jobs` and `verbose`
+// do not affect output and are deliberately absent.
+static std::string daemonOptsKey(const BilingualBuildOpts& opts){
+    std::ostringstream o;
+    o<<"dbg="<<opts.dbg<<";bc="<<opts.bc2
+     <<";noGc="<<opts.noGcSections<<";noStrip="<<opts.noStrip
+     <<";page="<<opts.pageSize<<";cliPage="<<opts.cliPageSet
+     <<";maxP="<<opts.maxParseDepth<<";maxL="<<opts.maxLoweringDepth
+     <<";out="<<opts.out;
+    for(const auto& d : opts.moduleDirs) o<<";mod="<<d;
+    for(const auto& g : opts.gcKeep) o<<";keep="<<g;
+    return o.str();
+}
+// Refresh the per-file parses for the current spec (DESIGN.md §4.1):
+// stat every source; only a file whose size+mtime moved is read, and a moved
+// file whose sha256 still matches (touch / mtime jitter) keeps its parse.
+// Returns false + err when a file cannot be read or parsed — the caller
+// replies an error and the client cold-runs, which reports the real
+// diagnostic. A failed file keeps its old meta, so the next request retries.
+static bool daemonRefreshParses(DaemonState& st, const ProjectSpec& spec,
+                                const aster_cn::ProjectLanguageConfig& langCfg,
+                                const BilingualBuildOpts& opts, const std::string& projHash,
+                                std::string& err){
+    // Config drift voids everything: a new aster.proj, or different
+    // --max-*-depth caps (the caps shape parsing itself).
+    if(st.projHash.empty()||st.projHash!=projHash||
+       st.parseMaxDepth!=opts.maxParseDepth||st.parseMaxLowering!=opts.maxLoweringDepth){
+        st.metas.clear();
+        st.progs.clear();
+        st.haveLastBuild=false;
+        st.projHash=projHash;
+        st.parseMaxDepth=(unsigned)opts.maxParseDepth;
+        st.parseMaxLowering=(unsigned)opts.maxLoweringDepth;
+        g_maxParseDepth=st.parseMaxDepth;
+        g_maxLoweringDepth=(unsigned)std::max(opts.maxLoweringDepth,opts.maxParseDepth);
+        aster_cn::setMaxNestingDepth(st.parseMaxDepth);
+    }
+    // Reorder by canonical path, moving cached parses; dropped files are
+    // discarded, new files are parsed below.
+    std::map<std::string,size_t> byCanon;
+    for(size_t i=0;i<st.metas.size();++i) byCanon[st.metas[i].canon]=i;
+    std::vector<DaemonFileMeta> newMetas;
+    std::vector<aster_cn::Program> newProgs;
+    std::vector<char> needParse(spec.sources.size(),0);
+    newMetas.reserve(spec.sources.size());
+    newProgs.reserve(spec.sources.size());
+    for(size_t i=0;i<spec.sources.size();++i){
+        const std::string canon=cnCanonicalPath(spec.sources[i]);
+        auto it=byCanon.find(canon);
+        if(it!=byCanon.end()){
+            newMetas.push_back(std::move(st.metas[it->second]));
+            newProgs.push_back(std::move(st.progs[it->second]));
+            byCanon.erase(it);
+        } else {
+            DaemonFileMeta m;
+            m.path=spec.sources[i];
+            m.canon=canon;
+            newMetas.push_back(std::move(m));
+            newProgs.emplace_back();
+            needParse[i]=1;
+        }
+    }
+    st.metas.swap(newMetas);
+    st.progs.swap(newProgs);
+    // DESIGN.md §4.1 guard 2: every 50th request re-hashes every source.
+    const bool fullHash=st.sinceFullHash>=50;
+    for(size_t i=0;i<spec.sources.size();++i){
+        const std::string& src=spec.sources[i];
+        uint64_t size=0;
+        int64_t ms=0, mn=0;
+        if(!daemonStatFile(src,size,ms,mn)){ err="missing source "+src; return false; }
+        DaemonFileMeta& meta=st.metas[i];
+        const bool statSame=!needParse[i]&&meta.size==size&&meta.mtimeSec==ms&&meta.mtimeNsec==mn;
+        if(statSame&&!fullHash) continue;
+        std::string text;
+        try { text=readFile(src); } catch(const std::exception& e){ err=e.what(); return false; }
+        const std::string h=sha256Hex(text);
+        if(!needParse[i]&&h==meta.sha256){
+            meta.size=size; meta.mtimeSec=ms; meta.mtimeNsec=mn;
+            continue;
+        }
+        try {
+            setSourceCache(src,text);
+            const aster_cn::Language lang=aster_cn::selectLanguage(
+                text,false,aster_cn::Language::Zh,langCfg,src);
+            st.progs[i]=aster_cn::parseProgram(text,lang,src);
+            meta.language=lang;
+        } catch(const std::exception& e){ err=e.what(); return false; }
+        meta.sha256=h;
+        meta.size=size;
+        meta.mtimeSec=ms;
+        meta.mtimeNsec=mn;
+    }
+    if(fullHash){
+        st.sinceFullHash=0;
+        // The full-hash guard also re-hashes the recorded .o/.meta files:
+        // a tampered object invalidates the fast-path memory (the worker's
+        // own .meta check would catch it on the next real build anyway).
+        for(const auto& rec : st.lastObjStats){
+            std::string bytes;
+            try { bytes=readFile(rec.path); } catch(const std::exception&){ st.haveLastBuild=false; break; }
+            if(sha256Hex(bytes)!=rec.sha256){ st.haveLastBuild=false; break; }
+        }
+        // ... and the recorded TU dependencies: a dep whose content moved
+        // invalidates the fast-path memory the same way.
+        if(st.haveLastBuild){
+            for(const auto& dep : st.lastDeps){
+                std::string bytes;
+                try { bytes=readFile(daemonResolveDepPath(dep.path,st.projectDir)); }
+                catch(const std::exception&){ st.haveLastBuild=false; break; }
+                if(sha256Hex(bytes)!=dep.hash){ st.haveLastBuild=false; break; }
+            }
+        }
+    }
+    return true;
+}
+// Recompute the Phase 0 fingerprint from the in-memory .o hashes. Must stay
+// in lock step with the worker's computeBilingualFingerprint in
+// runBilingualProjectBuild: same inputs, same helpers. False when any input
+// is unavailable (the caller then runs the worker).
+static bool daemonComputeFingerprint(const ProjectSpec& spec, const BilingualBuildOpts& opts,
+                                     const DaemonState& st, const std::string& target,
+                                     const std::string& projectName, const std::string& keyDir,
+                                     std::string& fpOut){
+    if(spec.kind!="apk") return false;
+    if(st.objInputs.empty()) return false;
+    ApkFastPathInputs fp;
+    fp.objects=st.objInputs;
+    fp.gcSections=!opts.noGcSections;
+    fp.stripSymtab=!opts.noStrip;
+    fp.pageSize=opts.cliPageSet?opts.pageSize:(spec.pageSize?spec.pageSize:opts.pageSize);
+    fp.gcKeep=opts.gcKeep;
+    fp.signMode=spec.signMode;
+    std::string certSha;
+    const std::string certPath=spec.signMode=="release"
+        ? spec.cert : debugCertPath(daemonKeyDirForClient(keyDir,st.projectDir));
+    if(apkFastPathCertSha256(certPath,certSha)) fp.certSha256=certSha;
+    fp.packageName=spec.package;
+    fp.libname=projectName;
+    fp.abi=spec.abi;
+    fp.label=spec.label.empty()?projectName:spec.label;
+    fp.versionCode=spec.versionCode;
+    fp.versionName=spec.versionName;
+    fp.minSdk=spec.minSdk;
+    fp.targetSdk=spec.targetSdk;
+    fp.hasIcon=!spec.icon.empty();
+    if(fp.hasIcon){
+        try { fp.iconSha256=sha256Hex(loadIconBytes(spec.icon,"aster build: icon")); }
+        catch(const std::exception&){ return false; }
+    }
+    (void)target;
+    if(!apkFastPathInputsReady(fp)) return false;
+    fpOut=apkFastPathFingerprint(fp);
+    return true;
+}
+// Read the "dep <hash> <path>" lines out of every TU's .meta file and merge
+// them (deduped by path). False on any unreadable meta, missing dep file, or
+// conflicting hash for one path — the caller then fails closed.
+static bool daemonCollectDeps(const std::vector<std::string>& objPaths,
+                              const std::string& projectDir,
+                              std::vector<DaemonDepRec>& depsOut){
+    std::map<std::string,std::string> byPath;
+    for(const auto& objPath : objPaths){
+        if(objPath.empty()) continue;
+        std::string metaPath=objPath;
+        if(metaPath.size()>2&&metaPath.compare(metaPath.size()-2,2,".o")==0)
+            metaPath.replace(metaPath.size()-2,2,".meta");
+        else
+            metaPath+=".meta";
+        std::string bytes;
+        try { bytes=readFile(metaPath); } catch(const std::exception&){ return false; }
+        std::istringstream in(bytes);
+        std::string line;
+        while(std::getline(in,line)){
+            if(line.rfind("dep ",0)!=0) continue;
+            const std::string rest=line.substr(4);
+            const size_t cut=rest.find(' ');
+            if(cut==std::string::npos||cut!=64) continue;
+            const std::string hash=rest.substr(0,cut);
+            const std::string dep=rest.substr(cut+1);
+            auto it=byPath.find(dep);
+            if(it==byPath.end()) byPath.emplace(dep,hash);
+            else if(it->second!=hash) return false;
+        }
+    }
+    depsOut.clear();
+    for(const auto& kv : byPath){
+        uint64_t size=0;
+        int64_t ms=0, mn=0;
+        if(!daemonStatFile(daemonResolveDepPath(kv.first,projectDir),size,ms,mn)) return false;
+        DaemonDepRec rec;
+        rec.path=kv.first; rec.hash=kv.second;
+        rec.size=size; rec.mtimeSec=ms; rec.mtimeNsec=mn;
+        depsOut.push_back(rec);
+    }
+    return true;
+}
+// The recorded deps must still be the ones the last build saw (stat fast
+// path, same accepted risk class as §4.1; the 50-request full hash re-hashes
+// them).
+static bool daemonDepsStatMatch(const DaemonState& st){
+    for(const auto& dep : st.lastDeps){
+        uint64_t size=0;
+        int64_t ms=0, mn=0;
+        if(!daemonStatFile(daemonResolveDepPath(dep.path,st.projectDir),size,ms,mn)) return false;
+        if(size!=dep.size||ms!=dep.mtimeSec||mn!=dep.mtimeNsec) return false;
+    }
+    return true;
+}
+// No source may have changed since the last build: even a comment-only edit
+// makes a cold build recompile that TU (its source hash moved), so the
+// daemon must run the worker for the output to stay byte-identical.
+static bool daemonSourcesUnchanged(const DaemonState& st){
+    if(st.lastSourceHashes.size()!=st.metas.size()) return false;
+    for(size_t i=0;i<st.metas.size();++i)
+        if(st.metas[i].sha256!=st.lastSourceHashes[i]) return false;
+    return true;
+}
+// The recorded .o/.meta files must still be the ones the last build wrote
+// (stat fast path, same accepted risk class as DESIGN.md §4.1; the 50-request
+// full hash above re-hashes them).
+static bool daemonObjStatsMatch(const DaemonState& st){
+    for(const auto& rec : st.lastObjStats){
+        uint64_t size=0;
+        int64_t ms=0, mn=0;
+        if(!daemonStatFile(rec.path,size,ms,mn)) return false;
+        if(size!=rec.size||ms!=rec.mtimeSec||mn!=rec.mtimeNsec) return false;
+    }
+    return true;
+}
+
+// ---- NDJSON replies ----
+static void daemonSendResult(int fd, long long id, const std::string& resultJson){
+    daemonWriteAll(fd,"{\"jsonrpc\":\"2.0\",\"id\":"+std::to_string(id)+",\"result\":"+resultJson+"}\n");
+}
+static void daemonSendError(int fd, long long id, int code, const std::string& message){
+    daemonWriteAll(fd,"{\"jsonrpc\":\"2.0\",\"id\":"+std::to_string(id)+",\"error\":{\"code\":"+std::to_string(code)+",\"message\":"+daemonJsonString(message)+"}}\n");
+}
+static void daemonSendProgress(int fd, const std::string& stream, const std::string& line, bool nl){
+    daemonWriteAll(fd,"{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"progress\",\"params\":{\"stream\":"+daemonJsonString(stream)+",\"line\":"+daemonJsonString(line)+",\"nl\":"+(nl?"true":"false")+"}}\n");
+}
+
+// ---- One build worker ----
+// The worker inherits the daemon's cached parses and runs the same body the
+// cold CLI runs; it reports a framed record (u32 LE length + lines) on a
+// separate pipe so the result never mixes with the build's own output.
+struct DaemonWorkerOutcome {
+    int exitCode=-1;
+    bool signaled=false;   // killed by signal, or by the silence watchdog
+    BilingualBuildReport report;
+    bool haveReport=false;
+};
+// Returns 0 = worker finished (outcome filled), 1 = client went away
+// (worker killed, no reply possible), -1 = fork/pipe failure.
+static int daemonRunBuildWorker(int clientFd, int listenFd, DaemonState& st,
+                                const ProjectSpec& spec,
+                                const aster_cn::ProjectLanguageConfig& langCfg,
+                                const BilingualBuildOpts& opts, const std::string& keyDir,
+                                DaemonWorkerOutcome& outcome){
+    int outPipe[2]={-1,-1}, errPipe[2]={-1,-1}, resPipe[2]={-1,-1};
+    if(::pipe(outPipe)!=0||::pipe(errPipe)!=0||::pipe(resPipe)!=0){
+        if(outPipe[0]>=0){ ::close(outPipe[0]); ::close(outPipe[1]); }
+        if(errPipe[0]>=0){ ::close(errPipe[0]); ::close(errPipe[1]); }
+        if(resPipe[0]>=0){ ::close(resPipe[0]); ::close(resPipe[1]); }
+        return -1;
+    }
+    const pid_t pid=::fork();
+    if(pid<0){
+        ::close(outPipe[0]); ::close(outPipe[1]);
+        ::close(errPipe[0]); ::close(errPipe[1]);
+        ::close(resPipe[0]); ::close(resPipe[1]);
+        return -1;
+    }
+    if(pid==0){
+        // Worker: never return into daemon code.
+        ::close(outPipe[0]); ::close(errPipe[0]); ::close(resPipe[0]);
+        ::close(listenFd);
+        ::close(clientFd);
+        ::dup2(outPipe[1],STDOUT_FILENO);
+        ::dup2(errPipe[1],STDERR_FILENO);
+        ::close(outPipe[1]);
+        ::close(errPipe[1]);
+        // The worker builds under the *client's* key dir, not the daemon's
+        // launch environment (a different ASTER_KEY_DIR must not change
+        // which key signs the APK).
+        if(keyDir.empty()) ::unsetenv("ASTER_KEY_DIR");
+        else ::setenv("ASTER_KEY_DIR",keyDir.c_str(),1);
+        g_maxParseDepth=(unsigned)opts.maxParseDepth;
+        g_maxLoweringDepth=(unsigned)std::max(opts.maxLoweringDepth,opts.maxParseDepth);
+        aster_cn::setMaxNestingDepth((unsigned)opts.maxParseDepth);
+        // Cold-equivalent diagnostic state: the cold CLI ends its parse loop
+        // with the last source in g_srcFile/g_srcLines; the daemon parent's
+        // refresh may have ended on a different (re-parsed) file.
+        if(!spec.sources.empty()){
+            try { setSourceCache(spec.sources.back(),readFile(spec.sources.back())); }
+            catch(const std::exception&){}
+        }
+        BilingualBuildReport report;
+        BilingualBuildOpts wopts=opts;
+        wopts.report=&report;
+        int rc=1;
+        try {
+            rc=runBilingualProjectBuild(spec,langCfg,st.progs,wopts);
+        } catch(const std::exception& e){
+            std::cerr<<renderError(e.what());
+            rc=1;
+        } catch(...){
+            std::cerr<<"aster: error: unknown error\n";
+            rc=1;
+        }
+        std::string payload;
+        payload+="exit "+std::to_string(rc)+"\n";
+        payload+="compiled "+std::to_string(report.compiled)+"\n";
+        payload+="reused "+std::to_string(report.reused)+"\n";
+        payload+="target "+report.target+"\n";
+        payload+="fingerprint "+report.fingerprint+"\n";
+        for(size_t i=0;i<report.objInputs.size();++i){
+            payload+="obj "+report.objInputs[i].first+"\t"+report.objInputs[i].second+"\t";
+            payload+=std::to_string(i<report.tuMs.size()?report.tuMs[i]:0)+"\t";
+            payload+=i<report.objPaths.size()?report.objPaths[i]:std::string();
+            payload+="\n";
+        }
+        std::string framed;
+        tuPutU32(framed,(uint32_t)payload.size());
+        framed+=payload;
+        tuWriteAll(resPipe[1],framed.data(),framed.size());
+        ::close(resPipe[1]);
+        ::_exit(rc);
+    }
+    ::close(outPipe[1]); ::close(errPipe[1]); ::close(resPipe[1]);
+    std::string outBuf, errBuf, resBytes;
+    bool outOpen=true, errOpen=true;
+    bool workerDone=false, clientGone=false;
+    int status=0;
+    auto lastProgress=std::chrono::steady_clock::now();
+    auto forwardLines=[&](std::string& buf, const std::string& stream, bool eof){
+        for(;;){
+            const size_t nl=buf.find('\n');
+            if(nl==std::string::npos) break;
+            daemonSendProgress(clientFd,stream,buf.substr(0,nl),true);
+            buf.erase(0,nl+1);
+            lastProgress=std::chrono::steady_clock::now();
+        }
+        if(eof&&!buf.empty()){
+            daemonSendProgress(clientFd,stream,buf,false);
+            buf.clear();
+            lastProgress=std::chrono::steady_clock::now();
+        }
+    };
+    auto killWorker=[&](){
+        ::kill(pid,SIGTERM);
+        for(int i=0;i<20;++i){
+            pid_t w=::waitpid(pid,&status,WNOHANG);
+            if(w==pid){ workerDone=true; return; }
+            ::usleep(100000);
+        }
+        ::kill(pid,SIGKILL);
+        ::waitpid(pid,&status,0);
+        workerDone=true;
+    };
+    while(!workerDone||outOpen||errOpen){
+        struct pollfd pfds[4];
+        pfds[0].fd=clientFd; pfds[0].events=POLLIN; pfds[0].revents=0;
+        pfds[1].fd=outOpen?outPipe[0]:-1; pfds[1].events=POLLIN; pfds[1].revents=0;
+        pfds[2].fd=errOpen?errPipe[0]:-1; pfds[2].events=POLLIN; pfds[2].revents=0;
+        pfds[3].fd=resPipe[0]; pfds[3].events=POLLIN; pfds[3].revents=0;
+        const int pr=::poll(pfds,4,200);
+        if(pr<0){
+            if(errno==EINTR) continue;
+            break;
+        }
+        if(pr>0){
+            if(pfds[0].revents&(POLLIN|POLLHUP|POLLERR)){
+                // The client never sends anything mid-build: anything
+                // readable here is a disconnect (or stray bytes, drained).
+                char tmp[1024];
+                const ssize_t n=::recv(clientFd,tmp,sizeof tmp,MSG_DONTWAIT);
+                if(n==0){ clientGone=true; killWorker(); break; }
+                if(n<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK){ clientGone=true; killWorker(); break; }
+            }
+            if(pfds[1].revents&(POLLIN|POLLHUP|POLLERR)){
+                char buf[65536];
+                const ssize_t n=::read(outPipe[0],buf,sizeof buf);
+                if(n>0){ outBuf.append(buf,(size_t)n); forwardLines(outBuf,"stdout",false); }
+                else if(n==0){ outOpen=false; forwardLines(outBuf,"stdout",true); }
+            }
+            if(pfds[2].revents&(POLLIN|POLLHUP|POLLERR)){
+                char buf[65536];
+                const ssize_t n=::read(errPipe[0],buf,sizeof buf);
+                if(n>0){ errBuf.append(buf,(size_t)n); forwardLines(errBuf,"stderr",false); }
+                else if(n==0){ errOpen=false; forwardLines(errBuf,"stderr",true); }
+            }
+            if(pfds[3].revents&(POLLIN|POLLHUP|POLLERR)){
+                char buf[65536];
+                const ssize_t n=::read(resPipe[0],buf,sizeof buf);
+                if(n>0) resBytes.append(buf,(size_t)n);
+            }
+        }
+        if(!workerDone){
+            pid_t w=::waitpid(pid,&status,WNOHANG);
+            if(w==pid) workerDone=true;
+        }
+        // DESIGN.md §7.5 watchdog: a verbose build prints a line per TU,
+        // so 120 s of silence means the worker is stuck. Without --verbose
+        // a clean build is silent by design, so no watchdog there (a build
+        // has no timeout, DESIGN.md §2.3).
+        if(opts.verbose&&!workerDone){
+            const auto quiet=std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now()-lastProgress).count();
+            if(quiet>=120){
+                daemonLog("build worker silent for 120 s in verbose mode; killing it");
+                killWorker();
+                outcome.signaled=true;
+                outcome.exitCode=-1;
+                ::close(outPipe[0]); ::close(errPipe[0]); ::close(resPipe[0]);
+                return 0;
+            }
+        }
+    }
+    ::close(outPipe[0]); ::close(errPipe[0]);
+    {
+        // Drain any result bytes that arrived with the worker's exit.
+        char buf[65536];
+        ssize_t n;
+        while((n=::read(resPipe[0],buf,sizeof buf))>0) resBytes.append(buf,(size_t)n);
+    }
+    ::close(resPipe[0]);
+    if(clientGone) return 1;
+    if(workerDone&&WIFEXITED(status)){
+        outcome.exitCode=WEXITSTATUS(status);
+        if(resBytes.size()>=4){
+            const uint32_t len=tuGetU32(resBytes.data());
+            if(len<=resBytes.size()-4){
+                const std::string payload=resBytes.substr(4,len);
+                std::istringstream in(payload);
+                std::string line;
+                bool sawExit=false;
+                while(std::getline(in,line)){
+                    if(line.rfind("exit ",0)==0){ sawExit=true; }
+                    else if(line.rfind("compiled ",0)==0){ outcome.report.compiled=std::atoi(line.c_str()+9); }
+                    else if(line.rfind("reused ",0)==0){ outcome.report.reused=std::atoi(line.c_str()+7); }
+                    else if(line.rfind("target ",0)==0){ outcome.report.target=line.substr(7); }
+                    else if(line.rfind("fingerprint ",0)==0){ outcome.report.fingerprint=line.substr(12); }
+                    else if(line.rfind("obj ",0)==0){
+                        const std::string rest=line.substr(4);
+                        const size_t t1=rest.find('\t');
+                        const size_t t2=t1==std::string::npos?std::string::npos:rest.find('\t',t1+1);
+                        const size_t t3=t2==std::string::npos?std::string::npos:rest.find('\t',t2+1);
+                        if(t1==std::string::npos||t2==std::string::npos||t3==std::string::npos) continue;
+                        outcome.report.objInputs.emplace_back(rest.substr(0,t1),rest.substr(t1+1,t2-t1-1));
+                        long long ms=0;
+                        try { ms=std::stoll(rest.substr(t2+1,t3-t2-1)); } catch(...){}
+                        outcome.report.tuMs.push_back(ms);
+                        outcome.report.objPaths.push_back(rest.substr(t3+1));
+                    }
+                }
+                outcome.haveReport=sawExit;
+            }
+        }
+    } else if(workerDone&&WIFSIGNALED(status)){
+        outcome.signaled=true;
+        outcome.exitCode=-1;
+    }
+    return 0;
+}
+
+// ---- Build request (daemon side) ----
+// Returns false only when the client went away mid-build (no reply is
+// possible then). Every other failure is answered with an error, and the
+// client cold-runs (DESIGN.md §2.4).
+static bool daemonHandleBuild(int clientFd, long long id, int listenFd, DaemonState& st,
+                              const std::string& reqJson){
+    ++st.requests;
+    ++st.sinceFullHash;
+    st.lastActivity=std::chrono::steady_clock::now();
+    BilingualBuildOpts opts;
+    std::string s;
+    long long v=0;
+    bool b=false;
+    if(daemonJsonGetString(reqJson,"project",s)&&daemonCanonicalDir(s)!=st.projectDir){
+        daemonSendError(clientFd,id,-32002,"daemon: this service serves a different project ("+st.projectDir+")");
+        return true;
+    }
+    if(daemonJsonGetInt(reqJson,"jobs",v)) opts.jobsCount=(unsigned)v;
+    else opts.jobsCount=defaultJobsCount();
+    if(daemonJsonGetBool(reqJson,"verbose",b)) opts.verbose=b;
+    if(daemonJsonGetBool(reqJson,"noCache",b)) opts.noCache=b;
+    if(daemonJsonGetBool(reqJson,"noGcSections",b)) opts.noGcSections=b;
+    if(daemonJsonGetBool(reqJson,"noStrip",b)) opts.noStrip=b;
+    if(daemonJsonGetBool(reqJson,"dbg",b)) opts.dbg=b;
+    if(daemonJsonGetBool(reqJson,"bc",b)) opts.bc2=b;
+    if(daemonJsonGetBool(reqJson,"cliPageSet",b)) opts.cliPageSet=b;
+    if(daemonJsonGetInt(reqJson,"pageSize",v)) opts.pageSize=(uint64_t)v;
+    if(daemonJsonGetInt(reqJson,"maxParseDepth",v)) opts.maxParseDepth=(uint64_t)v;
+    if(daemonJsonGetInt(reqJson,"maxLoweringDepth",v)) opts.maxLoweringDepth=(uint64_t)v;
+    if(daemonJsonGetString(reqJson,"out",s)) opts.out=s;
+    std::string keyDir;
+    daemonJsonGetString(reqJson,"keyDir",keyDir);
+    daemonJsonGetStringArray(reqJson,"gcKeep",opts.gcKeep);
+    daemonJsonGetStringArray(reqJson,"moduleDirs",opts.moduleDirs);
+    opts.cmd="build";
+    opts.isRun=false;
+    ProjectSpec spec;
+    aster_cn::ProjectLanguageConfig langCfg;
+    std::string projHash, err;
+    try {
+        spec=parseProjectFile("aster.proj");
+        langCfg=aster_cn::readProjectLanguage("aster.proj");
+        projHash=sha256Hex(readFile("aster.proj"));
+    } catch(const std::exception& e){
+        daemonSendError(clientFd,id,-32000,std::string("daemon: cannot read aster.proj: ")+e.what());
+        return true;
+    }
+    if(spec.sources.empty()){
+        daemonSendError(clientFd,id,-32000,"daemon: aster.proj lists no sources");
+        return true;
+    }
+    if(!daemonRefreshParses(st,spec,langCfg,opts,projHash,err)){
+        daemonLog("build: refresh failed: "+err);
+        daemonSendError(clientFd,id,-32000,"daemon: refresh failed: "+err);
+        return true;
+    }
+    const std::string projectName=daemonProjectName(spec,st.projectDir);
+    const std::string target=opts.out.empty()
+        ? ("build/"+projectName+(spec.kind=="apk"?".apk":"")) : opts.out;
+    // No-change fast path (DESIGN.md §5.1): the .o hashes are in memory, so
+    // this costs a stat sweep + one APK hash instead of a full build. The
+    // sidecar check is the same one the worker uses, so a stale memory can
+    // only miss, never hit wrongly. Verbose per-TU lines are replayed from
+    // the last build's stored timings (see the header note). The gate must
+    // also cover what the cold TU loop would have seen: any source whose
+    // hash moved (even a comment) makes cold recompile that TU, and any dep
+    // whose stat moved makes cold re-check it — so the daemon runs the
+    // worker in those cases and only fast-paths a genuinely unchanged build.
+    if(spec.kind=="apk"&&!opts.noCache&&st.haveLastBuild&&st.lastTarget==target&&
+       st.lastSources==spec.sources&&daemonOptsKey(opts)==st.lastOptsKey&&
+       daemonSourcesUnchanged(st)&&daemonDepsStatMatch(st)&&
+       daemonObjStatsMatch(st)){
+        std::string fp;
+        if(daemonComputeFingerprint(spec,opts,st,target,projectName,keyDir,fp)){
+            const auto fpT0=std::chrono::steady_clock::now();
+            if(apkFastPathHit("build/.cache/last-apk.json",target,fp)){
+                if(opts.verbose){
+                    for(size_t i=0;i<spec.sources.size();++i){
+                        const long long ms=i<st.lastTuMs.size()?st.lastTuMs[i]:0;
+                        daemonSendProgress(clientFd,"stdout","aster: verbose: reused "+spec.sources[i]+" in "+std::to_string(ms)+" ms",true);
+                    }
+                    daemonSendProgress(clientFd,"stdout","aster: verbose: fast-path: reused "+target+" (fingerprint match) in "+std::to_string(msSince(fpT0))+" ms",true);
+                }
+                // The fast path ran no TU work: nothing was compiled and
+                // every source was reused by this run (the stored counts
+                // describe the last *real* build, not this one).
+                daemonSendProgress(clientFd,"stdout","Aster v"+std::string(kVersion)+": built bilingual project "+target+" (0 compiled, "+std::to_string(spec.sources.size())+" reused)",true);
+                daemonSendResult(clientFd,id,"{\"exitCode\":0,\"fastPath\":true,\"viaDaemon\":true}");
+                daemonLog("build: fast-path hit "+target);
+                st.lastActivity=std::chrono::steady_clock::now();
+                return true;
+            }
+        }
+    }
+    DaemonWorkerOutcome outcome;
+    const int wr=daemonRunBuildWorker(clientFd,listenFd,st,spec,langCfg,opts,keyDir,outcome);
+    st.lastActivity=std::chrono::steady_clock::now();
+    if(wr==1) return false;  // client went away; the worker was killed
+    if(wr!=0){
+        daemonSendError(clientFd,id,-32000,"daemon: cannot start build worker");
+        return true;
+    }
+    if(outcome.signaled){
+        daemonLog("build: worker died");
+        daemonSendError(clientFd,id,-32001,"daemon: build worker died");
+        return true;
+    }
+    if(outcome.exitCode==0&&outcome.haveReport&&!outcome.report.fingerprint.empty()&&
+       outcome.report.target==target){
+        // Record the build's identity for the next no-change request. The
+        // .o hashes come from the worker's report (no re-read); the .meta
+        // files are small and are re-hashed here.
+        st.objInputs=outcome.report.objInputs;
+        st.lastTuMs=outcome.report.tuMs;
+        st.lastObjPaths=outcome.report.objPaths;
+        st.lastSources=spec.sources;
+        st.lastOptsKey=daemonOptsKey(opts);
+        st.lastTarget=outcome.report.target;
+        st.lastCompiled=outcome.report.compiled;
+        st.lastReused=outcome.report.reused;
+        st.lastObjStats.clear();
+        bool statsOk=true;
+        for(size_t i=0;i<outcome.report.objPaths.size();++i){
+            const std::string& objPath=outcome.report.objPaths[i];
+            if(objPath.empty()) continue;
+            uint64_t size=0;
+            int64_t ms=0, mn=0;
+            if(!daemonStatFile(objPath,size,ms,mn)){ statsOk=false; break; }
+            DaemonObjStat rec;
+            rec.path=objPath;
+            rec.size=size; rec.mtimeSec=ms; rec.mtimeNsec=mn;
+            rec.sha256=i<outcome.report.objInputs.size()?outcome.report.objInputs[i].second:std::string();
+            if(rec.sha256.size()!=64){ statsOk=false; break; }
+            st.lastObjStats.push_back(rec);
+            std::string metaPath=objPath;
+            if(metaPath.size()>2&&metaPath.compare(metaPath.size()-2,2,".o")==0)
+                metaPath.replace(metaPath.size()-2,2,".meta");
+            else
+                metaPath+=".meta";
+            if(!daemonStatFile(metaPath,size,ms,mn)){ statsOk=false; break; }
+            std::string metaBytes;
+            try { metaBytes=readFile(metaPath); } catch(const std::exception&){ statsOk=false; break; }
+            DaemonObjStat mrec;
+            mrec.path=metaPath;
+            mrec.size=size; mrec.mtimeSec=ms; mrec.mtimeNsec=mn;
+            mrec.sha256=sha256Hex(metaBytes);
+            st.lastObjStats.push_back(mrec);
+        }
+        if(statsOk){
+            st.lastSourceHashes.clear();
+            for(const auto& m : st.metas) st.lastSourceHashes.push_back(m.sha256);
+            if(!daemonCollectDeps(outcome.report.objPaths,st.projectDir,st.lastDeps))
+                statsOk=false;
+        }
+        st.haveLastBuild=statsOk&&!st.lastObjStats.empty();
+    }
+    daemonSendResult(clientFd,id,"{\"exitCode\":"+std::to_string(outcome.exitCode)+",\"fastPath\":false,\"viaDaemon\":true}");
+    daemonLog("build: exit "+std::to_string(outcome.exitCode));
+    return true;
+}
+
+// ---- One connection: hello + one method call ----
+static bool daemonHandleConnection(int fd, DaemonState& st, int listenFd){
+    DaemonLineReader reader;
+    reader.fd=fd;
+    std::string line;
+    if(reader.readLine(line,10000)!=1) return false;
+    std::string method;
+    long long id=0, proto=0;
+    std::string bin, project;
+    daemonJsonGetString(line,"method",method);
+    daemonJsonGetInt(line,"id",id);
+    daemonJsonGetInt(line,"protocol",proto);
+    daemonJsonGetString(line,"bin",bin);
+    daemonJsonGetString(line,"project",project);
+    // DESIGN.md §2.3: the first message carries protocol version 1 and the
+    // binary hash; anything else closes the connection (the client then
+    // cold-runs — no error text is owed to a stale client).
+    if(method!="hello"||proto!=1||bin.empty()||bin!=st.binIdentity||
+       (!project.empty()&&daemonCanonicalDir(project)!=st.projectDir)){
+        return false;
+    }
+    daemonSendResult(fd,id,"{\"protocol\":1,\"pid\":"+std::to_string((long long)::getpid())+",\"project\":"+daemonJsonString(st.projectDir)+"}");
+    if(reader.readLine(line,10000)!=1) return false;
+    daemonJsonGetString(line,"method",method);
+    daemonJsonGetInt(line,"id",id);
+    if(method=="ping"){
+        const auto up=std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now()-st.startedAt).count();
+        daemonSendResult(fd,id,"{\"status\":\"ok\",\"pid\":"+std::to_string((long long)::getpid())+
+            ",\"requests\":"+std::to_string(st.requests)+
+            ",\"cachedFiles\":"+std::to_string(st.progs.size())+
+            ",\"uptimeSec\":"+std::to_string(up)+"}");
+        return false;
+    }
+    if(method=="stats"){
+        const auto now=std::chrono::steady_clock::now();
+        const auto up=std::chrono::duration_cast<std::chrono::seconds>(now-st.startedAt).count();
+        const auto idle=std::chrono::duration_cast<std::chrono::seconds>(now-st.lastActivity).count();
+        daemonSendResult(fd,id,"{\"pid\":"+std::to_string((long long)::getpid())+
+            ",\"project\":"+daemonJsonString(st.projectDir)+
+            ",\"requests\":"+std::to_string(st.requests)+
+            ",\"cachedFiles\":"+std::to_string(st.progs.size())+
+            ",\"haveLastBuild\":"+(st.haveLastBuild?"true":"false")+
+            ",\"lastCompiled\":"+std::to_string(st.lastCompiled)+
+            ",\"lastReused\":"+std::to_string(st.lastReused)+
+            ",\"uptimeSec\":"+std::to_string(up)+
+            ",\"idleSec\":"+std::to_string(idle)+"}");
+        return false;
+    }
+    if(method=="shutdown"){
+        daemonSendResult(fd,id,"{\"status\":\"shutting down\"}");
+        return true;
+    }
+    if(method=="build"){
+        daemonHandleBuild(fd,id,listenFd,st,line);
+        return false;
+    }
+    daemonSendError(fd,id,-32601,"daemon: unknown method "+method);
+    return false;
+}
+
+// ---- `aster serve` ----
+static int daemonServeMain(const std::string& projectDirOpt, const std::string& socketDirOpt, bool detached){
+    const std::string projectDir=daemonCanonicalDir(projectDirOpt);
+    if(!dirExists(projectDir)){
+        std::cerr<<"aster serve: project directory does not exist: "<<projectDirOpt<<"\n";
+        return 2;
+    }
+    if(!fileExists(projectDir+"/aster.proj")){
+        std::cerr<<"aster serve: no aster.proj in "<<projectDir<<"\n";
+        return 2;
+    }
+    const std::string socketDir=daemonSocketDir(projectDir,socketDirOpt);
+    if(socketDir.empty()){
+        std::cerr<<"aster serve: cannot create socket directory\n";
+        return 1;
+    }
+    const std::string socketPath=daemonSocketPath(socketDir,projectDir);
+    const std::string lockPath=daemonLockPath(socketPath);
+    if(daemonPathExists(socketPath)){
+        int probeFd=-1;
+        if(daemonConnect(socketPath,probeFd)){
+            ::close(probeFd);
+            std::cerr<<"aster serve: a service is already running for "<<projectDir<<" ("<<socketPath<<")\n";
+            return 1;
+        }
+        DaemonLockInfo old;
+        if(daemonReadLock(lockPath,old)&&daemonPidAlive(old.pid)){
+            std::cerr<<"aster serve: socket "<<socketPath<<" is unresponsive but pid "<<old.pid
+                     <<" is alive; run `aster serve stop` first\n";
+            return 1;
+        }
+        std::remove(socketPath.c_str());
+        std::remove(lockPath.c_str());
+    }
+    const int listenFd=::socket(AF_UNIX,SOCK_STREAM,0);
+    if(listenFd<0){
+        std::cerr<<"aster serve: cannot create socket: "<<std::strerror(errno)<<"\n";
+        return 1;
+    }
+    struct sockaddr_un addr;
+    std::memset(&addr,0,sizeof addr);
+    addr.sun_family=AF_UNIX;
+    if(socketPath.size()>=sizeof(addr.sun_path)){
+        std::cerr<<"aster serve: socket path too long: "<<socketPath<<"\n";
+        return 1;
+    }
+    std::strncpy(addr.sun_path,socketPath.c_str(),sizeof(addr.sun_path)-1);
+    if(::bind(listenFd,(struct sockaddr*)&addr,sizeof addr)!=0){
+        std::cerr<<"aster serve: cannot bind "<<socketPath<<": "<<std::strerror(errno)<<"\n";
+        ::close(listenFd);
+        return 1;
+    }
+    if(::listen(listenFd,16)!=0){
+        std::cerr<<"aster serve: cannot listen on "<<socketPath<<": "<<std::strerror(errno)<<"\n";
+        ::close(listenFd);
+        return 1;
+    }
+    DaemonLockInfo info;
+    info.pid=(long)::getpid();
+    info.binIdentity=daemonBinaryIdentity();
+    info.binSha=daemonBinarySha256();
+    info.started=(long long)std::time(nullptr);
+    info.project=projectDir;
+    daemonWriteLock(lockPath,info);
+    std::signal(SIGPIPE,SIG_IGN);
+    std::signal(SIGTERM,daemonOnSignal);
+    std::signal(SIGINT,daemonOnSignal);
+    if(::chdir(projectDir.c_str())!=0){
+        std::cerr<<"aster serve: cannot enter "<<projectDir<<"\n";
+        ::close(listenFd);
+        return 1;
+    }
+    DaemonState st;
+    st.projectDir=projectDir;
+    st.binIdentity=info.binIdentity;
+    g_maxParseDepth=256;
+    g_maxLoweringDepth=2048;
+    aster_cn::setMaxNestingDepth(256);
+    daemonLog("listening on "+socketPath+" (pid "+std::to_string(info.pid)+", project "+projectDir+")");
+    auto lastBinCheck=std::chrono::steady_clock::now();
+    bool shutdown=false;
+    while(!shutdown&&!g_daemonStopFlag){
+        struct pollfd pfd;
+        pfd.fd=listenFd; pfd.events=POLLIN; pfd.revents=0;
+        const int pr=::poll(&pfd,1,1000);
+        if(pr<0){
+            if(errno==EINTR) continue;
+            break;
+        }
+        if(pr>0&&(pfd.revents&POLLIN)){
+            const int cfd=::accept(listenFd,nullptr,nullptr);
+            if(cfd>=0){
+                st.lastActivity=std::chrono::steady_clock::now();
+                if(daemonHandleConnection(cfd,st,listenFd)) shutdown=true;
+                ::close(cfd);
+            }
+        }
+        // Lifecycle checks, once a second (DESIGN.md §2.2). The parent-death
+        // check only applies to a directly launched daemon: a detached one
+        // (client auto-launch) is already reparented to init, so it relies
+        // on the idle timeout instead.
+        if(!detached&&::getppid()==1){
+            daemonLog("parent process is gone (getppid()==1); exiting");
+            break;
+        }
+        const auto now=std::chrono::steady_clock::now();
+        if(std::chrono::duration_cast<std::chrono::seconds>(now-st.lastActivity).count()>=600){
+            daemonLog("idle for 10 minutes; exiting");
+            break;
+        }
+        if(std::chrono::duration_cast<std::chrono::seconds>(now-lastBinCheck).count()>=60){
+            lastBinCheck=now;
+            if(daemonBinaryIdentity()!=st.binIdentity){
+                daemonLog("aster binary changed; exiting");
+                break;
+            }
+        }
+    }
+    ::close(listenFd);
+    std::remove(socketPath.c_str());
+    std::remove(lockPath.c_str());
+    daemonLog("stopped");
+    return 0;
+}
+
+// ---- Client side: launch, ensure, build ----
+// Detached launch: double fork + setsid, stdio to the daemon log file.
+static bool daemonLaunch(const std::string& projectDir, const std::string& socketDir, const std::string& logPath){
+    const std::string exe=daemonExePath();
+    if(exe.empty()) return false;
+    const pid_t pid=::fork();
+    if(pid<0) return false;
+    if(pid==0){
+        ::setsid();
+        const pid_t pid2=::fork();
+        if(pid2<0) ::_exit(127);
+        if(pid2>0) ::_exit(0);
+        const int devNull=::open("/dev/null",O_RDONLY);
+        if(devNull>=0) ::dup2(devNull,STDIN_FILENO);
+        const int logFd=::open(logPath.c_str(),O_WRONLY|O_CREAT|O_APPEND,0644);
+        if(logFd>=0){ ::dup2(logFd,STDOUT_FILENO); ::dup2(logFd,STDERR_FILENO); }
+        ::execl(exe.c_str(),exe.c_str(),"serve","--project",projectDir.c_str(),
+                "--socket-dir",socketDir.c_str(),"--detached",nullptr);
+        ::_exit(127);
+    }
+    int st=0;
+    ::waitpid(pid,&st,0);
+    return true;
+}
+// Make sure a daemon for this project is up. True when the socket is
+// connectable afterwards. A live lock with a different binary hash kills
+// the old service first (DESIGN.md §2.2); a lock younger than 30 s with a
+// live pid is a daemon still starting — this request cold-runs instead of
+// waiting on it.
+static bool daemonEnsure(const std::string& projectDir, const std::string& socketDir,
+                         const std::string& socketPath, const std::string& lockPath,
+                         const std::string& myBinIdentity, std::string& whyNot){
+    int fd=-1;
+    DaemonLockInfo lock;
+    const bool haveLock=daemonReadLock(lockPath,lock);
+    const long long now=(long long)std::time(nullptr);
+    auto killStale=[&](){
+        ::kill((pid_t)lock.pid,SIGTERM);
+        for(int i=0;i<20;++i){ if(!daemonPidAlive(lock.pid)) break; ::usleep(100000); }
+        if(daemonPidAlive(lock.pid)) ::kill((pid_t)lock.pid,SIGKILL);
+        ::usleep(200000);
+        std::remove(socketPath.c_str());
+        std::remove(lockPath.c_str());
+    };
+    // The binary check must run before the "socket answers" fast path: a
+    // connect alone proves nothing about which binary is listening, and
+    // without this the hello mismatch below would only ever cold-run while
+    // the stale daemon kept its socket forever (found by the lifecycle
+    // probe, 2026-11-27: a rebuilt binary never replaced the old service).
+    if(haveLock&&daemonPidAlive(lock.pid)&&
+       !lock.binIdentity.empty()&&lock.binIdentity!=myBinIdentity){
+        killStale();
+    } else if(daemonConnect(socketPath,fd)){ ::close(fd); return true; }
+    if(haveLock&&daemonPidAlive(lock.pid)){
+        if(!lock.binIdentity.empty()&&lock.binIdentity!=myBinIdentity){
+            killStale();
+        } else if(now-lock.started<30){
+            for(int i=0;i<20;++i){
+                if(daemonConnect(socketPath,fd)){ ::close(fd); return true; }
+                ::usleep(100000);
+            }
+            whyNot="daemon is starting";
+            return false;
+        } else {
+            killStale();
+        }
+    } else if(haveLock){
+        std::remove(socketPath.c_str());
+        std::remove(lockPath.c_str());
+    }
+    if(!daemonLaunch(projectDir,socketDir,daemonLogPath(socketPath))){
+        whyNot="cannot launch daemon";
+        return false;
+    }
+    for(int i=0;i<50;++i){
+        if(daemonConnect(socketPath,fd)){ ::close(fd); return true; }
+        ::usleep(100000);
+    }
+    whyNot="daemon did not come up";
+    return false;
+}
+// Try one build through the daemon. Returns the build's exit code when the
+// daemon handled it, or -1 to cold-run. Any failure at all fails closed;
+// `warn` names it for the --verbose fallback warning.
+static int daemonTryBuild(const BilingualBuildOpts& opts, const std::string& projectDir,
+                          const std::string& socketDirOpt, const std::string& keyDir,
+                          std::string& warn){
+    const std::string socketDir=daemonSocketDir(projectDir,socketDirOpt);
+    if(socketDir.empty()){ warn="cannot create socket directory"; return -1; }
+    const std::string socketPath=daemonSocketPath(socketDir,projectDir);
+    const std::string lockPath=daemonLockPath(socketPath);
+    const std::string myBinIdentity=daemonBinaryIdentity();
+    if(myBinIdentity.empty()){ warn="cannot identify own binary"; return -1; }
+    std::string whyNot;
+    if(!daemonEnsure(projectDir,socketDir,socketPath,lockPath,myBinIdentity,whyNot)){ warn=whyNot; return -1; }
+    int fd=-1;
+    if(!daemonConnect(socketPath,fd)){ warn="cannot connect to daemon"; return -1; }
+    DaemonLineReader reader;
+    reader.fd=fd;
+    const std::string hello="{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"hello\",\"params\":{\"protocol\":1,\"bin\":"+daemonJsonString(myBinIdentity)+",\"project\":"+daemonJsonString(projectDir)+"}}\n";
+    if(!daemonWriteAll(fd,hello)){ ::close(fd); warn="cannot write hello"; return -1; }
+    std::string line;
+    if(reader.readLine(line,5000)!=1){ ::close(fd); warn="no hello reply"; return -1; }
+    long long proto=0;
+    if(!daemonJsonGetInt(line,"protocol",proto)||proto!=1||line.find("\"result\"")==std::string::npos){
+        ::close(fd); warn="protocol mismatch"; return -1;
+    }
+    std::ostringstream p;
+    p<<"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"build\",\"params\":{";
+    p<<"\"project\":"+daemonJsonString(projectDir);
+    p<<",\"jobs\":"+std::to_string(opts.jobsCount);
+    p<<",\"verbose\":"<<(opts.verbose?"true":"false");
+    p<<",\"noCache\":"<<(opts.noCache?"true":"false");
+    p<<",\"noGcSections\":"<<(opts.noGcSections?"true":"false");
+    p<<",\"noStrip\":"<<(opts.noStrip?"true":"false");
+    p<<",\"dbg\":"<<(opts.dbg?"true":"false");
+    p<<",\"bc\":"<<(opts.bc2?"true":"false");
+    p<<",\"cliPageSet\":"<<(opts.cliPageSet?"true":"false");
+    p<<",\"pageSize\":"+std::to_string(opts.pageSize);
+    p<<",\"maxParseDepth\":"+std::to_string(opts.maxParseDepth);
+    p<<",\"maxLoweringDepth\":"+std::to_string(opts.maxLoweringDepth);
+    p<<",\"out\":"+daemonJsonString(opts.out);
+    p<<",\"keyDir\":"+daemonJsonString(keyDir);
+    p<<",\"gcKeep\":[";
+    for(size_t i=0;i<opts.gcKeep.size();++i){ if(i) p<<","; p<<daemonJsonString(opts.gcKeep[i]); }
+    p<<"],\"moduleDirs\":[";
+    for(size_t i=0;i<opts.moduleDirs.size();++i){ if(i) p<<","; p<<daemonJsonString(opts.moduleDirs[i]); }
+    p<<"]}}\n";
+    if(!daemonWriteAll(fd,p.str())){ ::close(fd); warn="cannot write build request"; return -1; }
+    // Stream progress lines until the final result. A build has no timeout
+    // (DESIGN.md §2.3); a line that takes over 10 minutes to arrive is
+    // treated as a dead daemon and the request cold-runs.
+    for(;;){
+        if(reader.readLine(line,600000)!=1){ ::close(fd); warn="daemon went away mid-build"; return -1; }
+        std::string method;
+        if(daemonJsonGetString(line,"method",method)&&method=="progress"){
+            std::string stream, text;
+            bool nl=true;
+            daemonJsonGetString(line,"stream",stream);
+            daemonJsonGetString(line,"line",text);
+            daemonJsonGetBool(line,"nl",nl);
+            if(stream=="stderr"){
+                std::cerr<<text; if(nl) std::cerr<<"\n";
+                std::cerr<<std::flush;
+            } else {
+                std::cout<<text; if(nl) std::cout<<"\n";
+                std::cout<<std::flush;
+            }
+            continue;
+        }
+        if(line.find("\"error\"")!=std::string::npos){
+            std::string msg;
+            daemonJsonGetString(line,"message",msg);
+            ::close(fd);
+            warn=msg.empty()?"daemon reported an error":msg;
+            return -1;
+        }
+        if(line.find("\"result\"")!=std::string::npos){
+            long long ec=-1;
+            if(!daemonJsonGetInt(line,"exitCode",ec)){ ::close(fd); warn="malformed daemon result"; return -1; }
+            ::close(fd);
+            return (int)ec;
+        }
+        // Unknown line: ignore (forward-compatible).
+    }
+}
+// One-shot request (hello + one method) for `serve stop` / `serve status`.
+static bool daemonOneShot(const std::string& socketPath, const std::string& myBinIdentity,
+                          const std::string& method, std::string& replyOut){
+    int fd=-1;
+    if(!daemonConnect(socketPath,fd)) return false;
+    DaemonLineReader reader;
+    reader.fd=fd;
+    const std::string hello="{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"hello\",\"params\":{\"protocol\":1,\"bin\":"+daemonJsonString(myBinIdentity)+",\"project\":\"\"}}\n";
+    if(!daemonWriteAll(fd,hello)){ ::close(fd); return false; }
+    std::string line;
+    if(reader.readLine(line,5000)!=1){ ::close(fd); return false; }
+    long long proto=0;
+    if(!daemonJsonGetInt(line,"protocol",proto)||proto!=1||line.find("\"result\"")==std::string::npos){
+        ::close(fd); return false;
+    }
+    const std::string req="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\""+method+"\",\"params\":{}}\n";
+    if(!daemonWriteAll(fd,req)){ ::close(fd); return false; }
+    if(reader.readLine(line,5000)!=1){ ::close(fd); return false; }
+    replyOut=line;
+    ::close(fd);
+    return line.find("\"result\"")!=std::string::npos;
+}
+static int daemonStopCommand(const std::string& projectDir, const std::string& socketDirOpt){
+    const std::string socketDir=daemonSocketDir(projectDir,socketDirOpt,false);
+    if(socketDir.empty()){
+        std::cout<<"aster serve: no service running for "<<projectDir<<"\n";
+        return 0;
+    }
+    const std::string socketPath=daemonSocketPath(socketDir,projectDir);
+    const std::string lockPath=daemonLockPath(socketPath);
+    std::string reply;
+    if(daemonOneShot(socketPath,daemonBinaryIdentity(),"shutdown",reply)){
+        for(int i=0;i<20;++i){ if(!daemonPathExists(socketPath)) break; ::usleep(100000); }
+        std::cout<<"aster serve: stopped the service for "<<projectDir<<"\n";
+        return 0;
+    }
+    // No live service on the socket: reap a stale lock by pid, then remove
+    // the leftovers so the next `serve` starts clean.
+    DaemonLockInfo lock;
+    if(daemonReadLock(lockPath,lock)&&daemonPidAlive(lock.pid)){
+        ::kill((pid_t)lock.pid,SIGTERM);
+        for(int i=0;i<20;++i){ if(!daemonPidAlive(lock.pid)) break; ::usleep(100000); }
+        if(daemonPidAlive(lock.pid)) ::kill((pid_t)lock.pid,SIGKILL);
+    }
+    std::remove(socketPath.c_str());
+    std::remove(lockPath.c_str());
+    std::cout<<"aster serve: no service running for "<<projectDir<<"\n";
+    return 0;
+}
+static int daemonStatusCommand(const std::string& projectDir, const std::string& socketDirOpt){
+    const std::string socketDir=daemonSocketDir(projectDir,socketDirOpt,false);
+    if(socketDir.empty()){
+        std::cout<<"aster serve: no service running for "<<projectDir<<"\n";
+        return 1;
+    }
+    const std::string socketPath=daemonSocketPath(socketDir,projectDir);
+    std::string reply;
+    if(!daemonOneShot(socketPath,daemonBinaryIdentity(),"stats",reply)){
+        std::cout<<"aster serve: no service running for "<<projectDir<<"\n";
+        return 1;
+    }
+    long long pid=0, requests=0, cached=0, uptime=0, idle=0, compiled=0, reused=0;
+    bool haveLast=false;
+    daemonJsonGetInt(reply,"pid",pid);
+    daemonJsonGetInt(reply,"requests",requests);
+    daemonJsonGetInt(reply,"cachedFiles",cached);
+    daemonJsonGetInt(reply,"uptimeSec",uptime);
+    daemonJsonGetInt(reply,"idleSec",idle);
+    daemonJsonGetInt(reply,"lastCompiled",compiled);
+    daemonJsonGetInt(reply,"lastReused",reused);
+    daemonJsonGetBool(reply,"haveLastBuild",haveLast);
+    std::cout<<"aster serve: running (pid "<<pid<<", project "<<projectDir<<")\n"
+             <<"  requests: "<<requests<<", cached files: "<<cached
+             <<(haveLast?(", last build: "+std::to_string(compiled)+" compiled, "+std::to_string(reused)+" reused"):", no build yet")<<"\n"
+             <<"  uptime: "<<uptime<<" s, idle: "<<idle<<" s\n"
+             <<"  socket: "<<socketPath<<"\n";
+    return 0;
+}
+
 int main(int argc,char**argv){
     const std::string cmd=canonicalCliCommand(argc>1?argv[1]:"");
     std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false,compactFrames=false,gcSections=false,stripSymtab=false,verbose=false;
@@ -31605,6 +33808,34 @@ int main(int argc,char**argv){
         if(cmd=="help"){
             std::cout<<kUsage;
             return 0;
+        }
+        // Phase 1 daemon: `aster serve` (foreground by default),
+        // `aster serve stop`, `aster serve status`. The daemon serves one
+        // project; see the service layer just above main().
+        if(cmd=="serve"){
+            std::string sub, projectOpt=".", socketDirOpt;
+            bool detached=false;
+            auto usageError=[&](){
+                std::cerr<<"aster serve: usage: aster serve [--project DIR] [--socket-dir DIR]\n"
+                            "             aster serve stop [--project DIR] [--socket-dir DIR]\n"
+                            "             aster serve status [--project DIR] [--socket-dir DIR]\n";
+                return 2;
+            };
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                else if(a=="stop"||a=="status"){ if(!sub.empty()) return usageError(); sub=a; }
+                else if(a=="--project"){ if(i+1>=argc) return usageError(); projectOpt=argv[++i]; }
+                else if(a.rfind("--project=",0)==0) projectOpt=a.substr(10);
+                else if(a=="--socket-dir"){ if(i+1>=argc) return usageError(); socketDirOpt=argv[++i]; }
+                else if(a.rfind("--socket-dir=",0)==0) socketDirOpt=a.substr(13);
+                else if(a=="--detached") detached=true;
+                else return usageError();
+            }
+            const std::string projectDir=daemonCanonicalDir(projectOpt);
+            if(sub=="stop") return daemonStopCommand(projectDir,socketDirOpt);
+            if(sub=="status") return daemonStatusCommand(projectDir,socketDirOpt);
+            return daemonServeMain(projectDir,socketDirOpt,detached);
         }
 #if ASTER_CN_FRONTEND_AVAILABLE
         if (cmd == "fmt") {
@@ -32881,6 +35112,10 @@ int main(int argc,char**argv){
         if(cmd=="build"||cmd=="run"){
             const bool isRun=cmd=="run";
             std::string out; bool dbg=false,bc2=false,noCache=false,afterDash=false,verbose=false,noGcSections=false,noStrip=false;
+            // Phase 1: --daemon / ASTER_DAEMON=1 routes `build` through the
+            // daemon; --no-daemon always wins (the escape hatch).
+            bool daemonOpt=false, noDaemon=false;
+            std::string socketDirOpt;
             unsigned jobs=0; // 0 = default (online CPUs); --jobs 1 restores the serial build
             std::vector<std::string> bilingualModuleDirs;
             uint64_t ps=4096; bool cliPageSet=false; std::vector<std::string> runArgs;
@@ -32929,6 +35164,13 @@ int main(int argc,char**argv){
                     bilingualModuleDirs.push_back(argv[++i]);
                 }
                 else if(a.rfind("--module-dir=",0)==0)bilingualModuleDirs.push_back(a.substr(13));
+                else if(a=="--daemon")daemonOpt=true;
+                else if(a=="--no-daemon")noDaemon=true;
+                else if(a=="--socket-dir"){
+                    if(i+1>=argc){std::cerr<<"aster "<<cmd<<": --socket-dir needs a path\n";return 2;}
+                    socketDirOpt=argv[++i];
+                }
+                else if(a.rfind("--socket-dir=",0)==0)socketDirOpt=a.substr(13);
                 else if(a=="--page-size"){
                     if(i+1>=argc||!parseCliUInt(argv[++i],16384,ps)){
                         std::cerr<<"aster "<<cmd<<": --page-size must be 4096 or 16384\n";return 2;
@@ -32950,6 +35192,45 @@ int main(int argc,char**argv){
                 std::cerr<<"aster "<<cmd<<": no aster.proj in this directory (create one with `aster new NAME`)\n";
                 return 2;
             }
+            // Phase 1: opt-in daemon builds (ASTER_DAEMON=1 or --daemon;
+            // --no-daemon always wins). `run` never routes through the
+            // daemon: it executes the built program locally. Any daemon
+            // failure fails closed to the cold build below.
+            if(cmd=="build"){
+                const char* envDaemon=std::getenv("ASTER_DAEMON");
+                const bool daemonEnabled=!noDaemon&&(daemonOpt||(envDaemon&&(std::string(envDaemon)=="1"||std::string(envDaemon)=="true")));
+                if(daemonEnabled){
+                    BilingualBuildOpts daemonBuildOpts;
+                    daemonBuildOpts.cmd=cmd;
+                    daemonBuildOpts.out=out;
+                    daemonBuildOpts.dbg=dbg;
+                    daemonBuildOpts.bc2=bc2;
+                    daemonBuildOpts.noCache=noCache;
+                    daemonBuildOpts.verbose=verbose;
+                    daemonBuildOpts.noGcSections=noGcSections;
+                    daemonBuildOpts.noStrip=noStrip;
+                    daemonBuildOpts.jobsCount=jobsCount;
+                    daemonBuildOpts.moduleDirs=bilingualModuleDirs;
+                    daemonBuildOpts.pageSize=ps;
+                    daemonBuildOpts.cliPageSet=cliPageSet;
+                    daemonBuildOpts.isRun=false;
+                    daemonBuildOpts.runArgs=runArgs;
+                    daemonBuildOpts.timeoutSec=timeoutSec;
+                    daemonBuildOpts.gcKeep=gcKeep;
+                    daemonBuildOpts.maxParseDepth=maxParseDepthOpt;
+                    daemonBuildOpts.maxLoweringDepth=maxLoweringDepthOpt;
+                    char daemonCwdBuf[4096];
+                    const std::string daemonProjectDir=daemonCanonicalDir(
+                        getcwd(daemonCwdBuf,sizeof daemonCwdBuf)?daemonCwdBuf:".");
+                    const char* keyDirEnv=std::getenv("ASTER_KEY_DIR");
+                    const std::string keyDir=keyDirEnv?keyDirEnv:std::string();
+                    std::string daemonWarn;
+                    const int daemonRc=daemonTryBuild(daemonBuildOpts,daemonProjectDir,socketDirOpt,keyDir,daemonWarn);
+                    if(daemonRc>=0) return daemonRc;
+                    if(verbose)
+                        std::cerr<<"aster: warning: daemon unavailable ("<<daemonWarn<<"), falling back to a cold build\n";
+                }
+            }
             ProjectSpec spec=parseProjectFile("aster.proj");
             if(spec.sources.empty()){std::cerr<<"aster "<<cmd<<": aster.proj lists no sources\n";return 2;}
             // P0-10: the bilingual frontend is the default (design
@@ -32968,27 +35249,6 @@ int main(int argc,char**argv){
                 bilingualLanguage=aster_cn::readProjectLanguage("aster.proj");
             }
             if(bilingualProject) {
-                // C-1: a bilingual APK project now follows the same flow
-                // as the mainline project build below (per-source PIC
-                // objects -> one shared object -> buildApk) instead of
-                // being refused. The rejection was itself an uncommitted
-                // P0-10 addition, so this merges with that change rather
-                // than conflicting with it.
-                const bool bilingualIsApk = spec.kind=="apk";
-                char bilingualCwdBuffer[4096];
-                const std::string bilingualCwd=getcwd(bilingualCwdBuffer,sizeof bilingualCwdBuffer)
-                    ? bilingualCwdBuffer : std::string(".");
-                if(bilingualIsApk&&spec.package.empty()){
-                    std::cerr<<"aster "<<cmd<<": an apk project needs `package <android.package>` in aster.proj\n";
-                    return 2;
-                }
-                if(isRun&&bilingualIsApk){
-                    std::cerr<<"aster run: this is an apk project — `aster build` writes build/"
-                             <<(spec.name.empty()?baseNameOf(bilingualCwd):spec.name)
-                             <<".apk; `aster run` runs an executable project\n";
-                    return 2;
-                }
-                const uint64_t bilingualPage = cliPageSet ? ps : (spec.pageSize ? spec.pageSize : ps);
                 std::vector<aster_cn::Program> parsedSources;
                 parsedSources.reserve(spec.sources.size());
                 for(const auto& sourcePath:spec.sources) {
@@ -32999,286 +35259,29 @@ int main(int argc,char**argv){
                         source,false,aster_cn::Language::Zh,bilingualLanguage,sourcePath);
                     parsedSources.push_back(aster_cn::parseProgram(source,language,sourcePath));
                 }
-                std::vector<std::string> packageRoots{bilingualCwd};
-                packageRoots.insert(packageRoots.end(),bilingualModuleDirs.begin(),bilingualModuleDirs.end());
-                aster_cn::Program roots;
-                roots.language=parsedSources.front().language;
-                roots.sourceFile=parsedSources.front().sourceFile;
-                for(const auto& parsed:parsedSources) {
-                    roots.structures.insert(roots.structures.end(),parsed.structures.begin(),parsed.structures.end());
-                    roots.enums.insert(roots.enums.end(),parsed.enums.begin(),parsed.enums.end());
-                    roots.classes.insert(roots.classes.end(),parsed.classes.begin(),parsed.classes.end());
-                    roots.interfaceClasses.insert(roots.interfaceClasses.end(),parsed.interfaceClasses.begin(),parsed.interfaceClasses.end());
-                    roots.globals.insert(roots.globals.end(),parsed.globals.begin(),parsed.globals.end());
-                    roots.methods.insert(roots.methods.end(),parsed.methods.begin(),parsed.methods.end());
-                    roots.imports.insert(roots.imports.end(),parsed.imports.begin(),parsed.imports.end());
-                    roots.aliases.insert(roots.aliases.end(),parsed.aliases.begin(),parsed.aliases.end());
-                    roots.fileImports.insert(roots.fileImports.end(),parsed.fileImports.begin(),parsed.fileImports.end());
-                }
-                // P1-3: listed sources are known sources for file imports:
-                // an imported file that is itself listed is supplied by its
-                // own TU instead of being merged again.
-                std::set<std::string> bilingualKnownSources;
-                for(const auto& sourcePath:spec.sources)
-                    bilingualKnownSources.insert(cnCanonicalPath(sourcePath));
-                // B-P1: each listed source's resolved language, so its file
-                // imports inherit it (not the merged root's, which only
-                // carries the first TU's language).
-                std::map<std::string, aster_cn::Language> bilingualSourceLanguages;
-                for(size_t i=0;i<spec.sources.size();++i)
-                    bilingualSourceLanguages[cnCanonicalPath(spec.sources[i])] = parsedSources[i].language;
-                // Package format (§11.3): a project that declares a package
-                // version must find that exact version before any import is
-                // resolved, so a missing or mismatched package reports
-                // itself instead of surfacing as a missing package source.
-                if(const std::string pkgErr=pkgValidateProjectPackages(spec,packageRoots);!pkgErr.empty()){
-                    std::cerr<<"aster "<<cmd<<": "<<pkgErr<<"\n";return 1;
-                }
-                aster_cn::Program program=cnResolvePackageImports(
-                    roots,bilingualLanguage,packageRoots,bilingualKnownSources,bilingualSourceLanguages);
-                std::string bilingualProjectName=spec.name.empty()?baseNameOf(bilingualCwd):spec.name;
-                if(bilingualProjectName.empty()||bilingualProjectName=="."||bilingualProjectName=="..")
-                    bilingualProjectName="app";
-                // C-1: an APK project's default output is build/<name>.apk,
-                // like the mainline project build; the .so name below is
-                // derived from the same name, so sanitise it the way the
-                // mainline build does (a cwd fallback may contain spaces).
-                if(bilingualIsApk){
-                    bilingualProjectName=sanitizeFileName(bilingualProjectName);
-                    if(bilingualProjectName.find_first_not_of('_')==std::string::npos)
-                        bilingualProjectName="app";
-                }
-                const std::string target=out.empty()
-                    ? "build/"+bilingualProjectName+(bilingualIsApk?".apk":"")
-                    : out;
-                const std::string targetDir=dirNameOf(target);
-                if(!targetDir.empty()&&!makeDirs(targetDir)){std::cerr<<"aster build: cannot create "<<targetDir<<"\n";return 1;}
-                const std::string cacheDir="build/.cache";
-                if(!makeDirs(cacheDir)){std::cerr<<"aster "<<cmd<<": cannot create "<<cacheDir<<"\n";return 1;}
-                // Per-source build: one cached object per deduplicated
-                // source, linked in aster.proj order. The whole-project
-                // fingerprint and its fileExists-only reuse are gone: each
-                // TU's validity comes from its own meta (src + obj hashes
-                // + foreign-source dep hashes). The exactly-one-main check
-                // stays at merged level, as before — for exe projects only:
-                // an APK project has no main (its entry is
-                // ANativeActivity_onCreate in the sources — the symbol
-                // android.app.NativeActivity looks up at launch; a bare
-                // aster_main is never called).
-                bool bilingualHasMain=bilingualIsApk;
-                for(const auto& method:program.methods) if(method.name=="main") bilingualHasMain=true;
-                if(!bilingualHasMain)
-                    throw Error(program.language==aster_cn::Language::Zh
-                        ? "程序必须定义 启动方法" : "program must define main");
-                std::map<std::string, std::string> bilingualTypeToSource;
-                for(const auto& parsed:parsedSources) {
-                    for(const auto& s:parsed.structures) bilingualTypeToSource[s.name]=parsed.sourceFile;
-                    for(const auto& e:parsed.enums) {
-                        bilingualTypeToSource[e.name]=parsed.sourceFile;
-                        for(const auto& m:e.members) bilingualTypeToSource[m.name]=parsed.sourceFile;
-                    }
-                    for(const auto& c:parsed.classes) bilingualTypeToSource[c.name]=parsed.sourceFile;
-                    for(const auto& i:parsed.interfaceClasses) bilingualTypeToSource[i.name]=parsed.sourceFile;
-                    // P1-3: aliases are type names too (see testAddTypes).
-                    for(const auto& a:parsed.aliases) bilingualTypeToSource[a.name]=parsed.sourceFile;
-                }
-                std::string bilingualLangText=std::string("default=")+
-                    (bilingualLanguage.hasDefault
-                        ? (bilingualLanguage.defaultLanguage==aster_cn::Language::Zh?"zh":"en") : "-")+
-                    ";zhAllowed="+(bilingualLanguage.zhAllowed?"1":"0")+
-                    ";enAllowed="+(bilingualLanguage.enAllowed?"1":"0");
-                // B-P1: per-file entries change how sources parse, so they
-                // are part of the cache key.
-                bilingualLangText+=aster_cn::projectLanguageFileEntries(bilingualLanguage);
-                for(const auto& moduleDir:bilingualModuleDirs)
-                    bilingualLangText+=";module-dir="+moduleDir;
-                const std::set<std::string> bilingualPackageFiles=g_cnPackageFilesLoaded;
-                CnPerSourceContext bilingualCtx;
-                bilingualCtx.program=&program;
-                {
-                    // Package declarations are emitted by the first
-                    // source importing each file's module, so a source
-                    // that neither imports nor references a package
-                    // records no package dep.
-                    std::vector<std::pair<std::string, const aster_cn::Program*>> bilingualLinkSet;
-                    for (size_t i = 0; i < spec.sources.size(); ++i)
-                        bilingualLinkSet.emplace_back(spec.sources[i], &parsedSources[i]);
-                    bilingualCtx.packageFileOwners = cnPackageFileOwners(bilingualLinkSet);
-                    bilingualCtx.fileImportOwners = cnFileImportOwners(bilingualLinkSet);
-                    bilingualCtx.ownersHash = cnCombinedOwnersHash(bilingualCtx.packageFileOwners,
-                                                                   bilingualCtx.fileImportOwners);
-                }
-                bilingualCtx.packageFiles=&bilingualPackageFiles;
-                bilingualCtx.forceConstructedClasses=cnFindConstructedClasses(program);
-                {
-                    std::string constructedText;
-                    for(const auto& name:bilingualCtx.forceConstructedClasses){constructedText+=name;constructedText+='\n';}
-                    bilingualCtx.constructedHash=sha256Hex(constructedText);
-                }
-                bilingualCtx.typeNameToSource=bilingualTypeToSource;
-                bilingualCtx.langHash=sha256Hex(bilingualLangText);
-                bilingualCtx.keySalt="";
-                bilingualCtx.cacheDir=cacheDir;
-                bilingualCtx.dbg=dbg;
-                bilingualCtx.bc=bc2;
-                bilingualCtx.page=bilingualPage;
-                bilingualCtx.maxParseDepth=(unsigned)maxParseDepthOpt;
-                bilingualCtx.maxLoweringDepth=effectiveLoweringDepth();
-                bilingualCtx.sharedObject=bilingualIsApk;
-                // Step 1: D2a + string-literal validation once for the merged
-                // program (after cnFindConstructedClasses above, which must
-                // see the raw program — see cnPreprocessMergedProgram).
-                // Runs even when every TU is cached: one pass (~80 ms) is
-                // the price of not re-doing it 21 times on a clean build.
-                cnPreprocessMergedProgram(program);
-                bilingualCtx.programPreprocessed=true;
-                std::vector<std::string> bilingualObjs;
-                int bilingualCompiled=0, bilingualReused=0;
-                if(jobsCount>1){
-                    // v0.23.85-dev: parallel per-TU build (fork workers).
-                    // One job per source; the parent collects in source
-                    // order, so link order and counts match the serial loop
-                    // below, and the first failure in source order is the
-                    // one reported (see runTuJobs).
-                    std::vector<std::function<TuWorkResult()>> tuJobs;
-                    tuJobs.reserve(spec.sources.size());
-                    for(size_t i=0;i<spec.sources.size();++i){
-                        tuJobs.push_back([&,i]{
-                            const auto t0=std::chrono::steady_clock::now();
-                            int c=0,r=0;
-                            std::string obj=cachedCnProjectObject(
-                                bilingualCtx,parsedSources[i],spec.sources[i],
-                                (i+1)*1000000,c,r,noCache);
-                            TuWorkResult res;
-                            res.objPath=std::move(obj);
-                            res.compiled=c>0;
-                            res.ms=msSince(t0);
-                            return res;
-                        });
-                    }
-                    std::string firstError;
-                    const bool tuOk=runTuJobs(tuJobs,jobsCount,
-                        [&](size_t idx,const TuWorkResult& res){
-                            if(res.compiled)++bilingualCompiled; else ++bilingualReused;
-                            if(verbose)
-                                std::cout<<"aster: verbose: "<<(res.compiled?"compiled ":"reused ")
-                                         <<spec.sources[idx]<<" in "<<res.ms<<" ms\n"<<std::flush;
-                            if(!res.objPath.empty()) bilingualObjs.push_back(res.objPath);
-                        },firstError,spec.sources);
-                    if(!tuOk){std::cerr<<firstError;return 1;}
-                } else
-                for(size_t i=0;i<spec.sources.size();++i) {
-                    const auto fileT0=std::chrono::steady_clock::now();
-                    const int c0=bilingualCompiled;
-                    const std::string obj=cachedCnProjectObject(
-                        bilingualCtx,parsedSources[i],spec.sources[i],
-                        (i+1)*1000000,bilingualCompiled,bilingualReused,noCache);
-                    // v0.23.82-dev: flush every verbose line. stdout is
-                    // block-buffered through a pipe, so without this all
-                    // 21 lines arrive in one burst at process exit and a
-                    // live log reader (e.g. the Tiecode plugin) sees
-                    // nothing while the build runs.
-                    if(verbose)
-                        std::cout<<"aster: verbose: "<<(bilingualCompiled>c0?"compiled ":"reused ")
-                                 <<spec.sources[i]<<" in "<<msSince(fileT0)<<" ms\n"<<std::flush;
-                    if(!obj.empty()) bilingualObjs.push_back(obj);
-                }
-                if(bilingualObjs.empty()){std::cerr<<"aster "<<cmd<<": no objects to link\n";return 1;}
-                if(bilingualIsApk){
-                    // C-1: the same packaging as the mainline project build
-                    // below — one shared object, then buildApk (v1 + v2 + v3
-                    // triple-signed, self-verified). The per-source objects
-                    // are PIC (ctx.sharedObject), so linkSharedObjects
-                    // accepts them (it refuses a _start definition); the
-                    // __aster_init chain is rooted by the shared-object
-                    // linker, as in the mainline path.
-                    // v0.23.82-dev: an APK project links with gc-sections and
-                    // --strip on by default (the .so is an app, not a library:
-                    // only ANativeActivity_onCreate is looked up by name, and
-                    // the packaged .so needs no source-level .symtab).
-                    // --no-gc-sections / --no-strip keep the whole-object
-                    // shape for debugging.
-                    const std::string bilingualSoPath=cacheDir+"/"+bilingualProjectName+".so";
-                    const auto linkT0=std::chrono::steady_clock::now();
-                    linkSharedObjects(bilingualObjs,bilingualSoPath,"lib"+bilingualProjectName+".so",{},bilingualPage,!noGcSections,!noStrip,verbose,gcKeep);
-                    if(verbose)
-                        std::cout<<"aster: verbose: linked "<<bilingualObjs.size()<<" objects into "<<bilingualSoPath
-                                 <<" in "<<msSince(linkT0)<<" ms\n"<<std::flush;
-                    std::string bilingualApkErr;
-                    if(!validateApkInputs(spec.package,spec.abi,bilingualProjectName,bilingualApkErr)){
-                        std::cerr<<"aster build: "<<bilingualApkErr<<"\n";return 2;
-                    }
-                    const std::string bilingualKeyPath=debugKeyPath(projectKeyDir(""));
-                    const bool bilingualKeyExisted=fileExists(bilingualKeyPath);
-                    const auto keyT0=std::chrono::steady_clock::now();
-                    SigningKey bilingualKey;
-                    if(spec.signMode=="release"){
-                        if(spec.keystore.empty()||spec.cert.empty()){
-                            std::cerr<<"aster build: sign-mode release needs `keystore <path>` and `cert <path>` in aster.proj\n";
-                            return 2;
-                        }
-                        bilingualKey=releaseKey(spec.keystore,spec.cert);
-                    } else {
-                        if(!spec.keystore.empty()||!spec.cert.empty()){
-                            std::cerr<<"aster build: keystore/cert are release settings — add `sign-mode release` or remove them\n";
-                            return 2;
-                        }
-                        bilingualKey=debugKeyFor(projectKeyDir(""), spec.keyBits);
-                    }
-                    if(verbose)
-                        std::cout<<"aster: verbose: signing key "
-                                 <<(spec.signMode=="release"?"loaded":(bilingualKeyExisted?"reused":"generated"))
-                                 <<" in "<<msSince(keyT0)<<" ms\n"<<std::flush;
-                    const std::string bilingualSoText=readFile(bilingualSoPath);
-                    std::vector<uint8_t> bilingualSo(bilingualSoText.begin(),bilingualSoText.end());
-                    const std::string bilingualLabel=spec.label.empty()?bilingualProjectName:spec.label;
-                    const std::vector<uint8_t> bilingualIconBytes=spec.icon.empty()?std::vector<uint8_t>{}:loadIconBytes(spec.icon,"aster build: icon");
-                    int bilingualApkResult=buildApk(target,spec.package,bilingualProjectName,spec.abi,bilingualSo,
-                        spec.minSdk,spec.targetSdk,bilingualLabel,
-                        spec.versionCode,spec.versionName,{},bilingualKey,true,false,false,bilingualPage,bilingualIconBytes,!noStrip,verbose);
-                    if(bilingualApkResult!=0)return bilingualApkResult;
-                    if(verbose){
-                        std::error_code ec;
-                        const uint64_t apkBytes=std::filesystem::file_size(target,ec);
-                        std::cout<<"aster: verbose: size: "<<target<<" "<<(ec?0:apkBytes)<<" bytes; .so "
-                                 <<bilingualSo.size()<<" bytes (.text "<<elfSectionSize(bilingualSo,".text")<<" bytes); "
-                                 <<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused\n"<<std::flush;
-                    }
-                    std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
-                             <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n"<<std::flush;
-                    return 0;
-                }
-                // No GC here, like the mainline project build: GC prunes
-                // from _start, and a foreign TU's __aster_init is unreachable
-                // from main (only the entry TU's own init is called from its
-                // prologue), so GC drops it before the linker can synthesize
-                // the entry stub that walks the chain — every foreign
-                // runtime-initialized global would silently stay zero.
-                // Without GC the chain survives and the A-21 order check
-                // still runs.
-                const auto exeLinkT0=std::chrono::steady_clock::now();
-                linkObjects(bilingualObjs,target,0x400000,2,bilingualPage,false);
-                if(verbose)
-                    std::cout<<"aster: verbose: linked "<<bilingualObjs.size()<<" objects into "<<target
-                             <<" in "<<msSince(exeLinkT0)<<" ms\n"<<std::flush;
-                std::cout<<"Aster v"<<kVersion<<": built bilingual project "<<target
-                         <<" ("<<bilingualCompiled<<" compiled, "<<bilingualReused<<" reused)\n"<<std::flush;
-                if(isRun){
-                    pid_t pid=::fork();
-                    if(pid==0){execAarch64Image(target,runArgs);std::perror("aster run");::_exit(127);}
-                    int st=0;
-                    if(pid<0){std::cerr<<"aster run: cannot fork\n";return 1;}
-                    // v0.23.82-dev (bilingual): the same bounded wait as the
-                    // original-parser run path below; a hanging program is
-                    // killed and reported instead of hanging aster.
-                    const int wr=waitChildWithTimeout(pid,st,timeoutSec,"aster run");
-                    if(wr<0)return 1;
-                    if(wr==1)return 124;
-                    if(WIFEXITED(st))return WEXITSTATUS(st);
-                    if(WIFSIGNALED(st))return 128+WTERMSIG(st);
-                    return 1;
-                }
-                return 0;
+                // Phase 1: the build itself lives in
+                // runBilingualProjectBuild() (just above main) so the
+                // daemon's worker can run the same body over cached parses.
+                BilingualBuildOpts bilingualOpts;
+                bilingualOpts.cmd=cmd;
+                bilingualOpts.out=out;
+                bilingualOpts.dbg=dbg;
+                bilingualOpts.bc2=bc2;
+                bilingualOpts.noCache=noCache;
+                bilingualOpts.verbose=verbose;
+                bilingualOpts.noGcSections=noGcSections;
+                bilingualOpts.noStrip=noStrip;
+                bilingualOpts.jobsCount=jobsCount;
+                bilingualOpts.moduleDirs=bilingualModuleDirs;
+                bilingualOpts.pageSize=ps;
+                bilingualOpts.cliPageSet=cliPageSet;
+                bilingualOpts.isRun=isRun;
+                bilingualOpts.runArgs=runArgs;
+                bilingualOpts.timeoutSec=timeoutSec;
+                bilingualOpts.gcKeep=gcKeep;
+                bilingualOpts.maxParseDepth=maxParseDepthOpt;
+                bilingualOpts.maxLoweringDepth=maxLoweringDepthOpt;
+                return runBilingualProjectBuild(spec,bilingualLanguage,parsedSources,bilingualOpts);
             }
             char cwdbuf[4096];
             const std::string cwd=getcwd(cwdbuf,sizeof cwdbuf)?cwdbuf:".";
@@ -33579,9 +35582,54 @@ int main(int argc,char**argv){
                 }
             }
             const std::vector<uint8_t> iconBytes=iconPath.empty()?std::vector<uint8_t>{}:loadIconBytes(iconPath,"aster: build-apk: --icon");
+            // Phase 0: no-change APK fast path (same fingerprint as the
+            // project build; the packaged .so itself is the link input
+            // here, and the key is already loaded, so its certificate
+            // hash costs nothing extra). selfVerify and --emit-so do not
+            // change the APK bytes, so they are not fingerprint inputs.
+            // The sidecar sits next to the output: a standalone build-apk
+            // has no project cache directory to put it in.
+            const std::string apkSidecarPath=output+".last-apk.json";
+            std::string apkFingerprint;
+            {
+                ApkFastPathInputs fp;
+                fp.soSha256=sha256Hex(so);
+                fp.stripSymtab=strip;
+                fp.pageSize=pageSize;
+                fp.signMode=signMode;
+                fp.certSha256=sha256Hex(key.certDER);
+                fp.packageName=package;
+                fp.libname=libname;
+                fp.abi=abi;
+                fp.label=label;
+                fp.versionCode=verCode;
+                fp.versionName=verName;
+                fp.minSdk=minSdk;
+                fp.targetSdk=targetSdk;
+                fp.debuggable=debuggable;
+                fp.labelAsReference=labelAsReference;
+                fp.extraStrings=extraStrings;
+                fp.hasIcon=!iconPath.empty();
+                if(fp.hasIcon) fp.iconSha256=sha256Hex(iconBytes);
+                if(apkFastPathInputsReady(fp)) apkFingerprint=apkFastPathFingerprint(fp);
+            }
+            if(!apkFingerprint.empty()){
+                const auto fpT0=std::chrono::steady_clock::now();
+                if(apkFastPathHit(apkSidecarPath,output,apkFingerprint)){
+                    if(verboseApk)
+                        std::cout<<"aster: verbose: fast-path: reused "<<output
+                                 <<" (fingerprint match) in "<<msSince(fpT0)<<" ms\n"<<std::flush;
+                    std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2+v3 triple-signed, "
+                        <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n"<<std::flush;
+                    return 0;
+                }
+            }
             int r=buildApk(output,package,libname,abi,so,minSdk,targetSdk,label,verCode,verName,extraStrings,key,selfVerify,labelAsReference,debuggable,pageSize,iconBytes,strip,verboseApk);
-            if(r==0)std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2+v3 triple-signed, "
-                <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n"<<std::flush;
+            if(r==0){
+                if(!apkFingerprint.empty()) apkFastPathRecord(apkSidecarPath,output,apkFingerprint);
+                std::cout<<"Aster v"<<kVersion<<": built APK (NativeActivity, v1+v2+v3 triple-signed, "
+                    <<(signMode=="release"?"release":"debug")<<" key from "<<key.source<<"): "<<output<<"\n"<<std::flush;
+            }
             return r;
         }
         // keygen writes the project's debug key without building anything, so
