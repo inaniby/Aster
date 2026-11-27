@@ -298,6 +298,50 @@ static std::string renderError(const std::string& msg) {
 static void reportError(const std::string& msg) {
     std::cerr << renderError(msg);
 }
+
+// ---- Phase 3: structured diagnostics (`aster diagnose`, DESIGN.md §6.3) ----
+// A diagnostic is the same error `aster build` would print, in structured
+// form: the file/line/column renderError derives from the exception text's
+// trailing " at L:C" plus g_diagFile/g_srcFile, and the message is the
+// decorated diagnostic text with that trailing location stripped (it is
+// redundant with the line/column fields). A location-less error has an
+// empty file and line/column 0 — the driver's current file is NOT
+// substituted, so a missing-main style error never misattributes a file.
+// diagnose reports the same FIRST error build would report (parse in
+// aster.proj order, then the front half, then the first TU in source
+// order); it never aggregates multiple errors, because build stops at the
+// first one too.
+struct DiagEntry {
+    std::string file;
+    long line = 0;
+    long col = 0;
+    std::string message;
+    std::string level = "error";
+};
+static DiagEntry diagFromException(const std::string& msg) {
+    DiagEntry d;
+    const std::string diagnostic = g_cnDiagnosticActive
+        ? aster_cn::decorateDiagnostic(msg, g_cnDiagnosticLanguage) : msg;
+    size_t at = diagnostic.rfind(" at ");
+    if (at != std::string::npos) {
+        const char* p = diagnostic.c_str() + at + 4;
+        char* end = nullptr;
+        unsigned long L = std::strtoul(p, &end, 10);
+        if (end && *end == ':') {
+            char* end2 = nullptr;
+            unsigned long C = std::strtoul(end + 1, &end2, 10);
+            if (end2 && *end2 == '\0') {
+                d.line = (long)L;
+                d.col = (long)C;
+                d.message = diagnostic.substr(0, at);
+                d.file = !g_diagFile.empty() ? g_diagFile : g_srcFile;
+                return d;
+            }
+        }
+    }
+    d.message = diagnostic;
+    return d;
+}
 // B-P4: an error raised while parsing or lowering a file that is not the
 // driver's current source must still name the file it came from.
 // reportError() prints g_diagFile when it is set (audit A-15, which did
@@ -1614,6 +1658,18 @@ static int64_t castConstValue(int64_t v,Ty to){
 // `aster build` can tell that nothing going into an object changed. Content,
 // not mtime: a fresh checkout or a `cp -p` keeps the bytes and still rebuilds.
 std::map<std::string,std::string> g_buildDeps;
+
+// Phase 2 (decl-level invalidation, incremental-design §4.2/§4.3): the
+// (struct/class, field) pairs one TU's lowering touched, as "Type.field"
+// with the canonical field name (the one the lowered Field node carries,
+// so a `string_view` data/len access records 数据/长度 like the
+// declaration). Recorded only at the user-visible Member branch of
+// cnExpressionToAster — reads and writes both flow through it; static
+// fields take the global-symbol path instead, and vtable/closure/
+// adapter fields belong to generated types, not user declarations.
+// cachedCnProjectObject clears this before each TU's lowering and takes
+// the snapshot after, exactly like g_buildDeps.
+std::set<std::string> g_cnEmittedFieldAccesses;
 
 // v0.23.84-dev (limits batch 2): the frame and array ceilings the second
 // limits batch establishes. A function's frame is 8192 bytes by default and
@@ -11725,6 +11781,12 @@ static long long msSince(std::chrono::steady_clock::time_point t0){
     return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now()-t0).count();
 }
+// Microseconds since a steady-clock mark (Phase 3 completion timings:
+// the whole lookup is sub-millisecond, so ms resolution reads 0).
+static long long usSince(std::chrono::steady_clock::time_point t0){
+    return (long long)std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now()-t0).count();
+}
 
 // Size of a named section in an in-memory ELF image (0 when absent or malformed).
 static uint64_t elfSectionSize(const std::vector<uint8_t>& elf,const char* want){
@@ -13926,16 +13988,17 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
 "       aster new [--apk] <dir>              scaffold a program or APK project\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
-"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [--verbose] [--jobs N] [--no-gc-sections] [--no-strip] [--gc-keep NAME[,NAME...]] [--daemon] [--no-daemon] [--socket-dir DIR] [-- args]\n"
+"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [--verbose] [--jobs N] [--no-gc-sections] [--no-strip] [--gc-keep NAME[,NAME...]] [--daemon] [--no-daemon] [--socket-dir DIR] [--decl-invalidation] [--no-decl-invalidation] [-- args]\n"
 "       aster serve [--project DIR] [--socket-dir DIR]   start the build daemon for one project\n"
 "       aster serve stop|status [--project DIR] [--socket-dir DIR]\n"
+"       aster diagnose [--project DIR] [--socket-dir DIR] [--format json|text] [--decl-invalidation] [--no-decl-invalidation]\n"
 "       aster test  [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [filter]\n"
 "       aster doctor [--strict]             check the host and the project it is run in\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
 "       aster fmt [--language zh|en] [--check|--write] <source.ast>\n"
 "       aster pack [--src-dir DIR] [--out DIR] [--check DIR]   build the standard-library package\n"
 "       aster complete [--language zh|en] [--format json|text] [--project DIR]\n"
-"           [--cursor LINE:COL] [--stdin] <package-dir|manifest.json> [file.ast]\n"
+"           [--cursor LINE:COL] [--stdin] [--socket-dir DIR] <package-dir|manifest.json> [file.ast]\n"
 "       aster pkg install <source> [--project DIR] | upgrade <package> [--project DIR] | list [--project DIR] | remove <package> [--project DIR]\n"
     "       aster link-obj|link-pie [--gc-sections] <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] [--gc-sections] [--gc-keep NAME[,NAME...]] [--strip] [--verbose] <input.o> [input2.o ...] -o <output.so>\n"
@@ -13946,7 +14009,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "    编译对象=build-obj、构建可执行文件=build-elf、构建PIE=build-pie、编译共享库=build-so、\n"
 "    构建APK=build-apk、链接可执行文件=link-obj、链接PIE=link-pie、链接共享库=link-so、\n"
 "    服务=serve\n"
-"    格式化源码=fmt、生成密钥=keygen、验证APK=verify-apk、打包=pack、补全=complete、包=pkg（英文命令仍可照常使用）\n"
+"    格式化源码=fmt、生成密钥=keygen、验证APK=verify-apk、打包=pack、补全=complete、诊断=diagnose、包=pkg（英文命令仍可照常使用）\n"
     "  build-elf  fixed-address AArch64 ET_EXEC executable (link base 0x400000)\n"
     "  build-pie  static PIE: AArch64 ET_DYN executable, no interpreter (link base 0)\n"
     "  build-obj  relocatable AArch64 ET_REL object (--pic: position-independent, for link-so)\n"
@@ -14022,6 +14085,14 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "                 opt-in: ASTER_DAEMON=1). The daemon only accelerates: any\n"
 "                 daemon failure falls back to a cold build, and `aster serve\n"
 "                 stop` / `aster serve status` manage it per project.\n"
+"  --decl-invalidation  decide per-TU reuse from declaration content hashes\n"
+"                 instead of whole-file hashes (comment edits recompile\n"
+"                 nothing; a method-body edit recompiles only its defining\n"
+"                 TU and direct callers). On by default (since the user\n"
+"                 decision of 2026-11-27); --no-decl-invalidation opts out\n"
+"                 to the file-hash path. The index lives in\n"
+"                 build/.cache/decl-index.json and is never a correctness\n"
+"                 input — any doubt falls back to the file-hash path.\n"
 "  --timeout SECONDS  how long `aster run`/`aster test` wait for the child before\n"
 "                 killing it (SIGTERM, then SIGKILL after 5s): default 60, 0 disables;\n"
 "                 --timeout wins over $ASTER_RUN_TIMEOUT.\n"
@@ -17579,7 +17650,16 @@ static ProjectSpec parseProjectFile(const std::string& path){
 // being trusted.
 static bool readProjectCacheMetaForReuse(const std::string& metaPath, const std::string& objPath,
                                          const std::string& flags, const std::string& sp,
-                                         const std::string& srcHash, std::string* objHashOut = nullptr) {
+                                         const std::string& srcHash, std::string* objHashOut = nullptr,
+                                         // Phase 2: when non-null, the canonical paths of
+                                         // project sources whose dep lines the decl table
+                                         // covers. For those lines the hash check is skipped
+                                         // (the decl decision already cleared them) and the
+                                         // src line is only required to be present, not to
+                                         // match: a comment edit moves it by design. Every
+                                         // other dep line (package/imported/embed) is still
+                                         // hash-checked, and version/flags/object always are.
+                                         const std::set<std::string>* declSkipDepFiles = nullptr) {
     const std::string meta = readFile(metaPath);
     // v0.23.81-dev (CLI-P2-1): the cached object itself is hashed, so a
     // planted or damaged .o is never trusted on the meta alone. An
@@ -17599,11 +17679,16 @@ static bool readProjectCacheMetaForReuse(const std::string& metaPath, const std:
             // the first: the hash is a fixed 64-hex suffix, while the
             // path may contain spaces. The writer format is unchanged,
             // so .meta files written by older versions still read.
+            // Phase 2: with a decl skip set the src hash is not compared
+            // (a comment edit moves it by design); the line must still be
+            // present and well-formed, so a corrupt meta cannot pass.
             const std::string rest = l.substr(4);
             const size_t cut = rest.rfind(' ');
             if (cut == std::string::npos) { ok = false; continue; }
             const std::string q = rest.substr(0, cut), h = rest.substr(cut + 1);
-            if (h.size() != 64 || q != sp || h != srcHash) ok = false; else sawSrc = true;
+            if (h.size() != 64 || q != sp) { ok = false; continue; }
+            if (!declSkipDepFiles && h != srcHash) ok = false;
+            else sawSrc = true;
         } else if (l.rfind("obj ", 0) == 0) {
             const std::string h = trimWs(l.substr(4));
             if (objHash.empty() || h != objHash) ok = false; else sawObj = true;
@@ -17612,6 +17697,13 @@ static bool readProjectCacheMetaForReuse(const std::string& metaPath, const std:
             const size_t cut = rest.find(' ');
             if (cut == std::string::npos) { ok = false; continue; }
             const std::string h = rest.substr(0, cut), q = rest.substr(cut + 1);
+            // Phase 2: a dep line for a project source is covered by the
+            // decl decision and skips the hash check; anything else
+            // (package/imported/embed) is still hash-checked. The set
+            // holds both spellings of each source (as listed in
+            // aster.proj and canonicalised), because dep paths are
+            // recorded as the parser saw them.
+            if (declSkipDepFiles && declSkipDepFiles->count(q)) continue;
             if (!fileExists(q) || sha256Hex(readFile(q)) != h) ok = false;
         }
     }
@@ -19702,6 +19794,13 @@ static E cnExpressionToAster(const aster_cn::Expression& source,
             return result;
         }
         const Ty baseType = cnExpressionType(source.children[0], *context);
+        // Phase 2: record the (type, field) this TU touches. The base
+        // type is a struct value or a pointer to one; anything else (a
+        // string_view is a struct too) records under its struct name, and
+        // a type the decl index never sees simply never resolves.
+        if (tyIsStruct(baseType) || tyIsPtrToStruct(baseType))
+            g_cnEmittedFieldAccesses.insert(structOf(baseType.sid).name + "." +
+                cnCanonicalFieldName(baseType, source.children[1].value));
         result.reset(new Expr(Expr::Field));
         result->a = cnExpressionToAster(source.children[0], strings, context);
         result->name = cnCanonicalFieldName(baseType, source.children[1].value);
@@ -28455,6 +28554,16 @@ struct CnPerSourceContext {
     // with. Part of the cache flags, like dbg/bc/page: an object compiled
     // under one cap must never be reused for a run under another.
     unsigned maxParseDepth = 256, maxLoweringDepth = 2048;
+    // Phase 2: declaration-level invalidation. When declEnabled, a TU not in
+    // declDirtyTus may reuse its object even when its source/deps changed on
+    // disk, provided the meta's version/flags/object hash still validate and
+    // every non-project-source dep line still hash-matches (see
+    // readProjectCacheMetaForReuse). declSkipDepFiles holds the canonical
+    // paths of project sources (the only dep lines the decl table covers).
+    // Null pointers mean "decl invalidation off".
+    bool declEnabled = false;
+    const std::set<std::string>* declDirtyTus = nullptr;
+    const std::set<std::string>* declSkipDepFiles = nullptr;
 };
 
 // Package-declaration ownership, per file (design §7.2): the first TU in
@@ -29090,11 +29199,1563 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
 // the object path, or "" for a TU that defines nothing emittable (a
 // struct/enum-only TU still gets a meta entry and still counts, so its own
 // edits are detected; it just contributes no object to the link).
+// ---- Phase 2: declaration-level invalidation (DESIGN.md §4.2/§4.3) ----
+// A build with --decl-invalidation decides per-TU reuse from declaration
+// content hashes instead of whole-file hashes, so a comment edit recompiles
+// nothing and a method-body edit recompiles only the defining TU and its
+// direct callers. The index below is an accelerator only: it lives in
+// build/.cache/decl-index.json (versioned; unknown/corrupt/missing reads as
+// absent), the .o/.meta cache stays authoritative, and any doubt fails
+// closed to the file-hash path (or to a full recompile).
+//
+// Hashing is over a canonical serialization of the parsed declaration, not
+// over source text: the AST carries no comments or whitespace, declarations
+// only record a start line/column (no end position exists to slice by), and
+// positions, sourceFile and sourceLanguage (diagnostic wording only) are
+// excluded, so a comment or a blank line can never move a hash. The table is
+// built from the merged program BEFORE cnPreprocessMergedProgram runs (D2a
+// synthesis is not idempotent and must never see an already-preprocessed
+// program), and the daemon never holds a preprocessed merged program across
+// requests — each request re-merges from its raw cached parses.
+//
+// Invalidation rules (§4.2, with the two documented tightenings):
+//   * comment/whitespace/newline -> 0 TUs (hash unchanged);
+//   * method body (signature unchanged) -> defining TU + direct callers;
+//   * method signature -> same 1 hop (a signature change does not change the
+//     caller's signature, so the caller's callers are unaffected; a method
+//     used as a value is a direct symbol reference, already in the set);
+//   * global initial value/type -> defining TU + direct readers/writers;
+//   * type (struct/enum/class/interface) change -> all TUs referencing the
+//     type, plus the transitive closure over field/alias/base edges (a field
+//     layout change moves every holder's layout);
+//   * type alias change -> all referencers; layout change -> referencers
+//     plus TUs mentioning its node names (`键(节点名)` folds to a key that
+//     depends on the layout's node set); event change -> referencers of any
+//     event callback (synthesised `__aster_evt_*` names cannot be mapped back
+//     to one event, so all event callbacks invalidate together);
+//   * added declaration whose name collides with a name some TU references
+//     -> those TUs (resolution may have moved); removed declaration -> its
+//     defining TU plus every TU that referenced it (via the previous index's
+//     name maps, or via its recorded dep files);
+//   * `aster.proj` content change or constructed-class set change -> all TUs;
+//   * a @embed asset change -> the embedding TU (recorded hashes).
+// Only project-source dep lines are skipped by the decl-aware reuse check:
+// package/file-import/embed dep lines are still hash-checked every build,
+// which is what closes the import-alias hole for files the table cannot
+// attribute module imports to (ImportDeclaration carries no sourceFile).
+
+struct DeclTuRefs {
+    std::set<std::string> symbols;    // emitted names from cnCollectEmittedReferences
+    std::set<std::string> types;      // type names from cnCollectEmittedReferences
+    std::set<std::string> fields;     // "Type.field" from g_cnEmittedFieldAccesses
+    std::set<std::string> mentioned;  // source names the TU's own AST mentions
+    std::set<std::string> files;      // foreign-source dep files (cnForeignSourcesForTu)
+    std::map<std::string, std::string> embeds;  // @embed asset path -> content hash
+};
+
+// One TU's fresh refs, serialised for the fork-worker pipe (TuWorkResult's
+// trailing field). Lines are "S name" / "T name" / "F name" / "M name" /
+// "D path" / "E path<TAB>hash". Names are identifiers or mangled symbols and
+// cannot contain a newline; a line that fails to parse is skipped, and a
+// payload that parses to nothing is treated as unknown refs.
+static std::string declSerializeRefs(const DeclTuRefs& refs) {
+    std::string out;
+    for (const auto& s : refs.symbols) { out += "S "; out += s; out.push_back('\n'); }
+    for (const auto& s : refs.types) { out += "T "; out += s; out.push_back('\n'); }
+    for (const auto& s : refs.fields) { out += "F "; out += s; out.push_back('\n'); }
+    for (const auto& s : refs.mentioned) { out += "M "; out += s; out.push_back('\n'); }
+    for (const auto& s : refs.files) { out += "D "; out += s; out.push_back('\n'); }
+    for (const auto& kv : refs.embeds) {
+        out += "E "; out += kv.first; out.push_back('\t'); out += kv.second; out.push_back('\n');
+    }
+    return out;
+}
+
+static bool declParseRefs(const std::string& text, DeclTuRefs& out) {
+    if (text.empty()) return false;
+    std::set<std::string> symbols, types, fields, mentioned, files;
+    std::map<std::string, std::string> embeds;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        const size_t nl = text.find('\n', pos);
+        const std::string line = text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        if (nl == std::string::npos) pos = text.size(); else pos = nl + 1;
+        if (line.size() < 2 || line[1] != ' ') continue;
+        const std::string val = line.substr(2);
+        if (val.empty()) continue;
+        switch (line[0]) {
+            case 'S': symbols.insert(val); break;
+            case 'T': types.insert(val); break;
+            case 'F': fields.insert(val); break;
+            case 'M': mentioned.insert(val); break;
+            case 'D': files.insert(val); break;
+            case 'E': {
+                const size_t tab = val.find('\t');
+                if (tab != std::string::npos && tab + 1 < val.size() && val.size() - tab - 1 == 64)
+                    embeds[val.substr(0, tab)] = val.substr(tab + 1);
+                break;
+            }
+            default: break;
+        }
+    }
+    if (symbols.empty() && types.empty() && fields.empty() && mentioned.empty() && files.empty() &&
+        embeds.empty())
+        return false;
+    out.symbols = std::move(symbols);
+    out.types = std::move(types);
+    out.fields = std::move(fields);
+    out.mentioned = std::move(mentioned);
+    out.files = std::move(files);
+    out.embeds = std::move(embeds);
+    return true;
+}
+
+// ---- Canonical AST serialization (positions excluded) ----
+// Every string is length-prefixed ("<len>:<bytes>") so no input can blur a
+// boundary; counts are decimal with a ';' terminator. The serializers below
+// enumerate every field of every declaration struct in cn_parser.hpp except
+// line/column (positions), sourceFile (identity, not content) and
+// sourceLanguage (diagnostic wording only).
+
+static void declSerStr(std::string& out, const std::string& s) {
+    out += std::to_string(s.size());
+    out.push_back(':');
+    out += s;
+}
+
+static void declSerNum(std::string& out, long long v) {
+    out += std::to_string(v);
+    out.push_back(';');
+}
+
+static void declSerBool(std::string& out, bool b) { out.push_back(b ? '1' : '0'); }
+
+static void declSerDims(std::string& out, const std::vector<std::string>& dims) {
+    declSerNum(out, (long long)dims.size());
+    for (const auto& d : dims) declSerStr(out, d);
+}
+
+static void declSerParam(std::string& out, const aster_cn::Parameter& p) {
+    out += "P ";
+    declSerStr(out, p.name);
+    declSerStr(out, p.typeName);
+    declSerDims(out, p.arrayDimensions);
+}
+
+static void declSerParams(std::string& out, const std::vector<aster_cn::Parameter>& params) {
+    declSerNum(out, (long long)params.size());
+    for (const auto& p : params) declSerParam(out, p);
+}
+
+static void declSerExpr(const aster_cn::Expression& e, std::string& out);
+static void declSerStmt(const aster_cn::Statement& s, std::string& out);
+
+static void declSerStmts(std::string& out, const std::vector<aster_cn::Statement>& stmts) {
+    declSerNum(out, (long long)stmts.size());
+    for (const auto& s : stmts) declSerStmt(s, out);
+}
+
+static void declSerExprs(std::string& out, const std::vector<aster_cn::Expression>& exprs) {
+    declSerNum(out, (long long)exprs.size());
+    for (const auto& e : exprs) declSerExpr(e, out);
+}
+
+static void declSerExpr(const aster_cn::Expression& e, std::string& out) {
+    out += "E ";
+    declSerStr(out, e.kind);
+    declSerStr(out, e.value);
+    declSerStr(out, e.nodeName);
+    declSerBool(out, e.hasKeyOverride);
+    declSerNum(out, e.keyOverride);
+    declSerStr(out, e.sourceFile);  // @embed paths resolve against it: semantic
+    declSerExprs(out, e.children);
+    declSerBool(out, e.closure != nullptr);
+    if (e.closure) {
+        declSerNum(out, (long long)e.closure->captures.size());
+        for (const auto& c : e.closure->captures) declSerStr(out, c);
+        declSerParams(out, e.closure->parameters);
+        declSerStr(out, e.closure->returnType);
+        declSerStmts(out, e.closure->body);
+    }
+    declSerExprs(out, e.modifiers);
+    declSerExprs(out, e.childRows);
+    declSerStmts(out, e.childStatements);
+}
+
+static void declSerStmt(const aster_cn::Statement& s, std::string& out) {
+    out += "S ";
+    declSerStr(out, s.kind);
+    declSerStr(out, s.name);
+    declSerStr(out, s.secondaryName);
+    declSerStr(out, s.typeName);
+    declSerStr(out, s.visibility);
+    declSerStr(out, s.sourceFile);
+    declSerDims(out, s.arrayDimensions);
+    declSerBool(out, s.hasExpression);
+    declSerBool(out, s.isExternal);
+    declSerStr(out, s.externalName);
+    declSerExpr(s.expression, out);
+    declSerExprs(out, s.expressions);
+    declSerStmts(out, s.body);
+    declSerExprs(out, s.conditions);
+    declSerNum(out, (long long)s.caseValues.size());
+    for (const auto& values : s.caseValues) declSerExprs(out, values);
+    declSerNum(out, (long long)s.branches.size());
+    for (const auto& branch : s.branches) declSerStmts(out, branch);
+    declSerBool(out, s.hasElse);
+    declSerStmts(out, s.elseBody);
+}
+
+static void declSerField(std::string& out, const aster_cn::StructFieldDeclaration& f) {
+    out += "F ";
+    declSerStr(out, f.name);
+    declSerStr(out, f.typeName);
+    declSerDims(out, f.arrayDimensions);
+    declSerBool(out, f.isStatic);
+    declSerBool(out, f.hasInitializer);
+    if (f.hasInitializer) declSerExpr(f.initializer, out);
+    declSerStr(out, f.visibility);
+}
+
+// A method's signature (interface) versus its body: the split that lets the
+// index tell a body-only edit from a signature edit. Parameter names ARE part
+// of the signature even though calls are positional: a rename the body does
+// not follow is a compile error (unknown variable), so a table blind to
+// names would reuse stale objects and report success where the cold build
+// fails (probe 7). A consistent rename over-invalidates the callers — the
+// safe direction. declSerParams (shared with layouts/interfaces/closures)
+// serialises name + type + dimensions per parameter.
+static void declSerMethodSig(std::string& out, const aster_cn::MethodDeclaration& m) {
+    out += "M ";
+    declSerStr(out, m.name);
+    declSerStr(out, m.returnType);
+    declSerParams(out, m.parameters);
+    declSerStr(out, m.visibility);
+    declSerBool(out, m.isStatic);
+    declSerBool(out, m.isConstructor);
+    declSerBool(out, m.isOverride);
+    declSerBool(out, m.isExternal);
+    declSerStr(out, m.externalName);
+}
+
+static void declSerMethod(std::string& out, const aster_cn::MethodDeclaration& m, bool includeBody) {
+    declSerMethodSig(out, m);
+    declSerBool(out, includeBody);
+    if (includeBody) declSerStmts(out, m.body);
+}
+
+static void declSerStruct(std::string& out, const aster_cn::StructDeclaration& s) {
+    out += "Struct ";
+    declSerStr(out, s.name);
+    declSerStr(out, s.visibility);
+    declSerNum(out, (long long)s.fields.size());
+    for (const auto& f : s.fields) declSerField(out, f);
+}
+
+static void declSerEnum(std::string& out, const aster_cn::EnumDeclaration& e) {
+    out += "Enum ";
+    declSerStr(out, e.name);
+    declSerStr(out, e.visibility);
+    declSerNum(out, (long long)e.members.size());
+    for (const auto& m : e.members) {
+        declSerStr(out, m.name);
+        declSerBool(out, m.hasExpression);
+        if (m.hasExpression) declSerExpr(m.expression, out);
+    }
+}
+
+// A class's hash covers its shape only — name, base, visibility, fields and
+// the ORDERED method-name list (add/remove/rename changes the vtable). Method
+// bodies and signatures live in their own classmethod entries, so a method
+// body edit does not invalidate every holder of the class.
+static void declSerClass(std::string& out, const aster_cn::ClassDeclaration& c) {
+    out += "Class ";
+    declSerStr(out, c.name);
+    declSerStr(out, c.baseName);
+    declSerStr(out, c.visibility);
+    declSerNum(out, (long long)c.fields.size());
+    for (const auto& f : c.fields) declSerField(out, f);
+    declSerNum(out, (long long)c.methods.size());
+    for (const auto& m : c.methods) declSerStr(out, m.name);
+}
+
+static void declSerIface(std::string& out, const aster_cn::InterfaceClassDeclaration& d) {
+    out += "Iface ";
+    declSerStr(out, d.name);
+    declSerStr(out, d.baseName);
+    declSerStr(out, d.visibility);
+    declSerNum(out, (long long)d.methods.size());
+    for (const auto& m : d.methods) {
+        declSerStr(out, m.name);
+        declSerStr(out, m.returnType);
+        declSerParams(out, m.parameters);
+    }
+}
+
+static void declSerAlias(std::string& out, const aster_cn::TypeAliasDeclaration& a) {
+    out += "Alias ";
+    declSerStr(out, a.name);
+    declSerStr(out, a.typeName);
+}
+
+static void declSerLayout(std::string& out, const aster_cn::LayoutDeclaration& l, bool includeBody) {
+    out += "Layout ";
+    declSerStr(out, l.name);
+    declSerParams(out, l.parameters);
+    declSerStr(out, l.returnType);
+    declSerStr(out, l.visibility);
+    declSerBool(out, includeBody);
+    if (includeBody) declSerStmts(out, l.body);
+}
+
+static void declSerEvent(std::string& out, const aster_cn::EventBlockDeclaration& e) {
+    out += "Event ";
+    declSerStr(out, e.nodeName);
+    declSerStr(out, e.eventKind);
+    declSerStr(out, e.visibility);
+    declSerStmts(out, e.body);
+}
+
+static void declSerGlobalSig(std::string& out, const aster_cn::Statement& g) {
+    out += "G ";
+    declSerStr(out, g.name);
+    declSerStr(out, g.typeName);
+    declSerStr(out, g.visibility);
+    declSerBool(out, g.isExternal);
+    declSerStr(out, g.externalName);
+    declSerDims(out, g.arrayDimensions);
+}
+
+static void declSerGlobal(std::string& out, const aster_cn::Statement& g, bool includeBody) {
+    declSerGlobalSig(out, g);
+    declSerBool(out, includeBody);
+    if (includeBody) {
+        declSerBool(out, g.hasExpression);
+        declSerExpr(g.expression, out);
+    }
+}
+
+// ---- Declaration table (current build) ----
+
+struct DeclKey {
+    std::string file;  // sourceFile as the merged program spells it
+    std::string kind;  // method|global|struct|enum|class|classmethod|iface|alias|layout|event
+    std::string name;  // method/global/type name; "Class.method" for classmethods;
+                       // "node:kind" for events
+    bool operator<(const DeclKey& o) const {
+        if (file != o.file) return file < o.file;
+        if (kind != o.kind) return kind < o.kind;
+        return name < o.name;
+    }
+    bool operator==(const DeclKey& o) const { return file == o.file && kind == o.kind && name == o.name; }
+};
+
+struct DeclEntry {
+    DeclKey key;
+    std::string hash;     // sha256 of the canonical serialization (whole decl)
+    std::string sigHash;  // sha256 of the signature only (methods/layouts/globals); "" otherwise
+    std::string ext;      // externalName for extern methods/globals; "" otherwise
+};
+
+struct DeclTable {
+    std::map<std::string, std::vector<DeclEntry>> byFile;  // file -> decls, program order
+    std::map<std::string, std::string> importsHash;        // file -> imports hash ("" = unknown)
+    std::map<std::string, std::vector<DeclKey>> byName;    // source/mangled name -> decls
+    std::map<std::string, std::vector<DeclKey>> byTypeName;  // type name -> type decls
+    std::map<std::string, std::vector<DeclKey>> byNodeName;  // layout node name -> layouts
+    std::vector<DeclKey> eventDecls;
+    std::map<std::string, std::set<std::string>> typeEdges;  // type name -> raw referenced type spellings
+    std::map<DeclKey, std::vector<std::string>> answerNames;  // decl -> names it answers to (collision checks)
+    std::set<std::string> files;
+    std::set<std::string> constructed;
+};
+
+// A file's import identity: package name/aliases plus its module and file
+// imports. Only computable for project sources (their per-file programs are
+// in hand); package/imported files get "" (their import-alias corner is
+// closed instead by always hash-checking their dep lines on reuse).
+static std::string declFileImportsHash(const aster_cn::Program& fileProg) {
+    std::string t;
+    t += fileProg.packageName;
+    t.push_back('\n');
+    for (const auto& a : fileProg.packageAliases) { t += a; t.push_back('\n'); }
+    t += "---\n";
+    for (const auto& im : fileProg.imports) {
+        t += im.moduleName;
+        t.push_back('\t');
+        t += im.alias;
+        t.push_back('\n');
+    }
+    t += "---\n";
+    for (const auto& fi : fileProg.fileImports) { t += fi.path; t.push_back('\n'); }
+    return sha256Hex(t);
+}
+
+static void declTableAddName(std::map<std::string, std::vector<DeclKey>>& map,
+                             const std::string& name, const DeclKey& key,
+                             std::vector<std::string>& answers) {
+    if (name.empty()) return;
+    map[name].push_back(key);
+    answers.push_back(name);
+}
+
+static void declCollectLayoutNodesExpr(const aster_cn::Expression& e, const DeclKey& key,
+                                       DeclTable& table);
+static void declCollectLayoutNodesStmt(const aster_cn::Statement& s, const DeclKey& key,
+                                       DeclTable& table) {
+    if (s.hasExpression) declCollectLayoutNodesExpr(s.expression, key, table);
+    for (const auto& x : s.expressions) declCollectLayoutNodesExpr(x, key, table);
+    for (const auto& b : s.body) declCollectLayoutNodesStmt(b, key, table);
+    for (const auto& c : s.conditions) declCollectLayoutNodesExpr(c, key, table);
+    for (const auto& values : s.caseValues)
+        for (const auto& v : values) declCollectLayoutNodesExpr(v, key, table);
+    for (const auto& branch : s.branches)
+        for (const auto& b : branch) declCollectLayoutNodesStmt(b, key, table);
+    for (const auto& b : s.elseBody) declCollectLayoutNodesStmt(b, key, table);
+}
+
+static void declCollectLayoutNodesExpr(const aster_cn::Expression& e, const DeclKey& key,
+                                       DeclTable& table) {
+    if (e.kind == "NodeRow" && !e.nodeName.empty()) table.byNodeName[e.nodeName].push_back(key);
+    for (const auto& child : e.children) declCollectLayoutNodesExpr(child, key, table);
+    if (e.closure)
+        for (const auto& s : e.closure->body) declCollectLayoutNodesStmt(s, key, table);
+    for (const auto& m : e.modifiers) declCollectLayoutNodesExpr(m, key, table);
+    for (const auto& row : e.childRows) declCollectLayoutNodesExpr(row, key, table);
+    for (const auto& s : e.childStatements) declCollectLayoutNodesStmt(s, key, table);
+}
+
+static DeclTable declBuildTable(const aster_cn::Program& program,
+                                const std::map<std::string, std::string>& fileImportsHash) {
+    DeclTable table;
+    table.constructed = cnFindConstructedClasses(program);
+    auto fileHash = [&](const std::string& file) -> std::string {
+        const auto found = fileImportsHash.find(file);
+        return found == fileImportsHash.end() ? std::string() : found->second;
+    };
+    auto noteFile = [&](const std::string& file) {
+        if (file.empty()) return;
+        table.files.insert(file);
+        if (!table.importsHash.count(file)) table.importsHash[file] = fileHash(file);
+    };
+    for (const auto& m : program.methods) {
+        DeclKey key{m.sourceFile, "method", m.name};
+        std::string sig, whole;
+        declSerMethod(sig, m, false);
+        declSerMethod(whole, m, true);
+        DeclEntry entry{key, sha256Hex(whole), sha256Hex(sig), m.isExternal ? m.externalName : std::string()};
+        table.byFile[m.sourceFile].push_back(entry);
+        noteFile(m.sourceFile);
+        std::vector<std::string> answers;
+        declTableAddName(table.byName, m.name, key, answers);
+        declTableAddName(table.byName, cnMangleAbiSymbol(m.name), key, answers);
+        if (!entry.ext.empty()) {
+            declTableAddName(table.byName, entry.ext, key, answers);
+            declTableAddName(table.byName, cnMangleAbiSymbol(entry.ext), key, answers);
+        }
+        table.answerNames[key] = answers;
+    }
+    for (const auto& g : program.globals) {
+        DeclKey key{g.sourceFile, "global", g.name};
+        std::string sig, whole;
+        declSerGlobal(sig, g, false);
+        declSerGlobal(whole, g, true);
+        DeclEntry entry{key, sha256Hex(whole), sha256Hex(sig), g.isExternal ? g.externalName : std::string()};
+        table.byFile[g.sourceFile].push_back(entry);
+        noteFile(g.sourceFile);
+        std::vector<std::string> answers;
+        declTableAddName(table.byName, g.name, key, answers);
+        declTableAddName(table.byName, cnMangleAbiSymbol(g.name), key, answers);
+        if (!entry.ext.empty()) {
+            declTableAddName(table.byName, entry.ext, key, answers);
+            declTableAddName(table.byName, cnMangleAbiSymbol(entry.ext), key, answers);
+        }
+        table.answerNames[key] = answers;
+    }
+    for (const auto& s : program.structures) {
+        DeclKey key{s.sourceFile, "struct", s.name};
+        std::string whole;
+        declSerStruct(whole, s);
+        table.byFile[s.sourceFile].push_back(DeclEntry{key, sha256Hex(whole), std::string(), std::string()});
+        noteFile(s.sourceFile);
+        std::vector<std::string> answers;
+        declTableAddName(table.byName, s.name, key, answers);
+        table.byTypeName[s.name].push_back(key);
+        for (const auto& f : s.fields) table.typeEdges[s.name].insert(f.typeName);
+        table.answerNames[key] = answers;
+    }
+    for (const auto& e : program.enums) {
+        DeclKey key{e.sourceFile, "enum", e.name};
+        std::string whole;
+        declSerEnum(whole, e);
+        table.byFile[e.sourceFile].push_back(DeclEntry{key, sha256Hex(whole), std::string(), std::string()});
+        noteFile(e.sourceFile);
+        std::vector<std::string> answers;
+        declTableAddName(table.byName, e.name, key, answers);
+        table.byTypeName[e.name].push_back(key);
+        for (const auto& m : e.members) declTableAddName(table.byName, m.name, key, answers);
+        table.answerNames[key] = answers;
+    }
+    for (const auto& c : program.classes) {
+        DeclKey key{c.sourceFile, "class", c.name};
+        std::string whole;
+        declSerClass(whole, c);
+        table.byFile[c.sourceFile].push_back(DeclEntry{key, sha256Hex(whole), std::string(), std::string()});
+        noteFile(c.sourceFile);
+        std::vector<std::string> answers;
+        declTableAddName(table.byName, c.name, key, answers);
+        table.byTypeName[c.name].push_back(key);
+        for (const auto& f : c.fields) table.typeEdges[c.name].insert(f.typeName);
+        if (!c.baseName.empty()) table.typeEdges[c.name].insert(c.baseName);
+        table.answerNames[key] = answers;
+        for (const auto& m : c.methods) {
+            DeclKey mkey{m.sourceFile, "classmethod", c.name + "." + m.name};
+            std::string sig, mwhole;
+            declSerMethod(sig, m, false);
+            declSerMethod(mwhole, m, true);
+            table.byFile[m.sourceFile].push_back(
+                DeclEntry{mkey, sha256Hex(mwhole), sha256Hex(sig), m.isExternal ? m.externalName : std::string()});
+            noteFile(m.sourceFile);
+            std::vector<std::string> manswers;
+            manswers.push_back("__aster_cn_method_" + cnMangleSymbolPart(c.name) + "_" +
+                               cnMangleSymbolPart(m.name));
+            manswers.push_back(m.name);
+            table.answerNames[mkey] = manswers;
+        }
+    }
+    for (const auto& d : program.interfaceClasses) {
+        DeclKey key{d.sourceFile, "iface", d.name};
+        std::string whole;
+        declSerIface(whole, d);
+        table.byFile[d.sourceFile].push_back(DeclEntry{key, sha256Hex(whole), std::string(), std::string()});
+        noteFile(d.sourceFile);
+        std::vector<std::string> answers;
+        declTableAddName(table.byName, d.name, key, answers);
+        table.byTypeName[d.name].push_back(key);
+        if (!d.baseName.empty()) table.typeEdges[d.name].insert(d.baseName);
+        table.answerNames[key] = answers;
+    }
+    for (const auto& a : program.aliases) {
+        DeclKey key{a.sourceFile, "alias", a.name};
+        std::string whole;
+        declSerAlias(whole, a);
+        table.byFile[a.sourceFile].push_back(DeclEntry{key, sha256Hex(whole), std::string(), std::string()});
+        noteFile(a.sourceFile);
+        std::vector<std::string> answers;
+        declTableAddName(table.byName, a.name, key, answers);
+        table.byTypeName[a.name].push_back(key);
+        table.typeEdges[a.name].insert(a.typeName);
+        table.answerNames[key] = answers;
+    }
+    // Layouts: node names map to the layout (for `键(节点名)` folding).
+    for (const auto& l : program.layouts) {
+        DeclKey key{l.sourceFile, "layout", l.name};
+        std::string sig, whole;
+        declSerLayout(sig, l, false);
+        declSerLayout(whole, l, true);
+        table.byFile[l.sourceFile].push_back(DeclEntry{key, sha256Hex(whole), sha256Hex(sig), std::string()});
+        noteFile(l.sourceFile);
+        std::vector<std::string> answers;
+        declTableAddName(table.byName, l.name, key, answers);
+        declTableAddName(table.byName, cnMangleAbiSymbol(l.name), key, answers);
+        table.answerNames[key] = answers;
+        for (const auto& st : l.body) declCollectLayoutNodesStmt(st, key, table);
+    }
+    for (const auto& e : program.events) {
+        DeclKey key{e.sourceFile, "event", e.nodeName + ":" + e.eventKind};
+        std::string whole;
+        declSerEvent(whole, e);
+        table.byFile[e.sourceFile].push_back(DeclEntry{key, sha256Hex(whole), std::string(), std::string()});
+        noteFile(e.sourceFile);
+        table.eventDecls.push_back(key);
+        table.answerNames[key] = std::vector<std::string>();
+    }
+    return table;
+}
+
+// ---- Emitted-name resolution ----
+// Every emitted name the lowering produces is either a plain source name, a
+// `__aster_cn_<hex>` mangling of one (invertible: the hex is the UTF-8
+// bytes), a structured `__aster_cn_*` name whose hex parts decode to a
+// (class, method/field) pair, or a generated helper that never denotes a
+// user declaration. The resolver maps a referenced name back to decl keys;
+// unknown names resolve to nothing (builtins, or a name that was never a
+// declaration — the caller checks the previous index separately for removed
+// declarations).
+
+static bool declHexDecode(const std::string& hex, std::string& out) {
+    if (hex.empty() || (hex.size() % 2) != 0) return false;
+    auto val = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    out.clear();
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        const int hi = val(hex[i]), lo = val(hex[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out.push_back((char)(hi * 16 + lo));
+    }
+    return !out.empty();
+}
+
+static bool declIsHex(const std::string& s) {
+    if (s.empty()) return false;
+    for (char c : s) {
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!ok) return false;
+    }
+    return true;
+}
+
+static void declAddTypeKeys(const std::map<std::string, std::vector<DeclKey>>& byTypeName,
+                            const std::string& typeName, std::set<DeclKey>& out) {
+    const auto found = byTypeName.find(typeName);
+    if (found == byTypeName.end()) return;
+    for (const auto& key : found->second) out.insert(key);
+}
+
+static void declAddNameKeys(const std::map<std::string, std::vector<DeclKey>>& byName,
+                            const std::string& name, std::set<DeclKey>& out) {
+    const auto found = byName.find(name);
+    if (found == byName.end()) return;
+    for (const auto& key : found->second) out.insert(key);
+}
+
+// Resolve one referenced (emitted) name against one table's maps. The
+// class-name helper decodes the first hex part of a structured name and
+// returns the class's decl keys.
+static void declResolveInTable(const std::string& emitted,
+                               const std::map<std::string, std::vector<DeclKey>>& byName,
+                               const std::map<std::string, std::vector<DeclKey>>& byTypeName,
+                               const std::vector<DeclKey>& eventDecls,
+                               std::set<DeclKey>& out) {
+    if (emitted.rfind("__aster_mod_", 0) == 0) {
+        size_t i = 12;
+        auto isHexChar = [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        };
+        while (i < emitted.size() && isHexChar(emitted[i])) ++i;
+        if (i > 12 && i < emitted.size() && emitted[i] == '_' && i + 1 < emitted.size())
+            declResolveInTable(emitted.substr(i + 1), byName, byTypeName, eventDecls, out);
+        return;
+    }
+    if (emitted.rfind("__aster_evt_", 0) == 0) {
+        for (const auto& key : eventDecls) out.insert(key);
+        return;
+    }
+    auto classFromHex = [&](const std::string& rest) {
+        const size_t cut = rest.find('_');
+        const std::string part = cut == std::string::npos ? rest : rest.substr(0, cut);
+        std::string className;
+        if (declHexDecode(part, className)) declAddTypeKeys(byTypeName, className, out);
+    };
+    static const std::string kNewClass = "__aster_cn_new_class_";
+    static const std::string kInitClass = "__aster_cn_init_class_";
+    if (emitted.rfind(kNewClass, 0) == 0) {
+        std::string className;
+        if (declHexDecode(emitted.substr(kNewClass.size()), className))
+            declAddTypeKeys(byTypeName, className, out);
+        return;
+    }
+    if (emitted.rfind(kInitClass, 0) == 0) {
+        std::string className;
+        if (declHexDecode(emitted.substr(kInitClass.size()), className))
+            declAddTypeKeys(byTypeName, className, out);
+        return;
+    }
+    static const std::string kMethod = "__aster_cn_method_";
+    if (emitted.rfind(kMethod, 0) == 0) {
+        const std::string rest = emitted.substr(kMethod.size());
+        const size_t cut = rest.find('_');
+        if (cut != std::string::npos) {
+            std::string className, methodName;
+            if (declHexDecode(rest.substr(0, cut), className) &&
+                declHexDecode(rest.substr(cut + 1), methodName)) {
+                std::set<DeclKey> classes;
+                declAddTypeKeys(byTypeName, className, classes);
+                for (const auto& c : classes)
+                    out.insert(DeclKey{c.file, "classmethod", className + "." + methodName});
+            }
+        }
+        return;
+    }
+    static const std::string kStaticField = "__aster_cn_static_field_";
+    if (emitted.rfind(kStaticField, 0) == 0) {
+        classFromHex(emitted.substr(kStaticField.size()));
+        return;
+    }
+    static const std::string kClassThunk = "__aster_cn_class_thunk_";
+    static const std::string kClassVtableValue = "__aster_cn_class_vtable_value_";
+    static const std::string kClassVtable = "__aster_cn_class_vtable_";
+    static const std::string kVtableValue = "__aster_cn_vtable_value_";
+    static const std::string kVtable = "__aster_cn_vtable_";
+    static const std::string kIfaceThunk = "__aster_cn_iface_thunk_";
+    if (emitted.rfind(kClassThunk, 0) == 0) { classFromHex(emitted.substr(kClassThunk.size())); return; }
+    if (emitted.rfind(kClassVtableValue, 0) == 0) { classFromHex(emitted.substr(kClassVtableValue.size())); return; }
+    if (emitted.rfind(kClassVtable, 0) == 0) { classFromHex(emitted.substr(kClassVtable.size())); return; }
+    if (emitted.rfind(kVtableValue, 0) == 0) { classFromHex(emitted.substr(kVtableValue.size())); return; }
+    if (emitted.rfind(kVtable, 0) == 0) { classFromHex(emitted.substr(kVtable.size())); return; }
+    if (emitted.rfind(kIfaceThunk, 0) == 0) { classFromHex(emitted.substr(kIfaceThunk.size())); return; }
+    if (emitted.rfind("__aster_cn_", 0) == 0) {
+        const std::string rest = emitted.substr(11);
+        std::string decoded;
+        if (declIsHex(rest) && declHexDecode(rest, decoded)) declAddNameKeys(byName, decoded, out);
+        return;
+    }
+    if (emitted.rfind("__aster_", 0) == 0) return;  // generated helper: no declaration
+    declAddNameKeys(byName, emitted, out);
+}
+
+// ---- Mentioned names (the over-approximating net) ----
+// Every identifier/type name a TU's own AST mentions, including layout and
+// event bodies and node-row modifiers/child rows (cnCollectCnProgramNames
+// does not visit those). This closes the constant-folding gap: an enum
+// member folded to a number leaves no lowered reference, but the mention
+// still invalidates the TU when the enum changes.
+
+static void declVisitExprMentions(const aster_cn::Expression& e, std::set<std::string>& out);
+static void declVisitStmtMentions(const aster_cn::Statement& s, std::set<std::string>& out) {
+    if (!s.typeName.empty()) out.insert(s.typeName);
+    if (s.hasExpression) declVisitExprMentions(s.expression, out);
+    for (const auto& x : s.expressions) declVisitExprMentions(x, out);
+    for (const auto& b : s.body) declVisitStmtMentions(b, out);
+    for (const auto& c : s.conditions) declVisitExprMentions(c, out);
+    for (const auto& values : s.caseValues)
+        for (const auto& v : values) declVisitExprMentions(v, out);
+    for (const auto& branch : s.branches)
+        for (const auto& b : branch) declVisitStmtMentions(b, out);
+    for (const auto& b : s.elseBody) declVisitStmtMentions(b, out);
+}
+
+static void declVisitExprMentions(const aster_cn::Expression& e, std::set<std::string>& out) {
+    if (!e.value.empty()) out.insert(e.value);
+    if (!e.nodeName.empty()) out.insert(e.nodeName);
+    for (const auto& child : e.children) declVisitExprMentions(child, out);
+    if (e.closure) {
+        for (const auto& c : e.closure->captures) out.insert(c);
+        for (const auto& p : e.closure->parameters)
+            if (!p.typeName.empty()) out.insert(p.typeName);
+        if (!e.closure->returnType.empty()) out.insert(e.closure->returnType);
+        for (const auto& s : e.closure->body) declVisitStmtMentions(s, out);
+    }
+    for (const auto& m : e.modifiers) declVisitExprMentions(m, out);
+    for (const auto& r : e.childRows) declVisitExprMentions(r, out);
+    for (const auto& s : e.childStatements) declVisitStmtMentions(s, out);
+}
+
+static void declCollectMentioned(const aster_cn::Program& ownParsed, std::set<std::string>& out) {
+    for (const auto& m : ownParsed.methods) {
+        if (!m.returnType.empty()) out.insert(m.returnType);
+        for (const auto& p : m.parameters)
+            if (!p.typeName.empty()) out.insert(p.typeName);
+        for (const auto& s : m.body) declVisitStmtMentions(s, out);
+    }
+    for (const auto& g : ownParsed.globals) declVisitStmtMentions(g, out);
+    for (const auto& c : ownParsed.classes) {
+        if (!c.baseName.empty()) out.insert(c.baseName);
+        for (const auto& f : c.fields) {
+            if (!f.typeName.empty()) out.insert(f.typeName);
+            if (f.hasInitializer) declVisitExprMentions(f.initializer, out);
+        }
+        for (const auto& m : c.methods) {
+            if (!m.returnType.empty()) out.insert(m.returnType);
+            for (const auto& p : m.parameters)
+                if (!p.typeName.empty()) out.insert(p.typeName);
+            for (const auto& s : m.body) declVisitStmtMentions(s, out);
+        }
+    }
+    for (const auto& s : ownParsed.structures)
+        for (const auto& f : s.fields) {
+            if (!f.typeName.empty()) out.insert(f.typeName);
+            if (f.hasInitializer) declVisitExprMentions(f.initializer, out);
+        }
+    for (const auto& e : ownParsed.enums)
+        for (const auto& m : e.members)
+            if (m.hasExpression) declVisitExprMentions(m.expression, out);
+    for (const auto& d : ownParsed.interfaceClasses) {
+        if (!d.baseName.empty()) out.insert(d.baseName);
+        for (const auto& m : d.methods) {
+            if (!m.returnType.empty()) out.insert(m.returnType);
+            for (const auto& p : m.parameters)
+                if (!p.typeName.empty()) out.insert(p.typeName);
+        }
+    }
+    for (const auto& a : ownParsed.aliases)
+        if (!a.typeName.empty()) out.insert(a.typeName);
+    for (const auto& l : ownParsed.layouts) {
+        if (!l.returnType.empty()) out.insert(l.returnType);
+        for (const auto& p : l.parameters)
+            if (!p.typeName.empty()) out.insert(p.typeName);
+        for (const auto& s : l.body) declVisitStmtMentions(s, out);
+    }
+    for (const auto& e : ownParsed.events)
+        for (const auto& s : e.body) declVisitStmtMentions(s, out);
+}
+
+// ---- decl-index.json (disk; preheat only, never a correctness input) ----
+
+static const int kDeclIndexVersion = 1;
+
+struct DeclIndex {
+    bool present = false;
+    std::string configHash;
+    std::vector<std::string> constructed;
+    // file -> (imports hash, decls)
+    std::map<std::string, std::pair<std::string, std::vector<DeclEntry>>> files;
+    std::map<std::string, DeclTuRefs> tus;
+};
+
+// Minimal strict JSON reader for exactly this schema. Any malformed input
+// fails the whole read (the caller then treats the index as absent).
+struct DeclJsonVal {
+    enum Kind { Null, Bool, Num, Str, Arr, Obj } kind = Null;
+    bool boolean = false;
+    std::string str;  // Str: decoded string; Num: raw number text
+    std::vector<DeclJsonVal> arr;
+    std::vector<std::pair<std::string, DeclJsonVal>> obj;
+    const DeclJsonVal* find(const std::string& key) const {
+        if (kind != Obj) return nullptr;
+        for (const auto& kv : obj)
+            if (kv.first == key) return &kv.second;
+        return nullptr;
+    }
+};
+
+struct DeclJsonParser {
+    const std::string& text;
+    size_t pos = 0;
+    int depth = 0;
+    explicit DeclJsonParser(const std::string& t) : text(t) {}
+    bool parse(DeclJsonVal& out) {
+        skipWs();
+        if (!parseValue(out)) return false;
+        skipWs();
+        return pos == text.size();
+    }
+    void skipWs() {
+        while (pos < text.size() &&
+               (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\n' || text[pos] == '\r'))
+            ++pos;
+    }
+    bool parseValue(DeclJsonVal& out) {
+        if (depth > 32 || pos >= text.size()) return false;
+        skipWs();
+        if (pos >= text.size()) return false;
+        const char c = text[pos];
+        if (c == '{') return parseObj(out);
+        if (c == '[') return parseArr(out);
+        if (c == '"') {
+            std::string s;
+            if (!parseString(s)) return false;
+            out.kind = DeclJsonVal::Str;
+            out.str = s;
+            return true;
+        }
+        if (c == 't') {
+            if (text.compare(pos, 4, "true") != 0) return false;
+            pos += 4;
+            out.kind = DeclJsonVal::Bool;
+            out.boolean = true;
+            return true;
+        }
+        if (c == 'f') {
+            if (text.compare(pos, 5, "false") != 0) return false;
+            pos += 5;
+            out.kind = DeclJsonVal::Bool;
+            out.boolean = false;
+            return true;
+        }
+        if (c == 'n') {
+            if (text.compare(pos, 4, "null") != 0) return false;
+            pos += 4;
+            out.kind = DeclJsonVal::Null;
+            return true;
+        }
+        if (c == '-' || (c >= '0' && c <= '9')) {
+            const size_t start = pos;
+            if (text[pos] == '-') ++pos;
+            while (pos < text.size() &&
+                   ((text[pos] >= '0' && text[pos] <= '9') || text[pos] == '.' ||
+                    text[pos] == 'e' || text[pos] == 'E' || text[pos] == '+' || text[pos] == '-'))
+                ++pos;
+            if (pos == start) return false;
+            out.kind = DeclJsonVal::Num;
+            out.str = text.substr(start, pos - start);
+            return true;
+        }
+        return false;
+    }
+    bool parseString(std::string& out) {
+        if (text[pos] != '"') return false;
+        ++pos;
+        out.clear();
+        while (pos < text.size()) {
+            const char c = text[pos++];
+            if (c == '"') return true;
+            if (c == '\\') {
+                if (pos >= text.size()) return false;
+                const char e = text[pos++];
+                switch (e) {
+                    case '"': out.push_back('"'); break;
+                    case '\\': out.push_back('\\'); break;
+                    case '/': out.push_back('/'); break;
+                    case 'b': out.push_back('\b'); break;
+                    case 'f': out.push_back('\f'); break;
+                    case 'n': out.push_back('\n'); break;
+                    case 'r': out.push_back('\r'); break;
+                    case 't': out.push_back('\t'); break;
+                    case 'u': {
+                        unsigned cp = 0;
+                        if (!parseHex4(cp)) return false;
+                        if (cp >= 0xD800 && cp <= 0xDBFF) {
+                            if (pos + 6 > text.size() || text[pos] != '\\' || text[pos + 1] != 'u')
+                                return false;
+                            pos += 2;
+                            unsigned lo = 0;
+                            if (!parseHex4(lo) || lo < 0xDC00 || lo > 0xDFFF) return false;
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                            return false;
+                        }
+                        if (cp < 0x80) {
+                            out.push_back((char)cp);
+                        } else if (cp < 0x800) {
+                            out.push_back((char)(0xC0 | (cp >> 6)));
+                            out.push_back((char)(0x80 | (cp & 0x3F)));
+                        } else {
+                            out.push_back((char)(0xE0 | (cp >> 12)));
+                            out.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+                            out.push_back((char)(0x80 | (cp & 0x3F)));
+                        }
+                        break;
+                    }
+                    default: return false;
+                }
+            } else if ((unsigned char)c < 0x20) {
+                return false;
+            } else {
+                out.push_back(c);
+            }
+        }
+        return false;
+    }
+    bool parseHex4(unsigned& cp) {
+        if (pos + 4 > text.size()) return false;
+        cp = 0;
+        for (int i = 0; i < 4; ++i) {
+            const char c = text[pos++];
+            cp *= 16;
+            if (c >= '0' && c <= '9') cp += (unsigned)(c - '0');
+            else if (c >= 'a' && c <= 'f') cp += (unsigned)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') cp += (unsigned)(c - 'A' + 10);
+            else return false;
+        }
+        return true;
+    }
+    bool parseArr(DeclJsonVal& out) {
+        ++pos;  // '['
+        ++depth;
+        out.kind = DeclJsonVal::Arr;
+        out.arr.clear();
+        skipWs();
+        if (pos < text.size() && text[pos] == ']') {
+            ++pos;
+            --depth;
+            return true;
+        }
+        for (;;) {
+            DeclJsonVal item;
+            if (!parseValue(item)) {
+                --depth;
+                return false;
+            }
+            out.arr.push_back(std::move(item));
+            skipWs();
+            if (pos >= text.size()) {
+                --depth;
+                return false;
+            }
+            if (text[pos] == ',') {
+                ++pos;
+                continue;
+            }
+            if (text[pos] == ']') {
+                ++pos;
+                --depth;
+                return true;
+            }
+            --depth;
+            return false;
+        }
+    }
+    bool parseObj(DeclJsonVal& out) {
+        ++pos;  // '{'
+        ++depth;
+        out.kind = DeclJsonVal::Obj;
+        out.obj.clear();
+        skipWs();
+        if (pos < text.size() && text[pos] == '}') {
+            ++pos;
+            --depth;
+            return true;
+        }
+        for (;;) {
+            skipWs();
+            std::string key;
+            if (!parseString(key)) {
+                --depth;
+                return false;
+            }
+            skipWs();
+            if (pos >= text.size() || text[pos] != ':') {
+                --depth;
+                return false;
+            }
+            ++pos;
+            DeclJsonVal val;
+            if (!parseValue(val)) {
+                --depth;
+                return false;
+            }
+            out.obj.emplace_back(std::move(key), std::move(val));
+            skipWs();
+            if (pos >= text.size()) {
+                --depth;
+                return false;
+            }
+            if (text[pos] == ',') {
+                ++pos;
+                continue;
+            }
+            if (text[pos] == '}') {
+                ++pos;
+                --depth;
+                return true;
+            }
+            --depth;
+            return false;
+        }
+    }
+};
+
+static bool declJsonStr(const DeclJsonVal* v, std::string& out) {
+    if (!v || v->kind != DeclJsonVal::Str) return false;
+    out = v->str;
+    return true;
+}
+
+static bool declJsonStrArray(const DeclJsonVal* v, std::vector<std::string>& out) {
+    if (!v || v->kind != DeclJsonVal::Arr) return false;
+    out.clear();
+    for (const auto& item : v->arr) {
+        if (item.kind != DeclJsonVal::Str) return false;
+        out.push_back(item.str);
+    }
+    return true;
+}
+
+static bool declJsonIsHex64(const std::string& s) {
+    if (s.size() != 64) return false;
+    for (char c : s) {
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!ok) return false;
+    }
+    return true;
+}
+
+static bool declIndexLoad(const std::string& path, DeclIndex& out) {
+    DeclIndex idx;
+    try {
+        if (!fileExists(path)) return false;
+        const std::string text = readFile(path);
+        if (text.size() > 64u * 1024u * 1024u) return false;
+        DeclJsonVal root;
+        DeclJsonParser parser(text);
+        if (!parser.parse(root) || root.kind != DeclJsonVal::Obj) return false;
+        const DeclJsonVal* ver = root.find("version");
+        if (!ver || ver->kind != DeclJsonVal::Num) return false;
+        long version = 0;
+        try {
+            version = std::stol(ver->str);
+        } catch (const std::exception&) {
+            return false;
+        }
+        if (version != kDeclIndexVersion) return false;
+        if (!declJsonStr(root.find("config"), idx.configHash)) return false;
+        if (!declJsonStrArray(root.find("constructed"), idx.constructed)) return false;
+        const DeclJsonVal* files = root.find("files");
+        if (!files || files->kind != DeclJsonVal::Arr) return false;
+        for (const auto& fval : files->arr) {
+            if (fval.kind != DeclJsonVal::Obj) return false;
+            std::string fpath, fimports;
+            if (!declJsonStr(fval.find("path"), fpath)) return false;
+            if (!declJsonStr(fval.find("imports"), fimports)) return false;
+            const DeclJsonVal* decls = fval.find("decls");
+            if (!decls || decls->kind != DeclJsonVal::Arr) return false;
+            std::vector<DeclEntry> entries;
+            for (const auto& dval : decls->arr) {
+                if (dval.kind != DeclJsonVal::Obj) return false;
+                std::string kind, name, hash, sig, ext;
+                if (!declJsonStr(dval.find("kind"), kind)) return false;
+                if (!declJsonStr(dval.find("name"), name)) return false;
+                if (!declJsonStr(dval.find("hash"), hash) || !declJsonIsHex64(hash)) return false;
+                if (!declJsonStr(dval.find("sig"), sig)) return false;
+                if (!sig.empty() && !declJsonIsHex64(sig)) return false;
+                const DeclJsonVal* extV = dval.find("ext");
+                if (extV && !declJsonStr(extV, ext)) return false;
+                entries.push_back(DeclEntry{DeclKey{fpath, kind, name}, hash, sig, ext});
+            }
+            idx.files[fpath] = std::make_pair(fimports, entries);
+        }
+        const DeclJsonVal* tus = root.find("tus");
+        if (!tus || tus->kind != DeclJsonVal::Arr) return false;
+        for (const auto& tval : tus->arr) {
+            if (tval.kind != DeclJsonVal::Obj) return false;
+            std::string tpath;
+            if (!declJsonStr(tval.find("path"), tpath)) return false;
+            DeclTuRefs refs;
+            std::vector<std::string> tmp;
+            if (!declJsonStrArray(tval.find("symbols"), tmp)) return false;
+            refs.symbols = std::set<std::string>(tmp.begin(), tmp.end());
+            if (!declJsonStrArray(tval.find("types"), tmp)) return false;
+            refs.types = std::set<std::string>(tmp.begin(), tmp.end());
+            if (!declJsonStrArray(tval.find("fields"), tmp)) return false;
+            refs.fields = std::set<std::string>(tmp.begin(), tmp.end());
+            if (!declJsonStrArray(tval.find("mentioned"), tmp)) return false;
+            refs.mentioned = std::set<std::string>(tmp.begin(), tmp.end());
+            if (!declJsonStrArray(tval.find("files"), tmp)) return false;
+            refs.files = std::set<std::string>(tmp.begin(), tmp.end());
+            const DeclJsonVal* embeds = tval.find("embeds");
+            if (!embeds || embeds->kind != DeclJsonVal::Arr) return false;
+            for (const auto& eval : embeds->arr) {
+                if (eval.kind != DeclJsonVal::Obj) return false;
+                std::string epath, ehash;
+                if (!declJsonStr(eval.find("path"), epath)) return false;
+                if (!declJsonStr(eval.find("hash"), ehash) || !declJsonIsHex64(ehash)) return false;
+                refs.embeds[epath] = ehash;
+            }
+            idx.tus[tpath] = refs;
+        }
+    } catch (const std::exception&) {
+        return false;
+    }
+    idx.present = true;
+    out = idx;
+    return true;
+}
+
+static bool declIndexSave(const std::string& path, const std::string& configHash,
+                          const DeclTable& table,
+                          const std::map<std::string, DeclTuRefs>& tus) {
+    try {
+        std::string j = "{\n  \"version\": 1,\n";
+        j += "  \"config\": \"" + apkSidecarJsonEscape(configHash) + "\",\n";
+        j += "  \"constructed\": [";
+        bool first = true;
+        for (const auto& c : table.constructed) {
+            if (!first) j += ", ";
+            first = false;
+            j += "\"" + apkSidecarJsonEscape(c) + "\"";
+        }
+        j += "],\n  \"files\": [\n";
+        first = true;
+        for (const auto& kv : table.byFile) {
+            if (!first) j += ",\n";
+            first = false;
+            const auto imp = table.importsHash.find(kv.first);
+            j += "    {\"path\": \"" + apkSidecarJsonEscape(kv.first) + "\", \"imports\": \"" +
+                 apkSidecarJsonEscape(imp == table.importsHash.end() ? std::string() : imp->second) +
+                 "\", \"decls\": [";
+            bool firstD = true;
+            for (const auto& e : kv.second) {
+                if (!firstD) j += ", ";
+                firstD = false;
+                j += "{\"kind\": \"" + apkSidecarJsonEscape(e.key.kind) + "\", \"name\": \"" +
+                     apkSidecarJsonEscape(e.key.name) + "\", \"hash\": \"" + e.hash +
+                     "\", \"sig\": \"" + e.sigHash + "\", \"ext\": \"" + apkSidecarJsonEscape(e.ext) + "\"}";
+            }
+            j += "]}";
+        }
+        j += "\n  ],\n  \"tus\": [\n";
+        first = true;
+        for (const auto& kv : tus) {
+            if (!first) j += ",\n";
+            first = false;
+            auto arrStr = [](const std::set<std::string>& s) {
+                std::string o = "[";
+                bool f = true;
+                for (const auto& x : s) {
+                    if (!f) o += ", ";
+                    f = false;
+                    o += "\"" + apkSidecarJsonEscape(x) + "\"";
+                }
+                o += "]";
+                return o;
+            };
+            j += "    {\"path\": \"" + apkSidecarJsonEscape(kv.first) +
+                 "\", \"symbols\": " + arrStr(kv.second.symbols) +
+                 ", \"types\": " + arrStr(kv.second.types) +
+                 ", \"fields\": " + arrStr(kv.second.fields) +
+                 ", \"mentioned\": " + arrStr(kv.second.mentioned) +
+                 ", \"files\": " + arrStr(kv.second.files) + ", \"embeds\": [";
+            bool firstE = true;
+            for (const auto& ev : kv.second.embeds) {
+                if (!firstE) j += ", ";
+                firstE = false;
+                j += "{\"path\": \"" + apkSidecarJsonEscape(ev.first) + "\", \"hash\": \"" + ev.second + "\"}";
+            }
+            j += "]}";
+        }
+        j += "\n  ]\n}\n";
+        writeFileAtomic(path, j, false);  // cache entry, not durable (like .meta)
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+// Name maps for the PREVIOUS index (removed declarations resolve here, so a
+// TU that referenced a deleted declaration is still invalidated).
+struct DeclPrevMaps {
+    std::map<std::string, std::vector<DeclKey>> byName;
+    std::map<std::string, std::vector<DeclKey>> byTypeName;
+    std::vector<DeclKey> eventDecls;
+};
+
+static DeclPrevMaps declBuildPrevMaps(const DeclIndex& prev) {
+    DeclPrevMaps maps;
+    for (const auto& kv : prev.files) {
+        for (const auto& e : kv.second.second) {
+            const DeclKey& key = e.key;
+            auto addName = [&](const std::string& n) {
+                if (!n.empty()) maps.byName[n].push_back(key);
+            };
+            if (key.kind == "method" || key.kind == "global" || key.kind == "layout") {
+                addName(key.name);
+                addName(cnMangleAbiSymbol(key.name));
+                if (!e.ext.empty()) {
+                    addName(e.ext);
+                    addName(cnMangleAbiSymbol(e.ext));
+                }
+            } else if (key.kind == "struct" || key.kind == "enum" || key.kind == "class" ||
+                       key.kind == "iface" || key.kind == "alias") {
+                addName(key.name);
+                maps.byTypeName[key.name].push_back(key);
+            } else if (key.kind == "event") {
+                maps.eventDecls.push_back(key);
+            }
+        }
+    }
+    return maps;
+}
+
+// ---- Dirty computation ----
+
+struct DeclDirty {
+    std::set<DeclKey> dirtyDecls;
+    std::set<std::string> dirtyTus;  // TU paths as listed in aster.proj
+    bool allDirty = false;
+    std::string reason;
+    size_t changedDecls = 0;
+    size_t sigChangedDecls = 0;
+};
+
+static DeclDirty declComputeDirty(const DeclTable& cur, const DeclIndex& prev,
+                                  const std::vector<std::string>& tuPaths,
+                                  const std::map<std::string, std::string>& packageOwners,
+                                  const std::map<std::string, std::string>& fileImportOwners,
+                                  const std::string& configHash) {
+    DeclDirty result;
+    auto markAll = [&](const std::string& reason) {
+        result.allDirty = true;
+        result.reason = reason;
+        for (const auto& tu : tuPaths) result.dirtyTus.insert(tu);
+        return result;
+    };
+    if (!prev.present) return markAll("no previous decl index");
+    if (prev.configHash != configHash) return markAll("aster.proj changed");
+    if (cur.byFile.count("")) return markAll("declaration without a source file");
+    {
+        std::set<std::string> prevConstructed(prev.constructed.begin(), prev.constructed.end());
+        if (prevConstructed != cur.constructed)
+            return markAll("constructed-class set changed");
+    }
+    // Canonical path maps: the table spells files as the merged program does,
+    // owners spell them as the package loader does; compare canonically.
+    std::map<std::string, std::string> canonTu, canonPkg, canonFile;
+    for (const auto& tu : tuPaths) canonTu[cnCanonicalPath(tu)] = tu;
+    for (const auto& kv : packageOwners) canonPkg[cnCanonicalPath(kv.first)] = kv.second;
+    for (const auto& kv : fileImportOwners) canonFile[cnCanonicalPath(kv.first)] = kv.second;
+    auto ownerOf = [&](const std::string& file, std::string& owner) -> bool {
+        const std::string canon = cnCanonicalPath(file);
+        const auto tu = canonTu.find(canon);
+        if (tu != canonTu.end()) {
+            owner = tu->second;
+            return true;
+        }
+        const auto pkg = canonPkg.find(canon);
+        if (pkg != canonPkg.end()) {
+            owner = pkg->second;
+            return true;
+        }
+        const auto imp = canonFile.find(canon);
+        if (imp != canonFile.end()) {
+            owner = imp->second;
+            return true;
+        }
+        return false;
+    };
+
+    const DeclPrevMaps prevMaps = declBuildPrevMaps(prev);
+    std::set<DeclKey> dirty = result.dirtyDecls;
+    std::set<std::string> removedFiles;
+    std::vector<DeclKey> addedDecls;
+    size_t sigChanged = 0;
+    auto declId = [](const DeclEntry& e) { return e.key.kind + "\n" + e.key.name; };
+    // Files in the previous index but not the current program: every decl removed.
+    for (const auto& kv : prev.files) {
+        if (cur.byFile.count(kv.first)) continue;
+        removedFiles.insert(kv.first);
+        for (const auto& e : kv.second.second) dirty.insert(e.key);
+    }
+    for (const auto& kv : cur.byFile) {
+        const std::string& file = kv.first;
+        const auto prevFile = prev.files.find(file);
+        if (prevFile == prev.files.end()) {
+            for (const auto& e : kv.second) {
+                dirty.insert(e.key);
+                addedDecls.push_back(e.key);
+            }
+            continue;
+        }
+        // Import-list change: every decl in the file counts as changed
+        // (resolution of its bodies may have moved). Unknown ("") means the
+        // file is not a project source; those files are hash-checked on reuse
+        // instead, so their import lists are not tracked here.
+        const std::string& curImp = cur.importsHash.count(file) ? cur.importsHash.at(file) : std::string();
+        const std::string& prevImp = prevFile->second.first;
+        const bool importsChanged = !curImp.empty() && !prevImp.empty() && curImp != prevImp;
+        std::map<std::string, const DeclEntry*> prevById;
+        for (const auto& e : prevFile->second.second) prevById[declId(e)] = &e;
+        std::set<std::string> curIds;
+        for (const auto& e : kv.second) {
+            curIds.insert(declId(e));
+            const auto found = prevById.find(declId(e));
+            if (found == prevById.end()) {
+                dirty.insert(e.key);
+                addedDecls.push_back(e.key);
+                continue;
+            }
+            if (importsChanged || found->second->hash != e.hash) {
+                dirty.insert(e.key);
+                if (!importsChanged && found->second->hash != e.hash &&
+                    !e.sigHash.empty() && found->second->sigHash != e.sigHash)
+                    ++sigChanged;
+            }
+        }
+        for (const auto& e : prevFile->second.second) {
+            if (!curIds.count(declId(e))) {
+                dirty.insert(e.key);
+                removedFiles.insert(file);
+            }
+        }
+    }
+    result.changedDecls = dirty.size();
+    result.sigChangedDecls = sigChanged;
+    // Type closure: a changed type pulls in every type whose fields, alias
+    // target or base mention it (exactly, or as a substring of a compound
+    // spelling like "ptr<T>" that is not itself a known type name).
+    {
+        std::set<std::string> closure;
+        for (const auto& key : dirty)
+            if (key.kind == "struct" || key.kind == "enum" || key.kind == "class" ||
+                key.kind == "iface" || key.kind == "alias")
+                closure.insert(key.name);
+        bool grew = true;
+        while (grew) {
+            grew = false;
+            for (const auto& edge : cur.typeEdges) {
+                if (closure.count(edge.first)) continue;
+                for (const auto& ref : edge.second) {
+                    bool hits = false;
+                    if (closure.count(ref)) {
+                        hits = true;
+                    } else if (!cur.byTypeName.count(ref)) {
+                        for (const auto& name : closure) {
+                            if (ref.find(name) != std::string::npos) {
+                                hits = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (hits) {
+                        closure.insert(edge.first);
+                        grew = true;
+                        break;
+                    }
+                }
+            }
+        }
+        for (const auto& name : closure)
+            declAddTypeKeys(cur.byTypeName, name, dirty);
+    }
+    result.dirtyDecls = dirty;
+    // Defining/owning TU of every dirty declaration.
+    for (const auto& key : dirty) {
+        std::string owner;
+        if (!ownerOf(key.file, owner)) return markAll("declaration owner unknown for " + key.file);
+        result.dirtyTus.insert(owner);
+    }
+    // Added declarations whose names collide with names some TU references:
+    // resolution may have moved for those TUs.
+    {
+        std::set<std::string> addedNames;
+        for (const auto& key : addedDecls) {
+            const auto found = cur.answerNames.find(key);
+            if (found != cur.answerNames.end())
+                for (const auto& n : found->second) addedNames.insert(n);
+        }
+        const bool addedEvent = [&] {
+            for (const auto& key : addedDecls)
+                if (key.kind == "event") return true;
+            return false;
+        }();
+        for (const auto& kv : prev.tus) {
+            const DeclTuRefs& refs = kv.second;
+            bool hit = false;
+            for (const auto& n : refs.symbols)
+                if (addedNames.count(n)) {
+                    hit = true;
+                    break;
+                }
+            if (!hit)
+                for (const auto& n : refs.mentioned)
+                    if (addedNames.count(n)) {
+                        hit = true;
+                        break;
+                    }
+            if (!hit)
+                for (const auto& n : refs.types)
+                    if (addedNames.count(n)) {
+                        hit = true;
+                        break;
+                    }
+            if (!hit && addedEvent)
+                for (const auto& n : refs.symbols)
+                    if (n.rfind("__aster_evt_", 0) == 0) {
+                        hit = true;
+                        break;
+                    }
+            if (hit) result.dirtyTus.insert(kv.first);
+        }
+    }
+    // Per-TU references against the dirty set (current maps, then previous
+    // maps for removed declarations).
+    for (const auto& kv : prev.tus) {
+        const std::string& tu = kv.first;
+        if (result.dirtyTus.count(tu)) continue;
+        const DeclTuRefs& refs = kv.second;
+        bool hit = false;
+        for (const auto& sym : refs.symbols) {
+            std::set<DeclKey> keys;
+            declResolveInTable(sym, cur.byName, cur.byTypeName, cur.eventDecls, keys);
+            declResolveInTable(sym, prevMaps.byName, prevMaps.byTypeName, prevMaps.eventDecls, keys);
+            for (const auto& key : keys)
+                if (dirty.count(key)) {
+                    hit = true;
+                    break;
+                }
+            if (hit) break;
+        }
+        if (!hit)
+            for (const auto& typeName : refs.types) {
+                std::set<DeclKey> keys;
+                declAddTypeKeys(cur.byTypeName, typeName, keys);
+                declAddTypeKeys(prevMaps.byTypeName, typeName, keys);
+                for (const auto& key : keys)
+                    if (dirty.count(key)) {
+                        hit = true;
+                        break;
+                    }
+                if (hit) break;
+            }
+        if (!hit)
+            for (const auto& field : refs.fields) {
+                const size_t dot = field.find('.');
+                if (dot == std::string::npos) continue;
+                const std::string typeName = field.substr(0, dot);
+                std::set<DeclKey> keys;
+                declAddTypeKeys(cur.byTypeName, typeName, keys);
+                declAddTypeKeys(prevMaps.byTypeName, typeName, keys);
+                for (const auto& key : keys)
+                    if (dirty.count(key)) {
+                        hit = true;
+                        break;
+                    }
+                if (hit) break;
+            }
+        if (!hit)
+            for (const auto& name : refs.mentioned) {
+                std::set<DeclKey> keys;
+                declAddNameKeys(cur.byName, name, keys);
+                declAddNameKeys(prevMaps.byName, name, keys);
+                // A mentioned layout node name resolves through the layout map.
+                const auto nodes = cur.byNodeName.find(name);
+                if (nodes != cur.byNodeName.end())
+                    for (const auto& key : nodes->second) keys.insert(key);
+                for (const auto& key : keys)
+                    if (dirty.count(key)) {
+                        hit = true;
+                        break;
+                    }
+                if (hit) break;
+            }
+        if (!hit)
+            for (const auto& depFile : refs.files)
+                if (removedFiles.count(depFile)) {
+                    hit = true;
+                    break;
+                }
+        if (!hit)
+            for (const auto& embed : refs.embeds) {
+                std::string currentHash;
+                bool ok = false;
+                try {
+                    if (fileExists(embed.first)) {
+                        currentHash = sha256Hex(readFile(embed.first));
+                        ok = true;
+                    }
+                } catch (const std::exception&) {
+                    ok = false;
+                }
+                if (!ok || currentHash != embed.second) {
+                    hit = true;
+                    break;
+                }
+            }
+        if (hit) result.dirtyTus.insert(tu);
+    }
+    // TUs with no previous refs entry (new TU, or an index that predates them).
+    for (const auto& tu : tuPaths)
+        if (!prev.tus.count(tu)) result.dirtyTus.insert(tu);
+    result.reason = std::to_string(result.changedDecls) + " decls changed (" +
+                    std::to_string(result.sigChangedDecls) + " signature), " +
+                    std::to_string(result.dirtyTus.size()) + " of " +
+                    std::to_string(tuPaths.size()) + " TUs dirty";
+    return result;
+}
+
 static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
                                          const aster_cn::Program& ownParsed,
                                          const std::string& sp, uint64_t poolSalt,
                                          int& compiled, int& reused, bool noCache,
-                                         std::string* objHashOut = nullptr) {
+                                         std::string* objHashOut = nullptr,
+                                         // Phase 2: filled on the compile path with this
+                                         // TU's fresh references (symbols/types/fields/
+                                         // mentioned/deps/embeds); untouched on reuse.
+                                         DeclTuRefs* freshRefsOut = nullptr) {
     const std::string src = readFile(sp);
     const std::string srcHash = sha256Hex(src);
     // C-1: the shared-object flag is part of the cache flags (like the
@@ -29110,8 +30771,28 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
     const std::string objPath = ctx.cacheDir + "/cn-" + key + ".o";
     const std::string metaPath = ctx.cacheDir + "/cn-" + key + ".meta";
     bool reuse = false;
-    if (!noCache && fileExists(objPath) && fileExists(metaPath))
+    // Phase 2: when decl invalidation is on, the dirty set is authoritative.
+    // A dirty TU must not reuse through the normal check: the cause of its
+    // dirtiness may leave every .meta input hash untouched (an aster.proj
+    // change is not a .meta input at all, and a newly added declaration can
+    // move name resolution for a TU whose dep files did not change), so a
+    // normal-reuse success would silently keep a stale object. Clean TUs
+    // keep the fast normal path; the decl-aware branch below handles the
+    // not-dirty-but-hash-moved case (e.g. a comment edit).
+    const bool declDirtyTu = ctx.declEnabled && ctx.declDirtyTus &&
+                             ctx.declDirtyTus->count(sp) != 0;
+    if (!noCache && !declDirtyTu && fileExists(objPath) && fileExists(metaPath))
         reuse = readProjectCacheMetaForReuse(metaPath, objPath, flags, sp, srcHash, objHashOut);
+    // Phase 2: a TU the decl decision cleared may reuse its object even
+    // though a source/dep hash moved (a comment edit, or an unrelated
+    // declaration's edit, in a file it depends on). Version, flags and the
+    // object hash still validate, and non-project-source dep lines are
+    // still hash-checked inside the decl-aware read.
+    if (!reuse && !noCache && ctx.declEnabled && ctx.declDirtyTus &&
+        ctx.declSkipDepFiles && !declDirtyTu &&
+        fileExists(objPath) && fileExists(metaPath))
+        reuse = readProjectCacheMetaForReuse(metaPath, objPath, flags, sp, srcHash, objHashOut,
+                                             ctx.declSkipDepFiles);
     if (reuse) {
         ++reused;
         return readFile(objPath).empty() ? std::string() : objPath;
@@ -29121,6 +30802,8 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
     // cnEmbedFile records each read in g_buildDeps (the mainline rule);
     // clear it here so the entries below are exactly this TU's reads.
     g_buildDeps.clear();
+    // Phase 2: same discipline for the field-access set (see g_buildDeps).
+    g_cnEmittedFieldAccesses.clear();
     std::vector<Global> globals;
     std::vector<Function> functions = cnProgramToAster(*ctx.program, globals, true, sp, false,
         &ctx.forceConstructedClasses, poolSalt, &ctx.packageFileOwners, &ctx.fileImportOwners,
@@ -29129,10 +30812,27 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
     // overwrites them, then clear so nothing leaks across TUs.
     const std::map<std::string, std::string> embedDeps = g_buildDeps;
     g_buildDeps.clear();
+    // Phase 2: same snapshot for the field accesses this TU's lowering made.
+    const std::set<std::string> fieldAccesses = g_cnEmittedFieldAccesses;
+    g_cnEmittedFieldAccesses.clear();
     std::set<std::string> referencedSymbols, referencedTypes;
     cnCollectEmittedReferences(functions, globals, referencedSymbols, referencedTypes);
     const std::set<std::string> depFiles =
         cnForeignSourcesForTu(ctx, sp, ownParsed, referencedSymbols, referencedTypes);
+    // Phase 2: the fresh references the next build's dirty computation
+    // runs on. Reused TUs keep their previous entry (their declarations
+    // did not change, so neither did their references).
+    if (freshRefsOut) {
+        std::set<std::string> mentioned;
+        declCollectMentioned(ownParsed, mentioned);
+        freshRefsOut->symbols = referencedSymbols;
+        freshRefsOut->types = referencedTypes;
+        freshRefsOut->fields = fieldAccesses;
+        freshRefsOut->mentioned = std::move(mentioned);
+        freshRefsOut->files = depFiles;
+        for (const auto& dep : embedDeps)
+            if (fileExists(dep.first)) freshRefsOut->embeds[dep.first] = dep.second;
+    }
     cnAddExternalStubs(functions, globals, *ctx.program, referencedSymbols);
     std::vector<CompiledFunction> compiledFns =
         compileProgram(functions, globals, ctx.sharedObject, true, ctx.bc, ctx.dbg);
@@ -30659,6 +32359,7 @@ static std::string canonicalCliCommand(const std::string& command) {
         {"编译共享库", "build-so"},
         {"构建APK", "build-apk"},
         {"服务", "serve"},
+        {"诊断", "diagnose"},
         {"链接可执行文件", "link-obj"},
         {"链接PIE", "link-pie"},
         {"链接共享库", "link-so"},
@@ -30712,6 +32413,10 @@ struct TuWorkResult {
     // worker reported no result (e.g. it died) — the parent then treats
     // the fingerprint as unavailable and takes the normal path.
     std::string objHash;
+    // Phase 2: this TU's fresh references, serialised (declSerializeRefs),
+    // "" when the TU was reused or decl invalidation is off. Trailing like
+    // objHash, so a record without it still parses.
+    std::string declRefs;
 };
 
 // Default worker count: online CPUs, clamped to [1, 32]. Deliberately
@@ -30772,6 +32477,7 @@ std::string tuSerializeResult(const TuWorkResult& r) {
     tuPutField(payload, ms);
     tuPutField(payload, r.error);
     tuPutField(payload, r.objHash);
+    tuPutField(payload, r.declRefs);
     std::string framed;
     tuPutU32(framed, (uint32_t)payload.size());
     framed += payload;
@@ -30799,6 +32505,8 @@ bool tuParseResult(const std::string& payload, TuWorkResult& r) {
     // Phase 0: the objHash field is trailing, so a record without it (an
     // older worker, or a truncated frame) still parses — objHash stays "".
     if (off < payload.size() && !getField(r.objHash)) return false;
+    // Phase 2: same trailing rule for declRefs.
+    if (off < payload.size() && !getField(r.declRefs)) return false;
     return off == payload.size();
 }
 } // namespace
@@ -30989,6 +32697,11 @@ struct CmpFileData {
     std::vector<CmpCandidate> topLevel;        // functions, globals, consts,
                                               // layouts, type declarations
     std::map<std::string, std::string> fnReturns;  // top-level fn name -> return type
+    // Phase 3: (name, typeName) of this file's globals. The receiver scope
+    // only needs these, so a daemon-resident file can supply them without
+    // copying its whole Program into CmpFileData (see the resident branch
+    // in cmpCompleteWithCursor).
+    std::vector<std::pair<std::string, std::string>> globalTypes;
 };
 
 static bool cmpIsIdentByte(unsigned char c) {
@@ -31191,6 +32904,7 @@ static void cmpCollectFile(const aster_cn::Program& prog, const std::string& sou
         data.topLevel.push_back(CmpCandidate{g.name, "", isConst ? "const" : "global",
                                              pkgGlobalSignature(g), "", "", "",
                                              sourceLabel});
+        data.globalTypes.emplace_back(g.name, g.typeName);
     }
 }
 static void cmpAddManifestTypes(const PkgManifest& manifest,
@@ -31424,6 +33138,17 @@ static std::vector<CmpCandidate> cmpFilterPrefix(std::vector<CmpCandidate> cands
     return kept;
 }
 
+// Phase 3: completion timing in MICROseconds, split so the lookup budget is
+// measured separately from the one-file incremental parse of the current
+// file. parseUs = parsing the current file's (unsaved) text; lookupUs =
+// everything else in the call (other files' collection + scope + assembly +
+// render); totalUs = parseUs + lookupUs. The daemon reports its refresh
+// time apart. Microsecond units: the whole lookup is sub-millisecond.
+struct CmpTiming {
+    long long parseUs = 0;
+    long long lookupUs = 0;
+    long long totalUs = 0;
+};
 // The cursor-mode completion. Returns the process exit code (0; all
 // failures degrade silently to a package-only listing, never to stderr).
 static int cmpCompleteWithCursor(const PkgManifest& manifest, bool zh,
@@ -31432,7 +33157,19 @@ static int cmpCompleteWithCursor(const PkgManifest& manifest, bool zh,
                                  const aster_cn::ProjectLanguageConfig& projConfig,
                                  const std::string& fileArg,
                                  const std::string& fileSrc, long cursorLine,
-                                 long cursorCol) {
+                                 long cursorCol,
+                                 // Phase 3: when non-null, the daemon's resident
+                                 // parses (canonical path -> parsed program).
+                                 // A project file missing from the table falls
+                                 // back to a disk parse, so a stale daemon
+                                 // state can only cost time, never candidates.
+                                 const std::map<std::string, const aster_cn::Program*>* residentProgs = nullptr,
+                                 // Phase 3: when non-null, the rendered output
+                                 // is written here instead of stdout (the
+                                 // daemon ships it inside its result JSON).
+                                 std::string* outText = nullptr,
+                                 CmpTiming* timingOut = nullptr) {
+    const auto cmpT0 = std::chrono::steady_clock::now();
     // --- Cursor context from the effective source text. ---
     const std::vector<std::string> lines = pkgSplitLines(fileSrc);
     long lineNo = cursorLine;
@@ -31552,10 +33289,15 @@ static int cmpCompleteWithCursor(const PkgManifest& manifest, bool zh,
     }
     CmpFileData current;
     current.path = fileArg;
+    // Phase 3: the only parse in the daemon path — the current file's
+    // (possibly unsaved) text. Everything else comes from the resident
+    // table when the caller supplied one.
+    const auto cmpParseT0 = std::chrono::steady_clock::now();
     if (cmpParseText(parseSrc, fileArg, projConfig, current.prog))
         cmpCollectFile(current.prog, "file", current);
     else
         current.parsed = false;
+    const long long cmpParseUs = usSince(cmpParseT0);
     for (const auto& t : current.types)
         if (!types.count(t.first)) types[t.first] = t.second;
     for (const auto& f : current.fnReturns)
@@ -31589,10 +33331,27 @@ static int cmpCompleteWithCursor(const PkgManifest& manifest, bool zh,
         if (!fileExists(full)) continue;
         CmpFileData data;
         data.path = full;
-        aster_cn::Program prog;
-        if (!cmpParseText(readFile(full), full, projConfig, prog)) continue;
-        cmpCollectFile(prog, "project", data);
-        data.prog = std::move(prog);
+        // Phase 3: the daemon's resident parse for this file, when the
+        // caller supplied one. The resident Program is only read (its
+        // globals reach the scope through globalTypes), never copied:
+        // data.prog stays empty on this path, which is fine because
+        // nothing below reads an `others` entry's prog anymore.
+        // A stale or missing entry falls back to the disk parse below
+        // (the cold path), so the daemon can only save time, never lose
+        // a candidate.
+        const aster_cn::Program* resident = nullptr;
+        if (residentProgs) {
+            const auto rit = residentProgs->find(cnCanonicalPath(full));
+            if (rit != residentProgs->end()) resident = rit->second;
+        }
+        if (resident) {
+            cmpCollectFile(*resident, "project", data);
+        } else {
+            aster_cn::Program prog;
+            if (!cmpParseText(readFile(full), full, projConfig, prog)) continue;
+            cmpCollectFile(prog, "project", data);
+            data.prog = std::move(prog);
+        }
         for (const auto& t : data.types)
             if (!types.count(t.first)) types[t.first] = t.second;
         for (const auto& f : data.fnReturns)
@@ -31665,8 +33424,8 @@ static int cmpCompleteWithCursor(const PkgManifest& manifest, bool zh,
     // can be a member receiver too).
     std::map<std::string, std::string> fullScope = scope;
     for (const auto& o : others) {
-        for (const auto& g : o.prog.globals)
-            if (!fullScope.count(g.name)) fullScope[g.name] = g.typeName;
+        for (const auto& g : o.globalTypes)
+            if (!fullScope.count(g.first)) fullScope[g.first] = g.second;
     }
     CmpReceiver receiver;
     if (isMember) {
@@ -31768,14 +33527,16 @@ static int cmpCompleteWithCursor(const PkgManifest& manifest, bool zh,
     }
     cmpDedupeKeepFirst(cands);
     cands = cmpFilterPrefix(std::move(cands), partial, zh);
+    // Phase 3: the rendered text is the daemon's result payload when the
+    // caller asked for it; the cold CLI prints it, byte-identical.
+    std::string rendered;
     if (formatOpt == "json") {
-        std::string out = "[\n";
+        rendered = "[\n";
         for (size_t i = 0; i < cands.size(); ++i) {
-            if (i) out += ",\n";
-            out += "  " + cmpCandidateJson(cands[i]);
+            if (i) rendered += ",\n";
+            rendered += "  " + cmpCandidateJson(cands[i]);
         }
-        out += "\n]\n";
-        std::cout << out;
+        rendered += "\n]\n";
     } else {
         for (const auto& c : cands) {
             std::string flat;
@@ -31783,9 +33544,16 @@ static int cmpCompleteWithCursor(const PkgManifest& manifest, bool zh,
                 if (ch == '\n' || ch == '\t') flat += ' ';
                 else if (ch != '\r') flat += ch;
             }
-            std::cout << cmpDisplayName(c, zh) << "\t" << c.kind << "\t" << c.signature
-                      << "\t" << flat << "\t" << c.source << "\n";
+            rendered += cmpDisplayName(c, zh) + "\t" + c.kind + "\t" + c.signature +
+                        "\t" + flat + "\t" + c.source + "\n";
         }
+    }
+    if (outText) *outText = rendered;
+    else std::cout << rendered;
+    if (timingOut) {
+        timingOut->parseUs = cmpParseUs;
+        timingOut->totalUs = usSince(cmpT0);
+        timingOut->lookupUs = timingOut->totalUs - timingOut->parseUs;
     }
     return 0;
 }
@@ -31820,6 +33588,18 @@ struct BilingualBuildOpts {
     long timeoutSec=60;
     uint64_t maxParseDepth=256, maxLoweringDepth=2048;
     BilingualBuildReport* report=nullptr;  // null on the cold CLI path
+    // Phase 2: declaration-level invalidation (DESIGN.md §4.2). On by
+    // default (user decision 2026-11-27); --no-decl-invalidation opts out.
+    // The daemon forwards it through the build request.
+    bool declInvalidation=true;
+    // Phase 3: diagnose-only mode (DESIGN.md §6.3). The TU loop still runs
+    // (type errors only surface in lowering), but the function returns
+    // right after it — no link, no packaging, no signature — and every
+    // early `cerr + return` below throws Error instead, so the caller can
+    // turn it into a structured diagnostic. The TU loop is forced serial
+    // (jobsCount 1) so the first error is deterministic in source order.
+    // Diagnose never writes the decl index.
+    bool diagnoseOnly=false;
 };
 static int runBilingualProjectBuild(const ProjectSpec& spec,
                                     const aster_cn::ProjectLanguageConfig& bilingualLanguage,
@@ -31834,7 +33614,7 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
     const bool verbose=opts.verbose;
     const bool noGcSections=opts.noGcSections;
     const bool noStrip=opts.noStrip;
-    const unsigned jobsCount=opts.jobsCount;
+    const unsigned jobsCount=opts.diagnoseOnly?1:opts.jobsCount;
     const std::vector<std::string>& bilingualModuleDirs=opts.moduleDirs;
     const std::vector<std::string>& gcKeep=opts.gcKeep;
     const std::vector<std::string>& runArgs=opts.runArgs;
@@ -31855,6 +33635,8 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
     const std::string bilingualCwd=getcwd(bilingualCwdBuffer,sizeof bilingualCwdBuffer)
         ? bilingualCwdBuffer : std::string(".");
     if(bilingualIsApk&&spec.package.empty()){
+        if(opts.diagnoseOnly)
+            throw Error("an apk project needs `package <android.package>` in aster.proj");
         std::cerr<<"aster "<<cmd<<": an apk project needs `package <android.package>` in aster.proj\n";
         return 2;
     }
@@ -31898,6 +33680,7 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
     // resolved, so a missing or mismatched package reports
     // itself instead of surfacing as a missing package source.
     if(const std::string pkgErr=pkgValidateProjectPackages(spec,packageRoots);!pkgErr.empty()){
+        if(opts.diagnoseOnly) throw Error(pkgErr);
         std::cerr<<"aster "<<cmd<<": "<<pkgErr<<"\n";return 1;
     }
     aster_cn::Program program=cnResolvePackageImports(
@@ -31918,9 +33701,15 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
         ? "build/"+bilingualProjectName+(bilingualIsApk?".apk":"")
         : out;
     const std::string targetDir=dirNameOf(target);
-    if(!targetDir.empty()&&!makeDirs(targetDir)){std::cerr<<"aster build: cannot create "<<targetDir<<"\n";return 1;}
+    if(!targetDir.empty()&&!makeDirs(targetDir)){
+        if(opts.diagnoseOnly) throw Error("cannot create "+targetDir);
+        std::cerr<<"aster build: cannot create "<<targetDir<<"\n";return 1;
+    }
     const std::string cacheDir="build/.cache";
-    if(!makeDirs(cacheDir)){std::cerr<<"aster "<<cmd<<": cannot create "<<cacheDir<<"\n";return 1;}
+    if(!makeDirs(cacheDir)){
+        if(opts.diagnoseOnly) throw Error("cannot create "+cacheDir);
+        std::cerr<<"aster "<<cmd<<": cannot create "<<cacheDir<<"\n";return 1;
+    }
     // Per-source build: one cached object per deduplicated
     // source, linked in aster.proj order. The whole-project
     // fingerprint and its fileExists-only reuse are gone: each
@@ -31991,6 +33780,48 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
     bilingualCtx.maxParseDepth=(unsigned)maxParseDepthOpt;
     bilingualCtx.maxLoweringDepth=(unsigned)std::max(maxLoweringDepthOpt,maxParseDepthOpt);
     bilingualCtx.sharedObject=bilingualIsApk;
+    // Phase 2: declaration-level invalidation. The table is built from the
+    // raw merged program (before D2a synthesis below, which is not
+    // idempotent); the previous index is loaded from
+    // build/.cache/decl-index.json. When the flag is off, or the index is
+    // absent/corrupt, every TU takes the file-hash path exactly as before.
+    // declTable/declConfigHash/declNewRefs live at this scope so the index
+    // write after the TU loop can use them.
+    DeclTable declTable;
+    DeclDirty declDirty;
+    std::string declConfigHash;
+    std::map<std::string, DeclTuRefs> declNewRefs;
+    std::set<std::string> declSkipDepFiles;
+    const std::string declIndexPath = cacheDir + "/decl-index.json";
+    if (opts.declInvalidation) {
+        std::map<std::string, std::string> declFileImports;
+        for (size_t i = 0; i < spec.sources.size() && i < parsedSources.size(); ++i)
+            declFileImports[parsedSources[i].sourceFile] = declFileImportsHash(parsedSources[i]);
+        declTable = declBuildTable(program, declFileImports);
+        try {
+            declConfigHash = sha256Hex(readFile("aster.proj"));
+        } catch (const std::exception&) {
+            declConfigHash.clear();  // unreadable config: every TU dirty (fail-closed)
+        }
+        DeclIndex declPrev;
+        const bool havePrev = declIndexLoad(declIndexPath, declPrev);
+        declDirty = declComputeDirty(
+            declTable, declPrev, spec.sources,
+            bilingualCtx.packageFileOwners, bilingualCtx.fileImportOwners, declConfigHash);
+        for (const auto& tu : spec.sources) {
+            declSkipDepFiles.insert(tu);
+            declSkipDepFiles.insert(cnCanonicalPath(tu));
+        }
+        bilingualCtx.declEnabled = true;
+        bilingualCtx.declDirtyTus = &declDirty.dirtyTus;
+        bilingualCtx.declSkipDepFiles = &declSkipDepFiles;
+        // Reused TUs keep their previous refs; compiled TUs replace them
+        // below as the loops report fresh refs.
+        for (const auto& kv : declPrev.tus) declNewRefs[kv.first] = kv.second;
+        if (verbose)
+            std::cout << "aster: verbose: decl-invalidation: " << declDirty.reason
+                      << (havePrev ? "" : " (no previous index)") << "\n" << std::flush;
+    }
     // Step 1: D2a + string-literal validation once for the merged
     // program (after cnFindConstructedClasses above, which must
     // see the raw program — see cnPreprocessMergedProgram).
@@ -32022,14 +33853,17 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
                 const auto t0=std::chrono::steady_clock::now();
                 int c=0,r=0;
                 std::string objHash;
+                DeclTuRefs freshRefs;
                 std::string obj=cachedCnProjectObject(
                     bilingualCtx,parsedSources[i],spec.sources[i],
-                    (i+1)*1000000,c,r,noCache,&objHash);
+                    (i+1)*1000000,c,r,noCache,&objHash,&freshRefs);
                 TuWorkResult res;
                 res.objPath=std::move(obj);
                 res.compiled=c>0;
                 res.ms=msSince(t0);
                 res.objHash=std::move(objHash);
+                // Phase 2: only a compiled TU has fresh refs to report.
+                if (c>0) res.declRefs=declSerializeRefs(freshRefs);
                 return res;
             });
         }
@@ -32043,6 +33877,15 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
                 bilingualObjInputs.emplace_back(spec.sources[idx], res.objHash);
                 if(!res.objPath.empty()) bilingualObjs.push_back(res.objPath);
                 bilingualTuMs[idx]=res.ms; bilingualObjPaths[idx]=res.objPath;
+                // Phase 2: a compiled TU replaces its refs entry with the
+                // fresh set; a refs payload that fails to parse drops the
+                // entry instead (the next build then treats the TU as dirty
+                // rather than trusting stale references).
+                if (opts.declInvalidation && res.compiled) {
+                    DeclTuRefs parsed;
+                    if (declParseRefs(res.declRefs, parsed)) declNewRefs[spec.sources[idx]] = parsed;
+                    else declNewRefs.erase(spec.sources[idx]);
+                }
             },firstError,spec.sources);
         if(!tuOk){std::cerr<<firstError;return 1;}
     } else
@@ -32050,9 +33893,13 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
         const auto fileT0=std::chrono::steady_clock::now();
         const int c0=bilingualCompiled;
         std::string objHash;
+        DeclTuRefs freshRefs;
         const std::string obj=cachedCnProjectObject(
             bilingualCtx,parsedSources[i],spec.sources[i],
-            (i+1)*1000000,bilingualCompiled,bilingualReused,noCache,&objHash);
+            (i+1)*1000000,bilingualCompiled,bilingualReused,noCache,&objHash,&freshRefs);
+        // Phase 2: same replacement as the parallel path, in-process.
+        if (opts.declInvalidation && bilingualCompiled>c0)
+            declNewRefs[spec.sources[i]] = freshRefs;
         // v0.23.82-dev: flush every verbose line. stdout is
         // block-buffered through a pipe, so without this all
         // 21 lines arrive in one burst at process exit and a
@@ -32064,6 +33911,23 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
         bilingualObjInputs.emplace_back(spec.sources[i], objHash);
         if(!obj.empty()) bilingualObjs.push_back(obj);
         bilingualTuMs[i]=msSince(fileT0); bilingualObjPaths[i]=obj;
+    }
+    // Phase 2: persist the declaration index for the next build. Only once
+    // the TU loop succeeded: a failed build keeps the previous index, and
+    // the next build simply recompiles more. A failed write is a warning,
+    // not an error — the index is never a correctness input.
+    // Phase 3: diagnose never writes the index (it must not mutate build
+    // state beyond the .o cache the TU loop itself already maintains).
+    if (opts.declInvalidation && !opts.diagnoseOnly) {
+        if (!declIndexSave(declIndexPath, declConfigHash, declTable, declNewRefs) && verbose)
+            std::cerr << "aster: warning: could not write " << declIndexPath << "\n";
+    }
+    // Phase 3: diagnose stops here — after the TU loop, before any link,
+    // packaging or signing. An empty object list is the only non-throwing
+    // failure left, and it becomes a structured diagnostic too.
+    if (opts.diagnoseOnly) {
+        if (bilingualObjs.empty()) throw Error("no objects to link");
+        return 0;
     }
     if(bilingualObjs.empty()){std::cerr<<"aster "<<cmd<<": no objects to link\n";return 1;}
     if(bilingualIsApk){
@@ -32231,6 +34095,38 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
     return 0;
 }
 
+// ---- Phase 3: structured-diagnostic rendering (needs pkgJsonQuote) ----
+static std::string diagEntryJson(const DiagEntry& d) {
+    std::ostringstream o;
+    o << "{\"file\": " << pkgJsonQuote(d.file)
+      << ", \"line\": " << d.line
+      << ", \"column\": " << d.col
+      << ", \"message\": " << pkgJsonQuote(d.message)
+      << ", \"level\": " << pkgJsonQuote(d.level) << "}";
+    return o.str();
+}
+static std::string diagListJson(const std::vector<DiagEntry>& diags) {
+    std::string out = "{\"diagnostics\": [";
+    for (size_t i = 0; i < diags.size(); ++i) {
+        if (i) out += ", ";
+        out += diagEntryJson(diags[i]);
+    }
+    out += "]}\n";
+    return out;
+}
+// Text form mirrors build's first diagnostic line, without the source echo.
+static std::string diagListText(const std::vector<DiagEntry>& diags) {
+    std::string out;
+    for (const auto& d : diags) {
+        if (!d.file.empty() && d.line > 0)
+            out += d.file + ":" + std::to_string(d.line) + ":" + std::to_string(d.col) +
+                   ": " + d.level + ": " + d.message + "\n";
+        else
+            out += d.level + ": " + d.message + "\n";
+    }
+    return out;
+}
+
 // ---- Phase 1 daemon: `aster serve` + Unix socket + NDJSON (DESIGN.md §2, §7.2) ----
 // The daemon is an accelerator, never a correctness dependency (DESIGN.md §0):
 // it holds per-file parses in memory and forks one worker per build request;
@@ -32241,7 +34137,8 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
 // Protocol (DESIGN.md §2.3): Unix domain socket, one request per connection.
 // First line: {"method":"hello","params":{"protocol":1,"bin":"<exe stat identity>",
 // "project":"<dir>"}} — a mismatch closes the connection and the client
-// cold-runs. Second line: one method call: ping | stats | shutdown | build.
+// cold-runs. Second line: one method call: ping | stats | shutdown | build
+// | complete | diagnose.
 // The identity is the exe's stat identity (dev:ino:size:mtime), not the full
 // sha256: hashing the 3 MB binary costs ~50 ms per side on this VM (measured
 // 2026-11-27), which alone would blow the 10-50 ms no-change budget. The full
@@ -32603,6 +34500,8 @@ struct DaemonState {
     std::string lastOptsKey, lastTarget;
     int lastCompiled=0, lastReused=0;
     uint64_t requests=0;       // build requests served
+    uint64_t completeRequests=0;  // Phase 3: complete requests served
+    uint64_t diagnoseRequests=0;  // Phase 3: diagnose requests served
     uint64_t sinceFullHash=0;  // requests since the last full-hash check
     std::chrono::steady_clock::time_point startedAt=std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastActivity=std::chrono::steady_clock::now();
@@ -32641,6 +34540,7 @@ static std::string daemonOptsKey(const BilingualBuildOpts& opts){
     o<<"dbg="<<opts.dbg<<";bc="<<opts.bc2
      <<";noGc="<<opts.noGcSections<<";noStrip="<<opts.noStrip
      <<";page="<<opts.pageSize<<";cliPage="<<opts.cliPageSet
+     <<";decl="<<opts.declInvalidation
      <<";maxP="<<opts.maxParseDepth<<";maxL="<<opts.maxLoweringDepth
      <<";out="<<opts.out;
     for(const auto& d : opts.moduleDirs) o<<";mod="<<d;
@@ -32885,14 +34785,24 @@ struct DaemonWorkerOutcome {
     bool signaled=false;   // killed by signal, or by the silence watchdog
     BilingualBuildReport report;
     bool haveReport=false;
+    // Phase 3: diagnose mode — the worker's single structured diagnostic
+    // (empty when the diagnose found nothing, or when this is a build).
+    std::vector<DiagEntry> diags;
+    bool haveDiag=false;
 };
 // Returns 0 = worker finished (outcome filled), 1 = client went away
 // (worker killed, no reply possible), -1 = fork/pipe failure.
+// Phase 3: with diagnose=true the worker runs the build's front half only
+// (opts.diagnoseOnly) and frames its single structured diagnostic as a
+// `diag {...}` payload line instead of printing renderError to stderr, so
+// the parent can return it as data. A diagnose worker that exits nonzero
+// without a diag line is a failure, not a diagnostic (the caller then
+// fails closed to the cold CLI).
 static int daemonRunBuildWorker(int clientFd, int listenFd, DaemonState& st,
                                 const ProjectSpec& spec,
                                 const aster_cn::ProjectLanguageConfig& langCfg,
                                 const BilingualBuildOpts& opts, const std::string& keyDir,
-                                DaemonWorkerOutcome& outcome){
+                                DaemonWorkerOutcome& outcome, bool diagnose=false){
     int outPipe[2]={-1,-1}, errPipe[2]={-1,-1}, resPipe[2]={-1,-1};
     if(::pipe(outPipe)!=0||::pipe(errPipe)!=0||::pipe(resPipe)!=0){
         if(outPipe[0]>=0){ ::close(outPipe[0]); ::close(outPipe[1]); }
@@ -32935,17 +34845,25 @@ static int daemonRunBuildWorker(int clientFd, int listenFd, DaemonState& st,
         BilingualBuildOpts wopts=opts;
         wopts.report=&report;
         int rc=1;
+        std::string diagPayload;
         try {
             rc=runBilingualProjectBuild(spec,langCfg,st.progs,wopts);
         } catch(const std::exception& e){
-            std::cerr<<renderError(e.what());
-            rc=1;
+            if(diagnose){
+                // Phase 3: the diagnostic travels as data, not stderr.
+                diagPayload="diag "+diagEntryJson(diagFromException(e.what()))+"\n";
+                rc=1;
+            } else {
+                std::cerr<<renderError(e.what());
+                rc=1;
+            }
         } catch(...){
             std::cerr<<"aster: error: unknown error\n";
             rc=1;
         }
         std::string payload;
         payload+="exit "+std::to_string(rc)+"\n";
+        if(diagnose) payload+=diagPayload;
         payload+="compiled "+std::to_string(report.compiled)+"\n";
         payload+="reused "+std::to_string(report.reused)+"\n";
         payload+="target "+report.target+"\n";
@@ -33073,6 +34991,20 @@ static int daemonRunBuildWorker(int clientFd, int listenFd, DaemonState& st,
                 bool sawExit=false;
                 while(std::getline(in,line)){
                     if(line.rfind("exit ",0)==0){ sawExit=true; }
+                    else if(line.rfind("diag ",0)==0){
+                        // Phase 3: one structured diagnostic from a
+                        // diagnose worker, as a JSON object.
+                        DiagEntry d;
+                        std::string f, m;
+                        long long li=0, co=0;
+                        if(daemonJsonGetString(line,"file",f)) d.file=f;
+                        if(daemonJsonGetInt(line,"line",li)) d.line=(long)li;
+                        if(daemonJsonGetInt(line,"column",co)) d.col=(long)co;
+                        if(daemonJsonGetString(line,"message",m)) d.message=m;
+                        d.level="error";
+                        outcome.diags.push_back(d);
+                        outcome.haveDiag=true;
+                    }
                     else if(line.rfind("compiled ",0)==0){ outcome.report.compiled=std::atoi(line.c_str()+9); }
                     else if(line.rfind("reused ",0)==0){ outcome.report.reused=std::atoi(line.c_str()+7); }
                     else if(line.rfind("target ",0)==0){ outcome.report.target=line.substr(7); }
@@ -33101,6 +35033,16 @@ static int daemonRunBuildWorker(int clientFd, int listenFd, DaemonState& st,
 }
 
 // ---- Build request (daemon side) ----
+// The cold TU loop reads build/.cache/decl-index.json before deciding
+// reuse; a missing or corrupt index makes it recompile every TU and print
+// a different decl line ("no previous decl index"). The daemon fast path
+// must run the worker in that case, or its replayed output would differ
+// from cold (serve-checks [4/7] compares them byte-for-byte modulo ms).
+static bool daemonDeclIndexUsable() {
+    DeclIndex tmp;
+    return declIndexLoad("build/.cache/decl-index.json", tmp);
+}
+
 // Returns false only when the client went away mid-build (no reply is
 // possible then). Every other failure is answered with an error, and the
 // client cold-runs (DESIGN.md §2.4).
@@ -33126,6 +35068,7 @@ static bool daemonHandleBuild(int clientFd, long long id, int listenFd, DaemonSt
     if(daemonJsonGetBool(reqJson,"dbg",b)) opts.dbg=b;
     if(daemonJsonGetBool(reqJson,"bc",b)) opts.bc2=b;
     if(daemonJsonGetBool(reqJson,"cliPageSet",b)) opts.cliPageSet=b;
+    if(daemonJsonGetBool(reqJson,"declInvalidation",b)) opts.declInvalidation=b;
     if(daemonJsonGetInt(reqJson,"pageSize",v)) opts.pageSize=(uint64_t)v;
     if(daemonJsonGetInt(reqJson,"maxParseDepth",v)) opts.maxParseDepth=(uint64_t)v;
     if(daemonJsonGetInt(reqJson,"maxLoweringDepth",v)) opts.maxLoweringDepth=(uint64_t)v;
@@ -33171,12 +35114,21 @@ static bool daemonHandleBuild(int clientFd, long long id, int listenFd, DaemonSt
     if(spec.kind=="apk"&&!opts.noCache&&st.haveLastBuild&&st.lastTarget==target&&
        st.lastSources==spec.sources&&daemonOptsKey(opts)==st.lastOptsKey&&
        daemonSourcesUnchanged(st)&&daemonDepsStatMatch(st)&&
-       daemonObjStatsMatch(st)){
+       daemonObjStatsMatch(st)&&
+       (!opts.declInvalidation||daemonDeclIndexUsable())){
         std::string fp;
         if(daemonComputeFingerprint(spec,opts,st,target,projectName,keyDir,fp)){
             const auto fpT0=std::chrono::steady_clock::now();
             if(apkFastPathHit("build/.cache/last-apk.json",target,fp)){
                 if(opts.verbose){
+                    // The cold build prints this line from the decl
+                    // computation before the TU loop; the gate above
+                    // guarantees a genuinely unchanged build, so the
+                    // dirty set is empty by construction and the line is
+                    // exactly this. Replay it, or the daemon's verbose
+                    // output differs from cold by one line.
+                    if(opts.declInvalidation)
+                        daemonSendProgress(clientFd,"stdout","aster: verbose: decl-invalidation: 0 decls changed (0 signature), 0 of "+std::to_string(spec.sources.size())+" TUs dirty",true);
                     for(size_t i=0;i<spec.sources.size();++i){
                         const long long ms=i<st.lastTuMs.size()?st.lastTuMs[i]:0;
                         daemonSendProgress(clientFd,"stdout","aster: verbose: reused "+spec.sources[i]+" in "+std::to_string(ms)+" ms",true);
@@ -33261,6 +35213,196 @@ static bool daemonHandleBuild(int clientFd, long long id, int listenFd, DaemonSt
     return true;
 }
 
+// ---- Complete request (daemon side, Phase 3, DESIGN.md §6.2) ----
+// Answered in the parent process, never forked: completion is a read-only
+// query over the resident parses, and a fork's 1-2 ms would eat the whole
+// ~1 ms lookup budget. Any failure is answered with an error and the client
+// cold-runs `aster complete` (same bytes: the cold path is the same function
+// over disk parses). The current file is parsed here from the client's text
+// (unsaved stdin text when --stdin was given); every other file comes from
+// the resident table, with a disk-parse fallback inside
+// cmpCompleteWithCursor. The parent never touches the g_* global tables:
+// cmpCompleteWithCursor only reads the merged state it is handed.
+static bool daemonHandleComplete(int clientFd, long long id, DaemonState& st,
+                                 const std::string& reqJson) {
+    ++st.requests;
+    ++st.completeRequests;
+    ++st.sinceFullHash;
+    st.lastActivity=std::chrono::steady_clock::now();
+    std::string s;
+    bool b=false;
+    if(daemonJsonGetString(reqJson,"project",s)&&daemonCanonicalDir(s)!=st.projectDir){
+        daemonSendError(clientFd,id,-32002,"daemon: this service serves a different project ("+st.projectDir+")");
+        return true;
+    }
+    std::string fileArg, text, manifestPath, format="json";
+    long long cursorLine=0, cursorCol=0;
+    bool zh=true;
+    if(!daemonJsonGetString(reqJson,"file",fileArg)||
+       !daemonJsonGetString(reqJson,"text",text)||
+       !daemonJsonGetString(reqJson,"manifest",manifestPath)||
+       !daemonJsonGetInt(reqJson,"cursorLine",cursorLine)||
+       !daemonJsonGetInt(reqJson,"cursorCol",cursorCol)){
+        daemonSendError(clientFd,id,-32000,"daemon: complete request is missing fields");
+        return true;
+    }
+    daemonJsonGetString(reqJson,"format",format);
+    if(daemonJsonGetBool(reqJson,"zh",b)) zh=b;
+    if(format!="json"&&format!="text"){
+        daemonSendError(clientFd,id,-32000,"daemon: complete: bad format");
+        return true;
+    }
+    PkgManifest manifest;
+    ProjectSpec spec;
+    aster_cn::ProjectLanguageConfig langCfg;
+    std::string projHash;
+    try {
+        manifest=pkgManifestFromJson(
+            PkgJsonParser(readFile(manifestPath),manifestPath).parse(),manifestPath);
+        spec=parseProjectFile("aster.proj");
+        langCfg=aster_cn::readProjectLanguage("aster.proj");
+        projHash=sha256Hex(readFile("aster.proj"));
+    } catch(const std::exception& e){
+        daemonSendError(clientFd,id,-32000,
+            std::string("daemon: complete: cannot read project inputs: ")+e.what());
+        return true;
+    }
+    if(spec.sources.empty()){
+        daemonSendError(clientFd,id,-32000,"daemon: aster.proj lists no sources");
+        return true;
+    }
+    BilingualBuildOpts opts;
+    opts.maxParseDepth=st.parseMaxDepth;
+    opts.maxLoweringDepth=st.parseMaxLowering;
+    std::string err;
+    const auto refreshT0=std::chrono::steady_clock::now();
+    if(!daemonRefreshParses(st,spec,langCfg,opts,projHash,err)){
+        daemonLog("complete: refresh failed: "+err);
+        daemonSendError(clientFd,id,-32000,"daemon: refresh failed: "+err);
+        return true;
+    }
+    const long long refreshUs=usSince(refreshT0);
+    std::map<std::string, const aster_cn::Program*> resident;
+    for(size_t i=0;i<spec.sources.size()&&i<st.progs.size();++i)
+        resident[cnCanonicalPath(spec.sources[i])]=&st.progs[i];
+    std::string outText;
+    CmpTiming timing;
+    const int rc=cmpCompleteWithCursor(manifest,zh,format,
+                                       st.projectDir+"/aster.proj",langCfg,
+                                       fileArg,text,cursorLine,cursorCol,
+                                       &resident,&outText,&timing);
+    if(rc!=0){
+        daemonSendError(clientFd,id,-32000,"daemon: complete failed");
+        return true;
+    }
+    std::ostringstream r;
+    r<<"{\"exitCode\":0,\"output\":"<<daemonJsonString(outText)
+     <<",\"parseUs\":"<<timing.parseUs
+     <<",\"lookupUs\":"<<timing.lookupUs
+     <<",\"totalUs\":"<<timing.totalUs
+     <<",\"refreshUs\":"<<refreshUs
+     <<",\"viaDaemon\":true}";
+    daemonSendResult(clientFd,id,r.str());
+    daemonLog("complete: "+fileArg+" @"+std::to_string(cursorLine)+":"+std::to_string(cursorCol)+
+              " lookup "+std::to_string(timing.lookupUs)+" us parse "+std::to_string(timing.parseUs)+
+              " us refresh "+std::to_string(refreshUs)+" us");
+    st.lastActivity=std::chrono::steady_clock::now();
+    return true;
+}
+
+// ---- Diagnose request (daemon side, Phase 3, DESIGN.md §6.3) ----
+// Unlike complete, diagnose forks a worker (DESIGN.md §6.2): it runs the
+// build's front half, which moves the g_* global tables. The worker runs
+// runBilingualProjectBuild with diagnoseOnly over the daemon's resident
+// parses and stops after the TU loop — no link, packaging or signing —
+// framing its single structured diagnostic as a `diag {...}` payload line.
+// Any worker failure without a diagnostic is answered with an error and
+// the client cold-runs `aster diagnose` (same bytes).
+static bool daemonHandleDiagnose(int clientFd, long long id, int listenFd, DaemonState& st,
+                                 const std::string& reqJson) {
+    ++st.requests;
+    ++st.diagnoseRequests;
+    ++st.sinceFullHash;
+    st.lastActivity=std::chrono::steady_clock::now();
+    std::string s;
+    bool b=false;
+    if(daemonJsonGetString(reqJson,"project",s)&&daemonCanonicalDir(s)!=st.projectDir){
+        daemonSendError(clientFd,id,-32002,"daemon: this service serves a different project ("+st.projectDir+")");
+        return true;
+    }
+    bool decl=true;
+    if(daemonJsonGetBool(reqJson,"declInvalidation",b)) decl=b;
+    std::string format="json";
+    daemonJsonGetString(reqJson,"format",format);
+    if(format!="json"&&format!="text"){
+        daemonSendError(clientFd,id,-32000,"daemon: diagnose: bad format");
+        return true;
+    }
+    ProjectSpec spec;
+    aster_cn::ProjectLanguageConfig langCfg;
+    std::string projHash;
+    try {
+        spec=parseProjectFile("aster.proj");
+        langCfg=aster_cn::readProjectLanguage("aster.proj");
+        projHash=sha256Hex(readFile("aster.proj"));
+    } catch(const std::exception& e){
+        daemonSendError(clientFd,id,-32000,std::string("daemon: cannot read aster.proj: ")+e.what());
+        return true;
+    }
+    if(spec.sources.empty()){
+        daemonSendError(clientFd,id,-32000,"daemon: aster.proj lists no sources");
+        return true;
+    }
+    BilingualBuildOpts opts;
+    opts.cmd="diagnose";
+    opts.diagnoseOnly=true;
+    opts.jobsCount=1;
+    opts.declInvalidation=decl;
+    opts.maxParseDepth=st.parseMaxDepth;
+    opts.maxLoweringDepth=st.parseMaxLowering;
+    std::string err;
+    const auto refreshT0=std::chrono::steady_clock::now();
+    if(!daemonRefreshParses(st,spec,langCfg,opts,projHash,err)){
+        daemonLog("diagnose: refresh failed: "+err);
+        daemonSendError(clientFd,id,-32000,"daemon: refresh failed: "+err);
+        return true;
+    }
+    const long long refreshUs=usSince(refreshT0);
+    const auto workerT0=std::chrono::steady_clock::now();
+    DaemonWorkerOutcome outcome;
+    const int wr=daemonRunBuildWorker(clientFd,listenFd,st,spec,langCfg,opts,std::string(),outcome,true);
+    const long long workerUs=usSince(workerT0);
+    st.lastActivity=std::chrono::steady_clock::now();
+    if(wr==1) return false;  // client went away; the worker was killed
+    if(wr!=0){
+        daemonSendError(clientFd,id,-32000,"daemon: cannot start diagnose worker");
+        return true;
+    }
+    if(outcome.signaled){
+        daemonLog("diagnose: worker died");
+        daemonSendError(clientFd,id,-32001,"daemon: diagnose worker died");
+        return true;
+    }
+    if(outcome.exitCode==1&&!outcome.haveDiag){
+        daemonLog("diagnose: worker failed without a diagnostic");
+        daemonSendError(clientFd,id,-32000,"daemon: diagnose worker failed without a diagnostic");
+        return true;
+    }
+    const std::string outText = format=="json" ? diagListJson(outcome.diags)
+                                               : diagListText(outcome.diags);
+    std::ostringstream r;
+    r<<"{\"exitCode\":"<<outcome.exitCode<<",\"output\":"<<daemonJsonString(outText)
+     <<",\"refreshUs\":"<<refreshUs
+     <<",\"workerUs\":"<<workerUs
+     <<",\"viaDaemon\":true}";
+    daemonSendResult(clientFd,id,r.str());
+    daemonLog("diagnose: exit "+std::to_string(outcome.exitCode)+
+              " diags "+std::to_string(outcome.diags.size())+
+              " refresh "+std::to_string(refreshUs)+" us worker "+std::to_string(workerUs)+" us");
+    st.lastActivity=std::chrono::steady_clock::now();
+    return true;
+}
+
 // ---- One connection: hello + one method call ----
 static bool daemonHandleConnection(int fd, DaemonState& st, int listenFd){
     DaemonLineReader reader;
@@ -33302,6 +35444,8 @@ static bool daemonHandleConnection(int fd, DaemonState& st, int listenFd){
         daemonSendResult(fd,id,"{\"pid\":"+std::to_string((long long)::getpid())+
             ",\"project\":"+daemonJsonString(st.projectDir)+
             ",\"requests\":"+std::to_string(st.requests)+
+            ",\"completeRequests\":"+std::to_string(st.completeRequests)+
+            ",\"diagnoseRequests\":"+std::to_string(st.diagnoseRequests)+
             ",\"cachedFiles\":"+std::to_string(st.progs.size())+
             ",\"haveLastBuild\":"+(st.haveLastBuild?"true":"false")+
             ",\"lastCompiled\":"+std::to_string(st.lastCompiled)+
@@ -33316,6 +35460,14 @@ static bool daemonHandleConnection(int fd, DaemonState& st, int listenFd){
     }
     if(method=="build"){
         daemonHandleBuild(fd,id,listenFd,st,line);
+        return false;
+    }
+    if(method=="complete"){
+        daemonHandleComplete(fd,id,st,line);
+        return false;
+    }
+    if(method=="diagnose"){
+        daemonHandleDiagnose(fd,id,listenFd,st,line);
         return false;
     }
     daemonSendError(fd,id,-32601,"daemon: unknown method "+method);
@@ -33566,6 +35718,7 @@ static int daemonTryBuild(const BilingualBuildOpts& opts, const std::string& pro
     p<<",\"bc\":"<<(opts.bc2?"true":"false");
     p<<",\"cliPageSet\":"<<(opts.cliPageSet?"true":"false");
     p<<",\"pageSize\":"+std::to_string(opts.pageSize);
+    p<<",\"declInvalidation\":"<<(opts.declInvalidation?"true":"false");
     p<<",\"maxParseDepth\":"+std::to_string(opts.maxParseDepth);
     p<<",\"maxLoweringDepth\":"+std::to_string(opts.maxLoweringDepth);
     p<<",\"out\":"+daemonJsonString(opts.out);
@@ -33612,6 +35765,104 @@ static int daemonTryBuild(const BilingualBuildOpts& opts, const std::string& pro
         }
         // Unknown line: ignore (forward-compatible).
     }
+}
+// Try one completion through the daemon. Returns 0 with the completion
+// text in `outText` when the daemon answered, or -1 to cold-run. Probe-only:
+// unlike daemonTryBuild this never launches a daemon — a completion must
+// not spawn a background service for one keystroke; when no service is
+// already running for this project the cold path is the right answer.
+// DESIGN.md §2.3 gives completion a 5 s timeout.
+static int daemonTryComplete(const std::string& projectDir,
+                             const std::string& socketDirOpt,
+                             const std::string& fileArg, const std::string& fileSrc,
+                             long cursorLine, long cursorCol, bool zh,
+                             const std::string& format, const std::string& manifestPath,
+                             std::string& outText, CmpTiming& timingOut) {
+    const std::string socketDir=daemonSocketDir(projectDir,socketDirOpt,false);
+    if(socketDir.empty()) return -1;
+    const std::string socketPath=daemonSocketPath(socketDir,projectDir);
+    const std::string myBinIdentity=daemonBinaryIdentity();
+    if(myBinIdentity.empty()) return -1;
+    int fd=-1;
+    if(!daemonConnect(socketPath,fd)) return -1;  // no service: cold-run
+    DaemonLineReader reader;
+    reader.fd=fd;
+    const std::string hello="{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"hello\",\"params\":{\"protocol\":1,\"bin\":"+daemonJsonString(myBinIdentity)+",\"project\":"+daemonJsonString(projectDir)+"}}\n";
+    if(!daemonWriteAll(fd,hello)){ ::close(fd); return -1; }
+    std::string line;
+    if(reader.readLine(line,5000)!=1){ ::close(fd); return -1; }
+    long long proto=0;
+    if(!daemonJsonGetInt(line,"protocol",proto)||proto!=1||line.find("\"result\"")==std::string::npos){
+        ::close(fd); return -1;
+    }
+    std::ostringstream p;
+    p<<"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"complete\",\"params\":{";
+    p<<"\"project\":"<<daemonJsonString(projectDir);
+    p<<",\"file\":"<<daemonJsonString(fileArg);
+    p<<",\"cursorLine\":"<<cursorLine;
+    p<<",\"cursorCol\":"<<cursorCol;
+    p<<",\"text\":"<<daemonJsonString(fileSrc);
+    p<<",\"zh\":"<<(zh?"true":"false");
+    p<<",\"format\":"<<daemonJsonString(format);
+    p<<",\"manifest\":"<<daemonJsonString(manifestPath);
+    p<<"}}\n";
+    if(!daemonWriteAll(fd,p.str())){ ::close(fd); return -1; }
+    if(reader.readLine(line,5000)!=1){ ::close(fd); return -1; }
+    if(line.find("\"error\"")!=std::string::npos){ ::close(fd); return -1; }
+    if(line.find("\"result\"")==std::string::npos){ ::close(fd); return -1; }
+    std::string output;
+    if(!daemonJsonGetString(line,"output",output)){ ::close(fd); return -1; }
+    long long v=0;
+    if(daemonJsonGetInt(line,"parseUs",v)) timingOut.parseUs=v;
+    if(daemonJsonGetInt(line,"lookupUs",v)) timingOut.lookupUs=v;
+    if(daemonJsonGetInt(line,"totalUs",v)) timingOut.totalUs=v;
+    ::close(fd);
+    outText=output;
+    return 0;
+}
+// Try one diagnose through the daemon. Returns 0 with the rendered output
+// in `outText` and the diagnose exit code in `exitCodeOut` when the daemon
+// answered, or -1 to cold-run. Probe-only like daemonTryComplete: this
+// never launches a daemon. DESIGN.md §2.3 gives diagnose a 30 s timeout.
+static int daemonTryDiagnose(const std::string& projectDir,
+                             const std::string& socketDirOpt,
+                             bool declInvalidation, const std::string& format,
+                             std::string& outText, int& exitCodeOut) {
+    const std::string socketDir=daemonSocketDir(projectDir,socketDirOpt,false);
+    if(socketDir.empty()) return -1;
+    const std::string socketPath=daemonSocketPath(socketDir,projectDir);
+    const std::string myBinIdentity=daemonBinaryIdentity();
+    if(myBinIdentity.empty()) return -1;
+    int fd=-1;
+    if(!daemonConnect(socketPath,fd)) return -1;  // no service: cold-run
+    DaemonLineReader reader;
+    reader.fd=fd;
+    const std::string hello="{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"hello\",\"params\":{\"protocol\":1,\"bin\":"+daemonJsonString(myBinIdentity)+",\"project\":"+daemonJsonString(projectDir)+"}}\n";
+    if(!daemonWriteAll(fd,hello)){ ::close(fd); return -1; }
+    std::string line;
+    if(reader.readLine(line,5000)!=1){ ::close(fd); return -1; }
+    long long proto=0;
+    if(!daemonJsonGetInt(line,"protocol",proto)||proto!=1||line.find("\"result\"")==std::string::npos){
+        ::close(fd); return -1;
+    }
+    std::ostringstream p;
+    p<<"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"diagnose\",\"params\":{";
+    p<<"\"project\":"<<daemonJsonString(projectDir);
+    p<<",\"declInvalidation\":"<<(declInvalidation?"true":"false");
+    p<<",\"format\":"<<daemonJsonString(format);
+    p<<"}}\n";
+    if(!daemonWriteAll(fd,p.str())){ ::close(fd); return -1; }
+    if(reader.readLine(line,30000)!=1){ ::close(fd); return -1; }
+    if(line.find("\"error\"")!=std::string::npos){ ::close(fd); return -1; }
+    if(line.find("\"result\"")==std::string::npos){ ::close(fd); return -1; }
+    std::string output;
+    long long ec=-1;
+    if(!daemonJsonGetString(line,"output",output)){ ::close(fd); return -1; }
+    if(!daemonJsonGetInt(line,"exitCode",ec)){ ::close(fd); return -1; }
+    ::close(fd);
+    outText=output;
+    exitCodeOut=(int)ec;
+    return 0;
 }
 // One-shot request (hello + one method) for `serve stop` / `serve status`.
 static bool daemonOneShot(const std::string& socketPath, const std::string& myBinIdentity,
@@ -33995,10 +36246,10 @@ int main(int argc,char**argv){
         }
         if(cmd=="complete"){
             std::string languageOpt, formatOpt="text", packageArg, fileArg, projectOpt;
-            std::string cursorOpt;
+            std::string cursorOpt, socketDirOpt;
             bool hasLanguageOpt=false, hasProjectOpt=false, hasCursor=false, hasStdin=false;
             auto usageError=[&](){
-                std::cerr<<"aster complete: usage: aster complete [--language zh|en] [--format json|text] [--project DIR] [--cursor LINE:COL] [--stdin] <package-dir|manifest.json> [file.ast]\n";
+                std::cerr<<"aster complete: usage: aster complete [--language zh|en] [--format json|text] [--project DIR] [--socket-dir DIR] [--cursor LINE:COL] [--stdin] <package-dir|manifest.json> [file.ast]\n";
                 return 2;
             };
             for(int i=2;i<argc;++i){
@@ -34012,6 +36263,8 @@ int main(int argc,char**argv){
                 else if(a.rfind("--project=",0)==0){projectOpt=a.substr(10);hasProjectOpt=true;}
                 else if(a=="--cursor"){if(i+1>=argc)return usageError();cursorOpt=argv[++i];hasCursor=true;}
                 else if(a.rfind("--cursor=",0)==0){cursorOpt=a.substr(9);hasCursor=true;}
+                else if(a=="--socket-dir"){if(i+1>=argc)return usageError();socketDirOpt=argv[++i];}
+                else if(a.rfind("--socket-dir=",0)==0)socketDirOpt=a.substr(13);
                 else if(a=="--stdin"){hasStdin=true;}
                 else if(!a.empty()&&a[0]=='-')return usageError();
                 else if(packageArg.empty())packageArg=a;
@@ -34093,10 +36346,34 @@ int main(int argc,char**argv){
                 // the project default and the allowed check apply).
                 language=aster_cn::selectLanguage(std::string(),false,aster_cn::Language::Zh,projConfig);
             }
-            if(hasCursor)
+            if(hasCursor){
+                // Phase 3: when a service is already running for this
+                // project, answer from its resident parses; any failure
+                // falls through to the cold path below (same bytes).
+                // Probe-only: this never launches a daemon (see
+                // daemonTryComplete).
+                if(!projectPath.empty()){
+                    char cwdBuf[4096];
+                    const std::string cwd=getcwd(cwdBuf,sizeof cwdBuf)?cwdBuf:std::string(".");
+                    auto absPath=[&](const std::string& p){
+                        if(p.empty()||p[0]=='/') return p;
+                        return cwd+"/"+p;
+                    };
+                    const std::string projectDir=daemonCanonicalDir(absPath(parentDir(projectPath)));
+                    std::string daemonOut;
+                    CmpTiming daemonTiming;
+                    if(daemonTryComplete(projectDir,socketDirOpt,absPath(fileArg),fileSrc,
+                                         cursorLine,cursorCol,
+                                         language==aster_cn::Language::Zh,formatOpt,
+                                         absPath(manifestPath),daemonOut,daemonTiming)==0){
+                        std::cout<<daemonOut;
+                        return 0;
+                    }
+                }
                 return cmpCompleteWithCursor(manifest,language==aster_cn::Language::Zh,
                                              formatOpt,projectPath,projConfig,fileArg,
                                              fileSrc,cursorLine,cursorCol);
+            }
             const bool zh=language==aster_cn::Language::Zh;
             std::vector<const PkgExport*> shown;
             for(const auto& e:manifest.exports)shown.push_back(&e);
@@ -34126,6 +36403,104 @@ int main(int argc,char**argv){
                     std::cout<<(zh&&!e->nameZh.empty()?e->nameZh:e->name)<<"\t"<<e->kind<<"\t"<<e->signature<<"\t"<<flat<<"\n";
                 }
             }
+            return 0;
+        }
+        if(cmd=="diagnose"){
+            // Phase 3 (DESIGN.md §6.3): structured diagnostics from the
+            // build's front half — parse + merge + preprocess + the TU
+            // loop — with no link, packaging or signing. The output is
+            // the same first error `aster build` would report, as JSON
+            // (default) or text. A daemon attempt is added in segment 4;
+            // any daemon failure falls through to this cold path.
+            std::string projectOpt=".", socketDirOpt, formatOpt="json";
+            bool declInvalidationDiag=true;
+            auto usageError=[&](){
+                std::cerr<<"aster diagnose: usage: aster diagnose [--project DIR] [--socket-dir DIR] [--format json|text] [--decl-invalidation] [--no-decl-invalidation]\n";
+                return 2;
+            };
+            for(int i=2;i<argc;++i){
+                const std::string a=argv[i];
+                if(a=="-h"||a=="--help"){std::cout<<kUsage;return 0;}
+                else if(a=="--project"){if(i+1>=argc)return usageError();projectOpt=argv[++i];}
+                else if(a.rfind("--project=",0)==0)projectOpt=a.substr(10);
+                else if(a=="--socket-dir"){if(i+1>=argc)return usageError();socketDirOpt=argv[++i];}
+                else if(a.rfind("--socket-dir=",0)==0)socketDirOpt=a.substr(13);
+                else if(a=="--format"){if(i+1>=argc)return usageError();formatOpt=argv[++i];}
+                else if(a.rfind("--format=",0)==0)formatOpt=a.substr(9);
+                else if(a=="--decl-invalidation")declInvalidationDiag=true;
+                else if(a=="--no-decl-invalidation")declInvalidationDiag=false;
+                else return usageError();
+            }
+            if(formatOpt!="json"&&formatOpt!="text")return usageError();
+            const std::string projectDir=daemonCanonicalDir(projectOpt);
+            if(!dirExists(projectDir)){std::cerr<<"aster diagnose: 项目目录不存在: "<<projectOpt<<"\n";return 2;}
+            if(!fileExists(projectDir+"/aster.proj")){std::cerr<<"aster diagnose: no aster.proj in project directory: "<<projectOpt<<"\n";return 2;}
+            // Phase 3: when a service is already running for this project,
+            // answer from it; any failure falls through to the cold path
+            // below (same bytes). Probe-only: this never launches a daemon
+            // (see daemonTryDiagnose).
+            {
+                std::string daemonOut;
+                int daemonRc=-1;
+                if(daemonTryDiagnose(projectDir,socketDirOpt,declInvalidationDiag,formatOpt,
+                                     daemonOut,daemonRc)==0){
+                    std::cout<<daemonOut;
+                    return daemonRc;
+                }
+            }
+            if(::chdir(projectDir.c_str())!=0){std::cerr<<"aster diagnose: cannot enter "<<projectDir<<"\n";return 1;}
+            auto printDiags=[&](const std::vector<DiagEntry>& diags){
+                std::cout<<(formatOpt=="json"?diagListJson(diags):diagListText(diags));
+            };
+            ProjectSpec spec;
+            aster_cn::ProjectLanguageConfig langCfg;
+            try {
+                spec=parseProjectFile("aster.proj");
+                langCfg=aster_cn::readProjectLanguage("aster.proj");
+            } catch(const std::exception& e){
+                printDiags(std::vector<DiagEntry>{diagFromException(e.what())});
+                return 1;
+            }
+            if(spec.sources.empty()){
+                printDiags(std::vector<DiagEntry>{
+                    DiagEntry{"",0,0,"aster.proj lists no sources","error"}});
+                return 1;
+            }
+            std::vector<aster_cn::Program> parsedSources;
+            parsedSources.reserve(spec.sources.size());
+            std::vector<DiagEntry> diags;
+            for(const auto& sourcePath:spec.sources){
+                if(!fileExists(sourcePath)){
+                    diags.push_back(DiagEntry{sourcePath,0,0,"missing source "+sourcePath,"error"});
+                    printDiags(diags);
+                    return 1;
+                }
+                try {
+                    const std::string source=readFile(sourcePath);
+                    setSourceCache(sourcePath,source);
+                    const aster_cn::Language language=aster_cn::selectLanguage(
+                        source,false,aster_cn::Language::Zh,langCfg,sourcePath);
+                    parsedSources.push_back(aster_cn::parseProgram(source,language,sourcePath));
+                } catch(const std::exception& e){
+                    diags.push_back(diagFromException(e.what()));
+                    printDiags(diags);
+                    return 1;
+                }
+            }
+            BilingualBuildOpts opts;
+            opts.cmd="diagnose";
+            opts.diagnoseOnly=true;
+            opts.jobsCount=1;
+            opts.declInvalidation=declInvalidationDiag;
+            try {
+                const int rc=runBilingualProjectBuild(spec,langCfg,parsedSources,opts);
+                if(rc!=0) return rc;  // unreachable in diagnose mode (failures throw)
+            } catch(const std::exception& e){
+                diags.push_back(diagFromException(e.what()));
+                printDiags(diags);
+                return 1;
+            }
+            printDiags(diags);
             return 0;
         }
         if(cmd=="pkg"){
@@ -35115,6 +37490,9 @@ int main(int argc,char**argv){
             // Phase 1: --daemon / ASTER_DAEMON=1 routes `build` through the
             // daemon; --no-daemon always wins (the escape hatch).
             bool daemonOpt=false, noDaemon=false;
+            // Phase 2: --decl-invalidation is on by default (user decision
+            // 2026-11-27); --no-decl-invalidation opts out.
+            bool declInvalidation=true;
             std::string socketDirOpt;
             unsigned jobs=0; // 0 = default (online CPUs); --jobs 1 restores the serial build
             std::vector<std::string> bilingualModuleDirs;
@@ -35166,6 +37544,8 @@ int main(int argc,char**argv){
                 else if(a.rfind("--module-dir=",0)==0)bilingualModuleDirs.push_back(a.substr(13));
                 else if(a=="--daemon")daemonOpt=true;
                 else if(a=="--no-daemon")noDaemon=true;
+                else if(a=="--decl-invalidation")declInvalidation=true;
+                else if(a=="--no-decl-invalidation")declInvalidation=false;
                 else if(a=="--socket-dir"){
                     if(i+1>=argc){std::cerr<<"aster "<<cmd<<": --socket-dir needs a path\n";return 2;}
                     socketDirOpt=argv[++i];
@@ -35219,6 +37599,7 @@ int main(int argc,char**argv){
                     daemonBuildOpts.gcKeep=gcKeep;
                     daemonBuildOpts.maxParseDepth=maxParseDepthOpt;
                     daemonBuildOpts.maxLoweringDepth=maxLoweringDepthOpt;
+                    daemonBuildOpts.declInvalidation=declInvalidation;
                     char daemonCwdBuf[4096];
                     const std::string daemonProjectDir=daemonCanonicalDir(
                         getcwd(daemonCwdBuf,sizeof daemonCwdBuf)?daemonCwdBuf:".");
@@ -35281,6 +37662,7 @@ int main(int argc,char**argv){
                 bilingualOpts.gcKeep=gcKeep;
                 bilingualOpts.maxParseDepth=maxParseDepthOpt;
                 bilingualOpts.maxLoweringDepth=maxLoweringDepthOpt;
+                bilingualOpts.declInvalidation=declInvalidation;
                 return runBilingualProjectBuild(spec,bilingualLanguage,parsedSources,bilingualOpts);
             }
             char cwdbuf[4096];
