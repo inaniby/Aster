@@ -29,3 +29,22 @@ fn equals(left: string, right: string): bool {
 fn less(left: string, right: string): bool {
     return left < right;
 }
+
+@private
+extern fn write_all(fd: i32, buf: string, n: i32) : i32;
+@private
+extern fn strlen(s: string) : i32;
+
+/** 把串写到 stdout，返回写了多少字节。
+ * @en Write a string to stdout; return the bytes written.
+ */
+fn print(s: string): i32 {
+    return write_all(1, s, strlen(s));
+}
+
+/** 把串写到 stderr，返回写了多少字节。
+ * @en Write a string to stderr; return the bytes written.
+ */
+fn eprint(s: string): i32 {
+    return write_all(2, s, strlen(s));
+}

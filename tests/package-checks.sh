@@ -38,7 +38,7 @@ for e in m["exports"]:
     assert set(e) == {"name", "name_zh", "kind", "signature", "package", "doc", "doc_en"}, e
     assert e["doc"] != "", e
     assert e["doc_en"] != "", e
-assert kinds == {"function": 113, "struct": 5, "const": 13, "global": 10}, kinds
+assert kinds == {"function": 115, "struct": 5, "const": 13, "global": 10}, kinds
 # Every export carries a bilingual doc comment (stdlib sources document
 # every public declaration in Chinese and in English); spot-check one
 # of each kind in both languages.
@@ -64,7 +64,8 @@ assert [e["doc_en"] for e in m["exports"] if e["name"] == "length"] == \
     ["Return the length of the string."]
 text = [e for e in m["exports"] if e["package"] == "standard.text"]
 assert [(e["name"], e["name_zh"]) for e in text] == [
-    ("length", "长度"), ("concat", "拼接"), ("equals", "相等"), ("less", "更小")], text
+    ("length", "长度"), ("concat", "拼接"), ("equals", "相等"), ("less", "更小"),
+    ("print", "输出"), ("eprint", "输出错误")], text
 assert sorted(e["name"] for e in m["exports"] if e["kind"] == "struct") == [
     "AsterStringView", "Buf", "Map", "Vec32", "VecPtr"]
 PY
@@ -77,7 +78,7 @@ for f in aster_std aster_core; do
             || fail "manifest is missing $f routine $name"
     done < "$TMP/$f.names"
 done
-for pair in "长度 length" "拼接 concat" "相等 equals" "更小 less"; do
+for pair in "长度 length" "拼接 concat" "相等 equals" "更小 less" "输出 print" "输出错误 eprint"; do
     set -- $pair
     grep -q "\"name_zh\": \"$1\"" "$TMP/pkg/manifest.json" || fail "manifest is missing $1"
     grep -q "\"name\": \"$2\"" "$TMP/pkg/manifest.json" || fail "manifest is missing $2"
@@ -255,6 +256,8 @@ printf '// aster:language=en\n' > "$TMP/file-en.ast"
 "$ASTER_BIN" complete "$TMP/pkg2" "$TMP/file-zh.ast" > "$TMP/complete-zh.txt" 2>&1
 grep -q '^长度' "$TMP/complete-zh.txt" || fail 'zh completion is missing 长度'
 grep -q '^拼接' "$TMP/complete-zh.txt" || fail 'zh completion is missing 拼接'
+grep -q '^输出' "$TMP/complete-zh.txt" || fail 'zh completion is missing 输出'
+grep -q '^输出错误' "$TMP/complete-zh.txt" || fail 'zh completion is missing 输出错误'
 if grep -q '^length' "$TMP/complete-zh.txt"; then fail 'zh completion leaked length'; fi
 if grep -q '^memcpy' "$TMP/complete-zh.txt"; then fail 'zh completion leaked an English-only routine'; fi
 "$ASTER_BIN" complete "$TMP/pkg2" "$TMP/file-en.ast" > "$TMP/complete-en.txt" 2>&1
@@ -276,11 +279,12 @@ python3 - "$TMP/complete-zh.json" <<'PY' || fail 'complete --format json is wron
 import json, sys
 entries = json.load(open(sys.argv[1]))
 assert [(e["name"], e["name_zh"]) for e in entries] == [
-    ("length", "长度"), ("concat", "拼接"), ("equals", "相等"), ("less", "更小")], entries
+    ("length", "长度"), ("concat", "拼接"), ("equals", "相等"), ("less", "更小"),
+    ("print", "输出"), ("eprint", "输出错误")], entries
 PY
 "$ASTER_BIN" complete --language en --format json "$TMP/pkg2" > "$TMP/complete-en.json" 2>&1
-python3 -c "import json,sys; assert len(json.load(open(sys.argv[1]))) == 141" "$TMP/complete-en.json" \
-    || fail 'complete --format json (en) does not list all 141 exports'
+python3 -c "import json,sys; assert len(json.load(open(sys.argv[1]))) == 143" "$TMP/complete-en.json" \
+    || fail 'complete --format json (en) does not list all 143 exports'
 
 echo '[4/10] [package] version check passes, and [package] does not disturb [language]'
 mkdir -p "$TMP/proj-ok/src" "$TMP/proj-ok/packages"

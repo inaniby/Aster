@@ -29,3 +29,22 @@
 方法 更小(左: 字符串, 右: 字符串): 逻辑型
     返回 左 < 右
 结束 方法
+
+@隐藏
+外部("write_all") 方法 写满(描述符: 整数, 缓冲: 字符串, 数量: 整数): 整数
+@隐藏
+外部("strlen") 方法 串长(串: 字符串): 整数
+
+/** 把串写到 stdout，返回写了多少字节。
+ * @en Write a string to stdout; return the bytes written.
+ */
+方法 输出(串: 字符串): 整数
+    返回 写满(1, 串, 串长(串))
+结束 方法
+
+/** 把串写到 stderr，返回写了多少字节。
+ * @en Write a string to stderr; return the bytes written.
+ */
+方法 输出错误(串: 字符串): 整数
+    返回 写满(2, 串, 串长(串))
+结束 方法

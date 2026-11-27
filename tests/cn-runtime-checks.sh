@@ -18,6 +18,8 @@ cat > "$TMP/app/string-zh.ast" <<'SRC'
     如果 文本.更小("a", "b")
         合计 = 合计 + 27
     结束 如果
+    合计 = 合计 + 文本.输出("你好\n")
+    合计 = 合计 + 文本.输出错误("错\n")
     返回 合计
 结束 方法
 SRC
@@ -33,6 +35,8 @@ fn main(): i32 {
     if (text.less("a", "b")) {
         total = total + 27;
     }
+    total = total + text.print("hi\n");
+    total = total + text.eprint("er\n");
     return total;
 }
 SRC
@@ -43,9 +47,24 @@ for language in zh en; do
         "$TMP/app/string-$language.ast" -o "$TMP/string-$language.o"
     "$ASTER_BIN" link-obj "$TMP/string-$language.o" "$TMP/aster_std.o" \
         -o "$TMP/string-$language"
-    if "$RUNNER" "$TMP/string-$language"; then status=0; else status=$?; fi
-    [ "$status" -eq 42 ] || {
-        echo "FAIL: $language bilingual standard string API returned $status, expected 42" >&2
+    if "$RUNNER" "$TMP/string-$language" > "$TMP/string-$language.out" 2> "$TMP/string-$language.err"; then status=0; else status=$?; fi
+    # 42 from the four string methods, plus the two output calls' byte
+    # counts: zh prints "你好\n" (7) to stdout and "错\n" (4) to stderr,
+    # en prints "hi\n" (3) and "er\n" (3).
+    case "$language" in
+        zh) want=53; printf '你好\n' > "$TMP/want.out"; printf '错\n' > "$TMP/want.err" ;;
+        en) want=48; printf 'hi\n' > "$TMP/want.out"; printf 'er\n' > "$TMP/want.err" ;;
+    esac
+    [ "$status" -eq "$want" ] || {
+        echo "FAIL: $language bilingual standard string API returned $status, expected $want" >&2
+        exit 1
+    }
+    cmp -s "$TMP/string-$language.out" "$TMP/want.out" || {
+        echo "FAIL: $language bilingual standard string API wrote the wrong stdout" >&2
+        exit 1
+    }
+    cmp -s "$TMP/string-$language.err" "$TMP/want.err" || {
+        echo "FAIL: $language bilingual standard string API wrote the wrong stderr" >&2
         exit 1
     }
 done
