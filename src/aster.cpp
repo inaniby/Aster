@@ -14894,11 +14894,22 @@ static std::string projectKeyDir(const std::string& explicitDir) {
 static std::string keyDirOf(const std::string& projectDir) { return projectDir + "/.aster"; }
 static std::string debugKeyPath(const std::string& projectDir) { return keyDirOf(projectDir) + "/debug.key.pem"; }
 static std::string debugCertPath(const std::string& projectDir) { return keyDirOf(projectDir) + "/debug.crt.pem"; }
-static void writeFileAtomic(const std::string& path, const std::string& data) {
+static void writeFileAtomic(const std::string& path, const std::string& data, bool durable = true) {
     // v0.23.61-dev: a key file is written through a unique mkstemp file (0600,
     // O_EXCL semantics, symlinks cannot be followed) and fsynced before the
     // rename, so a crash or a same-directory attacker never yields a short key
     // or a write through a planted link.
+    // Step 4 (ms-compile): `durable` defaults to true (keys, locks, scaffold
+    // and user files keep the v0.23.61 guarantee). The build-cache .meta
+    // writers pass false: a cache entry is already non-durable (the .o is
+    // published by plain rename, no fsync), and a crash that tears either
+    // file only loses the entry — reuse is gated on the meta's recorded
+    // sha256 of the actual object bytes plus the source hash
+    // (readProjectCacheMetaForReuse fails closed on any mismatch), so
+    // correctness never depends on the meta reaching disk. Measured on this
+    // filesystem: file+dir fsync ≈ 17.6 ms per meta write vs ≈ 0.4 ms
+    // without. Restore the old behaviour by passing true (or dropping the
+    // argument) at the four cache call sites.
     std::string tmpl = path + ".tmp.XXXXXX";
     std::vector<char> name(tmpl.begin(), tmpl.end()); name.push_back('\0');
     const int fd = ::mkstemp(name.data());
@@ -14914,7 +14925,7 @@ static void writeFileAtomic(const std::string& path, const std::string& data) {
         off += (size_t)n;
     }
     if (ok && ::fchmod(fd, 0600) != 0) { ok = false; saved = errno; }
-    if (ok && ::fsync(fd) != 0) { ok = false; saved = errno; }
+    if (ok && durable && ::fsync(fd) != 0) { ok = false; saved = errno; }
     if (::close(fd) != 0 && ok) { ok = false; saved = errno; }
     if (!ok) { ::unlink(tmp.c_str()); throw Error("cannot write " + tmp + ": " + std::strerror(saved)); }
     // Write-then-rename: two builds racing in one project must never observe a
@@ -14924,6 +14935,8 @@ static void writeFileAtomic(const std::string& path, const std::string& data) {
         throw Error("cannot move " + tmp + " into place: " + std::strerror(saved));
     }
     // The rename itself is only durable once the directory entry is on disk.
+    // Step 4: skipped for non-durable (cache) writes — see the header comment.
+    if (!durable) return;
     const std::string dir = dirNameOf(path);
     const int dfd = ::open(dir.empty() ? "." : dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dfd >= 0) { ::fsync(dfd); ::close(dfd); }
@@ -17649,7 +17662,8 @@ static std::string cachedProjectObject(const std::string& sp,bool pic,bool dbg,b
         // trusted (see the reuse check above): it recompiles instead.
         const std::string objBytes=readFile(tmp);
         if(std::rename(tmp.c_str(),objPath.c_str())!=0){const int e=errno;std::remove(tmp.c_str());throw Error("cannot move "+tmp+" into place: "+std::strerror(e));}
-        writeFileAtomic(metaPath,projectCacheMetaText(flags,sp,srcHash,sha256Hex(objBytes),g_buildDeps));
+        writeFileAtomic(metaPath,projectCacheMetaText(flags,sp,srcHash,sha256Hex(objBytes),g_buildDeps),
+                        false);  // Step 4: cache meta, not durable (hash-gated reuse).
         g_buildDeps.clear();
         ++compiled;
     } else ++reused;
@@ -25910,6 +25924,24 @@ static void cnD2aSynthesize(aster_cn::Program& program) {
     for (auto& method : layoutMethods) program.methods.push_back(std::move(method));
 }
 
+// Step 1 (ms-compile): hoist the per-TU whole-program preprocessing out
+// of cnProgramToAster. D2a synthesis + string-literal validation are pure
+// functions of the merged program (D2a appends one synthetic method per
+// layout/event and folds `键()`; validation only reads and throws), so
+// running them once on the merged program and skipping them in every
+// per-TU lowering gives identical objects. NOT idempotent: a second
+// cnD2aSynthesize would append a second copy of every synthetic method,
+// so a preprocessed program must never be preprocessed again — callers
+// that pass one set skipPreprocess=true on cnProgramToAster below.
+// The driver calls this AFTER cnFindConstructedClasses: that scan does
+// not visit layout/event bodies, so preprocessing first would newly count
+// classes constructed only inside a layout/event and change which
+// factories get emitted.
+static void cnPreprocessMergedProgram(aster_cn::Program& program) {
+    cnD2aSynthesize(program);
+    cnValidateStringLiteralsProgram(program);
+}
+
 // Defaults reproduce the merged behaviour exactly, so every other existing
 // caller is unaffected.
 static std::vector<Function> cnProgramToAster(const aster_cn::Program& programInput,
@@ -25921,12 +25953,36 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
                                               uint64_t poolSalt = 0,
                                               const std::map<std::string, std::string>* packageFileOwners = nullptr,
                                               const std::map<std::string, std::string>* fileImportOwners = nullptr,
-                                              uint64_t helperSalt = 0) {
+                                              uint64_t helperSalt = 0,
+                                              bool skipPreprocess = false) {
     // D-2a: desugar `布局`/`事件` into synthetic methods before anything
     // else reads the program (a no-op walk when the program has none,
     // except that a stray `键()` is still refused, with the name).
-    aster_cn::Program program = programInput;
-    cnD2aSynthesize(program);
+    // Step 1: the build/test drivers already ran cnPreprocessMergedProgram
+    // once on the merged program (skipPreprocess); build-cn-obj and any
+    // other single-shot caller still do it here.
+    // Step 3 (ms-compile): borrow the program instead of deep-copying it
+    // when the driver already preprocessed it. Audit (2026-11-27): with
+    // skipPreprocess=true the lowering below only READS the program — the
+    // only writers in this function are cnD2aSynthesize and
+    // cnValidateStringLiteralsProgram, both skipped on this path; every
+    // other use is through const refs (all 26 range-fors over program
+    // members are const; the four whole-program callees all take
+    // const Program&; no .body=, std::move(program) or const_cast anywhere
+    // in the function). So the per-TU deep copy (~20 ms) and its
+    // destruction on return (~15 ms) are pure waste here. Single-shot
+    // callers (skipPreprocess=false) still need the owned copy because D2a
+    // rewrites the program in place — hence the owned copy only exists on
+    // that path. This is why step 3 is NOT the shared-pointer/CoW refactor
+    // the brief anticipated: step 1 already removed the only per-TU
+    // mutation, so borrowing is exact. The shared program outlives every
+    // TU lowering: the build/test drivers hold *ctx.program for the whole
+    // build, and fork workers get their own copy-on-write snapshot, so
+    // serial and parallel modes stay identical.
+    std::unique_ptr<aster_cn::Program> ownedProgram;
+    if (!skipPreprocess) ownedProgram = std::make_unique<aster_cn::Program>(programInput);
+    const aster_cn::Program& program = ownedProgram ? *ownedProgram : programInput;
+    if (!skipPreprocess) cnD2aSynthesize(*ownedProgram);
     std::vector<Function> functions;
     // B-P4: a previous TU (per-source build) or test program (one process
     // lowers several) may have left another file's name behind; lowering
@@ -25946,7 +26002,8 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
     // Validate literal contents before type checking or lowering.  This keeps
     // malformed string bytes from being hidden by an unrelated surrounding
     // expression error (for example `0 + "bad\\0"`).
-    cnValidateStringLiteralsProgram(program);
+    // Step 1: skipped when the driver already validated the merged program.
+    if (!skipPreprocess) cnValidateStringLiteralsProgram(program);
     std::set<std::string> names;
     std::set<std::string> methodNames;
     std::map<std::string, Ty> methodReturns;
@@ -25975,27 +26032,71 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
     stringPool.nextEmbed = poolSalt;
     stringPool.fallbackSourceFile = program.sourceFile;
     const bool cnPerSource = !onlySource.empty();
+    // Step 2: memoize ownership per distinct source file. cnOwnsSource is
+    // called once per declaration in every lowering loop; the uncached
+    // version does two map finds plus up to two cnCanonicalPath calls
+    // (filesystem path normalisation) per call. Ownership is a pure
+    // function of the file name and the fixed owner maps, so caching it
+    // per call is exact.
+    std::map<std::string, bool> cnOwnsMemo;
     auto cnOwnsSource = [&](const std::string& sourceFile) {
-        if (!cnPerSource) return true;
-        if (sourceFile == onlySource) return true;
-        if (packageFileOwners) {
-            const auto owned = packageFileOwners->find(sourceFile);
-            if (owned != packageFileOwners->end()) return owned->second == onlySource;
+        const auto memo = cnOwnsMemo.find(sourceFile);
+        if (memo != cnOwnsMemo.end()) return memo->second;
+        bool owned = false;
+        if (!cnPerSource) owned = true;
+        else if (sourceFile == onlySource) owned = true;
+        else {
+            bool decided = false;
+            if (packageFileOwners) {
+                const auto ownedIt = packageFileOwners->find(sourceFile);
+                if (ownedIt != packageFileOwners->end()) {
+                    owned = ownedIt->second == onlySource;
+                    decided = true;
+                }
+            }
+            // P1-3: same rule for file imports: an imported file's
+            // declarations are emitted by the listed TU that (transitively)
+            // imports it, so they are emitted exactly once. Keys/values
+            // are canonical paths, so compare canonically against the TU path.
+            if (!decided && fileImportOwners) {
+                const auto ownedImp = fileImportOwners->find(cnCanonicalPath(sourceFile));
+                if (ownedImp != fileImportOwners->end()) {
+                    owned = cnCanonicalPath(ownedImp->second) == cnCanonicalPath(onlySource);
+                    decided = true;
+                }
+            }
+            // A declaration without provenance cannot be attributed to
+            // another TU; emitting it everywhere it is needed is the
+            // fail-loud choice (a duplicate is a link error, a missing
+            // definition is too).
+            if (!decided) owned = sourceFile.empty();
         }
-        // P1-3: same rule for file imports: an imported file's declarations
-        // are emitted by the listed TU that (transitively) imports it, so
-        // they are emitted exactly once. Keys/values are canonical paths,
-        // so compare canonically against the TU path.
-        if (fileImportOwners) {
-            const auto owned = fileImportOwners->find(cnCanonicalPath(sourceFile));
-            if (owned != fileImportOwners->end())
-                return cnCanonicalPath(owned->second) == cnCanonicalPath(onlySource);
-        }
-        // A declaration without provenance cannot be attributed to another
-        // TU; emitting it everywhere it is needed is the fail-loud choice
-        // (a duplicate is a link error, a missing definition is too).
-        return sourceFile.empty();
+        cnOwnsMemo.emplace(sourceFile, owned);
+        return owned;
     };
+    // Step 2: per-call index over the merged program. Pure-emission loops
+    // iterate only this TU's own declarations, in program order (identical
+    // emission order: the old loops visited in program order and skipped
+    // the rest). Loops that can throw on a FOREIGN declaration (duplicate
+    // checks, field-initializer validation) deliberately keep their
+    // whole-program walk: restricting them would change which TU reports
+    // the error and, in --verbose mode, which "compiled" lines print
+    // before it.
+    std::vector<const aster_cn::MethodDeclaration*> cnOwnMethods;
+    std::vector<const aster_cn::Statement*> cnOwnGlobals;
+    std::vector<const aster_cn::ClassDeclaration*> cnOwnClasses;
+    std::vector<std::pair<const aster_cn::ClassDeclaration*, const aster_cn::MethodDeclaration*>> cnOwnClassMethods;
+    std::map<std::string, const aster_cn::ClassDeclaration*> cnClassByName;
+    for (const auto& method : program.methods)
+        if (cnOwnsSource(method.sourceFile)) cnOwnMethods.push_back(&method);
+    for (const auto& declaration : program.globals)
+        if (cnOwnsSource(declaration.sourceFile)) cnOwnGlobals.push_back(&declaration);
+    for (const auto& declaration : program.classes) {
+        cnClassByName.emplace(declaration.name, &declaration);
+        if (cnOwnsSource(declaration.sourceFile)) cnOwnClasses.push_back(&declaration);
+        for (const auto& method : declaration.methods)
+            if (cnOwnsSource(method.sourceFile)) cnOwnClassMethods.emplace_back(&declaration, &method);
+    }
     bool hasMain = false;
     functions.reserve(program.methods.size() + 8);
     g_cnClosureTypes.clear();
@@ -26765,14 +26866,16 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             }
         }
     }
-    for (const auto& declaration : program.classes) {
+    // Step 2: iterate only this TU's own (class, method) pairs, in program
+    // order (the old nested loops visited in the same order and skipped
+    // foreign methods with the continue, now gone).
+    for (const auto& classMethod : cnOwnClassMethods) {
+        const aster_cn::ClassDeclaration& declaration = *classMethod.first;
+        const aster_cn::MethodDeclaration& method = *classMethod.second;
         cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
-        for (const auto& method : declaration.methods) {
+        {
             const CnClassMethodInfo& methodInfo = g_cnClassMethods.at(sid).at(method.name);
-            // Per-source: a foreign class method is lowered by its own TU;
-            // this TU only needs its signature (already registered above).
-            if (cnPerSource && !cnOwnsSource(method.sourceFile)) continue;
             Function function;
             function.name = methodInfo.functionName;
             function.line = method.line;
@@ -27021,24 +27124,40 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             throw Error(loc(declaration.line, declaration.column,
                             "an uninitialized global struct cannot contain string fields: " +
                             declaration.name));
+        // Step 2: one function-type parse per global (it was parsed twice:
+        // once for the emitted Global, once for the binding), and the
+        // emitted Global is only built when this TU owns it. The checks
+        // above still run for every global, so duplicate/conflict errors
+        // are unchanged; the mangled name is still computed for an
+        // `extern` declaration (its symbol takes part in the conflict
+        // check below) and for an owned definition.
+        FuncSig globalSignature;
+        const bool globalIsFunc = cnFunctionTypeSignature(declaration.typeName, globalSignature,
+                                                          declaration.line, declaration.column);
+        const std::string globalEmittedName =
+            (cnOwnGlobal || declaration.isExternal)
+                ? cnMangleAbiSymbol(declaration.isExternal ? declaration.externalName
+                                                           : declaration.name)
+                : std::string();
         Global global;
-        // C-IMP-4 (§3.6): the emitted object symbol is the mangled ABI name;
-        // the source spelling stays in sourceName for DWARF.
-        global.name = declaration.isExternal ? cnMangleAbiSymbol(declaration.externalName)
-                                             : cnMangleAbiSymbol(declaration.name);
-        global.sourceName = declaration.name;
-        global.external = declaration.isExternal;
-        global.ty = type;
-        global.align = tyAlign(type);
-        global.isBool = type == Ty::Bool;
-        global.isString = false;
-        global.isConst = isConstant;
-        global.isFunc = cnFunctionTypeSignature(declaration.typeName, global.funcSig,
-                                                declaration.line, declaration.column);
-        if (arrayLength != 0) {
-            global.isArray = true;
-            global.count = arrayLength;
-            global.dims.push_back(arrayLength);
+        if (cnOwnGlobal) {
+            // C-IMP-4 (§3.6): the emitted object symbol is the mangled ABI name;
+            // the source spelling stays in sourceName for DWARF.
+            global.name = globalEmittedName;
+            global.sourceName = declaration.name;
+            global.external = declaration.isExternal;
+            global.ty = type;
+            global.align = tyAlign(type);
+            global.isBool = type == Ty::Bool;
+            global.isString = false;
+            global.isConst = isConstant;
+            global.isFunc = globalIsFunc;
+            global.funcSig = globalSignature;
+            if (arrayLength != 0) {
+                global.isArray = true;
+                global.count = arrayLength;
+                global.dims.push_back(arrayLength);
+            }
         }
         // B-P3: a definition owns the index. When a pair reaches this
         // loop definition-first, the later `extern` declaration must not
@@ -27050,25 +27169,22 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
         if (cnOwnGlobal && (!declaration.isExternal || !globalIndices.count(declaration.name)))
             globalIndices[declaration.name] = globals.size();
         CnBinding globalBinding{type, arrayLength != 0, arrayLength};
-        FuncSig globalSignature;
-        globalBinding.isFunc = cnFunctionTypeSignature(declaration.typeName, globalSignature,
-                                                       declaration.line, declaration.column);
+        globalBinding.isFunc = globalIsFunc;
         globalBinding.funcSig = globalSignature;
         globalBindings[declaration.name] = globalBinding;
         names.insert(declaration.name);
-        if (declaration.isExternal) names.insert(global.name);
+        if (declaration.isExternal) names.insert(globalEmittedName);
         if (cnOwnGlobal) globals.push_back(std::move(global));
     }
-    for (const auto& declaration : program.classes) {
+    // Step 2: iterate only this TU's own classes, in program order.
+    for (const auto& declarationPtr : cnOwnClasses) {
+        const aster_cn::ClassDeclaration& declaration = *declarationPtr;
         cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
         for (const auto& field : declaration.fields) {
             if (!field.isStatic) continue;
             const CnStaticClassFieldInfo& info =
                 g_cnClassStaticFields.at(sid).at(field.name);
-            // Per-source: a foreign static field's storage is emitted by
-            // its own TU; this TU gets an external stub if it uses it.
-            if (cnPerSource && !cnOwnsSource(declaration.sourceFile)) continue;
             if (!names.insert(info.globalName).second)
                 throw Error(loc(field.line, field.column,
                                 "static field storage name conflicts with another declaration"));
@@ -27239,8 +27355,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             globals[index].initExpr = std::move(value);
         }
     }
-    for (const auto& declaration : program.globals) {
-        if (cnPerSource && !cnOwnsSource(declaration.sourceFile)) continue;
+    // Step 2: iterate only this TU's own globals, in program order.
+    for (const auto& declarationPtr : cnOwnGlobals) {
+        const aster_cn::Statement& declaration = *declarationPtr;
         cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         if (cnPerSource) globalContext.sourceFile = declaration.sourceFile;
         const size_t index = globalIndices.at(declaration.name);
@@ -27392,10 +27509,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             globals[index].init = allZero ? 0 : 1;
         }
     }
-    for (const auto& method : program.methods) {
-        // Per-source: a foreign method is lowered by its own TU; this TU
-        // only needs its signature (already registered above).
-        if (cnPerSource && !cnOwnsSource(method.sourceFile)) continue;
+    // Step 2: iterate only this TU's own methods, in program order.
+    for (const auto& methodPtr : cnOwnMethods) {
+        const aster_cn::MethodDeclaration& method = *methodPtr;
         cnSetDiagnosticFile(method.sourceFile);  // B-P4
         Function function;
         // C-IMP-4 (§3.6): the emitted object symbol is the mangled ABI name;
@@ -27486,11 +27602,10 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
     bool cnEmitsFactoryForAny = false;
     if (cnPerSource) {
         for (const int candidate : cnEffectiveConstructors) {
-            const auto sourceClass = std::find_if(program.classes.begin(), program.classes.end(),
-                [&](const aster_cn::ClassDeclaration& declaration) {
-                    return declaration.name == structOf(candidate).name;
-                });
-            if (sourceClass != program.classes.end() && cnOwnsSource(sourceClass->sourceFile)) {
+            // Step 2: class lookup by name (was a linear find_if over all
+            // classes per candidate).
+            const auto sourceClassIt = cnClassByName.find(structOf(candidate).name);
+            if (sourceClassIt != cnClassByName.end() && cnOwnsSource(sourceClassIt->second->sourceFile)) {
                 cnEmitsFactoryForAny = true;
                 break;
             }
@@ -27599,12 +27714,11 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             if (sid < 0) break;
             emittedClassFactories.insert(sid);
             const std::string className = structOf(sid).name;
-            const auto sourceClass = std::find_if(program.classes.begin(), program.classes.end(),
-                [&](const aster_cn::ClassDeclaration& declaration) {
-                    return declaration.name == className;
-                });
-            if (sourceClass == program.classes.end())
+            // Step 2: class lookup by name (was a linear find_if).
+            const auto sourceClassIt = cnClassByName.find(className);
+            if (sourceClassIt == cnClassByName.end())
                 throw Error("internal error: missing class declaration for constructor " + className);
+            const aster_cn::ClassDeclaration* sourceClass = sourceClassIt->second;
             // B-P4: the initializer/factory errors below belong to this class's file.
             cnSetDiagnosticFile(sourceClass->sourceFile);
 
@@ -27619,12 +27733,11 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             for (const int ownerClassId : classChain) {
                 if (!emittedClassInitializers.insert(ownerClassId).second) continue;
                 const std::string ownerName = structOf(ownerClassId).name;
-                const auto ownerSource = std::find_if(program.classes.begin(), program.classes.end(),
-                    [&](const aster_cn::ClassDeclaration& declaration) {
-                        return declaration.name == ownerName;
-                    });
-                if (ownerSource == program.classes.end())
+                // Step 2: class lookup by name (was a linear find_if).
+                const auto ownerSourceIt = cnClassByName.find(ownerName);
+                if (ownerSourceIt == cnClassByName.end())
                     throw Error("internal error: missing class declaration for initializer " + ownerName);
+                const aster_cn::ClassDeclaration* ownerSource = ownerSourceIt->second;
                 // Per-source: a base-class initializer is emitted by the
                 // TU that defines that base class, not by this TU.
                 if (cnPerSource && !cnOwnsSource(ownerSource->sourceFile)) continue;
@@ -28012,6 +28125,11 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
 
 struct CnPerSourceContext {
     const aster_cn::Program* program = nullptr;  // merged + package-resolved
+    // Step 1: the merged program already ran cnPreprocessMergedProgram once
+    // (build/test drivers); per-TU lowering then skips D2a + string-literal
+    // validation. False for single-shot callers (build-cn-obj), which still
+    // preprocess inside cnProgramToAster.
+    bool programPreprocessed = false;
     // Package file -> owning TU (first TU in link order importing the
     // file's module; see cnPackageFileOwners). The owner emits the
     // file's declarations and is the only TU that records it as a dep.
@@ -28313,11 +28431,16 @@ static std::map<std::string, std::string> cnSymbolToSourceMap(const aster_cn::Pr
         if (symbol == entry.first || !g_cnTopLevelGlobals.count(symbol))
             result[symbol] = entry.second.sourceFile;
     }
+    // Step 2: class name -> defining file, built once per call (the
+    // classSourceFile lookup below used to linearly scan all classes per
+    // entry in every table loop).
+    std::map<std::string, std::string> classSourceByName;
+    for (const auto& declaration : program.classes)
+        classSourceByName.emplace(declaration.name, declaration.sourceFile);
     auto classSourceFile = [&](int sid) -> std::string {
         const std::string className = structOf(sid).name;
-        const auto found = std::find_if(program.classes.begin(), program.classes.end(),
-            [&](const aster_cn::ClassDeclaration& d) { return d.name == className; });
-        return found == program.classes.end() ? std::string() : found->sourceFile;
+        const auto found = classSourceByName.find(className);
+        return found == classSourceByName.end() ? std::string() : found->second;
     };
     for (const auto& classEntry : g_cnClassMethods)
         for (const auto& methodEntry : classEntry.second)
@@ -28411,6 +28534,42 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
     std::set<std::string> definedFunctions, definedGlobals;
     for (const auto& f : functions) definedFunctions.insert(f.name);
     for (const auto& g : globals) definedGlobals.insert(g.name);
+    // Step 2: reverse indexes built once per call. The per-name loops below
+    // used to scan whole tables for every referenced name — including a
+    // find_if over all globals that re-mangled every global's name per
+    // name (a gprof hotspot: cnMangleAbiSymbol ran ~13.7M times per
+    // build). First match in iteration order wins, exactly like the scans.
+    std::map<std::string, const aster_cn::Statement*> stubGlobalBySymbol;
+    for (const auto& declaration : program.globals) {
+        stubGlobalBySymbol.emplace(cnMangleAbiSymbol(declaration.name), &declaration);
+        if (declaration.isExternal)
+            stubGlobalBySymbol.emplace(cnMangleAbiSymbol(declaration.externalName), &declaration);
+    }
+    // Emitted class-method name -> (class sid, isStatic).
+    std::map<std::string, std::pair<int, bool>> stubClassMethodByFunction;
+    for (const auto& classEntry : g_cnClassMethods)
+        for (const auto& methodEntry : classEntry.second)
+            stubClassMethodByFunction.emplace(methodEntry.second.functionName,
+                                            std::make_pair(classEntry.first,
+                                                           methodEntry.second.isStatic));
+    // Constructor / initializer emitted name -> class sid.
+    std::map<std::string, int> stubCtorByName, stubInitByName;
+    for (const auto& classEntry : g_cnClassIndex) {
+        stubCtorByName.emplace(cnClassConstructorName(classEntry.second), classEntry.second);
+        stubInitByName.emplace(cnClassInitializerName(classEntry.second), classEntry.second);
+    }
+    // Static-field emitted global name -> field info.
+    std::map<std::string, const CnStaticClassFieldInfo*> stubStaticFieldByGlobal;
+    for (const auto& classEntry : g_cnClassStaticFields)
+        for (const auto& fieldEntry : classEntry.second)
+            stubStaticFieldByGlobal.emplace(fieldEntry.second.globalName, &fieldEntry.second);
+    // Vtable / interface-table global name -> class sid / (sid, interface).
+    std::map<std::string, int> stubVtableGlobalByName;
+    for (const auto& entry : g_cnClassVtableGlobals)
+        stubVtableGlobalByName.emplace(entry.second, entry.first);
+    std::map<std::string, std::pair<int, std::string>> stubIfaceTableByName;
+    for (const auto& entry : g_cnInterfaceTableGlobals)
+        stubIfaceTableByName.emplace(entry.second, entry.first);
     for (const auto& name : referenced) {
         if (name.empty() || definedFunctions.count(name) || definedGlobals.count(name)) continue;
         if (name.compare(0, 15, "__aster_string_") == 0 || name == "__aster_empty_string") continue;
@@ -28435,22 +28594,17 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
             // signature alone is one parameter short, and every foreign
             // call fails Sema's arity check ("expected 0, got 1" for a
             // no-arg method). Static methods have no `this`.
-            for (const auto& classEntry : g_cnClassMethods) {
-                bool foundMethod = false;
-                for (const auto& methodEntry : classEntry.second) {
-                    if (methodEntry.second.functionName == name && !methodEntry.second.isStatic) {
-                        stub.params.push_back("__aster_cn_this");
-                        stub.paramTypes.push_back(Ty::ptrTo(classEntry.first));
-                        stub.paramPtr.push_back(true);
-                        stub.paramBool.push_back(false);
-                        stub.paramDims.emplace_back();
-                        stub.paramFuncSig.emplace_back();
-                        stub.paramIsFunc.push_back(false);
-                        foundMethod = true;
-                        break;
-                    }
-                }
-                if (foundMethod) break;
+            // Step 2: instance-method lookup by emitted name (was a scan
+            // of every class method per referenced name).
+            const auto instanceMethod = stubClassMethodByFunction.find(name);
+            if (instanceMethod != stubClassMethodByFunction.end() && !instanceMethod->second.second) {
+                stub.params.push_back("__aster_cn_this");
+                stub.paramTypes.push_back(Ty::ptrTo(instanceMethod->second.first));
+                stub.paramPtr.push_back(true);
+                stub.paramBool.push_back(false);
+                stub.paramDims.emplace_back();
+                stub.paramFuncSig.emplace_back();
+                stub.paramIsFunc.push_back(false);
             }
             for (size_t i = 0; i < signature->second.parameterTypes.size(); ++i) {
                 stub.params.push_back("__aster_cn_stub_arg_" + std::to_string(i));
@@ -28468,11 +28622,15 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
             continue;
         }
         bool handled = false;
-        for (const auto& classEntry : g_cnClassIndex) {
-            const int sid = classEntry.second;
-            if (name != cnClassConstructorName(sid) && name != cnClassInitializerName(sid)) continue;
+        // Step 2: constructor/initializer lookup by emitted name (was a
+        // scan of every class per referenced name).
+        const auto ctorIt = stubCtorByName.find(name);
+        const auto initIt = ctorIt == stubCtorByName.end()
+            ? stubInitByName.find(name) : stubInitByName.end();
+        if (ctorIt != stubCtorByName.end() || initIt != stubInitByName.end()) {
+            const bool isFactory = ctorIt != stubCtorByName.end();
+            const int sid = isFactory ? ctorIt->second : initIt->second;
             const CnClassMethodInfo* userConstructor = cnFindClassConstructor(sid);
-            const bool isFactory = name == cnClassConstructorName(sid);
             Function stub;
             stub.name = name;
             stub.external = true;
@@ -28506,7 +28664,6 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
             functions.push_back(std::move(stub));
             definedFunctions.insert(name);
             handled = true;
-            break;
         }
         if (handled) continue;
         if (name == "alloc") {
@@ -28558,14 +28715,11 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
             continue;
         }
         bool handledGlobal = false;
-        const auto globalDecl = std::find_if(program.globals.begin(), program.globals.end(),
-            [&](const aster_cn::Statement& d) {
-                // C-IMP-4 (§3.6): `name` is the emitted (mangled) symbol;
-                // compare against the mangled spellings (identity for ASCII).
-                return cnMangleAbiSymbol(d.name) == name ||
-                    (d.isExternal && cnMangleAbiSymbol(d.externalName) == name);
-            });
-        if (globalDecl != program.globals.end()) {
+        // Step 2: global lookup by emitted symbol (was a find_if that
+        // re-mangled every global's name per referenced name).
+        const auto globalDeclIt = stubGlobalBySymbol.find(name);
+        if (globalDeclIt != stubGlobalBySymbol.end()) {
+            const aster_cn::Statement* globalDecl = globalDeclIt->second;
             Global stub;
             stub.name = name;
             stub.external = true;
@@ -28587,49 +28741,49 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
             handledGlobal = true;
         }
         if (!handledGlobal) {
-            for (const auto& classEntry : g_cnClassStaticFields) {
-                for (const auto& fieldEntry : classEntry.second) {
-                    if (fieldEntry.second.globalName != name) continue;
-                    Global stub;
-                    stub.name = name;
-                    stub.external = true;
-                    stub.ty = fieldEntry.second.type;
-                    stub.align = tyAlign(stub.ty);
-                    stub.isBool = stub.ty == Ty::Bool;
-                    stub.isFunc = fieldEntry.second.isFunc;
-                    stub.funcSig = fieldEntry.second.funcSig;
-                    if (fieldEntry.second.arrayLength != 0) {
-                        stub.isArray = true;
-                        stub.count = fieldEntry.second.arrayLength;
-                        stub.dims.push_back(fieldEntry.second.arrayLength);
-                    }
-                    globals.push_back(std::move(stub));
-                    definedGlobals.insert(name);
-                    handledGlobal = true;
-                    break;
-                }
-                if (handledGlobal) break;
-            }
-        }
-        if (!handledGlobal) {
-            for (const auto& entry : g_cnClassVtableGlobals) {
-                if (entry.second != name) continue;
+            // Step 2: static-field lookup by emitted global name (was a
+            // scan of every class's static fields per referenced name).
+            const auto staticFieldIt = stubStaticFieldByGlobal.find(name);
+            if (staticFieldIt != stubStaticFieldByGlobal.end()) {
+                const CnStaticClassFieldInfo& fieldInfo = *staticFieldIt->second;
                 Global stub;
                 stub.name = name;
                 stub.external = true;
-                stub.ty = Ty::ofStruct(g_cnClassVtableIndex.at(entry.first));
+                stub.ty = fieldInfo.type;
+                stub.align = tyAlign(stub.ty);
+                stub.isBool = stub.ty == Ty::Bool;
+                stub.isFunc = fieldInfo.isFunc;
+                stub.funcSig = fieldInfo.funcSig;
+                if (fieldInfo.arrayLength != 0) {
+                    stub.isArray = true;
+                    stub.count = fieldInfo.arrayLength;
+                    stub.dims.push_back(fieldInfo.arrayLength);
+                }
+                globals.push_back(std::move(stub));
+                definedGlobals.insert(name);
+                handledGlobal = true;
+            }
+        }
+        if (!handledGlobal) {
+            // Step 2: vtable-global lookup by name (was a scan per name).
+            const auto vtableIt = stubVtableGlobalByName.find(name);
+            if (vtableIt != stubVtableGlobalByName.end()) {
+                Global stub;
+                stub.name = name;
+                stub.external = true;
+                stub.ty = Ty::ofStruct(g_cnClassVtableIndex.at(vtableIt->second));
                 stub.align = tyAlign(stub.ty);
                 globals.push_back(std::move(stub));
                 definedGlobals.insert(name);
                 handledGlobal = true;
-                break;
             }
         }
         if (!handledGlobal) {
-            for (const auto& entry : g_cnInterfaceTableGlobals) {
-                if (entry.second != name) continue;
+            // Step 2: interface-table lookup by name (was a scan per name).
+            const auto ifaceIt = stubIfaceTableByName.find(name);
+            if (ifaceIt != stubIfaceTableByName.end()) {
                 const std::string typeName =
-                    cnInterfaceTableTypeName(entry.first.first, entry.first.second);
+                    cnInterfaceTableTypeName(ifaceIt->second.first, ifaceIt->second.second);
                 const auto sidIt = g_structIndex.find(typeName);
                 if (sidIt != g_structIndex.end()) {
                     Global stub;
@@ -28641,7 +28795,6 @@ static void cnAddExternalStubs(std::vector<Function>& functions, std::vector<Glo
                     definedGlobals.insert(name);
                     handledGlobal = true;
                 }
-                break;
             }
         }
         // Anything else (a local, an enum constant, a field name) needs no stub.
@@ -28686,7 +28839,8 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
     g_buildDeps.clear();
     std::vector<Global> globals;
     std::vector<Function> functions = cnProgramToAster(*ctx.program, globals, true, sp, false,
-        &ctx.forceConstructedClasses, poolSalt, &ctx.packageFileOwners, &ctx.fileImportOwners);
+        &ctx.forceConstructedClasses, poolSalt, &ctx.packageFileOwners, &ctx.fileImportOwners,
+        0, ctx.programPreprocessed);
     // Take this TU's embed reads before the next TU's lowering
     // overwrites them, then clear so nothing leaks across TUs.
     const std::map<std::string, std::string> embedDeps = g_buildDeps;
@@ -28732,7 +28886,8 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
             throw Error("cannot move " + tmp + " into place: " + std::strerror(e));
         }
         writeFileAtomic(metaPath, projectCacheMetaText(flags, sp, srcHash, sha256Hex(std::string()),
-                                                       depHashes));
+                                                       depHashes),
+                        false);  // Step 4: cache meta, not durable (hash-gated reuse).
         ++compiled;
         return std::string();
     }
@@ -28760,7 +28915,8 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
         std::remove(tmp.c_str());
         throw Error("cannot move " + tmp + " into place: " + std::strerror(e));
     }
-    writeFileAtomic(metaPath, projectCacheMetaText(flags, sp, srcHash, sha256Hex(objBytes), depHashes));
+    writeFileAtomic(metaPath, projectCacheMetaText(flags, sp, srcHash, sha256Hex(objBytes), depHashes),
+                    false);  // Step 4: cache meta, not durable (hash-gated reuse).
     ++compiled;
     return objPath;
 }
@@ -31491,7 +31647,7 @@ int main(int argc,char**argv){
                     for(const auto& library:testLibraries)
                         testSourceLanguages[cnCanonicalPath(library.first)] = library.second.language;
                     testSourceLanguages[cnCanonicalPath(testPath)] = testProgram.language;
-                    const aster_cn::Program resolved=cnResolvePackageImports(roots,testLanguage,packageRoots,testKnownSources,testSourceLanguages);
+                    aster_cn::Program resolved=cnResolvePackageImports(roots,testLanguage,packageRoots,testKnownSources,testSourceLanguages);
                     // The exactly-one-main check, at merged level: the test
                     // file supplies main; the libraries must not.
                     bool testHasMain=false;
@@ -31558,6 +31714,10 @@ int main(int argc,char**argv){
                     testCtx.page=testPage;
                     testCtx.maxParseDepth=(unsigned)maxParseDepthOpt;
                     testCtx.maxLoweringDepth=effectiveLoweringDepth();
+                    // Step 1: D2a + string-literal validation once for the
+                    // merged program (after cnFindConstructedClasses above).
+                    cnPreprocessMergedProgram(resolved);
+                    testCtx.programPreprocessed=true;
                     std::vector<std::string> testObjs;
                     for(size_t i=0;i<testLibraries.size();++i) {
                         const std::string obj=cachedCnProjectObject(
@@ -32013,7 +32173,7 @@ int main(int argc,char**argv){
                 if(const std::string pkgErr=pkgValidateProjectPackages(spec,packageRoots);!pkgErr.empty()){
                     std::cerr<<"aster "<<cmd<<": "<<pkgErr<<"\n";return 1;
                 }
-                const aster_cn::Program program=cnResolvePackageImports(
+                aster_cn::Program program=cnResolvePackageImports(
                     roots,bilingualLanguage,packageRoots,bilingualKnownSources,bilingualSourceLanguages);
                 std::string bilingualProjectName=spec.name.empty()?baseNameOf(bilingualCwd):spec.name;
                 if(bilingualProjectName.empty()||bilingualProjectName=="."||bilingualProjectName=="..")
@@ -32104,6 +32264,13 @@ int main(int argc,char**argv){
                 bilingualCtx.maxParseDepth=(unsigned)maxParseDepthOpt;
                 bilingualCtx.maxLoweringDepth=effectiveLoweringDepth();
                 bilingualCtx.sharedObject=bilingualIsApk;
+                // Step 1: D2a + string-literal validation once for the merged
+                // program (after cnFindConstructedClasses above, which must
+                // see the raw program — see cnPreprocessMergedProgram).
+                // Runs even when every TU is cached: one pass (~80 ms) is
+                // the price of not re-doing it 21 times on a clean build.
+                cnPreprocessMergedProgram(program);
+                bilingualCtx.programPreprocessed=true;
                 std::vector<std::string> bilingualObjs;
                 int bilingualCompiled=0, bilingualReused=0;
                 if(jobsCount>1){
@@ -32363,7 +32530,7 @@ int main(int argc,char**argv){
                     if(std::rename(tmp.c_str(),objPath.c_str())!=0){const int e=errno;std::remove(tmp.c_str());throw Error("cannot move "+tmp+" into place: "+std::strerror(e));}
                     std::string meta="version "+std::string(kVersion)+"\nflags "+flags+"\nsrc "+sp+" "+srcHash+"\nobj "+sha256Hex(objBytes)+"\n";
                     for(const auto& kv:g_buildDeps)meta+="dep "+kv.second+" "+kv.first+"\n";
-                    writeFileAtomic(metaPath,meta);
+                    writeFileAtomic(metaPath,meta,false);  // Step 4: cache meta, not durable (hash-gated reuse).
                     g_buildDeps.clear();
                     ++compiled;
                 } else ++reused;
