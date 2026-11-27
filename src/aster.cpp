@@ -18190,7 +18190,7 @@ static bool cnExtractParentConstructorCall(const aster_cn::MethodDeclaration& me
 
 struct CnTopLevelMethodInfo {
     int visibility = 0;
-    std::string sourceFile;
+    std::shared_ptr<const std::string> sourceFile;
 };
 
 struct CnFunctionSignature {
@@ -18203,7 +18203,7 @@ struct CnFunctionSignature {
 
 struct CnTopLevelGlobalInfo {
     int visibility = 0;
-    std::string sourceFile;
+    std::shared_ptr<const std::string> sourceFile;
 };
 
 static std::map<int, std::map<std::string, CnClassMethodInfo>> g_cnClassMethods;
@@ -21452,7 +21452,7 @@ static void cnRequireTopLevelMethodAccess(const std::string& name,
     const auto found = g_cnTopLevelMethods.find(name);
     if (found == g_cnTopLevelMethods.end() || found->second.visibility == 0) return;
     const std::string sourceFile = context ? context->sourceFile : std::string();
-    if (sourceFile == found->second.sourceFile) return;
+    if (sourceFile == *found->second.sourceFile) return;
     const std::string reason = found->second.visibility == 1
         ? " is hidden outside its declaring file" : " is restricted to its declaring file";
     throw Error(loc(line, column, "method '" + name + "'" + reason));
@@ -21464,7 +21464,7 @@ static void cnRequireTopLevelGlobalAccess(const std::string& name,
     const auto found = g_cnTopLevelGlobals.find(name);
     if (found == g_cnTopLevelGlobals.end() || found->second.visibility == 0) return;
     const std::string sourceFile = context ? context->sourceFile : std::string();
-    if (sourceFile == found->second.sourceFile) return;
+    if (sourceFile == *found->second.sourceFile) return;
     const std::string reason = found->second.visibility == 1
         ? " is hidden outside its declaring file" : " is restricted to its declaring file";
     throw Error(loc(line, column, "global '" + name + "'" + reason));
@@ -22578,19 +22578,38 @@ static void cnAppendClassDefaultStores(std::vector<Stmt>& output, const std::str
 }
 
 static void cnRegisterEnums(const aster_cn::Program& program) {
-    std::set<std::string> methodNames;
-    std::set<std::string> structureNames;
-    for (const auto& method : program.methods) methodNames.insert(method.name);
-    for (const auto& structure : program.structures) structureNames.insert(structure.name);
+    std::vector<const std::string*> structureNames;
+    structureNames.reserve(program.structures.size());
+    for (const auto& structure : program.structures) structureNames.push_back(&structure.name);
+    std::sort(structureNames.begin(), structureNames.end(),
+              [](const std::string* a, const std::string* b) { return *a < *b; });
+    auto structureNameExists = [&structureNames](const std::string& name) {
+        return std::binary_search(structureNames.begin(), structureNames.end(), &name,
+                                  [](const std::string* a, const std::string* b) { return *a < *b; });
+    };
+    // Phase 4 segB item 3: these sets existed only for membership checks
+    // (count() in boolean context), built once per TU from all 2,021 method
+    // names — 2,021 RB-tree nodes + key copies each. A sorted vector of
+    // pointers to the (program-owned, stable) names answers the same checks
+    // with no per-name allocation; duplicates are harmless to binary_search.
+    std::vector<const std::string*> methodNames;
+    methodNames.reserve(program.methods.size());
+    for (const auto& method : program.methods) methodNames.push_back(&method.name);
+    std::sort(methodNames.begin(), methodNames.end(),
+              [](const std::string* a, const std::string* b) { return *a < *b; });
+    auto methodNameExists = [&methodNames](const std::string& name) {
+        return std::binary_search(methodNames.begin(), methodNames.end(), &name,
+                                  [](const std::string* a, const std::string* b) { return *a < *b; });
+    };
 
     for (const auto& source : program.enums) {
         // B-P4: a duplicate/conflicting enum belongs to its own file.
         cnSetDiagnosticFile(source.sourceFile);
         if (source.name == "字段信息" || g_enumIndex.count(source.name) ||
-            g_structIndex.count(source.name) || structureNames.count(source.name))
+            g_structIndex.count(source.name) || structureNameExists(source.name))
             throw Error(loc(source.line, source.column,
                             "duplicate or conflicting enum declaration: " + source.name));
-        if (methodNames.count(source.name))
+        if (methodNameExists(source.name))
             throw Error(loc(source.line, source.column,
                             "enum name conflicts with a method: " + source.name));
 
@@ -22601,8 +22620,8 @@ static void cnRegisterEnums(const aster_cn::Program& program) {
         definition.name = source.name;
         int64_t next = 0;
         for (const auto& member : source.members) {
-            if (g_enumConsts.count(member.name) || methodNames.count(member.name) ||
-                structureNames.count(member.name) || g_enumIndex.count(member.name))
+            if (g_enumConsts.count(member.name) || methodNameExists(member.name) ||
+                structureNameExists(member.name) || g_enumIndex.count(member.name))
                 throw Error(loc(member.line, member.column,
                                 "duplicate or conflicting enumerator: " + member.name));
             int64_t value = next;
@@ -22689,15 +22708,27 @@ static void cnRegisterStructures(const aster_cn::Program& program) {
     stringViewLengthAlias.offset = g_structs.back().fields[1].offset;
     g_structs.back().fields.push_back(std::move(stringViewLengthAlias));
 
-    std::set<std::string> methodNames;
-    for (const auto& method : program.methods) methodNames.insert(method.name);
-    if (methodNames.count("string_view"))
+    // Phase 4 segB item 3: these sets existed only for membership checks
+    // (count() in boolean context), built once per TU from all 2,021 method
+    // names — 2,021 RB-tree nodes + key copies each. A sorted vector of
+    // pointers to the (program-owned, stable) names answers the same checks
+    // with no per-name allocation; duplicates are harmless to binary_search.
+    std::vector<const std::string*> methodNames;
+    methodNames.reserve(program.methods.size());
+    for (const auto& method : program.methods) methodNames.push_back(&method.name);
+    std::sort(methodNames.begin(), methodNames.end(),
+              [](const std::string* a, const std::string* b) { return *a < *b; });
+    auto methodNameExists = [&methodNames](const std::string& name) {
+        return std::binary_search(methodNames.begin(), methodNames.end(), &name,
+                                  [](const std::string* a, const std::string* b) { return *a < *b; });
+    };
+    if (methodNameExists("string_view"))
         throw Error("method name conflicts with a built-in type: string_view");
     for (const auto& source : program.interfaceClasses) {
         // B-P4: a duplicate/conflicting interface belongs to its own file.
         cnSetDiagnosticFile(source.sourceFile);
         if (g_structIndex.count(source.name) || g_enumIndex.count(source.name) ||
-            g_cnInterfaceIndex.count(source.name) || methodNames.count(source.name))
+            g_cnInterfaceIndex.count(source.name) || methodNameExists(source.name))
             throw Error(loc(source.line, source.column,
                             "duplicate or conflicting interface class declaration: " + source.name));
         const int sid = static_cast<int>(g_structs.size());
@@ -22728,7 +22759,7 @@ static void cnRegisterStructures(const aster_cn::Program& program) {
                         }))
             throw Error(loc(source.line, source.column,
                             "duplicate or conflicting class declaration: " + source.name));
-        if (methodNames.count(source.name))
+        if (methodNameExists(source.name))
             throw Error(loc(source.line, source.column,
                             "class name conflicts with a method: " + source.name));
         const int sid = static_cast<int>(g_structs.size());
@@ -22743,7 +22774,7 @@ static void cnRegisterStructures(const aster_cn::Program& program) {
         if (g_structIndex.count(source.name))
             throw Error(loc(source.line, source.column,
                             "duplicate structure declaration: " + source.name));
-        if (methodNames.count(source.name))
+        if (methodNameExists(source.name))
             throw Error(loc(source.line, source.column,
                             "structure name conflicts with a method: " + source.name));
 
@@ -25630,67 +25661,70 @@ static uint32_t cnD2aResolveKeyRef(const std::string& name,
     return ctx.nodes[found->second.front()].key;
 }
 
-static std::vector<aster_cn::Statement> cnD2aFoldStatements(
-    const std::vector<aster_cn::Statement>& statements, const CnD2aContext& ctx,
-    const std::string& enclosingLayout);
+static void cnD2aFoldStatements(std::vector<aster_cn::Statement>& statements,
+                                const CnD2aContext& ctx,
+                                const std::string& enclosingLayout);
 
 // D-2a: fold every `键(名)` in an expression to its i32 key constant
 // (W-7). Runs over the whole program, so a stray `键()` outside any
 // layout or event block is still resolved — or refused with the name.
-static aster_cn::Expression cnD2aFoldExpression(const aster_cn::Expression& source,
-                                                const CnD2aContext& ctx,
-                                                const std::string& enclosingLayout) {
-    if (source.kind == "KeyRef") {
-        const uint32_t key = cnD2aResolveKeyRef(source.value, enclosingLayout, ctx,
-                                                source.line, source.column,
-                                                source.sourceFile);
-        return cnD2aKeyLiteral(key, source.line, source.column);
+// Phase 4 segB: the fold mutates the tree in place instead of copying
+// every node (the old by-value form deep-copied each subtree: ~99k
+// Expression + ~62k Statement copies per greeting build, ~283 ms and
+// ~384k mallocs in preprocessing). The result is identical: each node's
+// folded form depends only on itself and its descendants, and a throw
+// (unresolved key) aborts the compilation either way, so the
+// partially-folded tree is never observed.
+static void cnD2aFoldExpression(aster_cn::Expression& expr,
+                                const CnD2aContext& ctx,
+                                const std::string& enclosingLayout) {
+    if (expr.kind == "KeyRef") {
+        const uint32_t key = cnD2aResolveKeyRef(expr.value, enclosingLayout, ctx,
+                                                expr.line, expr.column,
+                                                expr.sourceFile);
+        expr = cnD2aKeyLiteral(key, expr.line, expr.column);
+        return;
     }
-    aster_cn::Expression folded = source;
-    if (folded.kind == "NodeRow") {
-        for (auto& child : folded.children)
-            child = cnD2aFoldExpression(child, ctx, enclosingLayout);
-        folded.childStatements =
-            cnD2aFoldStatements(folded.childStatements, ctx, enclosingLayout);
-        folded.childRows.clear();
-        for (const auto& childStatement : folded.childStatements)
+    if (expr.kind == "NodeRow") {
+        for (auto& child : expr.children)
+            cnD2aFoldExpression(child, ctx, enclosingLayout);
+        cnD2aFoldStatements(expr.childStatements, ctx, enclosingLayout);
+        expr.childRows.clear();
+        for (const auto& childStatement : expr.childStatements)
             if (childStatement.kind == "ExpressionStatement" &&
                 childStatement.expression.kind == "NodeRow")
-                folded.childRows.push_back(childStatement.expression);
-        return folded;
+                expr.childRows.push_back(childStatement.expression);
+        return;
     }
-    for (auto& child : folded.children)
-        child = cnD2aFoldExpression(child, ctx, enclosingLayout);
-    if (folded.closure)
-        folded.closure->body =
-            cnD2aFoldStatements(folded.closure->body, ctx, enclosingLayout);
-    return folded;
+    for (auto& child : expr.children)
+        cnD2aFoldExpression(child, ctx, enclosingLayout);
+    if (expr.closure)
+        cnD2aFoldStatements(expr.closure->body, ctx, enclosingLayout);
 }
 
-static std::vector<aster_cn::Statement> cnD2aFoldStatements(
-    const std::vector<aster_cn::Statement>& statements, const CnD2aContext& ctx,
-    const std::string& enclosingLayout) {
-    std::vector<aster_cn::Statement> folded;
-    folded.reserve(statements.size());
-    for (const auto& statement : statements) {
-        aster_cn::Statement copy = statement;
-        if (copy.hasExpression)
-            copy.expression =
-                cnD2aFoldExpression(copy.expression, ctx, enclosingLayout);
-        for (auto& expression : copy.expressions)
-            expression = cnD2aFoldExpression(expression, ctx, enclosingLayout);
-        for (auto& condition : copy.conditions)
-            condition = cnD2aFoldExpression(condition, ctx, enclosingLayout);
-        for (auto& values : copy.caseValues)
-            for (auto& value : values)
-                value = cnD2aFoldExpression(value, ctx, enclosingLayout);
-        copy.body = cnD2aFoldStatements(copy.body, ctx, enclosingLayout);
-        for (auto& branch : copy.branches)
-            branch = cnD2aFoldStatements(branch, ctx, enclosingLayout);
-        copy.elseBody = cnD2aFoldStatements(copy.elseBody, ctx, enclosingLayout);
-        folded.push_back(std::move(copy));
-    }
-    return folded;
+static void cnD2aFoldStatement(aster_cn::Statement& statement,
+                               const CnD2aContext& ctx,
+                               const std::string& enclosingLayout) {
+    if (statement.hasExpression)
+        cnD2aFoldExpression(statement.expression, ctx, enclosingLayout);
+    for (auto& expression : statement.expressions)
+        cnD2aFoldExpression(expression, ctx, enclosingLayout);
+    for (auto& condition : statement.conditions)
+        cnD2aFoldExpression(condition, ctx, enclosingLayout);
+    for (auto& values : statement.caseValues)
+        for (auto& value : values)
+            cnD2aFoldExpression(value, ctx, enclosingLayout);
+    cnD2aFoldStatements(statement.body, ctx, enclosingLayout);
+    for (auto& branch : statement.branches)
+        cnD2aFoldStatements(branch, ctx, enclosingLayout);
+    cnD2aFoldStatements(statement.elseBody, ctx, enclosingLayout);
+}
+
+static void cnD2aFoldStatements(std::vector<aster_cn::Statement>& statements,
+                                const CnD2aContext& ctx,
+                                const std::string& enclosingLayout) {
+    for (auto& statement : statements)
+        cnD2aFoldStatement(statement, ctx, enclosingLayout);
 }
 
 static bool cnD2aShadowed(const std::vector<std::set<std::string>>& scopes,
@@ -26147,29 +26181,24 @@ static void cnD2aSynthesize(aster_cn::Program& program) {
     // layouts, events): a stray `键()` with no layouts is refused here,
     // with the name.
     for (auto& method : program.methods)
-        method.body = cnD2aFoldStatements(method.body, ctx, "");
-    for (auto& global : program.globals) {
-        std::vector<aster_cn::Statement> folded =
-            cnD2aFoldStatements({global}, ctx, "");
-        global = folded.front();
-    }
+        cnD2aFoldStatements(method.body, ctx, "");
+    for (auto& global : program.globals)
+        cnD2aFoldStatement(global, ctx, "");
     for (auto& declaration : program.classes)
         for (auto& method : declaration.methods)
-            method.body = cnD2aFoldStatements(method.body, ctx, "");
+            cnD2aFoldStatements(method.body, ctx, "");
     for (auto& structure : program.structures)
         for (auto& field : structure.fields)
             if (field.hasInitializer)
-                field.initializer =
-                    cnD2aFoldExpression(field.initializer, ctx, "");
+                cnD2aFoldExpression(field.initializer, ctx, "");
     for (auto& enumeration : program.enums)
         for (auto& member : enumeration.members)
             if (member.hasExpression)
-                member.expression =
-                    cnD2aFoldExpression(member.expression, ctx, "");
+                cnD2aFoldExpression(member.expression, ctx, "");
     for (auto& layout : program.layouts)
-        layout.body = cnD2aFoldStatements(layout.body, ctx, layout.name);
+        cnD2aFoldStatements(layout.body, ctx, layout.name);
     for (auto& event : program.events)
-        event.body = cnD2aFoldStatements(event.body, ctx, "");
+        cnD2aFoldStatements(event.body, ctx, "");
     // Events: resolve the node, check (kind, event), check the body, and
     // mint the callback method.
     std::vector<aster_cn::MethodDeclaration> eventMethods;
@@ -26523,6 +26552,20 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
     g_cnFunctionSignatures.clear();
     g_cnExternalMethodNames.clear();
     g_cnExternalGlobalNames.clear();
+    // Phase 4 segB item 3: intern the per-file source path shared by every
+    // top-level Info of one TU (2,021 methods + ~1,300 globals per TU each
+    // copied the path string; paths like framework/src/aui_core.ast exceed
+    // SSO). The pool is local to this call; the Infos hold shared_ptr so
+    // the strings outlive this frame — cnForeignSourcesForTu reads them
+    // after cnProgramToAster returns.
+    std::map<std::string, std::shared_ptr<const std::string>> internedSourceFiles;
+    auto internSourceFile = [&internedSourceFiles](const std::string& path) {
+        const auto found = internedSourceFiles.find(path);
+        if (found != internedSourceFiles.end()) return found->second;
+        auto shared = std::make_shared<const std::string>(path);
+        internedSourceFiles.emplace(path, shared);
+        return shared;
+    };
     for (const auto& declaration : program.interfaceClasses)
         g_cnInterfaceNames.insert(declaration.name);
     cnRegisterEnums(program);
@@ -26603,12 +26646,12 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
                 g_cnTopLevelGlobals[declaration.name] = CnTopLevelGlobalInfo{
                     cnVisibilityCode(declaration.visibility,
                                      declaration.line, declaration.column),
-                    declaration.sourceFile};
+                    internSourceFile(declaration.sourceFile)};
         } else {
             const auto inserted = g_cnTopLevelGlobals.emplace(declaration.name,
                 CnTopLevelGlobalInfo{cnVisibilityCode(declaration.visibility,
                                                        declaration.line, declaration.column),
-                                     declaration.sourceFile});
+                                     internSourceFile(declaration.sourceFile)});
             if (!inserted.second)
                 throw Error(loc(declaration.line, declaration.column,
                                 "duplicate top-level global declaration: " + declaration.name));
@@ -26635,7 +26678,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
         CnFunctionSignature signature;
         signature.returnType = methodReturns[method.name];
         g_cnTopLevelMethods[method.name] = CnTopLevelMethodInfo{
-            cnVisibilityCode(method.visibility, method.line, method.column), method.sourceFile};
+            cnVisibilityCode(method.visibility, method.line, method.column), internSourceFile(method.sourceFile)};
         for (const auto& parameter : method.parameters) {
             std::vector<uint32_t> parameterDims;
             const Ty type = cnParameterType(parameter, method.line, method.column,
@@ -28819,8 +28862,8 @@ static void cnCollectEmittedReferences(const std::vector<Function>& functions,
 // lowering just populated. Covers top-level methods/globals (by source and
 // external symbol name), class methods, static fields, vtable/interface
 // tables and thunks, and class factories/initializers.
-static std::map<std::string, std::string> cnSymbolToSourceMap(const aster_cn::Program& program) {
-    std::map<std::string, std::string> result;
+static std::map<std::string, std::shared_ptr<const std::string>> cnSymbolToSourceMap(const aster_cn::Program& program) {
+    std::map<std::string, std::shared_ptr<const std::string>> result;
     for (const auto& entry : g_cnTopLevelMethods) {
         result[entry.first] = entry.second.sourceFile;
         result[cnFunctionSymbolName(entry.first)] = entry.second.sourceFile;
@@ -28841,17 +28884,19 @@ static std::map<std::string, std::string> cnSymbolToSourceMap(const aster_cn::Pr
     // Step 2: class name -> defining file, built once per call (the
     // classSourceFile lookup below used to linearly scan all classes per
     // entry in every table loop).
-    std::map<std::string, std::string> classSourceByName;
+    std::map<std::string, std::shared_ptr<const std::string>> classSourceByName;
     for (const auto& declaration : program.classes)
-        classSourceByName.emplace(declaration.name, declaration.sourceFile);
-    auto classSourceFile = [&](int sid) -> std::string {
+        classSourceByName.emplace(declaration.name,
+                                  std::make_shared<const std::string>(declaration.sourceFile));
+    auto classSourceFile = [&](int sid) -> std::shared_ptr<const std::string> {
         const std::string className = structOf(sid).name;
         const auto found = classSourceByName.find(className);
-        return found == classSourceByName.end() ? std::string() : found->second;
+        return found == classSourceByName.end() ? nullptr : found->second;
     };
     for (const auto& classEntry : g_cnClassMethods)
         for (const auto& methodEntry : classEntry.second)
-            result[methodEntry.second.functionName] = methodEntry.second.sourceFile;
+            result[methodEntry.second.functionName] =
+                std::make_shared<const std::string>(methodEntry.second.sourceFile);
     for (const auto& classEntry : g_cnClassStaticFields)
         for (const auto& fieldEntry : classEntry.second)
             result[fieldEntry.second.globalName] = classSourceFile(classEntry.first);
@@ -28864,7 +28909,7 @@ static std::map<std::string, std::string> cnSymbolToSourceMap(const aster_cn::Pr
         for (const auto& methodEntry : classEntry.second) {
             if (!methodEntry.second.isStatic && !methodEntry.second.isConstructor)
                 result[cnClassVtableThunkName(sid, methodEntry.first)] =
-                    methodEntry.second.sourceFile;
+                    std::make_shared<const std::string>(methodEntry.second.sourceFile);
         }
         result[cnClassConstructorName(sid)] = classSourceFile(sid);
         result[cnClassInitializerName(sid)] = classSourceFile(sid);
@@ -28889,7 +28934,7 @@ static std::set<std::string> cnForeignSourcesForTu(const CnPerSourceContext& ctx
                                                    const std::set<std::string>& referencedSymbols,
                                                    const std::set<std::string>& referencedTypes) {
     std::set<std::string> files;
-    const std::map<std::string, std::string> symbolToSource = cnSymbolToSourceMap(*ctx.program);
+    const std::map<std::string, std::shared_ptr<const std::string>> symbolToSource = cnSymbolToSourceMap(*ctx.program);
     auto addFile = [&](const std::string& file) { if (!file.empty() && file != sp) files.insert(file); };
     auto addPackageFiles = [&]() {
         if (ctx.packageFiles)
@@ -28897,7 +28942,7 @@ static std::set<std::string> cnForeignSourcesForTu(const CnPerSourceContext& ctx
     };
     for (const auto& name : referencedSymbols) {
         const auto found = symbolToSource.find(name);
-        if (found != symbolToSource.end()) addFile(found->second);
+        if (found != symbolToSource.end()) addFile(*found->second);
         else if (name.compare(0, 12, "__aster_mod_") == 0) addPackageFiles();
     }
     for (const auto& name : referencedTypes) {
@@ -28909,7 +28954,7 @@ static std::set<std::string> cnForeignSourcesForTu(const CnPerSourceContext& ctx
     cnCollectCnProgramNames(ownParsed, mentioned);
     for (const auto& name : mentioned) {
         const auto found = symbolToSource.find(name);
-        if (found != symbolToSource.end()) { addFile(found->second); continue; }
+        if (found != symbolToSource.end()) { addFile(*found->second); continue; }
         const auto typeFound = ctx.typeNameToSource.find(name);
         if (typeFound != ctx.typeNameToSource.end()) { addFile(typeFound->second); continue; }
         if (name.compare(0, 12, "__aster_mod_") == 0) addPackageFiles();
