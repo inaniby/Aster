@@ -13929,7 +13929,8 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "       aster deps <source.ast> [...] [-o OBJ]   make rules for include/@embed inputs\n"
 "       aster fmt [--language zh|en] [--check|--write] <source.ast>\n"
 "       aster pack [--src-dir DIR] [--out DIR] [--check DIR]   build the standard-library package\n"
-"       aster complete [--language zh|en] [--format json|text] [--project DIR] <package-dir|manifest.json> [file.ast]\n"
+"       aster complete [--language zh|en] [--format json|text] [--project DIR]\n"
+"           [--cursor LINE:COL] [--stdin] <package-dir|manifest.json> [file.ast]\n"
 "       aster pkg install <source> [--project DIR] | upgrade <package> [--project DIR] | list [--project DIR] | remove <package> [--project DIR]\n"
     "       aster link-obj|link-pie [--gc-sections] <input.o> [input2.o ...] -o <output>\n"
     "       aster link-so   [--soname NAME] [--needed LIB] [--gc-sections] [--gc-keep NAME[,NAME...]] [--strip] [--verbose] <input.o> [input2.o ...] -o <output.so>\n"
@@ -30652,6 +30653,842 @@ static bool runTuJobs(const std::vector<std::function<TuWorkResult()>>& jobs,
     return firstError.empty();
 }
 
+// ---- Context-aware completion (`aster complete --cursor L:C [--stdin]`).
+// The no-cursor path below keeps the old package-export listing (except
+// D-ZH: zh no longer hides English-only exports). The cursor path parses
+// the current file (unsaved stdin text when --stdin is given, never written
+// back to disk) plus the aster.proj sources, and returns scoped candidates
+// filtered by the cursor context. Every parse here is best-effort and
+// silent: on any failure the completion degrades to the package exports
+// (or, after a dot, to the union of known type members) instead of
+// printing a diagnostic into the completion output.
+struct CmpCandidate {
+    std::string name;       // English / canonical spelling
+    std::string nameZh;     // Chinese spelling, "" when the symbol has none
+    std::string kind;       // function | struct | enum | class | const | global |
+                            // variable | parameter | field | method | member |
+                            // type | layout | module
+    std::string signature;  // "name(params): Ret", "name: Type", "struct X { ... }"
+    std::string package;    // manifest package for package/member candidates, else ""
+    std::string doc;
+    std::string docEn;
+    std::string source;     // file | project | package | member | builtin
+};
+struct CmpTypeInfo {
+    std::string name;
+    std::string kind;       // struct | enum | class | type (alias)
+    std::string signature;
+    std::vector<CmpCandidate> members;  // fields (kind field), methods (method),
+                                        // enum members (member)
+};
+struct CmpFileData {
+    std::string path;
+    aster_cn::Program prog;
+    bool parsed = false;
+    std::map<std::string, CmpTypeInfo> types;  // by type name
+    std::vector<CmpCandidate> topLevel;        // functions, globals, consts,
+                                              // layouts, type declarations
+    std::map<std::string, std::string> fnReturns;  // top-level fn name -> return type
+};
+
+static bool cmpIsIdentByte(unsigned char c) {
+    return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+           (c >= 'A' && c <= 'Z') || c >= 0x80;
+}
+static size_t cmpUtf8Len(unsigned char c) {
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+static size_t cmpCodePointCount(const std::string& s) {
+    size_t n = 0;
+    for (size_t i = 0; i < s.size(); i += cmpUtf8Len((unsigned char)s[i])) ++n;
+    return n;
+}
+// Byte offset of the (1-based) code-point column in one line, clamped to
+// the line end so a cursor past EOL still completes at the line end.
+static size_t cmpByteOffsetForCol(const std::string& line, long col) {
+    if (col <= 1) return 0;
+    size_t byte = 0, cp = 1;
+    while (byte < line.size() && cp < (size_t)col) {
+        byte += cmpUtf8Len((unsigned char)line[byte]);
+        ++cp;
+    }
+    return byte;
+}
+static std::string cmpDisplayName(const CmpCandidate& c, bool zh) {
+    if (zh && !c.nameZh.empty()) return c.nameZh;
+    return c.name;
+}
+static std::string cmpDocFor(const CmpCandidate& c, bool zh) {
+    if (zh) return c.doc.empty() ? c.docEn : c.doc;
+    return c.docEn.empty() ? c.doc : c.docEn;
+}
+static std::string cmpCandidateJson(const CmpCandidate& c) {
+    return std::string("{\"name\": ") + pkgJsonQuote(c.name) +
+           ", \"name_zh\": " + pkgJsonQuote(c.nameZh) +
+           ", \"kind\": " + pkgJsonQuote(c.kind) +
+           ", \"signature\": " + pkgJsonQuote(c.signature) +
+           ", \"package\": " + pkgJsonQuote(c.package) +
+           ", \"doc\": " + pkgJsonQuote(c.doc) +
+           ", \"doc_en\": " + pkgJsonQuote(c.docEn) +
+           ", \"source\": " + pkgJsonQuote(c.source) + "}";
+}
+
+// Parse source text in place (never from disk): the file directive wins,
+// then the project default, then zh; a file parses in exactly one of the
+// two languages, so retry once in the other like pkgParseSource does.
+static bool cmpParseText(const std::string& src, const std::string& path,
+                         const aster_cn::ProjectLanguageConfig& cfg,
+                         aster_cn::Program& out) {
+    aster_cn::Language lang = aster_cn::Language::Zh;
+    try {
+        lang = aster_cn::selectLanguage(src, false, aster_cn::Language::Zh, cfg, path);
+    } catch (...) {
+        lang = aster_cn::Language::Zh;
+    }
+    try {
+        out = aster_cn::parseProgram(src, lang, path);
+        return true;
+    } catch (...) {
+        try {
+            out = aster_cn::parseProgram(
+                src, lang == aster_cn::Language::Zh ? aster_cn::Language::En
+                                                    : aster_cn::Language::Zh,
+                path);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+}
+static std::string cmpFieldSignature(const aster_cn::StructFieldDeclaration& f) {
+    std::string t = f.typeName;
+    for (const auto& d : f.arrayDimensions) t += "[" + d + "]";
+    return f.name + ": " + t;
+}
+static std::string cmpInterfaceMethodSignature(const aster_cn::InterfaceMethodSignature& m) {
+    std::string s = m.name + "(";
+    for (size_t i = 0; i < m.parameters.size(); ++i) {
+        if (i) s += ", ";
+        s += m.parameters[i].name + ": " + pkgParamType(m.parameters[i]);
+    }
+    s += ")";
+    if (!m.returnType.empty()) s += ": " + m.returnType;
+    return s;
+}
+// "name: Type" -> Type; "" when the signature carries no type.
+static std::string cmpTypeOfFieldSignature(const std::string& sig) {
+    const size_t colon = sig.find(": ");
+    if (colon == std::string::npos) return std::string();
+    return sig.substr(colon + 2);
+}
+// "name(params): Ret" -> Ret; "" when there is no return type.
+static std::string cmpReturnOfMethodSignature(const std::string& sig) {
+    const size_t close = sig.rfind("): ");
+    if (close == std::string::npos) return std::string();
+    return sig.substr(close + 3);
+}
+// Manifest struct signatures carry their fields ("struct Buf { data: ptr,
+// count: i32, cap: i32 }"), so stdlib struct members need no source read.
+static void cmpStructFieldsFromSignature(const std::string& sig,
+                                         std::vector<CmpCandidate>& members) {
+    const size_t open = sig.find('{');
+    const size_t close = sig.rfind('}');
+    if (open == std::string::npos || close == std::string::npos || close <= open) return;
+    const std::string inner = sig.substr(open + 1, close - open - 1);
+    size_t pos = 0;
+    while (pos < inner.size()) {
+        const size_t comma = inner.find(',', pos);
+        std::string field = trimWs(inner.substr(pos, comma == std::string::npos
+                                                           ? std::string::npos
+                                                           : comma - pos));
+        const size_t colon = field.find(':');
+        if (!field.empty() && colon != std::string::npos) {
+            const std::string fname = trimWs(field.substr(0, colon));
+            const std::string ftype = trimWs(field.substr(colon + 1));
+            if (!fname.empty())
+                members.push_back(CmpCandidate{fname, "", "field",
+                                               fname + ": " + ftype, "", "", "", "member"});
+        }
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+}
+static void cmpCollectFile(const aster_cn::Program& prog, const std::string& sourceLabel,
+                           CmpFileData& data) {
+    data.parsed = true;
+    auto addType = [&](const std::string& name, const std::string& kind,
+                       const std::string& sig, std::vector<CmpCandidate> members) {
+        if (name.empty() || data.types.count(name)) return;
+        CmpTypeInfo info;
+        info.name = name;
+        info.kind = kind;
+        info.signature = sig;
+        info.members = std::move(members);
+        data.types[name] = std::move(info);
+        data.topLevel.push_back(
+            CmpCandidate{name, "", kind, sig, "", "", "", sourceLabel});
+    };
+    for (const auto& s : prog.structures) {
+        std::vector<CmpCandidate> members;
+        for (const auto& f : s.fields)
+            members.push_back(CmpCandidate{f.name, "", "field", cmpFieldSignature(f),
+                                           "", "", "", sourceLabel});
+        addType(s.name, "struct", pkgStructSignature(s), std::move(members));
+    }
+    for (const auto& e : prog.enums) {
+        std::vector<CmpCandidate> members;
+        for (const auto& m : e.members)
+            members.push_back(
+                CmpCandidate{m.name, "", "member", m.name, "", "", "", sourceLabel});
+        addType(e.name, "enum", pkgEnumSignature(e), std::move(members));
+    }
+    for (const auto& c : prog.classes) {
+        std::vector<CmpCandidate> members;
+        for (const auto& f : c.fields)
+            members.push_back(CmpCandidate{f.name, "", "field", cmpFieldSignature(f),
+                                           "", "", "", sourceLabel});
+        for (const auto& m : c.methods) {
+            members.push_back(CmpCandidate{m.name, "", "method", pkgMethodSignature(m),
+                                           "", "", "", sourceLabel});
+            if (!data.fnReturns.count(m.name)) data.fnReturns[m.name] = m.returnType;
+        }
+        addType(c.name, "class", pkgClassSignature(c), std::move(members));
+    }
+    for (const auto& i : prog.interfaceClasses) {
+        std::vector<CmpCandidate> members;
+        for (const auto& m : i.methods)
+            members.push_back(CmpCandidate{m.name, "", "method",
+                                           cmpInterfaceMethodSignature(m), "", "", "",
+                                           sourceLabel});
+        addType(i.name, "class", pkgInterfaceSignature(i), std::move(members));
+    }
+    for (const auto& a : prog.aliases)
+        addType(a.name, "type", "type " + a.name + " = " + a.typeName, {});
+    for (const auto& m : prog.methods) {
+        data.topLevel.push_back(
+            CmpCandidate{m.name, "", "function", pkgMethodSignature(m), "", "", "",
+                         sourceLabel});
+        if (!data.fnReturns.count(m.name)) data.fnReturns[m.name] = m.returnType;
+    }
+    for (const auto& l : prog.layouts) {
+        std::string sig = l.name + "(";
+        for (size_t i = 0; i < l.parameters.size(); ++i) {
+            if (i) sig += ", ";
+            sig += l.parameters[i].name + ": " + pkgParamType(l.parameters[i]);
+        }
+        sig += ")";
+        if (!l.returnType.empty()) sig += ": " + l.returnType;
+        data.topLevel.push_back(
+            CmpCandidate{l.name, "", "layout", sig, "", "", "", sourceLabel});
+        if (!data.fnReturns.count(l.name)) data.fnReturns[l.name] = l.returnType;
+    }
+    for (const auto& g : prog.globals) {
+        const bool isConst = g.kind == "ConstantDeclaration";
+        data.topLevel.push_back(CmpCandidate{g.name, "", isConst ? "const" : "global",
+                                             pkgGlobalSignature(g), "", "", "",
+                                             sourceLabel});
+    }
+}
+static void cmpAddManifestTypes(const PkgManifest& manifest,
+                                std::map<std::string, CmpTypeInfo>& types) {
+    for (const auto& e : manifest.exports) {
+        if (e.kind != "struct" || types.count(e.name)) continue;
+        CmpTypeInfo info;
+        info.name = e.name;
+        info.kind = "struct";
+        info.signature = e.signature;
+        cmpStructFieldsFromSignature(e.signature, info.members);
+        types[e.name] = std::move(info);
+    }
+}
+// The type of a member of a known type: a field's declared type, or a
+// method's return type. "" when the member does not exist there.
+static std::string cmpMemberType(const std::string& typeName, const std::string& member,
+                                 const std::map<std::string, CmpTypeInfo>& types) {
+    const auto it = types.find(typeName);
+    if (it == types.end()) return std::string();
+    for (const auto& m : it->second.members) {
+        if (m.name != member) continue;
+        if (m.kind == "field") return cmpTypeOfFieldSignature(m.signature);
+        if (m.kind == "method") return cmpReturnOfMethodSignature(m.signature);
+        return std::string();
+    }
+    return std::string();
+}
+static std::string cmpInferType(const aster_cn::Expression& expr,
+                                const std::map<std::string, std::string>& scope,
+                                const std::map<std::string, CmpTypeInfo>& types,
+                                const std::map<std::string, std::string>& fnReturns) {
+    if (expr.kind == "Identifier") {
+        const auto it = scope.find(expr.value);
+        if (it != scope.end()) return it->second;
+        return std::string();
+    }
+    if (expr.kind == "StringLiteral") return "string";
+    if (expr.kind == "IntegerLiteral") return "i64";
+    if (expr.kind == "FloatLiteral") return "f64";
+    if (expr.kind == "BoolLiteral" || expr.kind == "TrueLit" || expr.kind == "FalseLit")
+        return "bool";
+    if (expr.kind == "StructLiteral") return expr.value;
+    if (expr.kind == "Call" && !expr.children.empty()) {
+        const aster_cn::Expression& callee = expr.children[0];
+        if (callee.kind == "Identifier") {
+            if (types.count(callee.value)) return callee.value;
+            const auto it = fnReturns.find(callee.value);
+            if (it != fnReturns.end()) return it->second;
+            return std::string();
+        }
+        if (callee.kind == "Member" && callee.children.size() == 2) {
+            const std::string recv =
+                cmpInferType(callee.children[0], scope, types, fnReturns);
+            if (!recv.empty())
+                return cmpMemberType(recv, callee.children[1].value, types);
+        }
+        return std::string();
+    }
+    if (expr.kind == "Member" && expr.children.size() == 2) {
+        const std::string recv = cmpInferType(expr.children[0], scope, types, fnReturns);
+        if (!recv.empty()) return cmpMemberType(recv, expr.children[1].value, types);
+        return std::string();
+    }
+    if (expr.kind == "Index" && !expr.children.empty())
+        return cmpInferType(expr.children[0], scope, types, fnReturns);
+    return std::string();
+}
+static unsigned cmpMaxStmtLine(const std::vector<aster_cn::Statement>& stmts) {
+    unsigned m = 0;
+    for (const auto& s : stmts) {
+        if (s.line > m) m = s.line;
+        if (s.expression.line > m) m = s.expression.line;
+        const unsigned b = cmpMaxStmtLine(s.body);
+        if (b > m) m = b;
+        const unsigned e = cmpMaxStmtLine(s.elseBody);
+        if (e > m) m = e;
+        for (const auto& br : s.branches) {
+            const unsigned v = cmpMaxStmtLine(br);
+            if (v > m) m = v;
+        }
+    }
+    return m;
+}
+// Walk statements in source order, collecting locals declared strictly
+// before the cursor (same line: strictly before the cursor column) into
+// both the candidate list and the name->type scope map. Loop variables
+// enter scope for their body. Closure bodies are not walked (see DESIGN).
+static void cmpWalkScope(const std::vector<aster_cn::Statement>& stmts, long cursorLine,
+                         long cursorCol,
+                         const std::map<std::string, CmpTypeInfo>& types,
+                         const std::map<std::string, std::string>& fnReturns,
+                         std::map<std::string, std::string>& scope,
+                         std::vector<CmpCandidate>& out) {
+    for (const auto& s : stmts) {
+        const bool before = (long)s.line < cursorLine ||
+                            ((long)s.line == cursorLine && (long)s.column < cursorCol);
+        if (s.kind == "VariableDeclaration" || s.kind == "ConstantDeclaration") {
+            if (before && !s.name.empty() && !scope.count(s.name)) {
+                std::string t = s.typeName;
+                if (t.empty() && s.hasExpression)
+                    t = cmpInferType(s.expression, scope, types, fnReturns);
+                scope[s.name] = t;
+                const bool isConst = s.kind == "ConstantDeclaration";
+                out.push_back(CmpCandidate{s.name, "", isConst ? "const" : "variable",
+                                           t.empty() ? s.name : s.name + ": " + t, "", "",
+                                           "", "file"});
+            }
+            continue;
+        }
+        if (s.kind == "ForEachLoopStatement" || s.kind == "CountLoopStatement" ||
+            s.kind == "EnumLoopStatement") {
+            if (before && !s.name.empty() && !scope.count(s.name)) {
+                scope[s.name] = s.kind == "CountLoopStatement" ? "i32" : std::string();
+                out.push_back(CmpCandidate{s.name, "", "variable", s.name, "", "", "",
+                                           "file"});
+            }
+        }
+        cmpWalkScope(s.body, cursorLine, cursorCol, types, fnReturns, scope, out);
+        cmpWalkScope(s.elseBody, cursorLine, cursorCol, types, fnReturns, scope, out);
+        for (const auto& br : s.branches)
+            cmpWalkScope(br, cursorLine, cursorCol, types, fnReturns, scope, out);
+    }
+}
+// A module spelling as written in source (`文本`, `标准库.文本`,
+// `standard.text`, an import alias target) -> the manifest package id.
+static std::string cmpModulePackage(const std::string& name) {
+    if (name == "标准库.文本" || name == "文本" || name == "standard.text")
+        return "standard.text";
+    if (name == "标准库" || name == "standard") return "standard";
+    return std::string();
+}
+struct CmpReceiver {
+    enum class Kind { Unknown, Module, Type } kind = Kind::Unknown;
+    std::string value;  // package ("standard.text") or type name
+};
+static CmpReceiver cmpResolveChain(const std::vector<std::string>& segments,
+                                   const std::map<std::string, std::string>& scope,
+                                   const std::map<std::string, CmpTypeInfo>& types,
+                                   const std::map<std::string, std::string>& imports) {
+    CmpReceiver out;
+    if (segments.empty()) return out;
+    std::string joined;
+    for (size_t i = 0; i < segments.size(); ++i) {
+        if (i) joined += ".";
+        joined += segments[i];
+    }
+    const std::string modulePkg = cmpModulePackage(joined);
+    if (!modulePkg.empty()) {
+        out.kind = CmpReceiver::Kind::Module;
+        out.value = modulePkg;
+        return out;
+    }
+    if (segments.size() == 1) {
+        const auto imp = imports.find(segments[0]);
+        if (imp != imports.end()) {
+            const std::string pkg = cmpModulePackage(imp->second);
+            if (!pkg.empty()) {
+                out.kind = CmpReceiver::Kind::Module;
+                out.value = pkg;
+                return out;
+            }
+        }
+    }
+    std::string type;
+    const auto var = scope.find(segments[0]);
+    if (var != scope.end()) {
+        type = var->second;
+    } else if (types.count(segments[0])) {
+        type = segments[0];
+    } else {
+        return out;
+    }
+    for (size_t i = 1; i < segments.size(); ++i) {
+        if (type.empty()) return CmpReceiver();
+        type = cmpMemberType(type, segments[i], types);
+    }
+    if (type.empty()) return CmpReceiver();
+    out.kind = CmpReceiver::Kind::Type;
+    out.value = type;
+    return out;
+}
+static std::vector<std::string> cmpSplitDots(const std::string& s) {
+    std::vector<std::string> parts;
+    size_t pos = 0;
+    while (true) {
+        const size_t dot = s.find('.', pos);
+        parts.push_back(s.substr(pos, dot == std::string::npos ? std::string::npos
+                                                               : dot - pos));
+        if (dot == std::string::npos) break;
+        pos = dot + 1;
+    }
+    return parts;
+}
+// Built-in type spellings, both languages; the display name follows
+// --language, the other spelling stays matchable via the prefix filter.
+static std::vector<CmpCandidate> cmpBuiltinTypes(bool zh) {
+    static const char* kPairs[][2] = {
+        {"i8", "字节"}, {"i16", "短整数"}, {"i32", "整数"}, {"i64", "长整数"},
+        {"u8", "u字节"}, {"u16", "u短整数"}, {"u32", "u整数"}, {"u64", "u长整数"},
+        {"f32", "单精度"}, {"f64", "小数"}, {"bool", "逻辑型"}, {"char", "字符"},
+        {"string", "字符串"}, {"string_view", "字符串视图"}, {"ptr", "指针"},
+        {"void", "空"},
+    };
+    std::vector<CmpCandidate> out;
+    for (const auto& p : kPairs)
+        out.push_back(CmpCandidate{p[0], p[1], "type", zh ? p[1] : p[0], "", "", "",
+                                   "builtin"});
+    return out;
+}
+static void cmpDedupeKeepFirst(std::vector<CmpCandidate>& cands) {
+    std::set<std::string> seen;
+    std::vector<CmpCandidate> kept;
+    for (const auto& c : cands) {
+        const std::string key = c.kind + "\n" + c.name + "\n" + c.nameZh;
+        if (!seen.insert(key).second) continue;
+        kept.push_back(c);
+    }
+    cands.swap(kept);
+}
+static std::vector<CmpCandidate> cmpFilterPrefix(std::vector<CmpCandidate> cands,
+                                                 const std::string& prefix, bool zh) {
+    if (prefix.empty()) return cands;
+    std::vector<CmpCandidate> kept;
+    for (const auto& c : cands) {
+        const std::string disp = cmpDisplayName(c, zh);
+        if (disp.rfind(prefix, 0) == 0 || c.name.rfind(prefix, 0) == 0 ||
+            (!c.nameZh.empty() && c.nameZh.rfind(prefix, 0) == 0))
+            kept.push_back(c);
+    }
+    return kept;
+}
+
+// The cursor-mode completion. Returns the process exit code (0; all
+// failures degrade silently to a package-only listing, never to stderr).
+static int cmpCompleteWithCursor(const PkgManifest& manifest, bool zh,
+                                 const std::string& formatOpt,
+                                 const std::string& projectPath,
+                                 const aster_cn::ProjectLanguageConfig& projConfig,
+                                 const std::string& fileArg,
+                                 const std::string& fileSrc, long cursorLine,
+                                 long cursorCol) {
+    // --- Cursor context from the effective source text. ---
+    const std::vector<std::string> lines = pkgSplitLines(fileSrc);
+    long lineNo = cursorLine;
+    if (lineNo < 1) lineNo = 1;
+    if (!lines.empty() && lineNo > (long)lines.size()) lineNo = (long)lines.size();
+    if (lines.empty()) lineNo = 1;
+    std::string lineText = lines.empty() ? std::string() : lines[lineNo - 1];
+    if (!lineText.empty() && lineText.back() == '\r') lineText.pop_back();
+    long colNo = cursorCol;
+    if (colNo < 1) colNo = 1;
+    const long maxCol = (long)cmpCodePointCount(lineText) + 1;
+    if (colNo > maxCol) colNo = maxCol;
+    const std::string prefix =
+        lineText.substr(0, cmpByteOffsetForCol(lineText, colNo));
+    std::string partial;
+    {
+        size_t i = prefix.size();
+        while (i > 0 && cmpIsIdentByte((unsigned char)prefix[i - 1])) {
+            size_t start = i - 1;
+            while (start > 0 && ((unsigned char)prefix[start - 1] & 0xC0) == 0x80) --start;
+            i = start;
+        }
+        partial = prefix.substr(i);
+    }
+    std::string rest = prefix.substr(0, prefix.size() - partial.size());
+    while (!rest.empty() && (rest.back() == ' ' || rest.back() == '\t')) rest.pop_back();
+    const std::string trimmedLine = trimWs(lineText);
+    const bool isImport = trimmedLine.rfind("导入", 0) == 0 ||
+                          trimmedLine.rfind("include", 0) == 0;
+    bool isMember = false;
+    std::string receiverText;
+    std::string callCallee;  // bare identifier callee of a `f().x` receiver
+    if (!rest.empty() && rest.back() == '.') {
+        isMember = true;
+        std::string chain = rest.substr(0, rest.size() - 1);
+        while (!chain.empty() && (chain.back() == ' ' || chain.back() == '\t'))
+            chain.pop_back();
+        size_t i = chain.size();
+        while (i > 0 &&
+               (cmpIsIdentByte((unsigned char)chain[i - 1]) || chain[i - 1] == '.')) {
+            size_t start = i - 1;
+            while (start > 0 && ((unsigned char)chain[start - 1] & 0xC0) == 0x80) --start;
+            i = start;
+        }
+        receiverText = chain.substr(i);
+        // A call result as receiver: `makePoint().x` — record the
+        // callee; its return type is resolved after parsing, below.
+        if (i > 0 && chain[i - 1] == ')') {
+            size_t depth = 0;
+            size_t j = i - 1;
+            size_t openPos = std::string::npos;
+            for (;;) {
+                if (chain[j] == ')') ++depth;
+                if (chain[j] == '(') {
+                    if (--depth == 0) {
+                        openPos = j;
+                        break;
+                    }
+                }
+                if (j == 0) break;
+                --j;
+            }
+            if (openPos != std::string::npos && openPos > 0) {
+                size_t k = openPos;
+                while (k > 0 && cmpIsIdentByte((unsigned char)chain[k - 1])) {
+                    size_t start = k - 1;
+                    while (start > 0 && ((unsigned char)chain[start - 1] & 0xC0) == 0x80)
+                        --start;
+                    k = start;
+                }
+                callCallee = chain.substr(k, openPos - k);
+            }
+        }
+    }
+    // Type position: the stripped prefix ends with ':' (variable /
+// parameter / return-type / base-class annotation, or a type alias RHS
+    // after '='), so only types are offered.
+    bool isType = false;
+    if (!isMember && !isImport) {
+        std::string stripped = rest;
+        while (!stripped.empty() && (stripped.back() == ' ' || stripped.back() == '\t'))
+            stripped.pop_back();
+        if (!stripped.empty() && stripped.back() == ':') isType = true;
+        if (!isType && !stripped.empty() && stripped.back() == '=' &&
+            (trimmedLine.rfind("类型", 0) == 0 || trimmedLine.rfind("type", 0) == 0))
+            isType = true;
+    }
+
+
+    // The text at the cursor is, by construction, incomplete: `返回 p.`
+    // and `变量 n:` do not parse. Repair only the cursor line (line
+    // numbers are preserved) before parsing: cut a member access back to
+    // its receiver, and complete a dangling type annotation with a dummy
+    // type. Text after the cursor on that line is dropped — it is the
+    // identifier/expression still being typed.
+    std::string parseSrc = fileSrc;
+    if (isMember || isType) {
+        std::string repaired = rest;
+        if (isMember) repaired = rest.substr(0, rest.size() - 1);
+        else repaired = rest + (zh ? " 整数" : " i32");
+        std::string rebuilt;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if ((long)i == lineNo - 1) rebuilt += repaired;
+            else rebuilt += lines[i];
+            rebuilt += "\n";
+        }
+        parseSrc = rebuilt;
+    }
+
+    // --- Parse the current file and the project sources. ---
+    std::map<std::string, CmpTypeInfo> types;
+    cmpAddManifestTypes(manifest, types);
+    std::map<std::string, std::string> fnReturns;
+    for (const auto& e : manifest.exports) {
+        if (e.kind == "function" && !fnReturns.count(e.name))
+            fnReturns[e.name] = cmpReturnOfMethodSignature(e.signature);
+    }
+    CmpFileData current;
+    current.path = fileArg;
+    if (cmpParseText(parseSrc, fileArg, projConfig, current.prog))
+        cmpCollectFile(current.prog, "file", current);
+    else
+        current.parsed = false;
+    for (const auto& t : current.types)
+        if (!types.count(t.first)) types[t.first] = t.second;
+    for (const auto& f : current.fnReturns)
+        if (!fnReturns.count(f.first)) fnReturns[f.first] = f.second;
+    std::vector<CmpFileData> others;
+    std::map<std::string, std::string> imports;  // alias/module name -> package
+    if (current.parsed) {
+        for (const auto& im : current.prog.imports) {
+            if (!im.moduleName.empty())
+                imports[im.moduleName] = im.moduleName;
+            if (!im.alias.empty()) imports[im.alias] = im.moduleName;
+        }
+    }
+    std::vector<std::string> projectFiles;
+    if (!projectPath.empty()) {
+        try {
+            const ProjectSpec spec = parseProjectFile(projectPath);
+            const std::string dir = parentDir(projectPath);
+            for (const auto& s : spec.sources) {
+                std::string full = s;
+                if (full.empty() || full[0] != '/') full = dir + "/" + s;
+                projectFiles.push_back(full);
+            }
+        } catch (...) {
+            // A malformed aster.proj must not break completion.
+        }
+    }
+    const std::string currentCanon = cnCanonicalPath(fileArg);
+    for (const auto& full : projectFiles) {
+        if (cnCanonicalPath(full) == currentCanon) continue;
+        if (!fileExists(full)) continue;
+        CmpFileData data;
+        data.path = full;
+        aster_cn::Program prog;
+        if (!cmpParseText(readFile(full), full, projConfig, prog)) continue;
+        cmpCollectFile(prog, "project", data);
+        data.prog = std::move(prog);
+        for (const auto& t : data.types)
+            if (!types.count(t.first)) types[t.first] = t.second;
+        for (const auto& f : data.fnReturns)
+            if (!fnReturns.count(f.first)) fnReturns[f.first] = f.second;
+        others.push_back(std::move(data));
+    }
+
+    // --- Scope at the cursor (current file only for locals). ---
+    std::map<std::string, std::string> scope;
+    std::vector<CmpCandidate> scopeCands;
+    if (current.parsed) {
+        const aster_cn::MethodDeclaration* method = nullptr;
+        const aster_cn::ClassDeclaration* klass = nullptr;
+        auto contains = [&](long startLine, const std::vector<aster_cn::Statement>& body) {
+            if (lineNo < startLine) return false;
+            const unsigned end = cmpMaxStmtLine(body);
+            return end == 0 ? lineNo == startLine : lineNo <= (long)end;
+        };
+        for (const auto& m : current.prog.methods) {
+            if (contains((long)m.line, m.body)) {
+                method = &m;
+                break;
+            }
+        }
+        if (!method) {
+            for (const auto& c : current.prog.classes) {
+                for (const auto& m : c.methods) {
+                    if (contains((long)m.line, m.body)) {
+                        method = &m;
+                        klass = &c;
+                        break;
+                    }
+                }
+                if (method) break;
+            }
+        }
+        if (method) {
+            for (const auto& p : method->parameters) {
+                if (!scope.count(p.name)) {
+                    scope[p.name] = p.typeName;
+                    scopeCands.push_back(CmpCandidate{
+                        p.name, "", "parameter",
+                        p.typeName.empty() ? p.name : p.name + ": " + p.typeName, "", "",
+                        "", "file"});
+                }
+            }
+            if (klass) {
+                for (const auto& f : klass->fields) {
+                    if (!scope.count(f.name)) {
+                        scope[f.name] = f.typeName;
+                        scopeCands.push_back(CmpCandidate{
+                            f.name, "", "field", cmpFieldSignature(f), "", "", "",
+                            "file"});
+                    }
+                }
+            }
+            cmpWalkScope(method->body, lineNo, colNo, types, fnReturns, scope,
+                         scopeCands);
+        }
+        for (const auto& g : current.prog.globals) {
+            if (g.name.empty() || scope.count(g.name)) continue;
+            scope[g.name] = g.typeName;
+            scopeCands.push_back(CmpCandidate{
+                g.name, "", g.kind == "ConstantDeclaration" ? "const" : "global",
+                pkgGlobalSignature(g), "", "", "", "file"});
+        }
+    }
+    // Receiver resolution needs the full visible scope: locals and params
+    // above, plus every file's globals (a global from another project file
+    // can be a member receiver too).
+    std::map<std::string, std::string> fullScope = scope;
+    for (const auto& o : others) {
+        for (const auto& g : o.prog.globals)
+            if (!fullScope.count(g.name)) fullScope[g.name] = g.typeName;
+    }
+    CmpReceiver receiver;
+    if (isMember) {
+        if (!callCallee.empty()) {
+            const auto it = fnReturns.find(callCallee);
+            if (it != fnReturns.end() && !it->second.empty() &&
+                types.count(it->second)) {
+                receiver.kind = CmpReceiver::Kind::Type;
+                receiver.value = it->second;
+            }
+        } else if (!receiverText.empty()) {
+            receiver = cmpResolveChain(cmpSplitDots(receiverText), fullScope, types,
+                                       imports);
+        }
+    }
+
+    // --- Assemble candidates by context. ---
+    std::vector<CmpCandidate> cands;
+    if (isMember) {
+        if (receiver.kind == CmpReceiver::Kind::Module) {
+            for (const auto& e : manifest.exports) {
+                if (e.package != receiver.value) continue;
+                cands.push_back(CmpCandidate{e.name, e.nameZh, e.kind, e.signature,
+                                             e.package, e.doc, e.docEn, "member"});
+            }
+        } else if (receiver.kind == CmpReceiver::Kind::Type) {
+            const auto it = types.find(receiver.value);
+            if (it != types.end()) {
+                for (auto m : it->second.members) {
+                    m.source = "member";
+                    cands.push_back(std::move(m));
+                }
+            }
+        } else {
+            // Unknown receiver: every known member, deduplicated. Noisy
+            // but honest — the alternative (nothing) hides real members.
+            for (const auto& t : types)
+                for (auto m : t.second.members) {
+                    m.source = "member";
+                    cands.push_back(std::move(m));
+                }
+        }
+    } else if (isImport) {
+        cands.push_back(
+            CmpCandidate{"standard", "标准库", "module", "standard", "standard", "",
+                         "", "package"});
+        cands.push_back(
+            CmpCandidate{"text", "文本", "module", "standard.text", "standard.text",
+                         "", "", "package"});
+    } else if (isType) {
+        for (const auto& t : types) {
+            if (t.second.kind == "struct" || t.second.kind == "enum" ||
+                t.second.kind == "class" || t.second.kind == "type")
+                cands.push_back(CmpCandidate{t.second.name, "", t.second.kind,
+                                             t.second.signature, "", "", "", ""});
+        }
+        for (const auto& e : manifest.exports) {
+            if (e.kind != "struct") continue;
+            if (types.count(e.name)) continue;
+            cands.push_back(CmpCandidate{e.name, e.nameZh, e.kind, e.signature,
+                                         e.package, e.doc, e.docEn, "package"});
+        }
+        for (auto b : cmpBuiltinTypes(zh)) cands.push_back(std::move(b));
+        // The types map lost each type's origin; restore it: current file,
+        // then another project file, then a manifest-only struct.
+        for (auto& c : cands) {
+            if (!c.source.empty()) continue;
+            if (current.types.count(c.name)) {
+                c.source = "file";
+                continue;
+            }
+            bool inProject = false;
+            for (const auto& o : others)
+                if (o.types.count(c.name)) inProject = true;
+            c.source = inProject ? "project" : "package";
+        }
+    } else {
+        // Expression position: everything except type names.
+        for (const auto& c : scopeCands) cands.push_back(c);
+        for (const auto& c : current.topLevel) {
+            if (c.kind == "struct" || c.kind == "enum" || c.kind == "class" ||
+                c.kind == "type")
+                continue;
+            cands.push_back(c);
+        }
+        for (const auto& o : others) {
+            for (const auto& c : o.topLevel) {
+                if (c.kind == "struct" || c.kind == "enum" || c.kind == "class" ||
+                    c.kind == "type")
+                    continue;
+                cands.push_back(c);
+            }
+        }
+        for (const auto& e : manifest.exports) {
+            if (e.kind == "struct") continue;
+            cands.push_back(CmpCandidate{e.name, e.nameZh, e.kind, e.signature,
+                                         e.package, e.doc, e.docEn, "package"});
+        }
+    }
+    cmpDedupeKeepFirst(cands);
+    cands = cmpFilterPrefix(std::move(cands), partial, zh);
+    if (formatOpt == "json") {
+        std::string out = "[\n";
+        for (size_t i = 0; i < cands.size(); ++i) {
+            if (i) out += ",\n";
+            out += "  " + cmpCandidateJson(cands[i]);
+        }
+        out += "\n]\n";
+        std::cout << out;
+    } else {
+        for (const auto& c : cands) {
+            std::string flat;
+            for (const char ch : cmpDocFor(c, zh)) {
+                if (ch == '\n' || ch == '\t') flat += ' ';
+                else if (ch != '\r') flat += ch;
+            }
+            std::cout << cmpDisplayName(c, zh) << "\t" << c.kind << "\t" << c.signature
+                      << "\t" << flat << "\t" << c.source << "\n";
+        }
+    }
+    return 0;
+}
 int main(int argc,char**argv){
     const std::string cmd=canonicalCliCommand(argc>1?argv[1]:"");
     std::string output,soname;std::vector<std::string> needed,sources;bool pic=false,haveOutput=false,haveSoname=false,boundsCheck=false,debugLine=false,compactFrames=false,gcSections=false,stripSymtab=false,verbose=false;
@@ -30927,9 +31764,10 @@ int main(int argc,char**argv){
         }
         if(cmd=="complete"){
             std::string languageOpt, formatOpt="text", packageArg, fileArg, projectOpt;
-            bool hasLanguageOpt=false, hasProjectOpt=false;
+            std::string cursorOpt;
+            bool hasLanguageOpt=false, hasProjectOpt=false, hasCursor=false, hasStdin=false;
             auto usageError=[&](){
-                std::cerr<<"aster complete: usage: aster complete [--language zh|en] [--format json|text] [--project DIR] <package-dir|manifest.json> [file.ast]\n";
+                std::cerr<<"aster complete: usage: aster complete [--language zh|en] [--format json|text] [--project DIR] [--cursor LINE:COL] [--stdin] <package-dir|manifest.json> [file.ast]\n";
                 return 2;
             };
             for(int i=2;i<argc;++i){
@@ -30941,12 +31779,27 @@ int main(int argc,char**argv){
                 else if(a.rfind("--format=",0)==0)formatOpt=a.substr(9);
                 else if(a=="--project"){if(i+1>=argc)return usageError();projectOpt=argv[++i];hasProjectOpt=true;}
                 else if(a.rfind("--project=",0)==0){projectOpt=a.substr(10);hasProjectOpt=true;}
+                else if(a=="--cursor"){if(i+1>=argc)return usageError();cursorOpt=argv[++i];hasCursor=true;}
+                else if(a.rfind("--cursor=",0)==0){cursorOpt=a.substr(9);hasCursor=true;}
+                else if(a=="--stdin"){hasStdin=true;}
                 else if(!a.empty()&&a[0]=='-')return usageError();
                 else if(packageArg.empty())packageArg=a;
                 else if(fileArg.empty())fileArg=a;
                 else return usageError();
             }
             if(packageArg.empty())return usageError();
+            if(hasStdin&&!hasCursor)return usageError();
+            if(hasCursor&&fileArg.empty())return usageError();
+            long cursorLine=0, cursorCol=0;
+            if(hasCursor){
+                const size_t colon=cursorOpt.find(':');
+                if(colon==std::string::npos)return usageError();
+                char* end=nullptr;
+                cursorLine=std::strtol(cursorOpt.substr(0,colon).c_str(),&end,10);
+                if(!end||*end||cursorLine<1)return usageError();
+                cursorCol=std::strtol(cursorOpt.substr(colon+1).c_str(),&end,10);
+                if(!end||*end||cursorCol<1)return usageError();
+            }
             if(hasLanguageOpt&&(languageOpt!="zh"&&languageOpt!="en"))return usageError();
             if(formatOpt!="json"&&formatOpt!="text")return usageError();
             // --project names the project directory whose aster.proj
@@ -30991,10 +31844,17 @@ int main(int argc,char**argv){
             aster_cn::ProjectLanguageConfig projConfig;
             if(!projectPath.empty())projConfig=aster_cn::readProjectLanguage(projectPath);
             aster_cn::Language language=aster_cn::Language::Zh;
+            // --stdin carries the editor's unsaved text for this file; it
+            // is parsed in place and never written back to disk. It is
+            // read once, up front, so the cursor path below and the
+            // language chain share the same effective source.
+            std::string stdinText;
+            if(hasStdin)stdinText=std::string(std::istreambuf_iterator<char>(std::cin),
+                                               std::istreambuf_iterator<char>());
+            const std::string fileSrc=hasStdin?stdinText:(!fileArg.empty()?readFile(fileArg):std::string());
             if(hasLanguageOpt){
                 language=languageOpt=="en"?aster_cn::Language::En:aster_cn::Language::Zh;
             }else if(!fileArg.empty()){
-                const std::string fileSrc=readFile(fileArg);
                 language=aster_cn::selectLanguage(fileSrc,false,aster_cn::Language::Zh,projConfig,fileArg);
             }else{
                 // No file and no flag: the project default, if any, via
@@ -31002,12 +31862,13 @@ int main(int argc,char**argv){
                 // the project default and the allowed check apply).
                 language=aster_cn::selectLanguage(std::string(),false,aster_cn::Language::Zh,projConfig);
             }
+            if(hasCursor)
+                return cmpCompleteWithCursor(manifest,language==aster_cn::Language::Zh,
+                                             formatOpt,projectPath,projConfig,fileArg,
+                                             fileSrc,cursorLine,cursorCol);
             const bool zh=language==aster_cn::Language::Zh;
             std::vector<const PkgExport*> shown;
-            for(const auto& e:manifest.exports){
-                if(zh&&e.nameZh.empty())continue;
-                shown.push_back(&e);
-            }
+            for(const auto& e:manifest.exports)shown.push_back(&e);
             if(formatOpt=="json"){
                 std::string out="[\n";
                 for(size_t i=0;i<shown.size();++i){
@@ -31031,7 +31892,7 @@ int main(int argc,char**argv){
                         if(c=='\n'||c=='\t')flat+=' ';
                         else if(c!='\r')flat+=c;
                     }
-                    std::cout<<(zh?e->nameZh:e->name)<<"\t"<<e->kind<<"\t"<<e->signature<<"\t"<<flat<<"\n";
+                    std::cout<<(zh&&!e->nameZh.empty()?e->nameZh:e->name)<<"\t"<<e->kind<<"\t"<<e->signature<<"\t"<<flat<<"\n";
                 }
             }
             return 0;

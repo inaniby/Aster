@@ -2,8 +2,10 @@
 # Package format checks (stdlib §11): `aster pack` builds the standard
 # library package (manifest + canonical sources + prebuilt std.o),
 # `aster pack --check` fails when the sources and the manifest disagree,
-# `aster complete` reads the manifest (not the sources) filtered by the
-# file's language, and aster.proj `[package]` declarations are version
+# `aster complete` reads the manifest (not the sources); the file's
+# language picks the display name (D-ZH: zh lists every export, showing the
+# Chinese name when one exists and the English name otherwise — English-only
+# exports are never hidden), and aster.proj `[package]` declarations are version
 # checked by build/test/build-cn-obj before any import resolves.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -250,7 +252,7 @@ fi
 grep -q "package 'standard': package contains unexpected file \"cn/extra.ast\"" \
     "$TMP/proj-extra2/build.log" || { cat "$TMP/proj-extra2/build.log" >&2; fail 'extra-file-under-cn build diagnostic is wrong'; }
 
-echo '[3/10] complete filters by the file language'
+echo '[3/10] complete picks the display name by the file language (D-ZH)'
 printf '// aster:language=zh\n' > "$TMP/file-zh.ast"
 printf '// aster:language=en\n' > "$TMP/file-en.ast"
 "$ASTER_BIN" complete "$TMP/pkg2" "$TMP/file-zh.ast" > "$TMP/complete-zh.txt" 2>&1
@@ -258,8 +260,11 @@ grep -q '^长度' "$TMP/complete-zh.txt" || fail 'zh completion is missing 长�
 grep -q '^拼接' "$TMP/complete-zh.txt" || fail 'zh completion is missing 拼接'
 grep -q '^输出' "$TMP/complete-zh.txt" || fail 'zh completion is missing 输出'
 grep -q '^输出错误' "$TMP/complete-zh.txt" || fail 'zh completion is missing 输出错误'
-if grep -q '^length' "$TMP/complete-zh.txt"; then fail 'zh completion leaked length'; fi
-if grep -q '^memcpy' "$TMP/complete-zh.txt"; then fail 'zh completion leaked an English-only routine'; fi
+# D-ZH: zh lists every export — an English-only routine is shown under
+# its English name, not hidden; an export with a Chinese name is shown
+# under that name (so `length` the row is absent, it is the 长度 row).
+grep -q '^memcpy' "$TMP/complete-zh.txt" || fail 'zh completion hid English-only memcpy'
+[ "$(grep -c . "$TMP/complete-zh.txt")" = '143' ] || fail "zh completion listed $(grep -c . "$TMP/complete-zh.txt") rows, expected 143"
 "$ASTER_BIN" complete "$TMP/pkg2" "$TMP/file-en.ast" > "$TMP/complete-en.txt" 2>&1
 grep -q '^length' "$TMP/complete-en.txt" || fail 'en completion is missing length'
 grep -q '^memcpy' "$TMP/complete-en.txt" || fail 'en completion is missing memcpy'
@@ -269,18 +274,22 @@ if grep -q '^长度' "$TMP/complete-en.txt"; then fail 'en completion leaked 长
 # file-wins reading was revoked by the complete-takes-aster.proj decision.
 "$ASTER_BIN" complete --language zh "$TMP/pkg2" > "$TMP/complete-defzh.txt" 2>&1
 grep -q '^长度' "$TMP/complete-defzh.txt" || fail '--language zh did not default to zh'
-if grep -q '^length' "$TMP/complete-defzh.txt"; then fail '--language zh leaked length'; fi
+grep -q '^memcpy' "$TMP/complete-defzh.txt" || fail '--language zh hid English-only memcpy'
 "$ASTER_BIN" complete --language zh "$TMP/pkg2" "$TMP/file-en.ast" > "$TMP/complete-flagwins.txt" 2>&1
 grep -q '^长度' "$TMP/complete-flagwins.txt" || fail '--language zh did not win over an en file directive'
-if grep -q '^length' "$TMP/complete-flagwins.txt"; then fail '--language zh leaked length over an en file'; fi
+grep -q '^memcpy' "$TMP/complete-flagwins.txt" || fail '--language zh hid memcpy over an en file'
 # JSON output carries the manifest export shape; a manifest.json path works too.
 "$ASTER_BIN" complete --language zh --format json "$TMP/pkg2/manifest.json" > "$TMP/complete-zh.json" 2>&1
 python3 - "$TMP/complete-zh.json" <<'PY' || fail 'complete --format json is wrong'
 import json, sys
 entries = json.load(open(sys.argv[1]))
-assert [(e["name"], e["name_zh"]) for e in entries] == [
+# D-ZH: zh JSON lists all 143 exports (it used to list only the 6 with a
+# Chinese name); the bilingual pairs keep both spellings.
+assert len(entries) == 143, len(entries)
+assert sorted((e["name"], e["name_zh"]) for e in entries if e["name_zh"]) == sorted([
     ("length", "长度"), ("concat", "拼接"), ("equals", "相等"), ("less", "更小"),
-    ("print", "输出"), ("eprint", "输出错误")], entries
+    ("print", "输出"), ("eprint", "输出错误")]), entries
+assert [e["name_zh"] for e in entries if e["name"] == "memcpy"] == [""], entries
 PY
 "$ASTER_BIN" complete --language en --format json "$TMP/pkg2" > "$TMP/complete-en.json" 2>&1
 python3 -c "import json,sys; assert len(json.load(open(sys.argv[1]))) == 143" "$TMP/complete-en.json" \
