@@ -13996,7 +13996,7 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
     "       aster build-so  [--soname NAME] [--needed LIB] <source.ast|input.o> [more...] -o <output.so>\n"
 "       aster new [--apk] <dir>              scaffold a program or APK project\n"
 "       aster add <source.ast>              append a source to aster.proj\n"
-"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [--verbose] [--jobs N] [--no-gc-sections] [--no-strip] [--gc-keep NAME[,NAME...]] [--daemon] [--no-daemon] [--socket-dir DIR] [--decl-invalidation] [--no-decl-invalidation] [-- args]\n"
+"       aster build|run [-g] [--bounds-check] [--module-dir DIR] [--page-size N] [-o OUT] [--no-cache] [--timeout SECONDS] [--max-nesting-depth N] [--max-lowering-depth N] [--verbose] [--jobs N] [--no-gc-sections] [--no-strip] [--gc-keep NAME[,NAME...]] [--daemon] [--no-daemon] [--socket-dir DIR] [--decl-invalidation] [--no-decl-invalidation] [--registry-sharing] [--no-registry-sharing] [-- args]\n"
 "       aster serve [--project DIR] [--socket-dir DIR]   start the build daemon for one project\n"
 "       aster serve stop|status [--project DIR] [--socket-dir DIR]\n"
 "       aster diagnose [--project DIR] [--socket-dir DIR] [--format json|text] [--decl-invalidation] [--no-decl-invalidation]\n"
@@ -14101,6 +14101,12 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "                 to the file-hash path. The index lives in\n"
 "                 build/.cache/decl-index.json and is never a correctness\n"
 "                 input — any doubt falls back to the file-hash path.\n"
+"  --registry-sharing  reuse one built declaration registry across the\n"
+"                 serial build's TUs instead of rebuilding it per TU\n"
+"                 (experimental, opt-in, off by default). Serial cold\n"
+"                 builds only (--jobs 1): parallel and daemon builds\n"
+"                 ignore it. --no-registry-sharing always wins and is\n"
+"                 the permanent escape hatch back to per-TU registration.\n"
 "  --timeout SECONDS  how long `aster run`/`aster test` wait for the child before\n"
 "                 killing it (SIGTERM, then SIGKILL after 5s): default 60, 0 disables;\n"
 "                 --timeout wins over $ASTER_RUN_TIMEOUT.\n"
@@ -26361,167 +26367,270 @@ static void cnPreprocessMergedProgram(aster_cn::Program& program) {
     cnValidateStringLiteralsProgram(program);
 }
 
-// Defaults reproduce the merged behaviour exactly, so every other existing
-// caller is unaffected.
-static std::vector<Function> cnProgramToAster(const aster_cn::Program& programInput,
-                                              std::vector<Global>& globals,
-                                              bool countCheck,
-                                              const std::string& onlySource = "",
-                                              bool requireMain = true,
-                                              const std::set<std::string>* forceConstructedClasses = nullptr,
-                                              uint64_t poolSalt = 0,
-                                              const std::map<std::string, std::string>* packageFileOwners = nullptr,
-                                              const std::map<std::string, std::string>* fileImportOwners = nullptr,
-                                              uint64_t helperSalt = 0,
-                                              bool skipPreprocess = false) {
-    // D-2a: desugar `布局`/`事件` into synthetic methods before anything
-    // else reads the program (a no-op walk when the program has none,
-    // except that a stray `键()` is still refused, with the name).
-    // Step 1: the build/test drivers already ran cnPreprocessMergedProgram
-    // once on the merged program (skipPreprocess); build-cn-obj and any
-    // other single-shot caller still do it here.
-    // Step 3 (ms-compile): borrow the program instead of deep-copying it
-    // when the driver already preprocessed it. Audit (2026-11-27): with
-    // skipPreprocess=true the lowering below only READS the program — the
-    // only writers in this function are cnD2aSynthesize and
-    // cnValidateStringLiteralsProgram, both skipped on this path; every
-    // other use is through const refs (all 26 range-fors over program
-    // members are const; the four whole-program callees all take
-    // const Program&; no .body=, std::move(program) or const_cast anywhere
-    // in the function). So the per-TU deep copy (~20 ms) and its
-    // destruction on return (~15 ms) are pure waste here. Single-shot
-    // callers (skipPreprocess=false) still need the owned copy because D2a
-    // rewrites the program in place — hence the owned copy only exists on
-    // that path. This is why step 3 is NOT the shared-pointer/CoW refactor
-    // the brief anticipated: step 1 already removed the only per-TU
-    // mutation, so borrowing is exact. The shared program outlives every
-    // TU lowering: the build/test drivers hold *ctx.program for the whole
-    // build, and fork workers get their own copy-on-write snapshot, so
-    // serial and parallel modes stay identical.
-    std::unique_ptr<aster_cn::Program> ownedProgram;
-    if (!skipPreprocess) ownedProgram = std::make_unique<aster_cn::Program>(programInput);
-    const aster_cn::Program& program = ownedProgram ? *ownedProgram : programInput;
-    if (!skipPreprocess) cnD2aSynthesize(*ownedProgram);
-    std::vector<Function> functions;
-    // B-P4: a previous TU (per-source build) or test program (one process
-    // lowers several) may have left another file's name behind; lowering
-    // sets it per declaration below, so start clean.
+static bool cnGlobalDeclarationsMatch(const aster_cn::Statement& first,
+                                       const aster_cn::Statement& second) {
+    if (!first.isExternal && !second.isExternal) return false;
+    if (first.kind != second.kind) return false;
+    if (first.typeName.empty() || second.typeName.empty()) return false;
+    if (cnBackendType(first.typeName, first.line, first.column) !=
+        cnBackendType(second.typeName, second.line, second.column)) return false;
+    FuncSig firstFunc;
+    FuncSig secondFunc;
+    const bool firstIsFunc = cnFunctionTypeSignature(first.typeName, firstFunc,
+                                                     first.line, first.column);
+    const bool secondIsFunc = cnFunctionTypeSignature(second.typeName, secondFunc,
+                                                      second.line, second.column);
+    if (firstIsFunc != secondIsFunc) return false;
+    if (firstIsFunc) {
+        if (firstFunc.params.size() != secondFunc.params.size() ||
+            !(firstFunc.ret == secondFunc.ret)) return false;
+        for (size_t index = 0; index < firstFunc.params.size(); ++index)
+            if (!(firstFunc.params[index] == secondFunc.params[index])) return false;
+    }
+    if (first.arrayDimensions.size() != second.arrayDimensions.size()) return false;
+    for (size_t index = 0; index < first.arrayDimensions.size(); ++index) {
+        Expr::LitSuffix firstSuffix = Expr::LSNone;
+        Expr::LitSuffix secondSuffix = Expr::LSNone;
+        if (cnIntegerValue(first.arrayDimensions[index], firstSuffix,
+                           first.line, first.column) !=
+            cnIntegerValue(second.arrayDimensions[index], secondSuffix,
+                           second.line, second.column)) return false;
+    }
+    return true;
+}
+
+// Registry-sharing step 1: the per-TU registration block of
+// cnProgramToAster, extracted verbatim as an independent function.
+// Scope (decision doc section 1.3, steps 3-13): closure-table clear +
+// reserved-name fill, the 15 registry-table clears, cnRegisterEnums /
+// cnRegisterStructures, the alias loop, the global loop
+// (firstGlobalByName), the method loop (declaredMethodNames), the
+// interface-class loop, the class-method loop, the interface-implementation
+// check loops, the class/interface vtable loops, and the seed loop
+// (globalBindings second fill + class static fields). Step 1 (the entry
+// clears of g_diagFile/g_diagLines and the legacy g_structs/g_enums/
+// g_typeAlias tables) stays in cnProgramToAster at its original position:
+// it precedes the cnOwn* index construction, which is explicitly out of
+// scope for this step, and moving it past that construction would change
+// execution order -- the one thing this step must prove unchanged.
+// The block is called once per TU from exactly the point it used to occupy.
+// No sharing, no key, no flag, no behaviour change: the same loops in the
+// same order with the same checks; only the state handover is explicit.
+// Handover (all by reference, so writes land exactly where they did):
+//   - program: read-only merged program (already preprocessed by the driver
+//     or, for single-shot callers, preprocessed inside cnProgramToAster).
+//   - globals / functions: output vectors; the vtable loops push thunk
+//     functions and table globals into them, as before.
+//   - names: the TU-wide name set; the vtable loops insert table/thunk
+//     names, and the emit section (C-1/B-P3) reads and extends it after.
+//   - methodReturns: filled by the method loop and the class-method loop;
+//     the emit section reads it for every lowering context.
+//   - globalBindings: filled by the vtable loops and the seed loop; the
+//     emit section reads it for every lowering context.
+//   - stringPool: the thunk lowering contexts point at it.
+//   - cnOwnsSource: the caller's ownership predicate (a capturing lambda);
+//     passed as a template parameter so the call stays a direct call with
+//     no std::function indirection. It is also used by the emit section,
+//     so it stays defined in cnProgramToAster.
+// Wholly inside the block (not visible to the caller afterwards, as
+// before): internedSourceFiles/internSourceFile, firstGlobalByName,
+// declaredMethodNames. One exception, found by the compiler, not by
+// inspection: cnGlobalDeclarationsMatch was a captureless lambda defined
+// inside the block, but the emit section's B-P3 loop calls it too, so it
+// is hoisted to a file-scope static function just above (identical body,
+// identical call sites). Not touched: cnOwn* indexes,
+// closure tables (per-TU, excluded), stringPool salt, globalIndices,
+// methodNames (first filled by the C-1 loop after this block), countCheck
+// (only used by the field-initializer loop, which stays in the caller).
+// Registry-sharing step 2 splits the registry block into
+// cnBuildRegistryFront (the program-pure tables, built once per program
+// key: signatures, top-level tables, structures, enums, aliases, class
+// and interface tables, the three check passes, and the vtable table
+// structs) and cnBuildRegistryBack (the per-TU remainder: the vtable
+// thunk passes and the global-storage seed loop); cnBuildRegistry below
+// is the unchanged full per-TU wrapper (front + back, no sharing). The
+// split itself is pure code motion -- the two bodies concatenate back to
+// the step-1 body modulo the moved clears -- and the entry clears (step
+// 1 of section 1.3) stay in cnProgramToAster, where they are skipped on
+// a front hit.
+// Registry-sharing step 2 (full, serial-first, opt-in): the shared front
+// built once per program key. There is no undo log: the per-TU back
+// writes no shared table the front must restore -- thunk signatures are
+// re-inserted identically every TU, and the vtable structs are built by
+// the front's table pass. The back's only per-TU tables (closure tables)
+// are its own.
+struct CnSharedRegistry {
+    bool built = false;
+    std::string key;  // registryKey of the program the front was built from
+};
+static CnSharedRegistry g_cnSharedRegistry;
+
+// The entry clears of cnProgramToAster (step 1, section 1.3 step 1):
+// the per-program backend type registry. A bilingual project test can
+// lower several independent test programs in one compiler process, so
+// keeping entries from the previous program would make the built-in
+// metadata structures look like duplicate user declarations. Skipped on
+// a front hit, run before a front build and before the R6 fallback's
+// full rebuild.
+static void cnClearRegistryEntryTables() {
     g_diagFile.clear();
     g_diagLines.clear();
-    // A bilingual project test can lower several independent test programs in
-    // one compiler process.  These legacy tables are the per-program backend
-    // type registry; keeping entries from the previous test makes the built-in
-    // metadata structures look like duplicate user declarations.
     g_structs.clear();
     g_structIndex.clear();
     g_enums.clear();
     g_enumIndex.clear();
     g_enumConsts.clear();
     g_typeAlias.clear();
-    // Validate literal contents before type checking or lowering.  This keeps
-    // malformed string bytes from being hidden by an unrelated surrounding
-    // expression error (for example `0 + "bad\\0"`).
-    // Step 1: skipped when the driver already validated the merged program.
-    if (!skipPreprocess) cnValidateStringLiteralsProgram(program);
-    std::set<std::string> names;
-    std::set<std::string> methodNames;
-    std::map<std::string, Ty> methodReturns;
-    std::map<std::string, CnBinding> globalBindings;
-    std::map<std::string, size_t> globalIndices;
-    CnStringPool stringPool;
-    stringPool.globals = &globals;
-    stringPool.functions = &functions;
-    // Per-source runs restart the generated-name counters from a TU-specific
-    // offset (merged runs keep 0, i.e. today's numbering). Names minted
-    // here are only ever referenced by the TU that minted them, except the
-    // string pool, which the linker remaps per input anyway.
-    stringPool.next = poolSalt;
-    // LIB8: only the helper counters take the helper salt (see the
-    // function header); the string pool, enum tables and embed blobs
-    // keep poolSalt, so their numbering stays spelling-independent.
-    const uint64_t cnHelperSalt = helperSalt != 0 ? helperSalt : poolSalt;
-    stringPool.nextClosure = cnHelperSalt;
-    stringPool.nextInterfaceUpcast = cnHelperSalt;
-    stringPool.nextEnumTable = poolSalt;
-    // B-P2: the per-TU counter offset also salts embed symbols, so two
-    // TUs that both embed without a recorded file name still mint
-    // different symbols; the fallback file covers lowering without a
-    // context (its own file is preferred whenever the expression or the
-    // context carries one).
-    stringPool.nextEmbed = poolSalt;
-    stringPool.fallbackSourceFile = program.sourceFile;
-    const bool cnPerSource = !onlySource.empty();
-    // Step 2: memoize ownership per distinct source file. cnOwnsSource is
-    // called once per declaration in every lowering loop; the uncached
-    // version does two map finds plus up to two cnCanonicalPath calls
-    // (filesystem path normalisation) per call. Ownership is a pure
-    // function of the file name and the fixed owner maps, so caching it
-    // per call is exact.
-    std::map<std::string, bool> cnOwnsMemo;
-    auto cnOwnsSource = [&](const std::string& sourceFile) {
-        const auto memo = cnOwnsMemo.find(sourceFile);
-        if (memo != cnOwnsMemo.end()) return memo->second;
-        bool owned = false;
-        if (!cnPerSource) owned = true;
-        else if (sourceFile == onlySource) owned = true;
-        else {
-            bool decided = false;
-            if (packageFileOwners) {
-                const auto ownedIt = packageFileOwners->find(sourceFile);
-                if (ownedIt != packageFileOwners->end()) {
-                    owned = ownedIt->second == onlySource;
-                    decided = true;
-                }
-            }
-            // P1-3: same rule for file imports: an imported file's
-            // declarations are emitted by the listed TU that (transitively)
-            // imports it, so they are emitted exactly once. Keys/values
-            // are canonical paths, so compare canonically against the TU path.
-            if (!decided && fileImportOwners) {
-                const auto ownedImp = fileImportOwners->find(cnCanonicalPath(sourceFile));
-                if (ownedImp != fileImportOwners->end()) {
-                    owned = cnCanonicalPath(ownedImp->second) == cnCanonicalPath(onlySource);
-                    decided = true;
-                }
-            }
-            // A declaration without provenance cannot be attributed to
-            // another TU; emitting it everywhere it is needed is the
-            // fail-loud choice (a duplicate is a link error, a missing
-            // definition is too).
-            if (!decided) owned = sourceFile.empty();
-        }
-        cnOwnsMemo.emplace(sourceFile, owned);
-        return owned;
-    };
-    // Step 2: per-call index over the merged program. Pure-emission loops
-    // iterate only this TU's own declarations, in program order (identical
-    // emission order: the old loops visited in program order and skipped
-    // the rest). Loops that can throw on a FOREIGN declaration (duplicate
-    // checks, field-initializer validation) deliberately keep their
-    // whole-program walk: restricting them would change which TU reports
-    // the error and, in --verbose mode, which "compiled" lines print
-    // before it.
-    std::vector<const aster_cn::MethodDeclaration*> cnOwnMethods;
-    std::vector<const aster_cn::Statement*> cnOwnGlobals;
-    std::vector<const aster_cn::ClassDeclaration*> cnOwnClasses;
-    std::vector<std::pair<const aster_cn::ClassDeclaration*, const aster_cn::MethodDeclaration*>> cnOwnClassMethods;
-    std::map<std::string, const aster_cn::ClassDeclaration*> cnClassByName;
-    for (const auto& method : program.methods)
-        if (cnOwnsSource(method.sourceFile)) cnOwnMethods.push_back(&method);
-    for (const auto& declaration : program.globals)
-        if (cnOwnsSource(declaration.sourceFile)) cnOwnGlobals.push_back(&declaration);
-    for (const auto& declaration : program.classes) {
-        cnClassByName.emplace(declaration.name, &declaration);
-        if (cnOwnsSource(declaration.sourceFile)) cnOwnClasses.push_back(&declaration);
-        for (const auto& method : declaration.methods)
-            if (cnOwnsSource(method.sourceFile)) cnOwnClassMethods.emplace_back(&declaration, &method);
+}
+
+// Registry-sharing step 2 (full): the effective (most-derived,
+// non-static, non-constructor) methods of a class, in vtable slot order:
+// the class chain from the root base down, each method overriding the
+// same-named one from a less-derived class. Shared by the vtable table
+// pass (front) and the thunk pass (per TU): both must see the same slot
+// order, so the computation lives in exactly one place. The pointers
+// point into g_cnClassMethods, whose nodes are stable once the front is
+// built (and, in the full per-TU path, for the rest of this call).
+static std::vector<std::pair<std::string, const CnClassMethodInfo*>> cnClassVtableEffectiveMethods(
+    int classSid) {
+    std::vector<int> classChain;
+    for (int current = classSid;;) {
+        classChain.push_back(current);
+        const auto base = g_cnClassBase.find(current);
+        if (base == g_cnClassBase.end()) break;
+        current = base->second;
     }
-    bool hasMain = false;
-    functions.reserve(program.methods.size() + 8);
-    g_cnClosureTypes.clear();
-    g_cnClosureTypesBySignature.clear();
+    std::reverse(classChain.begin(), classChain.end());
+    std::vector<std::pair<std::string, const CnClassMethodInfo*>> effective;
+    for (const int current : classChain) {
+        const auto methods = g_cnClassMethods.find(current);
+        if (methods != g_cnClassMethods.end()) {
+            for (const auto& entry : methods->second) {
+                if (entry.second.isStatic || entry.second.isConstructor) continue;
+                const auto existing = std::find_if(effective.begin(), effective.end(),
+                    [&](const auto& candidate) { return candidate.first == entry.first; });
+                if (existing == effective.end())
+                    effective.emplace_back(entry.first, &entry.second);
+                else
+                    existing->second = &entry.second;
+            }
+        }
+    }
+    return effective;
+}
+
+// Registry-sharing step 2 (full): the SHARED TABLE HALVES of the two
+// vtable loops (decision doc section 1.3 step 12): build the vtable
+// structs (class tables and interface tables), lay them out, push them
+// into g_structs, and record their indices and global names. Runs once
+// per program key, in the front. The thunk halves stay per TU in
+// cnBuildRegistryBack: thunk Functions are move-only and are emitted
+// into the owning TU's vectors, so they cannot be built once and copied.
+// The thunk pass re-derives each table's sid from the shared tables
+// (g_cnClassVtableIndex for classes; g_structIndex by table type name
+// for interfaces, whose index is last-wins across classes).
+static void cnBuildRegistryVtableTables(const aster_cn::Program& program) {
+    // Every class object carries one pointer to the table for its most-derived
+    // class.  Table entries use a raw receiver pointer, so one thunk per class
+    // and method can cast that pointer to the implementation owner and make the
+    // ordinary typed method call.  This keeps the class method ABI unchanged.
+    for (const auto& declaration : program.classes) {
+        cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
+        const int classSid = g_cnClassIndex.at(declaration.name);
+        const std::vector<std::pair<std::string, const CnClassMethodInfo*>> effective =
+            cnClassVtableEffectiveMethods(classSid);
+        StructDef table;
+        table.name = cnClassVtableTypeName(classSid);
+        for (const auto& entry : effective) {
+            const CnClassMethodInfo& method = *entry.second;
+            StructField field{};
+            field.name = cnClassVtableMethodFieldName(entry.first);
+            field.ty = Ty::Ptr;
+            field.isFunc = true;
+            field.funcSig.ret = method.returnType;
+            field.funcSig.params.push_back(Ty::Ptr);
+            field.funcSig.params.insert(field.funcSig.params.end(),
+                                        method.parameterTypes.begin(), method.parameterTypes.end());
+            table.fields.push_back(std::move(field));
+        }
+        const int tableSid = static_cast<int>(g_structs.size());
+        Token tableToken{TK::Ident, table.name, declaration.line, declaration.column};
+        if (table.fields.empty()) {
+            table.size = 1;
+            table.align = 1;
+        } else {
+            layoutStruct(table, tableToken);
+        }
+        g_structs.push_back(std::move(table));
+        g_structIndex[g_structs.back().name] = tableSid;
+        g_cnClassVtableIndex[classSid] = tableSid;
+        const std::string tableGlobalName = cnClassVtableGlobalName(classSid);
+        g_cnClassVtableGlobals[classSid] = tableGlobalName;
+    }
+    // Lower interface references as a two-word value and create one function
+    // table per directly implementing class.  Table entries use a generic
+    // ptr receiver; the generated thunk casts it to the implementation class
+    // pointer before making the ordinary class-method call.
+    for (const auto& declaration : program.interfaceClasses) {
+        // B-P4: the vtable token below carries this interface's position.
+        cnSetDiagnosticFile(declaration.sourceFile);
+        const auto interfaceMethods = g_cnInterfaceMethods.find(declaration.name);
+        if (interfaceMethods == g_cnInterfaceMethods.end()) continue;
+        for (const auto& classDeclaration : program.classes) {
+            const int classSid = g_cnClassIndex.at(classDeclaration.name);
+            const auto implemented = g_cnClassInterface.find(classSid);
+            if (implemented == g_cnClassInterface.end() ||
+                !cnInterfaceExtendsOrSame(implemented->second, declaration.name)) continue;
+            StructDef table;
+            table.name = cnInterfaceTableTypeName(classSid, declaration.name);
+            const auto& methodOrder = g_cnInterfaceMethodOrder.at(declaration.name);
+            for (const std::string& methodName : methodOrder) {
+                const auto required = interfaceMethods->second.find(methodName);
+                if (required == interfaceMethods->second.end()) continue;
+                StructField field{};
+                field.name = cnInterfaceMethodFieldName(required->first);
+                field.ty = Ty::Ptr;
+                field.isFunc = true;
+                field.funcSig.ret = required->second.returnType;
+                field.funcSig.params.push_back(Ty::Ptr);
+                field.funcSig.params.insert(field.funcSig.params.end(),
+                                            required->second.parameterTypes.begin(),
+                                            required->second.parameterTypes.end());
+                table.fields.push_back(std::move(field));
+            }
+            const int tableSid = static_cast<int>(g_structs.size());
+            Token tableToken{TK::Ident, table.name, declaration.line, declaration.column};
+            layoutStruct(table, tableToken);
+            g_structs.push_back(std::move(table));
+            g_structIndex[g_structs.back().name] = tableSid;
+            g_cnInterfaceVtableIndex[declaration.name] = tableSid;
+            const std::string tableGlobalName = cnInterfaceTableGlobalName(classSid, declaration.name);
+            g_cnInterfaceTableGlobals[{classSid, declaration.name}] = tableGlobalName;
+        }
+    }
+}
+
+// Registry-sharing step 2 (full): the SHARED FRONT of the step-1
+// registration block: reserved-name fill, the front-table clears,
+// cnRegisterEnums / cnRegisterStructures (structs, enums, classes and
+// their layout, including the inseparable class-index side effects
+// g_cnClassIndex / g_cnClassBase / g_cnClassInterface /
+// g_cnClassStaticFields / g_cnInterfaceIndex -- all pure functions of the
+// program, identical every TU), the alias loop, the global loop, the
+// top-level method loop, the interface-class loop, the class-method loop,
+// the three check loops (interface implementation, base constructor,
+// override), and the vtable table pass (cnBuildRegistryVtableTables).
+// Built once per program key; skipped on a key hit. The method loops
+// fill the caller's methodReturns (top-level and class-method return
+// types). The top-level method names collected by the method loop are
+// read by the interface loop below; they are front-local now that both
+// loops live here. The seed loop and the vtable thunk passes stay per TU
+// in the back.
+static void cnBuildRegistryFront(const aster_cn::Program& program,
+                                 std::map<std::string, Ty>& methodReturns) {
+    std::set<std::string> declaredMethodNames;
+
     g_cnReservedSourceNames.clear();
-    g_cnNextClosureType = 0;
     for (const auto& declaration : program.interfaceClasses)
         g_cnReservedSourceNames.insert(declaration.name);
     for (const auto& declaration : program.enums)
@@ -26598,37 +26707,6 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
     // array lengths compare by resolved value, and a function-typed
     // global also compares its signature, which the bare backend type
     // (`ptr`) does not carry.
-    auto cnGlobalDeclarationsMatch = [](const aster_cn::Statement& first,
-                                        const aster_cn::Statement& second) {
-        if (!first.isExternal && !second.isExternal) return false;
-        if (first.kind != second.kind) return false;
-        if (first.typeName.empty() || second.typeName.empty()) return false;
-        if (cnBackendType(first.typeName, first.line, first.column) !=
-            cnBackendType(second.typeName, second.line, second.column)) return false;
-        FuncSig firstFunc;
-        FuncSig secondFunc;
-        const bool firstIsFunc = cnFunctionTypeSignature(first.typeName, firstFunc,
-                                                         first.line, first.column);
-        const bool secondIsFunc = cnFunctionTypeSignature(second.typeName, secondFunc,
-                                                          second.line, second.column);
-        if (firstIsFunc != secondIsFunc) return false;
-        if (firstIsFunc) {
-            if (firstFunc.params.size() != secondFunc.params.size() ||
-                !(firstFunc.ret == secondFunc.ret)) return false;
-            for (size_t index = 0; index < firstFunc.params.size(); ++index)
-                if (!(firstFunc.params[index] == secondFunc.params[index])) return false;
-        }
-        if (first.arrayDimensions.size() != second.arrayDimensions.size()) return false;
-        for (size_t index = 0; index < first.arrayDimensions.size(); ++index) {
-            Expr::LitSuffix firstSuffix = Expr::LSNone;
-            Expr::LitSuffix secondSuffix = Expr::LSNone;
-            if (cnIntegerValue(first.arrayDimensions[index], firstSuffix,
-                               first.line, first.column) !=
-                cnIntegerValue(second.arrayDimensions[index], secondSuffix,
-                               second.line, second.column)) return false;
-        }
-        return true;
-    };
     // First top-level global seen under each source name. Later
     // declarations of the same name compare against this one.
     std::map<std::string, const aster_cn::Statement*> firstGlobalByName;
@@ -26664,7 +26742,6 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             g_cnExternalGlobalNames[declaration.name] = declaration.externalName;
         }
     }
-    std::set<std::string> declaredMethodNames;
     for (const auto& method : program.methods) {
         cnSetDiagnosticFile(method.sourceFile);  // B-P4
         declaredMethodNames.insert(method.name);
@@ -26933,63 +27010,49 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             }
         }
     }
+    cnBuildRegistryVtableTables(program);
+}
+
+// Registry-sharing step 2 (full): the PER-TU BACK of the step-1
+// registration block: the class and interface vtable thunk passes and
+// the seed loop. Runs every TU, even on a front hit. It writes no shared
+// table the front must restore: thunk signatures are re-inserted
+// identically every TU (same key, same value), and the vtable structs
+// were built once by the front's table pass. The closure tables are
+// cleared in the preamble: nothing in the front reads them, and they
+// are per-TU by design (excluded from sharing).
+template <typename OwnsSource>
+static void cnBuildRegistryBack(const aster_cn::Program& program,
+                                std::vector<Global>& globals,
+                                std::vector<Function>& functions,
+                                std::set<std::string>& names,
+                                std::map<std::string, Ty>& methodReturns,
+                                std::map<std::string, CnBinding>& globalBindings,
+                                CnStringPool& stringPool,
+                                const OwnsSource& cnOwnsSource) {
+    // Registry-sharing step 2 (full): per-TU preamble. Only the
+    // closure tables are cleared here now: the class/interface
+    // tables moved to the front (their clears moved with them),
+    // and the back writes no shared table that needs undoing --
+    // thunk signatures are re-inserted identically every TU.
+    g_cnClosureTypes.clear();
+    g_cnClosureTypesBySignature.clear();
+    g_cnNextClosureType = 0;
     // Every class object carries one pointer to the table for its most-derived
     // class.  Table entries use a raw receiver pointer, so one thunk per class
     // and method can cast that pointer to the implementation owner and make the
     // ordinary typed method call.  This keeps the class method ABI unchanged.
+    // (Full sharing: the table structs were built once by
+    // cnBuildRegistryVtableTables; this pass only builds the thunks
+    // and table globals for the owning TU.)
     for (const auto& declaration : program.classes) {
         cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int classSid = g_cnClassIndex.at(declaration.name);
-        std::vector<int> classChain;
-        for (int current = classSid;;) {
-            classChain.push_back(current);
-            const auto base = g_cnClassBase.find(current);
-            if (base == g_cnClassBase.end()) break;
-            current = base->second;
-        }
-        std::reverse(classChain.begin(), classChain.end());
-        std::vector<std::pair<std::string, const CnClassMethodInfo*>> effective;
-        for (const int current : classChain) {
-            const auto methods = g_cnClassMethods.find(current);
-            if (methods != g_cnClassMethods.end()) {
-                for (const auto& entry : methods->second) {
-                    if (entry.second.isStatic || entry.second.isConstructor) continue;
-                    const auto existing = std::find_if(effective.begin(), effective.end(),
-                        [&](const auto& candidate) { return candidate.first == entry.first; });
-                    if (existing == effective.end())
-                        effective.emplace_back(entry.first, &entry.second);
-                    else
-                        existing->second = &entry.second;
-                }
-            }
-        }
-        StructDef table;
-        table.name = cnClassVtableTypeName(classSid);
-        for (const auto& entry : effective) {
-            const CnClassMethodInfo& method = *entry.second;
-            StructField field{};
-            field.name = cnClassVtableMethodFieldName(entry.first);
-            field.ty = Ty::Ptr;
-            field.isFunc = true;
-            field.funcSig.ret = method.returnType;
-            field.funcSig.params.push_back(Ty::Ptr);
-            field.funcSig.params.insert(field.funcSig.params.end(),
-                                        method.parameterTypes.begin(), method.parameterTypes.end());
-            table.fields.push_back(std::move(field));
-        }
-        const int tableSid = static_cast<int>(g_structs.size());
-        Token tableToken{TK::Ident, table.name, declaration.line, declaration.column};
-        if (table.fields.empty()) {
-            table.size = 1;
-            table.align = 1;
-        } else {
-            layoutStruct(table, tableToken);
-        }
-        g_structs.push_back(std::move(table));
-        g_structIndex[g_structs.back().name] = tableSid;
-        g_cnClassVtableIndex[classSid] = tableSid;
-        const std::string tableGlobalName = cnClassVtableGlobalName(classSid);
-        g_cnClassVtableGlobals[classSid] = tableGlobalName;
+        const std::vector<std::pair<std::string, const CnClassMethodInfo*>> effective =
+            cnClassVtableEffectiveMethods(classSid);
+        const int tableSid = g_cnClassVtableIndex.at(classSid);
+        const std::string tableGlobalName = g_cnClassVtableGlobals.at(classSid);
+        const std::string tableStructName = structOf(tableSid).name;
         names.insert(tableGlobalName);
         Global tableGlobal;
         tableGlobal.name = tableGlobalName;
@@ -26997,7 +27060,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
         tableGlobal.align = tyAlign(tableGlobal.ty);
         tableGlobal.runtimeInit = true;
         tableGlobal.initExpr.reset(new Expr(Expr::StructLit));
-        tableGlobal.initExpr->name = g_structs.back().name;
+        tableGlobal.initExpr->name = tableStructName;
         for (const auto& entry : effective) {
             const CnClassMethodInfo& method = *entry.second;
             const std::string thunkName = cnClassVtableThunkName(classSid, entry.first);
@@ -27077,6 +27140,9 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
     // table per directly implementing class.  Table entries use a generic
     // ptr receiver; the generated thunk casts it to the implementation class
     // pointer before making the ordinary class-method call.
+    // (Full sharing: the table structs were built once by
+    // cnBuildRegistryVtableTables; this pass only builds the thunks
+    // and table globals for the owning TU.)
     for (const auto& declaration : program.interfaceClasses) {
         // B-P4: the vtable token below carries this interface's position.
         cnSetDiagnosticFile(declaration.sourceFile);
@@ -27087,31 +27153,12 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             const auto implemented = g_cnClassInterface.find(classSid);
             if (implemented == g_cnClassInterface.end() ||
                 !cnInterfaceExtendsOrSame(implemented->second, declaration.name)) continue;
-            StructDef table;
-            table.name = cnInterfaceTableTypeName(classSid, declaration.name);
+            const std::string tableStructName =
+                cnInterfaceTableTypeName(classSid, declaration.name);
+            const int tableSid = g_structIndex.at(tableStructName);
+            const std::string tableGlobalName =
+                g_cnInterfaceTableGlobals.at({classSid, declaration.name});
             const auto& methodOrder = g_cnInterfaceMethodOrder.at(declaration.name);
-            for (const std::string& methodName : methodOrder) {
-                const auto required = interfaceMethods->second.find(methodName);
-                if (required == interfaceMethods->second.end()) continue;
-                StructField field{};
-                field.name = cnInterfaceMethodFieldName(required->first);
-                field.ty = Ty::Ptr;
-                field.isFunc = true;
-                field.funcSig.ret = required->second.returnType;
-                field.funcSig.params.push_back(Ty::Ptr);
-                field.funcSig.params.insert(field.funcSig.params.end(),
-                                            required->second.parameterTypes.begin(),
-                                            required->second.parameterTypes.end());
-                table.fields.push_back(std::move(field));
-            }
-            const int tableSid = static_cast<int>(g_structs.size());
-            Token tableToken{TK::Ident, table.name, declaration.line, declaration.column};
-            layoutStruct(table, tableToken);
-            g_structs.push_back(std::move(table));
-            g_structIndex[g_structs.back().name] = tableSid;
-            g_cnInterfaceVtableIndex[declaration.name] = tableSid;
-            const std::string tableGlobalName = cnInterfaceTableGlobalName(classSid, declaration.name);
-            g_cnInterfaceTableGlobals[{classSid, declaration.name}] = tableGlobalName;
             names.insert(tableGlobalName);
             Global tableGlobal;
             tableGlobal.name = tableGlobalName;
@@ -27119,7 +27166,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             tableGlobal.align = tyAlign(tableGlobal.ty);
             tableGlobal.runtimeInit = true;
             tableGlobal.initExpr.reset(new Expr(Expr::StructLit));
-            tableGlobal.initExpr->name = g_structs.back().name;
+            tableGlobal.initExpr->name = tableStructName;
             for (const std::string& methodName : methodOrder) {
                 const auto required = interfaceMethods->second.find(methodName);
                 if (required == interfaceMethods->second.end()) continue;
@@ -27263,6 +27310,257 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             binding.funcSig = entry.second.funcSig;
             globalBindings[entry.second.globalName] = std::move(binding);
         }
+}
+
+// Full per-TU registration: today's behaviour, front + back with no
+// sharing. Used by every caller that does not opt into registry sharing,
+// and by the R6 fallback inside cnProgramToAster when the shared front
+// build throws.
+template <typename OwnsSource>
+static void cnBuildRegistry(const aster_cn::Program& program,
+                            std::vector<Global>& globals,
+                            std::vector<Function>& functions,
+                            std::set<std::string>& names,
+                            std::map<std::string, Ty>& methodReturns,
+                            std::map<std::string, CnBinding>& globalBindings,
+                            CnStringPool& stringPool,
+                            const OwnsSource& cnOwnsSource) {
+    cnBuildRegistryFront(program, methodReturns);
+    cnBuildRegistryBack(program, globals, functions, names, methodReturns,
+                        globalBindings, stringPool, cnOwnsSource);
+}
+
+
+
+// Defaults reproduce the merged behaviour exactly, so every other existing
+// caller is unaffected.
+static std::vector<Function> cnProgramToAster(const aster_cn::Program& programInput,
+                                              std::vector<Global>& globals,
+                                              bool countCheck,
+                                              const std::string& onlySource = "",
+                                              bool requireMain = true,
+                                              const std::set<std::string>* forceConstructedClasses = nullptr,
+                                              uint64_t poolSalt = 0,
+                                              const std::map<std::string, std::string>* packageFileOwners = nullptr,
+                                              const std::map<std::string, std::string>* fileImportOwners = nullptr,
+                                              uint64_t helperSalt = 0,
+                                              bool skipPreprocess = false,
+                                              // Registry-sharing step 2: the driver-computed
+                                              // key for this build's merged + preprocessed
+                                              // program (null = sharing off; the default keeps
+                                              // every existing caller on the full per-TU path).
+                                              const std::string* registryKey = nullptr) {
+    // D-2a: desugar `布局`/`事件` into synthetic methods before anything
+    // else reads the program (a no-op walk when the program has none,
+    // except that a stray `键()` is still refused, with the name).
+    // Step 1: the build/test drivers already ran cnPreprocessMergedProgram
+    // once on the merged program (skipPreprocess); build-cn-obj and any
+    // other single-shot caller still do it here.
+    // Step 3 (ms-compile): borrow the program instead of deep-copying it
+    // when the driver already preprocessed it. Audit (2026-11-27): with
+    // skipPreprocess=true the lowering below only READS the program — the
+    // only writers in this function are cnD2aSynthesize and
+    // cnValidateStringLiteralsProgram, both skipped on this path; every
+    // other use is through const refs (all 26 range-fors over program
+    // members are const; the four whole-program callees all take
+    // const Program&; no .body=, std::move(program) or const_cast anywhere
+    // in the function). So the per-TU deep copy (~20 ms) and its
+    // destruction on return (~15 ms) are pure waste here. Single-shot
+    // callers (skipPreprocess=false) still need the owned copy because D2a
+    // rewrites the program in place — hence the owned copy only exists on
+    // that path. This is why step 3 is NOT the shared-pointer/CoW refactor
+    // the brief anticipated: step 1 already removed the only per-TU
+    // mutation, so borrowing is exact. The shared program outlives every
+    // TU lowering: the build/test drivers hold *ctx.program for the whole
+    // build, and fork workers get their own copy-on-write snapshot, so
+    // serial and parallel modes stay identical.
+    std::unique_ptr<aster_cn::Program> ownedProgram;
+    if (!skipPreprocess) ownedProgram = std::make_unique<aster_cn::Program>(programInput);
+    const aster_cn::Program& program = ownedProgram ? *ownedProgram : programInput;
+    if (!skipPreprocess) cnD2aSynthesize(*ownedProgram);
+    std::vector<Function> functions;
+    // Registry-sharing step 2: a front hit keeps the shared front tables
+    // (g_structs and friends, built once for this program key); every
+    // other call clears them exactly as before. The diagnostic file/line
+    // are per-TU state, so they are cleared on both paths. The key is
+    // compared on every call -- never a bare "already built" boolean --
+    // so a second program in this process (aster test) rebuilds.
+    const bool registrySharingRequested = registryKey != nullptr && !registryKey->empty();
+    const bool registryHit = registrySharingRequested && g_cnSharedRegistry.built &&
+                             g_cnSharedRegistry.key == *registryKey;
+    if (!registryHit) {
+        cnClearRegistryEntryTables();
+    } else {
+        // B-P4: a previous TU (per-source build) or test program (one process
+        // lowers several) may have left another file's name behind; lowering
+        // sets it per declaration below, so start clean.
+        g_diagFile.clear();
+        g_diagLines.clear();
+    }
+    // Validate literal contents before type checking or lowering.  This keeps
+    // malformed string bytes from being hidden by an unrelated surrounding
+    // expression error (for example `0 + "bad\\0"`).
+    // Step 1: skipped when the driver already validated the merged program.
+    if (!skipPreprocess) cnValidateStringLiteralsProgram(program);
+    std::set<std::string> names;
+    std::set<std::string> methodNames;
+    std::map<std::string, Ty> methodReturns;
+    std::map<std::string, CnBinding> globalBindings;
+    std::map<std::string, size_t> globalIndices;
+    CnStringPool stringPool;
+    stringPool.globals = &globals;
+    stringPool.functions = &functions;
+    // Per-source runs restart the generated-name counters from a TU-specific
+    // offset (merged runs keep 0, i.e. today's numbering). Names minted
+    // here are only ever referenced by the TU that minted them, except the
+    // string pool, which the linker remaps per input anyway.
+    stringPool.next = poolSalt;
+    // LIB8: only the helper counters take the helper salt (see the
+    // function header); the string pool, enum tables and embed blobs
+    // keep poolSalt, so their numbering stays spelling-independent.
+    const uint64_t cnHelperSalt = helperSalt != 0 ? helperSalt : poolSalt;
+    stringPool.nextClosure = cnHelperSalt;
+    stringPool.nextInterfaceUpcast = cnHelperSalt;
+    stringPool.nextEnumTable = poolSalt;
+    // B-P2: the per-TU counter offset also salts embed symbols, so two
+    // TUs that both embed without a recorded file name still mint
+    // different symbols; the fallback file covers lowering without a
+    // context (its own file is preferred whenever the expression or the
+    // context carries one).
+    stringPool.nextEmbed = poolSalt;
+    stringPool.fallbackSourceFile = program.sourceFile;
+    const bool cnPerSource = !onlySource.empty();
+    // Step 2: memoize ownership per distinct source file. cnOwnsSource is
+    // called once per declaration in every lowering loop; the uncached
+    // version does two map finds plus up to two cnCanonicalPath calls
+    // (filesystem path normalisation) per call. Ownership is a pure
+    // function of the file name and the fixed owner maps, so caching it
+    // per call is exact.
+    std::map<std::string, bool> cnOwnsMemo;
+    auto cnOwnsSource = [&](const std::string& sourceFile) {
+        const auto memo = cnOwnsMemo.find(sourceFile);
+        if (memo != cnOwnsMemo.end()) return memo->second;
+        bool owned = false;
+        if (!cnPerSource) owned = true;
+        else if (sourceFile == onlySource) owned = true;
+        else {
+            bool decided = false;
+            if (packageFileOwners) {
+                const auto ownedIt = packageFileOwners->find(sourceFile);
+                if (ownedIt != packageFileOwners->end()) {
+                    owned = ownedIt->second == onlySource;
+                    decided = true;
+                }
+            }
+            // P1-3: same rule for file imports: an imported file's
+            // declarations are emitted by the listed TU that (transitively)
+            // imports it, so they are emitted exactly once. Keys/values
+            // are canonical paths, so compare canonically against the TU path.
+            if (!decided && fileImportOwners) {
+                const auto ownedImp = fileImportOwners->find(cnCanonicalPath(sourceFile));
+                if (ownedImp != fileImportOwners->end()) {
+                    owned = cnCanonicalPath(ownedImp->second) == cnCanonicalPath(onlySource);
+                    decided = true;
+                }
+            }
+            // A declaration without provenance cannot be attributed to
+            // another TU; emitting it everywhere it is needed is the
+            // fail-loud choice (a duplicate is a link error, a missing
+            // definition is too).
+            if (!decided) owned = sourceFile.empty();
+        }
+        cnOwnsMemo.emplace(sourceFile, owned);
+        return owned;
+    };
+    // Step 2: per-call index over the merged program. Pure-emission loops
+    // iterate only this TU's own declarations, in program order (identical
+    // emission order: the old loops visited in program order and skipped
+    // the rest). Loops that can throw on a FOREIGN declaration (duplicate
+    // checks, field-initializer validation) deliberately keep their
+    // whole-program walk: restricting them would change which TU reports
+    // the error and, in --verbose mode, which "compiled" lines print
+    // before it.
+    std::vector<const aster_cn::MethodDeclaration*> cnOwnMethods;
+    std::vector<const aster_cn::Statement*> cnOwnGlobals;
+    std::vector<const aster_cn::ClassDeclaration*> cnOwnClasses;
+    std::vector<std::pair<const aster_cn::ClassDeclaration*, const aster_cn::MethodDeclaration*>> cnOwnClassMethods;
+    std::map<std::string, const aster_cn::ClassDeclaration*> cnClassByName;
+    for (const auto& method : program.methods)
+        if (cnOwnsSource(method.sourceFile)) cnOwnMethods.push_back(&method);
+    for (const auto& declaration : program.globals)
+        if (cnOwnsSource(declaration.sourceFile)) cnOwnGlobals.push_back(&declaration);
+    for (const auto& declaration : program.classes) {
+        cnClassByName.emplace(declaration.name, &declaration);
+        if (cnOwnsSource(declaration.sourceFile)) cnOwnClasses.push_back(&declaration);
+        for (const auto& method : declaration.methods)
+            if (cnOwnsSource(method.sourceFile)) cnOwnClassMethods.emplace_back(&declaration, &method);
+    }
+    bool hasMain = false;
+    functions.reserve(program.methods.size() + 8);
+    // Registry-sharing step 2: the registration block (defined just above
+    // as cnBuildRegistryFront + cnBuildRegistryBack) runs once per TU from
+    // exactly the point it used to occupy. Four paths, all with the same
+    // loops in the same order:
+    //   - front hit: skip the shared front; refill this TU's methodReturns
+    //     top-level and class-method return types (the front's method loops
+    //     filled them on the build TU; the C-1 loop below refills the
+    //     top-level ones again, as today) and run the per-TU back. Step 3:
+    //     the front is normally built once by the parent before the TU
+    //     loop and inherited by fork workers (or read inline by --jobs 1);
+    //     a 0-compiled build never builds it, because the driver gate
+    //     (decl dirty set) leaves the key unset when no TU will lower.
+    //   - sharing requested, front not built for this key: try to build
+    //     the front once, then run the back for this TU. This lazy build
+    //     is the fallback for callers that set a key without a parent
+    //     pre-build; in a project build the parent normally already
+    //     built it, so this branch fires only when a TU lowers without
+    //     a pre-build -- e.g. a decl-clean TU whose .o went missing
+    //     after the gate ran, or a non-project caller.
+    //   - front build throws (R6): discard the front and rebuild per-TU,
+    //     so the first dirty TU re-reports the error exactly as today
+    //     (nothing was printed yet, and the entry tables are re-cleared
+    //     before the full rebuild, so a half-built front cannot leak in).
+    //     Back errors are not caught here: they already surface from this
+    //     TU with today's timing and attribution.
+    //   - sharing off: today's full per-TU rebuild.
+    bool registryDone = false;
+    if (registryHit) {
+        for (const auto& method : program.methods)
+            methodReturns[method.name] = cnBackendType(method.returnType, method.line, method.column);
+        // Class-method ABI return types too, with the front's own key
+        // (functionName): the front's class-method loop filled them on
+        // the build TU, and the field-initializer loop below reads them
+        // for this TU.
+        for (const auto& declaration : program.classes) {
+            const int sid = g_cnClassIndex.at(declaration.name);
+            for (const auto& method : declaration.methods)
+                methodReturns[g_cnClassMethods.at(sid).at(method.name).functionName] =
+                    g_cnClassMethods.at(sid).at(method.name).returnType;
+        }
+        cnBuildRegistryBack(program, globals, functions, names, methodReturns,
+                            globalBindings, stringPool, cnOwnsSource);
+        registryDone = true;
+    } else if (registrySharingRequested) {
+        try {
+            cnBuildRegistryFront(program, methodReturns);
+            g_cnSharedRegistry.built = true;
+            g_cnSharedRegistry.key = *registryKey;
+        } catch (...) {
+            g_cnSharedRegistry = CnSharedRegistry{};
+            cnClearRegistryEntryTables();
+            cnBuildRegistry(program, globals, functions, names, methodReturns,
+                            globalBindings, stringPool, cnOwnsSource);
+            registryDone = true;
+        }
+        if (!registryDone) {
+            cnBuildRegistryBack(program, globals, functions, names, methodReturns,
+                                globalBindings, stringPool, cnOwnsSource);
+            registryDone = true;
+        }
+    }
+    if (!registryDone)
+        cnBuildRegistry(program, globals, functions, names, methodReturns,
+                        globalBindings, stringPool, cnOwnsSource);
     for (const auto& declaration : program.classes) {
         cnSetDiagnosticFile(declaration.sourceFile);  // B-P4
         const int sid = g_cnClassIndex.at(declaration.name);
@@ -28599,6 +28897,14 @@ struct CnPerSourceContext {
     // programs, where struct/enum provenance still exists).
     std::map<std::string, std::string> typeNameToSource;
     std::string langHash;   // hash of the serialised effective [language] config
+    // Registry-sharing step 2: the driver-computed key for this build's
+    // merged + preprocessed program (empty = sharing off). cnProgramToAster
+    // compares it against the built front's key on every call; a mismatch
+    // rebuilds. Never a bare "already built" boolean (R5): a test driver
+    // lowering a second program in this process must not reuse the first
+    // program's front. The test driver and single-shot callers never set
+    // this, so they keep today's per-TU registration.
+    std::string registryKey;
     std::string keySalt;    // "" for build; the test file path for test links
     std::string cacheDir;
     bool dbg = false, bc = false;
@@ -30867,7 +31173,8 @@ static std::string cachedCnProjectObject(const CnPerSourceContext& ctx,
     std::vector<Global> globals;
     std::vector<Function> functions = cnProgramToAster(*ctx.program, globals, true, sp, false,
         &ctx.forceConstructedClasses, poolSalt, &ctx.packageFileOwners, &ctx.fileImportOwners,
-        0, ctx.programPreprocessed);
+        0, ctx.programPreprocessed,
+        ctx.registryKey.empty() ? nullptr : &ctx.registryKey);
     // Take this TU's embed reads before the next TU's lowering
     // overwrites them, then clear so nothing leaks across TUs.
     const std::map<std::string, std::string> embedDeps = g_buildDeps;
@@ -33652,6 +33959,16 @@ struct BilingualBuildOpts {
     // default (user decision 2026-11-27); --no-decl-invalidation opts out.
     // The daemon forwards it through the build request.
     bool declInvalidation=true;
+    // Registry-sharing step 3 (full, opt-in, default off per Q6):
+    // share one built declaration registry across the build's TUs
+    // instead of rebuilding it per TU. The parent builds the front
+    // once before the TU loop and fork workers inherit it (CoW,
+    // read-only); --jobs 1 runs inline against the same table and
+    // key -- one path for both modes. --no-registry-sharing is the
+    // permanent escape hatch (Q7); it is parsed in main() and always
+    // wins over --registry-sharing. The daemon never receives this
+    // flag (Q5 pending): daemon builds ignore it.
+    bool registrySharing=false;
     // Phase 3: diagnose-only mode (DESIGN.md §6.3). The TU loop still runs
     // (type errors only surface in lowering), but the function returns
     // right after it — no link, no packaging, no signature — and every
@@ -33661,6 +33978,75 @@ struct BilingualBuildOpts {
     // Diagnose never writes the decl index.
     bool diagnoseOnly=false;
 };
+
+// Registry-sharing step 2 (§3.1): registryKey = sha256(kVersion ‖
+// langHash ‖ ownersHash ‖ constructedHash ‖ projHash ‖ full-program
+// content hash), where the content hash covers every project source file,
+// every loaded package source file, and every other file merged into the
+// program (file imports), as (canonical path, content sha256) pairs
+// sorted by path and hashed again. Content hashes, never size+mtime.
+// Computed here, in the driver, from the merged + preprocessed program --
+// never inside cnProgramToAster, which cannot see the driver inputs.
+// Fail-closed: any unreadable input returns "" (no sharing this build,
+// today's per-TU registration). The "rs1" tag is the key version: bump
+// it whenever the registry layout changes, so an old key never matches.
+static std::string cnComputeRegistryKey(const ProjectSpec& spec,
+                                        const CnPerSourceContext& ctx,
+                                        const aster_cn::Program& program,
+                                        const std::string& declConfigHash) {
+    std::string projHash = declConfigHash;
+    if (projHash.empty()) {
+        try {
+            projHash = sha256Hex(readFile("aster.proj"));
+        } catch (const std::exception&) {
+            return std::string();
+        }
+    }
+    std::map<std::string, std::string> fileHashes;  // canonical path -> content sha256
+    auto addFile = [&](const std::string& path) -> bool {
+        if (path.empty()) return true;  // no provenance: nothing to hash
+        const std::string canon = cnCanonicalPath(path);
+        if (fileHashes.count(canon) != 0) return true;
+        std::string content;
+        try {
+            content = readFile(path);
+        } catch (const std::exception&) {
+            return false;
+        }
+        fileHashes.emplace(canon, sha256Hex(content));
+        return true;
+    };
+    for (const auto& source : spec.sources)
+        if (!addFile(source)) return std::string();
+    if (ctx.packageFiles)
+        for (const auto& packageFile : *ctx.packageFiles)
+            if (!addFile(packageFile)) return std::string();
+    for (const auto& declaration : program.structures)
+        if (!addFile(declaration.sourceFile)) return std::string();
+    for (const auto& declaration : program.enums)
+        if (!addFile(declaration.sourceFile)) return std::string();
+    for (const auto& declaration : program.classes)
+        if (!addFile(declaration.sourceFile)) return std::string();
+    for (const auto& declaration : program.interfaceClasses)
+        if (!addFile(declaration.sourceFile)) return std::string();
+    for (const auto& declaration : program.globals)
+        if (!addFile(declaration.sourceFile)) return std::string();
+    for (const auto& declaration : program.methods)
+        if (!addFile(declaration.sourceFile)) return std::string();
+    for (const auto& declaration : program.aliases)
+        if (!addFile(declaration.sourceFile)) return std::string();
+    std::string contentText;
+    for (const auto& entry : fileHashes) {
+        contentText += entry.first;
+        contentText += '\n';
+        contentText += entry.second;
+        contentText += '\n';
+    }
+    return sha256Hex(std::string(kVersion) + "|rs1|" + ctx.langHash + "|" + ctx.ownersHash + "|" +
+                     ctx.constructedHash + "|" + projHash + "|" + sha256Hex(contentText) + "|" +
+                     std::to_string(ctx.maxParseDepth) + "|" + std::to_string(ctx.maxLoweringDepth));
+}
+
 static int runBilingualProjectBuild(const ProjectSpec& spec,
                                     const aster_cn::ProjectLanguageConfig& bilingualLanguage,
                                     const std::vector<aster_cn::Program>& parsedSources,
@@ -33889,6 +34275,46 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
     // the price of not re-doing it 21 times on a clean build.
     cnPreprocessMergedProgram(program);
     bilingualCtx.programPreprocessed=true;
+    // Registry-sharing step 3: the key is computed here, in the driver,
+    // from the merged + preprocessed program, for any jobs count -- the
+    // parent builds the front once below, before the TU loop, so fork
+    // workers inherit it (CoW, read-only) and --jobs 1 runs inline
+    // against the same table and key: one path, no serial/parallel
+    // fork. The gate is the driver-computed decl dirty set: with decl
+    // invalidation on, an empty dirty set means no TU will lower, so
+    // neither the key nor the front is built and a no-change rebuild
+    // pays nothing for sharing (the APK fast path reuses the APK after
+    // the loop, and the TU loop's reuse check is what gates lowering).
+    // --no-cache forces every TU to compile, and with decl
+    // invalidation off there is no precomputed dirty set, so both cases
+    // build -- fail-closed toward correctness (a no-change build with
+    // decl off pays one ~28 ms front build; the default decl-on path
+    // never does). The lazy build inside cnProgramToAster stays as the
+    // fallback for any caller that sets a key without a parent
+    // pre-build; the R6 fallback below clears the key, so a failed
+    // parent build can never leave a half-built front behind.
+    const bool registryHasDirtyTu =
+        noCache || !opts.declInvalidation || !declDirty.dirtyTus.empty();
+    if (opts.registrySharing && registryHasDirtyTu)
+        bilingualCtx.registryKey = cnComputeRegistryKey(spec, bilingualCtx, program, declConfigHash);
+    if (opts.registrySharing && !bilingualCtx.registryKey.empty()) {
+        try {
+            cnClearRegistryEntryTables();
+            std::map<std::string, Ty> parentMethodReturns;
+            cnBuildRegistryFront(program, parentMethodReturns);
+            g_cnSharedRegistry.built = true;
+            g_cnSharedRegistry.key = bilingualCtx.registryKey;
+        } catch (...) {
+            // R6 (parallel): discard the half-built front and fall back
+            // to today's per-TU rebuild. Nothing is printed here: the
+            // first dirty TU's worker re-reports the error with today's
+            // timing and attribution (runTuJobs reports the first error
+            // in source order), and the error is never cached.
+            g_cnSharedRegistry = CnSharedRegistry{};
+            cnClearRegistryEntryTables();
+            bilingualCtx.registryKey.clear();
+        }
+    }
     std::vector<std::string> bilingualObjs;
     // Phase 1: per-TU timings and .o paths, in aster.proj order, for
     // the daemon's fast-path replay and .o/.meta stat checks. Filled
@@ -37553,6 +37979,11 @@ int main(int argc,char**argv){
             // Phase 2: --decl-invalidation is on by default (user decision
             // 2026-11-27); --no-decl-invalidation opts out.
             bool declInvalidation=true;
+            // Registry-sharing step 2: opt-in, default off (Q6);
+            // --no-registry-sharing always wins and is the permanent
+            // escape hatch (Q7). Deliberately not forwarded to the
+            // daemon: daemon builds ignore it (Q5 pending).
+            bool registrySharing=false, noRegistrySharing=false;
             std::string socketDirOpt;
             unsigned jobs=0; // 0 = default (online CPUs); --jobs 1 restores the serial build
             std::vector<std::string> bilingualModuleDirs;
@@ -37606,6 +38037,8 @@ int main(int argc,char**argv){
                 else if(a=="--no-daemon")noDaemon=true;
                 else if(a=="--decl-invalidation")declInvalidation=true;
                 else if(a=="--no-decl-invalidation")declInvalidation=false;
+                else if(a=="--registry-sharing")registrySharing=true;
+                else if(a=="--no-registry-sharing")noRegistrySharing=true;
                 else if(a=="--socket-dir"){
                     if(i+1>=argc){std::cerr<<"aster "<<cmd<<": --socket-dir needs a path\n";return 2;}
                     socketDirOpt=argv[++i];
@@ -37723,6 +38156,7 @@ int main(int argc,char**argv){
                 bilingualOpts.maxParseDepth=maxParseDepthOpt;
                 bilingualOpts.maxLoweringDepth=maxLoweringDepthOpt;
                 bilingualOpts.declInvalidation=declInvalidation;
+                bilingualOpts.registrySharing=registrySharing&&!noRegistrySharing;
                 return runBilingualProjectBuild(spec,bilingualLanguage,parsedSources,bilingualOpts);
             }
             char cwdbuf[4096];
