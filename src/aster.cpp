@@ -14105,7 +14105,9 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "                 build's TUs instead of rebuilding it per TU\n"
 "                 (experimental, opt-in, off by default). Serial,\n"
 "                 parallel and daemon builds all share it inside the\n"
-"                 build's worker process. --no-registry-sharing always\n"
+"                 build's worker process; the daemon also keeps the\n"
+"                 built table for the next request with the same\n"
+"                 program. --no-registry-sharing always\n"
 "                 wins and is the permanent escape hatch back to\n"
 "                 per-TU registration.\n"
 "  --timeout SECONDS  how long `aster run`/`aster test` wait for the child before\n"
@@ -26484,6 +26486,1004 @@ static void cnClearRegistryEntryTables() {
     g_typeAlias.clear();
 }
 
+// Registry-sharing Q5 (b): serialize the built front so the daemon can
+// keep it across build requests.
+//
+// Flow: the first worker that builds the front for a program key captures
+// the 26 front tables into a byte blob (cnRegistryCapture, called right
+// after a successful front build, before any per-TU back runs -- so the
+// blob is exactly the front state, with no thunk signatures or other
+// per-TU insertions in it) and sends it back to the daemon parent in the
+// worker result payload as one `registry <key> <base64>` line. The parent
+// stores the opaque bytes in DaemonState. On the next build request, after
+// the no-change fast path misses and before forking the worker, the parent
+// deserializes the blob into this process's tables
+// (cnRegistryDeserialize) and the worker inherits them via fork; the
+// driver's parent-build step then skips its own front build when the
+// freshly computed key matches (restore hit) and only re-derives the one
+// field the blob cannot carry (see below).
+//
+// Format ("ARSG"): magic 4 bytes, u32 format version (= 1), u32 string
+// table count, the interned strings (u32 length + bytes each), then the
+// body (26 sections in fixed order, each a u32 count + entries; every
+// string in the body is a u32 index into the table), then a u64 FNV-1a
+// checksum over everything before it. All integers are little-endian.
+// The version tag is the format gate: an older/other blob is rejected.
+// Deserialization validates magic, version, size bounds, the checksum,
+// every count, every string index, every enum range and every bool byte,
+// requires exact consumption of the body, and builds all tables in
+// locals first -- the globals are only committed (move-assigned) once
+// the whole blob parsed. Any failure returns false and leaves the
+// globals untouched; the caller then drops the cache and clears the
+// tables (fail-closed: the next build just rebuilds the front).
+// Bounds (corrupt-blob defence, no allocation amplification): blob
+// <= 64 MiB, every count <= 1,000,000, never reserve() from an untrusted
+// count. The blob only ever travels worker -> parent through the local
+// result pipe inside one machine and one binary (the daemon is killed
+// on a binary change), so the version + checksum + structural checks are
+// defence in depth, not a trust boundary.
+//
+// The one field NOT serialized is CnClassMethodInfo::parentConstructorArguments:
+// it holds aster_cn::Expression AST nodes (recursive: children, closures,
+// statements), which have no serializer. It is only non-empty for a
+// constructor with an explicit `super(...)` / `父对象(...)` first
+// statement, and it is read by the emit phase. On a restore hit the
+// worker re-derives it from the live merged program
+// (cnRegistryRederiveParentCtorArgs, same program the key was computed
+// from, same extraction the front ran when the table was built); any
+// inconsistency throws and the build falls back to a full front rebuild.
+// hasExplicitParentConstructorCall IS serialized, so the re-derivation
+// knows exactly which methods to refill (and skips the scan entirely
+// when no constructor carries the flag).
+//
+// Not serialized (deliberately): g_diagFile/g_diagLines (per-TU
+// diagnostic state, cleared on every cnProgramToAster call, hit path
+// included), the closure tables and g_cnEmittedFieldAccesses (per-TU,
+// excluded since step 1), methodReturns (the hit branch refills it from
+// the restored tables), and the per-TU back's thunk signatures (the back
+// re-inserts them identically every TU, as on an in-process hit).
+
+// Q5 (b): FNV-1a 64-bit checksum for the registry blob (corruption
+// detection only, not a trust boundary).
+static uint64_t cnRegistryFnv1a(const char* data, size_t len) {
+    uint64_t h = 14695981039346656037ull;
+    for (size_t i = 0; i < len; ++i) {
+        h ^= static_cast<unsigned char>(data[i]);
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+// Q5 (b): strict base64 (standard alphabet, padded). Decode rejects any
+// character outside the alphabet, bad padding, or a non-canonical tail.
+static std::string cnRegistryBase64Encode(const std::string& in) {
+    static const char kB64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    for (size_t i = 0; i < in.size(); i += 3) {
+        const uint32_t a = static_cast<unsigned char>(in[i]);
+        const uint32_t b = i + 1 < in.size() ? static_cast<unsigned char>(in[i + 1]) : 0;
+        const uint32_t c = i + 2 < in.size() ? static_cast<unsigned char>(in[i + 2]) : 0;
+        out.push_back(kB64[(a >> 2) & 0x3F]);
+        out.push_back(kB64[((a & 0x3) << 4) | ((b >> 4) & 0xF)]);
+        out.push_back(i + 1 < in.size() ? kB64[((b & 0xF) << 2) | ((c >> 6) & 0x3)] : '=');
+        out.push_back(i + 2 < in.size() ? kB64[c & 0x3F] : '=');
+    }
+    return out;
+}
+static bool cnRegistryBase64Decode(const std::string& in, std::string& out) {
+    if (in.empty() || in.size() % 4 != 0) return false;
+    auto val = [](char ch) -> int {
+        if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+        if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+        if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+        if (ch == '+') return 62;
+        if (ch == '/') return 63;
+        return -1;
+    };
+    out.clear();
+    out.reserve((in.size() / 4) * 3);
+    for (size_t i = 0; i < in.size(); i += 4) {
+        const bool pad2 = in[i + 2] == '=';
+        const bool pad3 = in[i + 3] == '=';
+        if (in[i] == '=' || in[i + 1] == '=') return false;
+        if (pad2 && !pad3) return false;
+        if ((pad2 || pad3) && i + 4 != in.size()) return false;
+        const int a = val(in[i]);
+        const int b = val(in[i + 1]);
+        const int c = pad2 ? 0 : val(in[i + 2]);
+        const int d = pad3 ? 0 : val(in[i + 3]);
+        if (a < 0 || b < 0 || c < 0 || d < 0) return false;
+        out.push_back(static_cast<char>((a << 2) | (b >> 4)));
+        if (!pad2) out.push_back(static_cast<char>(((b & 0xF) << 4) | (c >> 2)));
+        if (!pad3) out.push_back(static_cast<char>(((c & 0x3) << 6) | d));
+    }
+    return true;
+}
+
+// Q5 (b): writer for the registry blob. Strings are interned: putStr
+// records each distinct string once in `table` and writes its u32 index
+// into `body`. finish() emits magic + version + table + body + checksum.
+struct CnRegistryWriter {
+    std::string body;
+    std::map<std::string, uint32_t> intern;
+    std::vector<std::string> table;
+    void putU8(uint8_t v) { body.push_back(static_cast<char>(v)); }
+    void putU32(uint32_t v) {
+        body.push_back(static_cast<char>(v & 0xFF));
+        body.push_back(static_cast<char>((v >> 8) & 0xFF));
+        body.push_back(static_cast<char>((v >> 16) & 0xFF));
+        body.push_back(static_cast<char>((v >> 24) & 0xFF));
+    }
+    void putU64(uint64_t v) {
+        for (int i = 0; i < 8; ++i)
+            body.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+    }
+    void putI32(int32_t v) { putU32(static_cast<uint32_t>(v)); }
+    void putI64(int64_t v) { putU64(static_cast<uint64_t>(v)); }
+    void putBool(bool v) { putU8(v ? 1 : 0); }
+    void putStr(const std::string& s) {
+        const auto found = intern.find(s);
+        uint32_t idx = 0;
+        if (found == intern.end()) {
+            idx = static_cast<uint32_t>(table.size());
+            intern.emplace(s, idx);
+            table.push_back(s);
+        } else {
+            idx = found->second;
+        }
+        putU32(idx);
+    }
+    void putTy(const Ty& t) {
+        putU8(static_cast<uint8_t>(t.k));
+        putI32(t.sid);
+        putBool(t.isString);
+        putI32(t.ew);
+        putU8(static_cast<uint8_t>(t.ekind));
+        putI32(t.esid);
+    }
+    void putFuncSig(const FuncSig& s) {
+        putU32(static_cast<uint32_t>(s.params.size()));
+        for (const auto& p : s.params) putTy(p);
+        putTy(s.ret);
+    }
+    void putDims(const std::vector<uint32_t>& dims) {
+        putU32(static_cast<uint32_t>(dims.size()));
+        for (uint32_t d : dims) putU32(d);
+    }
+    void putMethodInfo(const CnClassMethodInfo& info) {
+        putStr(info.functionName);
+        putI32(info.ownerClassId);
+        putTy(info.returnType);
+        putU32(static_cast<uint32_t>(info.parameterTypes.size()));
+        for (const auto& t : info.parameterTypes) putTy(t);
+        putU32(static_cast<uint32_t>(info.parameterNames.size()));
+        for (const auto& n : info.parameterNames) putStr(n);
+        putU32(static_cast<uint32_t>(info.parameterDims.size()));
+        for (const auto& d : info.parameterDims) putDims(d);
+        putU32(static_cast<uint32_t>(info.parameterFuncSigs.size()));
+        for (const auto& s : info.parameterFuncSigs) putFuncSig(s);
+        putU32(static_cast<uint32_t>(info.parameterIsFunc.size()));
+        for (bool b : info.parameterIsFunc) putBool(b);
+        // parentConstructorArguments: NOT serialized (AST nodes; see the
+        // block comment above). Re-derived on a restore hit.
+        putI32(info.visibility);
+        putBool(info.isStatic);
+        putBool(info.isConstructor);
+        putBool(info.hasExplicitParentConstructorCall);
+        putBool(info.isOverride);
+        putStr(info.sourceFile);
+    }
+    void putStaticFieldInfo(const CnStaticClassFieldInfo& info) {
+        putTy(info.type);
+        putU32(info.arrayLength);
+        putBool(info.isFunc);
+        putFuncSig(info.funcSig);
+        putI32(info.ownerClassId);
+        putI32(info.visibility);
+        putBool(info.isString);
+        putStr(info.globalName);
+        putStr(info.sourceFile);
+    }
+    void putFuncSignature(const CnFunctionSignature& sig) {
+        putTy(sig.returnType);
+        putU32(static_cast<uint32_t>(sig.parameterTypes.size()));
+        for (const auto& t : sig.parameterTypes) putTy(t);
+        putU32(static_cast<uint32_t>(sig.parameterDims.size()));
+        for (const auto& d : sig.parameterDims) putDims(d);
+        putU32(static_cast<uint32_t>(sig.parameterFuncSigs.size()));
+        for (const auto& s : sig.parameterFuncSigs) putFuncSig(s);
+        putU32(static_cast<uint32_t>(sig.parameterIsFunc.size()));
+        for (bool b : sig.parameterIsFunc) putBool(b);
+    }
+    std::string finish() {
+        std::string out;
+        out += "ARSG";
+        auto put32 = [&](uint32_t v) {
+            out.push_back(static_cast<char>(v & 0xFF));
+            out.push_back(static_cast<char>((v >> 8) & 0xFF));
+            out.push_back(static_cast<char>((v >> 16) & 0xFF));
+            out.push_back(static_cast<char>((v >> 24) & 0xFF));
+        };
+        put32(1);  // format version
+        put32(static_cast<uint32_t>(table.size()));
+        for (const auto& s : table) {
+            put32(static_cast<uint32_t>(s.size()));
+            out += s;
+        }
+        out += body;
+        const uint64_t sum = cnRegistryFnv1a(out.data(), out.size());
+        for (int i = 0; i < 8; ++i)
+            out.push_back(static_cast<char>((sum >> (8 * i)) & 0xFF));
+        return out;
+    }
+};
+
+// Q5 (b): serialize the 26 front tables, in fixed section order:
+// structs, structIndex, enums, enumIndex, enumConsts, typeAlias,
+// reservedSourceNames, interfaceNames, interfaceMethods, interfaceIndex,
+// interfaceVtableIndex, interfaceTableGlobals, interfaceMethodOrder,
+// interfaceBase, classIndex, classBase, classInterface, classMethods,
+// classStaticFields, classVtableIndex, classVtableGlobals,
+// topLevelMethods, topLevelGlobals, functionSignatures,
+// externalMethodNames, externalGlobalNames.
+static std::string cnRegistrySerialize() {
+    CnRegistryWriter w;
+    w.putU32(static_cast<uint32_t>(g_structs.size()));
+    for (const auto& s : g_structs) {
+        w.putStr(s.name);
+        w.putU32(s.size);
+        w.putU32(s.align);
+        w.putBool(s.isUnion);
+        w.putU32(static_cast<uint32_t>(s.fields.size()));
+        for (const auto& f : s.fields) {
+            w.putStr(f.name);
+            w.putTy(f.ty);
+            w.putU32(f.offset);
+            w.putU32(f.len);
+            w.putDims(f.dims);
+            w.putFuncSig(f.funcSig);
+            w.putBool(f.isFunc);
+            w.putBool(f.isString);
+            w.putI32(f.cnVisibility);
+            w.putI32(f.cnOwnerClassId);
+            w.putStr(f.cnSourceFile);
+        }
+    }
+    w.putU32(static_cast<uint32_t>(g_structIndex.size()));
+    for (const auto& e : g_structIndex) { w.putStr(e.first); w.putI32(e.second); }
+    w.putU32(static_cast<uint32_t>(g_enums.size()));
+    for (const auto& e : g_enums) {
+        w.putStr(e.name);
+        w.putU32(static_cast<uint32_t>(e.consts.size()));
+        for (const auto& c : e.consts) { w.putStr(c.name); w.putI64(c.value); }
+    }
+    w.putU32(static_cast<uint32_t>(g_enumIndex.size()));
+    for (const auto& e : g_enumIndex) { w.putStr(e.first); w.putI32(e.second); }
+    w.putU32(static_cast<uint32_t>(g_enumConsts.size()));
+    for (const auto& e : g_enumConsts) { w.putStr(e.first); w.putI64(e.second); }
+    w.putU32(static_cast<uint32_t>(g_typeAlias.size()));
+    for (const auto& e : g_typeAlias) {
+        w.putStr(e.first);
+        w.putTy(e.second.ty);
+        w.putBool(e.second.isFunc);
+        w.putFuncSig(e.second.sig);
+    }
+    w.putU32(static_cast<uint32_t>(g_cnReservedSourceNames.size()));
+    for (const auto& s : g_cnReservedSourceNames) w.putStr(s);
+    w.putU32(static_cast<uint32_t>(g_cnInterfaceNames.size()));
+    for (const auto& s : g_cnInterfaceNames) w.putStr(s);
+    w.putU32(static_cast<uint32_t>(g_cnInterfaceMethods.size()));
+    for (const auto& e : g_cnInterfaceMethods) {
+        w.putStr(e.first);
+        w.putU32(static_cast<uint32_t>(e.second.size()));
+        for (const auto& m : e.second) { w.putStr(m.first); w.putMethodInfo(m.second); }
+    }
+    w.putU32(static_cast<uint32_t>(g_cnInterfaceIndex.size()));
+    for (const auto& e : g_cnInterfaceIndex) { w.putStr(e.first); w.putI32(e.second); }
+    w.putU32(static_cast<uint32_t>(g_cnInterfaceVtableIndex.size()));
+    for (const auto& e : g_cnInterfaceVtableIndex) { w.putStr(e.first); w.putI32(e.second); }
+    w.putU32(static_cast<uint32_t>(g_cnInterfaceTableGlobals.size()));
+    for (const auto& e : g_cnInterfaceTableGlobals) {
+        w.putI32(e.first.first);
+        w.putStr(e.first.second);
+        w.putStr(e.second);
+    }
+    w.putU32(static_cast<uint32_t>(g_cnInterfaceMethodOrder.size()));
+    for (const auto& e : g_cnInterfaceMethodOrder) {
+        w.putStr(e.first);
+        w.putU32(static_cast<uint32_t>(e.second.size()));
+        for (const auto& n : e.second) w.putStr(n);
+    }
+    w.putU32(static_cast<uint32_t>(g_cnInterfaceBase.size()));
+    for (const auto& e : g_cnInterfaceBase) { w.putStr(e.first); w.putStr(e.second); }
+    w.putU32(static_cast<uint32_t>(g_cnClassIndex.size()));
+    for (const auto& e : g_cnClassIndex) { w.putStr(e.first); w.putI32(e.second); }
+    w.putU32(static_cast<uint32_t>(g_cnClassBase.size()));
+    for (const auto& e : g_cnClassBase) { w.putI32(e.first); w.putI32(e.second); }
+    w.putU32(static_cast<uint32_t>(g_cnClassInterface.size()));
+    for (const auto& e : g_cnClassInterface) { w.putI32(e.first); w.putStr(e.second); }
+    w.putU32(static_cast<uint32_t>(g_cnClassMethods.size()));
+    for (const auto& e : g_cnClassMethods) {
+        w.putI32(e.first);
+        w.putU32(static_cast<uint32_t>(e.second.size()));
+        for (const auto& m : e.second) { w.putStr(m.first); w.putMethodInfo(m.second); }
+    }
+    w.putU32(static_cast<uint32_t>(g_cnClassStaticFields.size()));
+    for (const auto& e : g_cnClassStaticFields) {
+        w.putI32(e.first);
+        w.putU32(static_cast<uint32_t>(e.second.size()));
+        for (const auto& f : e.second) { w.putStr(f.first); w.putStaticFieldInfo(f.second); }
+    }
+    w.putU32(static_cast<uint32_t>(g_cnClassVtableIndex.size()));
+    for (const auto& e : g_cnClassVtableIndex) { w.putI32(e.first); w.putI32(e.second); }
+    w.putU32(static_cast<uint32_t>(g_cnClassVtableGlobals.size()));
+    for (const auto& e : g_cnClassVtableGlobals) { w.putI32(e.first); w.putStr(e.second); }
+    w.putU32(static_cast<uint32_t>(g_cnTopLevelMethods.size()));
+    for (const auto& e : g_cnTopLevelMethods) {
+        w.putStr(e.first);
+        w.putI32(e.second.visibility);
+        w.putStr(e.second.sourceFile ? *e.second.sourceFile : std::string());
+    }
+    w.putU32(static_cast<uint32_t>(g_cnTopLevelGlobals.size()));
+    for (const auto& e : g_cnTopLevelGlobals) {
+        w.putStr(e.first);
+        w.putI32(e.second.visibility);
+        w.putStr(e.second.sourceFile ? *e.second.sourceFile : std::string());
+    }
+    w.putU32(static_cast<uint32_t>(g_cnFunctionSignatures.size()));
+    for (const auto& e : g_cnFunctionSignatures) {
+        w.putStr(e.first);
+        w.putFuncSignature(e.second);
+    }
+    w.putU32(static_cast<uint32_t>(g_cnExternalMethodNames.size()));
+    for (const auto& e : g_cnExternalMethodNames) { w.putStr(e.first); w.putStr(e.second); }
+    w.putU32(static_cast<uint32_t>(g_cnExternalGlobalNames.size()));
+    for (const auto& e : g_cnExternalGlobalNames) { w.putStr(e.first); w.putStr(e.second); }
+    return w.finish();
+}
+
+// Q5 (b): bounds-checked reader over a registry blob body. Every get
+// returns false on overrun or on an out-of-range value; nothing here
+// allocates from an untrusted count.
+struct CnRegistryReader {
+    const char* data = nullptr;
+    size_t size = 0;
+    size_t pos = 0;
+    const std::vector<std::string>* strings = nullptr;
+    // Interned shared_ptr rebuild: one shared string object per distinct
+    // table index, so restored TopLevel infos share pointers exactly the
+    // way the front's internedSourceFiles built them.
+    std::map<uint32_t, std::shared_ptr<const std::string>> sharedFiles;
+    bool getU8(uint8_t& v) {
+        if (pos + 1 > size) return false;
+        v = static_cast<uint8_t>(data[pos++]);
+        return true;
+    }
+    bool getU32(uint32_t& v) {
+        if (pos + 4 > size) return false;
+        v = static_cast<uint32_t>(static_cast<unsigned char>(data[pos])) |
+            (static_cast<uint32_t>(static_cast<unsigned char>(data[pos + 1])) << 8) |
+            (static_cast<uint32_t>(static_cast<unsigned char>(data[pos + 2])) << 16) |
+            (static_cast<uint32_t>(static_cast<unsigned char>(data[pos + 3])) << 24);
+        pos += 4;
+        return true;
+    }
+    bool getU64(uint64_t& v) {
+        if (pos + 8 > size) return false;
+        v = 0;
+        for (int i = 0; i < 8; ++i)
+            v |= static_cast<uint64_t>(static_cast<unsigned char>(data[pos + i])) << (8 * i);
+        pos += 8;
+        return true;
+    }
+    bool getI32(int32_t& v) {
+        uint32_t u = 0;
+        if (!getU32(u)) return false;
+        v = static_cast<int32_t>(u);
+        return true;
+    }
+    bool getI64(int64_t& v) {
+        uint64_t u = 0;
+        if (!getU64(u)) return false;
+        v = static_cast<int64_t>(u);
+        return true;
+    }
+    bool getBool(bool& v) {
+        uint8_t b = 0;
+        if (!getU8(b)) return false;
+        if (b > 1) return false;
+        v = b != 0;
+        return true;
+    }
+    bool getCount(uint32_t& v) {
+        if (!getU32(v)) return false;
+        return v <= 1000000;
+    }
+    bool getStr(std::string& v) {
+        uint32_t idx = 0;
+        if (!getU32(idx)) return false;
+        if (idx >= strings->size()) return false;
+        v = (*strings)[idx];
+        return true;
+    }
+    bool getSharedStr(std::shared_ptr<const std::string>& v) {
+        uint32_t idx = 0;
+        if (!getU32(idx)) return false;
+        if (idx >= strings->size()) return false;
+        const auto found = sharedFiles.find(idx);
+        if (found != sharedFiles.end()) {
+            v = found->second;
+            return true;
+        }
+        auto shared = std::make_shared<const std::string>((*strings)[idx]);
+        sharedFiles.emplace(idx, shared);
+        v = shared;
+        return true;
+    }
+    bool getTy(Ty& t) {
+        uint8_t k = 0;
+        if (!getU8(k)) return false;
+        if (k >= 16) return false;  // Ty::Kind has 16 values
+        t.k = static_cast<Ty::Kind>(k);
+        if (!getI32(t.sid)) return false;
+        if (!getBool(t.isString)) return false;
+        if (!getI32(t.ew)) return false;
+        uint8_t ek = 0;
+        if (!getU8(ek)) return false;
+        if (ek >= 16) return false;
+        t.ekind = static_cast<Ty::Kind>(ek);
+        if (!getI32(t.esid)) return false;
+        return true;
+    }
+    bool getFuncSig(FuncSig& s) {
+        uint32_t n = 0;
+        if (!getCount(n)) return false;
+        s.params.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            Ty t;
+            if (!getTy(t)) return false;
+            s.params.push_back(t);
+        }
+        if (!getTy(s.ret)) return false;
+        return true;
+    }
+    bool getDims(std::vector<uint32_t>& dims) {
+        uint32_t n = 0;
+        if (!getCount(n)) return false;
+        dims.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            uint32_t d = 0;
+            if (!getU32(d)) return false;
+            dims.push_back(d);
+        }
+        return true;
+    }
+    bool getMethodInfo(CnClassMethodInfo& info) {
+        if (!getStr(info.functionName)) return false;
+        if (!getI32(info.ownerClassId)) return false;
+        if (!getTy(info.returnType)) return false;
+        uint32_t n = 0;
+        if (!getCount(n)) return false;
+        info.parameterTypes.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            Ty t;
+            if (!getTy(t)) return false;
+            info.parameterTypes.push_back(t);
+        }
+        if (!getCount(n)) return false;
+        info.parameterNames.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            std::string s;
+            if (!getStr(s)) return false;
+            info.parameterNames.push_back(s);
+        }
+        if (!getCount(n)) return false;
+        info.parameterDims.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            std::vector<uint32_t> d;
+            if (!getDims(d)) return false;
+            info.parameterDims.push_back(std::move(d));
+        }
+        if (!getCount(n)) return false;
+        info.parameterFuncSigs.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            FuncSig s;
+            if (!getFuncSig(s)) return false;
+            info.parameterFuncSigs.push_back(s);
+        }
+        if (!getCount(n)) return false;
+        info.parameterIsFunc.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            bool b = false;
+            if (!getBool(b)) return false;
+            info.parameterIsFunc.push_back(b);
+        }
+        // parentConstructorArguments stays empty here; re-derived by the
+        // worker on a restore hit (cnRegistryRederiveParentCtorArgs).
+        info.parentConstructorArguments.clear();
+        if (!getI32(info.visibility)) return false;
+        if (!getBool(info.isStatic)) return false;
+        if (!getBool(info.isConstructor)) return false;
+        if (!getBool(info.hasExplicitParentConstructorCall)) return false;
+        if (!getBool(info.isOverride)) return false;
+        if (!getStr(info.sourceFile)) return false;
+        return true;
+    }
+    bool getStaticFieldInfo(CnStaticClassFieldInfo& info) {
+        if (!getTy(info.type)) return false;
+        if (!getU32(info.arrayLength)) return false;
+        if (!getBool(info.isFunc)) return false;
+        if (!getFuncSig(info.funcSig)) return false;
+        if (!getI32(info.ownerClassId)) return false;
+        if (!getI32(info.visibility)) return false;
+        if (!getBool(info.isString)) return false;
+        if (!getStr(info.globalName)) return false;
+        if (!getStr(info.sourceFile)) return false;
+        return true;
+    }
+    bool getFuncSignature(CnFunctionSignature& sig) {
+        if (!getTy(sig.returnType)) return false;
+        uint32_t n = 0;
+        if (!getCount(n)) return false;
+        sig.parameterTypes.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            Ty t;
+            if (!getTy(t)) return false;
+            sig.parameterTypes.push_back(t);
+        }
+        if (!getCount(n)) return false;
+        sig.parameterDims.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            std::vector<uint32_t> d;
+            if (!getDims(d)) return false;
+            sig.parameterDims.push_back(std::move(d));
+        }
+        if (!getCount(n)) return false;
+        sig.parameterFuncSigs.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            FuncSig s;
+            if (!getFuncSig(s)) return false;
+            sig.parameterFuncSigs.push_back(s);
+        }
+        if (!getCount(n)) return false;
+        sig.parameterIsFunc.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            bool b = false;
+            if (!getBool(b)) return false;
+            sig.parameterIsFunc.push_back(b);
+        }
+        return true;
+    }
+};
+
+// Q5 (b): header-only check for a received blob (magic, version, size,
+// checksum). The full structural parse happens in cnRegistryDeserialize.
+static bool cnRegistryBlobHeaderOk(const std::string& blob) {
+    if (blob.size() < 16 || blob.size() > (64u << 20)) return false;
+    if (blob.compare(0, 4, "ARSG") != 0) return false;
+    const uint32_t version = static_cast<uint32_t>(static_cast<unsigned char>(blob[4])) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(blob[5])) << 8) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(blob[6])) << 16) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(blob[7])) << 24);
+    if (version != 1) return false;
+    uint64_t stored = 0;
+    const size_t n = blob.size();
+    for (int i = 0; i < 8; ++i)
+        stored |= static_cast<uint64_t>(static_cast<unsigned char>(blob[n - 8 + i])) << (8 * i);
+    return cnRegistryFnv1a(blob.data(), n - 8) == stored;
+}
+
+// Q5 (b): deserialize `blob` (built for `key`) into the 26 front tables.
+// All tables are built in locals and only committed on a complete,
+// exact-consumption parse; any failure returns false with the globals
+// untouched. Never throws on corrupt input (only bad_alloc can escape,
+// which is fatal anywhere).
+static bool cnRegistryDeserialize(const std::string& blob, const std::string& key) {
+    if (!cnRegistryBlobHeaderOk(blob)) return false;
+    size_t pos = 8;  // past magic + version
+    auto getU32At = [&](uint32_t& v) -> bool {
+        if (pos + 4 > blob.size() - 8) return false;
+        v = static_cast<uint32_t>(static_cast<unsigned char>(blob[pos])) |
+            (static_cast<uint32_t>(static_cast<unsigned char>(blob[pos + 1])) << 8) |
+            (static_cast<uint32_t>(static_cast<unsigned char>(blob[pos + 2])) << 16) |
+            (static_cast<uint32_t>(static_cast<unsigned char>(blob[pos + 3])) << 24);
+        pos += 4;
+        return true;
+    };
+    uint32_t stringCount = 0;
+    if (!getU32At(stringCount) || stringCount > 1000000) return false;
+    std::vector<std::string> strings;
+    for (uint32_t i = 0; i < stringCount; ++i) {
+        uint32_t len = 0;
+        if (!getU32At(len)) return false;
+        if (len > blob.size() - 8 - pos) return false;
+        strings.emplace_back(blob.data() + pos, len);
+        pos += len;
+    }
+    CnRegistryReader r;
+    r.data = blob.data() + pos;
+    r.size = blob.size() - 8 - pos;
+    r.pos = 0;
+    r.strings = &strings;
+    // Locals: committed only after the whole body parses.
+    std::vector<StructDef> structs;
+    std::map<std::string, int> structIndex;
+    std::vector<EnumDef> enums;
+    std::map<std::string, int> enumIndex;
+    std::map<std::string, int64_t> enumConsts;
+    std::map<std::string, TypeAlias> typeAlias;
+    std::set<std::string> reservedSourceNames;
+    std::set<std::string> interfaceNames;
+    std::map<std::string, std::map<std::string, CnClassMethodInfo>> interfaceMethods;
+    std::map<std::string, int> interfaceIndex;
+    std::map<std::string, int> interfaceVtableIndex;
+    std::map<std::pair<int, std::string>, std::string> interfaceTableGlobals;
+    std::map<std::string, std::vector<std::string>> interfaceMethodOrder;
+    std::map<std::string, std::string> interfaceBase;
+    std::map<std::string, int> classIndex;
+    std::map<int, int> classBase;
+    std::map<int, std::string> classInterface;
+    std::map<int, std::map<std::string, CnClassMethodInfo>> classMethods;
+    std::map<int, std::map<std::string, CnStaticClassFieldInfo>> classStaticFields;
+    std::map<int, int> classVtableIndex;
+    std::map<int, std::string> classVtableGlobals;
+    std::map<std::string, CnTopLevelMethodInfo> topLevelMethods;
+    std::map<std::string, CnTopLevelGlobalInfo> topLevelGlobals;
+    std::map<std::string, CnFunctionSignature> functionSignatures;
+    std::map<std::string, std::string> externalMethodNames;
+    std::map<std::string, std::string> externalGlobalNames;
+    uint32_t n = 0;
+    auto readCount = [&]() -> bool { return r.getCount(n); };
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        StructDef s;
+        if (!r.getStr(s.name)) return false;
+        if (!r.getU32(s.size)) return false;
+        if (!r.getU32(s.align)) return false;
+        if (!r.getBool(s.isUnion)) return false;
+        uint32_t nf = 0;
+        if (!r.getCount(nf)) return false;
+        for (uint32_t j = 0; j < nf; ++j) {
+            StructField f;
+            if (!r.getStr(f.name)) return false;
+            if (!r.getTy(f.ty)) return false;
+            if (!r.getU32(f.offset)) return false;
+            if (!r.getU32(f.len)) return false;
+            if (!r.getDims(f.dims)) return false;
+            if (!r.getFuncSig(f.funcSig)) return false;
+            if (!r.getBool(f.isFunc)) return false;
+            if (!r.getBool(f.isString)) return false;
+            if (!r.getI32(f.cnVisibility)) return false;
+            if (!r.getI32(f.cnOwnerClassId)) return false;
+            if (!r.getStr(f.cnSourceFile)) return false;
+            s.fields.push_back(std::move(f));
+        }
+        structs.push_back(std::move(s));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        int32_t v = 0;
+        if (!r.getStr(k) || !r.getI32(v)) return false;
+        structIndex.emplace(std::move(k), v);
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        EnumDef e;
+        if (!r.getStr(e.name)) return false;
+        uint32_t nc = 0;
+        if (!r.getCount(nc)) return false;
+        for (uint32_t j = 0; j < nc; ++j) {
+            EnumConst c;
+            if (!r.getStr(c.name)) return false;
+            if (!r.getI64(c.value)) return false;
+            e.consts.push_back(std::move(c));
+        }
+        enums.push_back(std::move(e));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        int32_t v = 0;
+        if (!r.getStr(k) || !r.getI32(v)) return false;
+        enumIndex.emplace(std::move(k), v);
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        int64_t v = 0;
+        if (!r.getStr(k) || !r.getI64(v)) return false;
+        enumConsts.emplace(std::move(k), v);
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        TypeAlias a;
+        if (!r.getStr(k)) return false;
+        if (!r.getTy(a.ty)) return false;
+        if (!r.getBool(a.isFunc)) return false;
+        if (!r.getFuncSig(a.sig)) return false;
+        typeAlias.emplace(std::move(k), std::move(a));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string s;
+        if (!r.getStr(s)) return false;
+        reservedSourceNames.insert(std::move(s));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string s;
+        if (!r.getStr(s)) return false;
+        interfaceNames.insert(std::move(s));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        if (!r.getStr(k)) return false;
+        uint32_t nm = 0;
+        if (!r.getCount(nm)) return false;
+        std::map<std::string, CnClassMethodInfo> inner;
+        for (uint32_t j = 0; j < nm; ++j) {
+            std::string mk;
+            CnClassMethodInfo info;
+            if (!r.getStr(mk)) return false;
+            if (!r.getMethodInfo(info)) return false;
+            inner.emplace(std::move(mk), std::move(info));
+        }
+        interfaceMethods.emplace(std::move(k), std::move(inner));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        int32_t v = 0;
+        if (!r.getStr(k) || !r.getI32(v)) return false;
+        interfaceIndex.emplace(std::move(k), v);
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        int32_t v = 0;
+        if (!r.getStr(k) || !r.getI32(v)) return false;
+        interfaceVtableIndex.emplace(std::move(k), v);
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        int32_t a = 0;
+        std::string b, v;
+        if (!r.getI32(a) || !r.getStr(b) || !r.getStr(v)) return false;
+        interfaceTableGlobals.emplace(std::make_pair(a, std::move(b)), std::move(v));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        if (!r.getStr(k)) return false;
+        uint32_t nm = 0;
+        if (!r.getCount(nm)) return false;
+        std::vector<std::string> order;
+        for (uint32_t j = 0; j < nm; ++j) {
+            std::string s;
+            if (!r.getStr(s)) return false;
+            order.push_back(std::move(s));
+        }
+        interfaceMethodOrder.emplace(std::move(k), std::move(order));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k, v;
+        if (!r.getStr(k) || !r.getStr(v)) return false;
+        interfaceBase.emplace(std::move(k), std::move(v));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        int32_t v = 0;
+        if (!r.getStr(k) || !r.getI32(v)) return false;
+        classIndex.emplace(std::move(k), v);
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        int32_t k = 0, v = 0;
+        if (!r.getI32(k) || !r.getI32(v)) return false;
+        classBase.emplace(k, v);
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        int32_t k = 0;
+        std::string v;
+        if (!r.getI32(k) || !r.getStr(v)) return false;
+        classInterface.emplace(k, std::move(v));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        int32_t k = 0;
+        if (!r.getI32(k)) return false;
+        uint32_t nm = 0;
+        if (!r.getCount(nm)) return false;
+        std::map<std::string, CnClassMethodInfo> inner;
+        for (uint32_t j = 0; j < nm; ++j) {
+            std::string mk;
+            CnClassMethodInfo info;
+            if (!r.getStr(mk)) return false;
+            if (!r.getMethodInfo(info)) return false;
+            inner.emplace(std::move(mk), std::move(info));
+        }
+        classMethods.emplace(k, std::move(inner));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        int32_t k = 0;
+        if (!r.getI32(k)) return false;
+        uint32_t nf = 0;
+        if (!r.getCount(nf)) return false;
+        std::map<std::string, CnStaticClassFieldInfo> inner;
+        for (uint32_t j = 0; j < nf; ++j) {
+            std::string fk;
+            CnStaticClassFieldInfo info;
+            if (!r.getStr(fk)) return false;
+            if (!r.getStaticFieldInfo(info)) return false;
+            inner.emplace(std::move(fk), std::move(info));
+        }
+        classStaticFields.emplace(k, std::move(inner));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        int32_t k = 0, v = 0;
+        if (!r.getI32(k) || !r.getI32(v)) return false;
+        classVtableIndex.emplace(k, v);
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        int32_t k = 0;
+        std::string v;
+        if (!r.getI32(k) || !r.getStr(v)) return false;
+        classVtableGlobals.emplace(k, std::move(v));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        CnTopLevelMethodInfo info;
+        if (!r.getStr(k)) return false;
+        if (!r.getI32(info.visibility)) return false;
+        if (!r.getSharedStr(info.sourceFile)) return false;
+        topLevelMethods.emplace(std::move(k), std::move(info));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        CnTopLevelGlobalInfo info;
+        if (!r.getStr(k)) return false;
+        if (!r.getI32(info.visibility)) return false;
+        if (!r.getSharedStr(info.sourceFile)) return false;
+        topLevelGlobals.emplace(std::move(k), std::move(info));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k;
+        CnFunctionSignature sig;
+        if (!r.getStr(k)) return false;
+        if (!r.getFuncSignature(sig)) return false;
+        functionSignatures.emplace(std::move(k), std::move(sig));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k, v;
+        if (!r.getStr(k) || !r.getStr(v)) return false;
+        externalMethodNames.emplace(std::move(k), std::move(v));
+    }
+    if (!readCount()) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string k, v;
+        if (!r.getStr(k) || !r.getStr(v)) return false;
+        externalGlobalNames.emplace(std::move(k), std::move(v));
+    }
+    if (r.pos != r.size) return false;  // exact consumption: no trailing bytes
+    // Commit: move-assign every table, then mark the shared front built.
+    g_structs = std::move(structs);
+    g_structIndex = std::move(structIndex);
+    g_enums = std::move(enums);
+    g_enumIndex = std::move(enumIndex);
+    g_enumConsts = std::move(enumConsts);
+    g_typeAlias = std::move(typeAlias);
+    g_cnReservedSourceNames = std::move(reservedSourceNames);
+    g_cnInterfaceNames = std::move(interfaceNames);
+    g_cnInterfaceMethods = std::move(interfaceMethods);
+    g_cnInterfaceIndex = std::move(interfaceIndex);
+    g_cnInterfaceVtableIndex = std::move(interfaceVtableIndex);
+    g_cnInterfaceTableGlobals = std::move(interfaceTableGlobals);
+    g_cnInterfaceMethodOrder = std::move(interfaceMethodOrder);
+    g_cnInterfaceBase = std::move(interfaceBase);
+    g_cnClassIndex = std::move(classIndex);
+    g_cnClassBase = std::move(classBase);
+    g_cnClassInterface = std::move(classInterface);
+    g_cnClassMethods = std::move(classMethods);
+    g_cnClassStaticFields = std::move(classStaticFields);
+    g_cnClassVtableIndex = std::move(classVtableIndex);
+    g_cnClassVtableGlobals = std::move(classVtableGlobals);
+    g_cnTopLevelMethods = std::move(topLevelMethods);
+    g_cnTopLevelGlobals = std::move(topLevelGlobals);
+    g_cnFunctionSignatures = std::move(functionSignatures);
+    g_cnExternalMethodNames = std::move(externalMethodNames);
+    g_cnExternalGlobalNames = std::move(externalGlobalNames);
+    g_cnSharedRegistry.built = true;
+    g_cnSharedRegistry.key = key;
+    return true;
+}
+
+// Q5 (b): clear every front table (entry tables + the 16 front clears +
+// the register-function tables). Used when a cached blob fails to
+// deserialize, so no stale table can survive in the daemon parent.
+static void cnRegistryClearAllTables() {
+    cnClearRegistryEntryTables();
+    g_cnReservedSourceNames.clear();
+    g_cnInterfaceNames.clear();
+    g_cnInterfaceMethods.clear();
+    g_cnInterfaceIndex.clear();
+    g_cnInterfaceVtableIndex.clear();
+    g_cnInterfaceTableGlobals.clear();
+    g_cnInterfaceMethodOrder.clear();
+    g_cnInterfaceBase.clear();
+    g_cnClassIndex.clear();
+    g_cnClassBase.clear();
+    g_cnClassInterface.clear();
+    g_cnClassMethods.clear();
+    g_cnClassStaticFields.clear();
+    g_cnClassVtableIndex.clear();
+    g_cnClassVtableGlobals.clear();
+    g_cnTopLevelMethods.clear();
+    g_cnTopLevelGlobals.clear();
+    g_cnFunctionSignatures.clear();
+    g_cnExternalMethodNames.clear();
+    g_cnExternalGlobalNames.clear();
+}
+
+// Q5 (b): the blob a worker built for its program key, held in this
+// process until the worker result payload is framed. Captured right
+// after a successful front build, before any per-TU back runs, so it is
+// exactly the front state. Only the process that built the front ever
+// has it present: the daemon parent never captures (it never builds),
+// and a restore-hit worker never captures (it built nothing).
+struct CnRegistryCache {
+    bool present = false;
+    std::string key;   // registryKey the blob was built for (sha256 hex)
+    std::string blob;  // cnRegistrySerialize() output
+};
+static CnRegistryCache g_cnRegistryCache;
+static void cnRegistryCapture() {
+    if (!g_cnSharedRegistry.built || g_cnSharedRegistry.key.empty()) return;
+    g_cnRegistryCache.present = true;
+    g_cnRegistryCache.key = g_cnSharedRegistry.key;
+    g_cnRegistryCache.blob = cnRegistrySerialize();
+}
+
+// Q5 (b): re-derive parentConstructorArguments for restored class
+// methods from the live merged program. Only constructors whose
+// serialized flag is set are touched; when no method carries the flag
+// the scan is a no-op walk. Any inconsistency (missing class/method, a
+// flag set but no call found, empty arguments) throws Error and the
+// caller falls back to a full front rebuild -- the blob is never
+// trusted over the program.
+static void cnRegistryRederiveParentCtorArgs(const aster_cn::Program& program) {
+    for (const auto& declaration : program.classes) {
+        const auto sidIt = g_cnClassIndex.find(declaration.name);
+        if (sidIt == g_cnClassIndex.end())
+            throw Error("internal compiler error: registry restore: class not in restored table");
+        const auto methodsIt = g_cnClassMethods.find(sidIt->second);
+        if (methodsIt == g_cnClassMethods.end()) continue;
+        for (const auto& method : declaration.methods) {
+            const auto infoIt = methodsIt->second.find(method.name);
+            if (infoIt == methodsIt->second.end())
+                throw Error("internal compiler error: registry restore: method not in restored table");
+            if (!infoIt->second.hasExplicitParentConstructorCall) continue;
+            if (!cnExtractParentConstructorCall(method, infoIt->second) ||
+                infoIt->second.parentConstructorArguments.empty())
+                throw Error("internal compiler error: registry restore: parent constructor arguments missing");
+        }
+    }
+}
+
 // Registry-sharing step 2 (full): the effective (most-derived,
 // non-static, non-constructor) methods of a class, in vtable slot order:
 // the class chain from the root base down, each method overriding the
@@ -27546,6 +28546,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             cnBuildRegistryFront(program, methodReturns);
             g_cnSharedRegistry.built = true;
             g_cnSharedRegistry.key = *registryKey;
+            cnRegistryCapture();
         } catch (...) {
             g_cnSharedRegistry = CnSharedRegistry{};
             cnClearRegistryEntryTables();
@@ -34301,21 +35302,40 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
     if (opts.registrySharing && registryHasDirtyTu)
         bilingualCtx.registryKey = cnComputeRegistryKey(spec, bilingualCtx, program, declConfigHash);
     if (opts.registrySharing && !bilingualCtx.registryKey.empty()) {
-        try {
-            cnClearRegistryEntryTables();
-            std::map<std::string, Ty> parentMethodReturns;
-            cnBuildRegistryFront(program, parentMethodReturns);
-            g_cnSharedRegistry.built = true;
-            g_cnSharedRegistry.key = bilingualCtx.registryKey;
-        } catch (...) {
-            // R6 (parallel): discard the half-built front and fall back
-            // to today's per-TU rebuild. Nothing is printed here: the
-            // first dirty TU's worker re-reports the error with today's
-            // timing and attribution (runTuJobs reports the first error
-            // in source order), and the error is never cached.
-            g_cnSharedRegistry = CnSharedRegistry{};
-            cnClearRegistryEntryTables();
-            bilingualCtx.registryKey.clear();
+        // Q5 (b): the daemon parent may already hold this program's
+        // front (restored from the previous worker's blob and inherited
+        // via fork). On a key hit there is nothing to build: skip the
+        // clear + front build and only re-derive the parent-constructor
+        // arguments the blob cannot carry. Any inconsistency falls back
+        // to a full rebuild, exactly like the R6 path below.
+        const bool registryRestoredHit = g_cnSharedRegistry.built &&
+            g_cnSharedRegistry.key == bilingualCtx.registryKey;
+        if (registryRestoredHit) {
+            try {
+                cnRegistryRederiveParentCtorArgs(program);
+            } catch (...) {
+                g_cnSharedRegistry = CnSharedRegistry{};
+                cnClearRegistryEntryTables();
+                bilingualCtx.registryKey.clear();
+            }
+        } else {
+            try {
+                cnClearRegistryEntryTables();
+                std::map<std::string, Ty> parentMethodReturns;
+                cnBuildRegistryFront(program, parentMethodReturns);
+                g_cnSharedRegistry.built = true;
+                g_cnSharedRegistry.key = bilingualCtx.registryKey;
+                cnRegistryCapture();
+            } catch (...) {
+                // R6 (parallel): discard the half-built front and fall back
+                // to today's per-TU rebuild. Nothing is printed here: the
+                // first dirty TU's worker re-reports the error with today's
+                // timing and attribution (runTuJobs reports the first error
+                // in source order), and the error is never cached.
+                g_cnSharedRegistry = CnSharedRegistry{};
+                cnClearRegistryEntryTables();
+                bilingualCtx.registryKey.clear();
+            }
         }
     }
     std::vector<std::string> bilingualObjs;
@@ -34987,6 +36007,13 @@ struct DaemonState {
     std::vector<std::string> lastSourceHashes;  // st.metas' sha256 at the last build
     std::vector<DaemonDepRec> lastDeps;         // merged TU deps, deduped by path
     std::string lastOptsKey, lastTarget;
+    // Q5 (b): the previous worker's serialized registry front, keyed by
+    // its program key. Opaque bytes only: the parent never builds from
+    // them, it only restores them into its tables before forking the
+    // next worker. Empty when no worker has sent one yet, or after a
+    // config drift / failed restore cleared it.
+    std::string cachedRegistryKey;
+    std::string cachedRegistryBlob;
     int lastCompiled=0, lastReused=0;
     uint64_t requests=0;       // build requests served
     uint64_t completeRequests=0;  // Phase 3: complete requests served
@@ -35054,6 +36081,11 @@ static bool daemonRefreshParses(DaemonState& st, const ProjectSpec& spec,
         st.metas.clear();
         st.progs.clear();
         st.haveLastBuild=false;
+        // Q5 (b): the cached front belongs to the old configuration's
+        // program key; drop it so the next build does not pay a wasted
+        // restore for a key that cannot match.
+        st.cachedRegistryKey.clear();
+        st.cachedRegistryBlob.clear();
         st.projHash=projHash;
         st.parseMaxDepth=(unsigned)opts.maxParseDepth;
         st.parseMaxLowering=(unsigned)opts.maxLoweringDepth;
@@ -35279,6 +36311,11 @@ struct DaemonWorkerOutcome {
     // (empty when the diagnose found nothing, or when this is a build).
     std::vector<DiagEntry> diags;
     bool haveDiag=false;
+    // Q5 (b): the worker's serialized registry front (present only when
+    // this worker built the front for its program key and exited 0).
+    std::string registryKey;
+    std::string registryBlob;
+    bool haveRegistry=false;
 };
 // Returns 0 = worker finished (outcome filled), 1 = client went away
 // (worker killed, no reply possible), -1 = fork/pipe failure.
@@ -35363,6 +36400,15 @@ static int daemonRunBuildWorker(int clientFd, int listenFd, DaemonState& st,
             payload+=std::to_string(i<report.tuMs.size()?report.tuMs[i]:0)+"\t";
             payload+=i<report.objPaths.size()?report.objPaths[i]:std::string();
             payload+="\n";
+        }
+        // Q5 (b): hand the front this worker built back to the daemon
+        // parent for the next request with the same program key. Only
+        // when this worker built it (a restore-hit worker sends nothing:
+        // the parent already holds these exact bytes) and only on a
+        // successful build.
+        if(!diagnose&&rc==0&&wopts.registrySharing&&g_cnRegistryCache.present){
+            payload+="registry "+g_cnRegistryCache.key+" "+
+                cnRegistryBase64Encode(g_cnRegistryCache.blob)+"\n";
         }
         std::string framed;
         tuPutU32(framed,(uint32_t)payload.size());
@@ -35497,6 +36543,26 @@ static int daemonRunBuildWorker(int clientFd, int listenFd, DaemonState& st,
                     }
                     else if(line.rfind("compiled ",0)==0){ outcome.report.compiled=std::atoi(line.c_str()+9); }
                     else if(line.rfind("reused ",0)==0){ outcome.report.reused=std::atoi(line.c_str()+7); }
+                    else if(line.rfind("registry ",0)==0){
+                        // Q5 (b): the worker's serialized front for the
+                        // next request. Validated here only for header
+                        // (magic/version/checksum); the full structural
+                        // parse runs at restore time. A corrupt frame is
+                        // dropped silently: the next build just rebuilds.
+                        const std::string rest=line.substr(9);
+                        const size_t sp=rest.find(' ');
+                        if(sp!=std::string::npos){
+                            const std::string rkey=rest.substr(0,sp);
+                            std::string blob;
+                            if(rkey.size()==64&&
+                               cnRegistryBase64Decode(rest.substr(sp+1),blob)&&
+                               cnRegistryBlobHeaderOk(blob)){
+                                outcome.registryKey=rkey;
+                                outcome.registryBlob=std::move(blob);
+                                outcome.haveRegistry=true;
+                            }
+                        }
+                    }
                     else if(line.rfind("target ",0)==0){ outcome.report.target=line.substr(7); }
                     else if(line.rfind("fingerprint ",0)==0){ outcome.report.fingerprint=line.substr(12); }
                     else if(line.rfind("obj ",0)==0){
@@ -35641,6 +36707,21 @@ static bool daemonHandleBuild(int clientFd, long long id, int listenFd, DaemonSt
             }
         }
     }
+    // Q5 (b): restore the previous worker's registry into this process's
+    // tables before forking, so the worker inherits it and skips its own
+    // front build when the program key matches. The no-change fast path
+    // above already returned, so this never runs for a no-change request.
+    // A failed restore drops the cache and wipes the tables: the worker
+    // then rebuilds the front exactly as before.
+    if(opts.registrySharing&&!st.cachedRegistryBlob.empty()&&
+       !st.cachedRegistryKey.empty()){
+        if(!cnRegistryDeserialize(st.cachedRegistryBlob,st.cachedRegistryKey)){
+            st.cachedRegistryKey.clear();
+            st.cachedRegistryBlob.clear();
+            g_cnSharedRegistry=CnSharedRegistry{};
+            cnRegistryClearAllTables();
+        }
+    }
     DaemonWorkerOutcome outcome;
     const int wr=daemonRunBuildWorker(clientFd,listenFd,st,spec,langCfg,opts,keyDir,outcome);
     st.lastActivity=std::chrono::steady_clock::now();
@@ -35653,6 +36734,13 @@ static bool daemonHandleBuild(int clientFd, long long id, int listenFd, DaemonSt
         daemonLog("build: worker died");
         daemonSendError(clientFd,id,-32001,"daemon: build worker died");
         return true;
+    }
+    // Q5 (b): keep the worker's front for the next request with the same
+    // program key. Independent of the fast-path recording below: the blob
+    // is keyed by program content, not by target. Only on success.
+    if(outcome.exitCode==0&&outcome.haveRegistry){
+        st.cachedRegistryKey=outcome.registryKey;
+        st.cachedRegistryBlob=outcome.registryBlob;
     }
     if(outcome.exitCode==0&&outcome.haveReport&&!outcome.report.fingerprint.empty()&&
        outcome.report.target==target){
