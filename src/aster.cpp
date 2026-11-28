@@ -203,7 +203,35 @@ std::vector<std::string> g_srcLines;
 // the message the sub-parse has already been unwound, so a swap would be
 // undone before anyone read it.
 std::string g_diagFile;
-std::vector<std::string> g_diagLines;
+// Diag-cache sharing (§2): g_diagLines used to be an owning vector, so every
+// cnLoadDiagnosticLines hit copied the whole cached line table into it and
+// every switch first destroyed the previous table (~8.6 ms/file, §1). It is
+// now a borrowed view instead:
+//   - g_diagLinesPtr points at the lines of the current diagnostic file: either
+//     the `.lines` of a diagCache entry (hit, or a miss that was just stored),
+//     or g_diagLinesOwned (the two paths that never enter the cache, below).
+//     Switching files is one pointer store: no copy, no destruction.
+//   - g_diagLinesOwned is the owned fallback, used only by the include-parser
+//     catch (it already holds the file text) and by a miss whose stat failed
+//     (lines are still echoed, just not cached, exactly as before). It is
+//     empty on the hot path, so clearing it is ~free.
+// Lifetime (the load-bearing invariant): diagCache is a function-static
+// std::map that is never cleared or erased anywhere, and std::map is
+// node-based, so insertion never invalidates pointers to existing elements;
+// the map lives for the process lifetime and fork children inherit it, so a
+// pointer into an entry cannot dangle while the process lives. The pointer
+// is only ever set after the object it names is fully filled, and it is
+// const-qualified: renderError is the only reader and never writes through
+// it. If diagCache ever gains an erase/clear, this pointer must be
+// re-audited first. cnClearDiagLines nulls the pointer BEFORE clearing the
+// owned vector, so the pointer can never name a just-destroyed buffer.
+const std::vector<std::string>* g_diagLinesPtr = nullptr;
+std::vector<std::string> g_diagLinesOwned;
+static const std::vector<std::string> kEmptyDiagLines;
+static void cnClearDiagLines() {
+    g_diagLinesPtr = nullptr;
+    g_diagLinesOwned.clear();
+}
 // CN semantic and package errors are raised after parsing, where the source
 // language is still known only by the CN command path.  Keep that context for
 // the common top-level reporter so those errors receive the same code and
@@ -259,7 +287,8 @@ static std::string renderError(const std::string& msg) {
     const bool fromInclude = !g_diagFile.empty();
     const char* file = fromInclude ? g_diagFile.c_str()
                                    : (g_srcFile.empty() ? "<source>" : g_srcFile.c_str());
-    const std::vector<std::string>& srcLines = fromInclude ? g_diagLines : g_srcLines;
+    const std::vector<std::string>& srcLines = fromInclude
+        ? (g_diagLinesPtr ? *g_diagLinesPtr : kEmptyDiagLines) : g_srcLines;
     size_t at = diagnostic.rfind(" at ");
     unsigned ln = 0, col = 0; bool haveLoc = false;
     if (at != std::string::npos) {
@@ -351,15 +380,17 @@ static DiagEntry diagFromException(const std::string& msg) {
 // name right, only the caret echo is lost.
 static void cnLoadDiagnosticLines(const std::string& path) {
     g_diagFile = path;
-    g_diagLines.clear();
+    cnClearDiagLines();
     // v0.23.85-dev (parallel build): this used to re-read the file
     // char-by-char on every call, and per-source lowering switches files
     // once per declaration (~151 calls per TU over the same 21 files:
     // ~144 ms of every ~385 ms TU compile, phase timers). Read in bulk
     // like setSourceCache, and cache the split lines keyed by path +
-    // size + mtime, so a re-visit is a copy of the cached lines. A
-    // same-size same-mtime rewrite could show a stale caret echo in the
-    // (error-only) diagnostic; the message text itself is unaffected.
+    // size + mtime, so a re-visit is a pointer at the cached lines
+    // (diag-cache sharing §2: no whole-vector copy, no destruction of
+    // the previous table on switch). A same-size same-mtime rewrite
+    // could show a stale caret echo in the (error-only) diagnostic; the
+    // message text itself is unaffected.
     struct DiagCacheEntry { uint64_t size = 0; std::filesystem::file_time_type mtime{}; std::vector<std::string> lines; };
     static std::map<std::string, DiagCacheEntry> diagCache;
     std::error_code diagEc;
@@ -369,7 +400,7 @@ static void cnLoadDiagnosticLines(const std::string& path) {
     if (!diagEc) {
         const auto it = diagCache.find(path);
         if (it != diagCache.end() && it->second.size == diagSize && it->second.mtime == diagMtime) {
-            g_diagLines = it->second.lines;
+            g_diagLinesPtr = &it->second.lines;
             diagHit = true;
         }
     }
@@ -377,13 +408,22 @@ static void cnLoadDiagnosticLines(const std::string& path) {
         std::string diagText;
         try { diagText = readFile(path); } catch (const Error&) { diagText.clear(); }
         if (!diagText.empty() || !diagEc) {
+            std::vector<std::string> diagLines;
             std::string cur;
             for (char ch : diagText) {
-                if (ch == '\n') { g_diagLines.push_back(std::move(cur)); cur.clear(); }
+                if (ch == '\n') { diagLines.push_back(std::move(cur)); cur.clear(); }
                 else if (ch != '\r') cur.push_back(ch);
             }
-            g_diagLines.push_back(std::move(cur));
-            if (!diagEc) diagCache[path] = DiagCacheEntry{diagSize, diagMtime, g_diagLines};
+            diagLines.push_back(std::move(cur));
+            if (!diagEc) {
+                diagCache[path] = DiagCacheEntry{diagSize, diagMtime, std::move(diagLines)};
+                g_diagLinesPtr = &diagCache[path].lines;
+            } else {
+                // Stat failed: lines are still echoed (as before), just not
+                // cached. Park them in the owned fallback, never a local.
+                g_diagLinesOwned = std::move(diagLines);
+                g_diagLinesPtr = &g_diagLinesOwned;
+            }
         }
     }
 }
@@ -3789,13 +3829,14 @@ public:
             // overwrite the file the message is really about.
             if(g_diagFile.empty()){
             g_diagFile=full;
-            g_diagLines.clear();
+            g_diagLinesOwned.clear();
             std::string cur;
             for(char ch : text){
-                if(ch=='\n'){g_diagLines.push_back(std::move(cur));cur.clear();}
+                if(ch=='\n'){g_diagLinesOwned.push_back(std::move(cur));cur.clear();}
                 else if(ch!='\r')cur.push_back(ch);
             }
-            g_diagLines.push_back(std::move(cur));
+            g_diagLinesOwned.push_back(std::move(cur));
+            g_diagLinesPtr=&g_diagLinesOwned;
             }
             throw;
         }
@@ -26411,7 +26452,7 @@ static bool cnGlobalDeclarationsMatch(const aster_cn::Statement& first,
 // interface-class loop, the class-method loop, the interface-implementation
 // check loops, the class/interface vtable loops, and the seed loop
 // (globalBindings second fill + class static fields). Step 1 (the entry
-// clears of g_diagFile/g_diagLines and the legacy g_structs/g_enums/
+// clears of g_diagFile/g_diagLinesPtr and the legacy g_structs/g_enums/
 // g_typeAlias tables) stays in cnProgramToAster at its original position:
 // it precedes the cnOwn* index construction, which is explicitly out of
 // scope for this step, and moving it past that construction would change
@@ -26477,7 +26518,7 @@ static CnSharedRegistry g_cnSharedRegistry;
 // full rebuild.
 static void cnClearRegistryEntryTables() {
     g_diagFile.clear();
-    g_diagLines.clear();
+    cnClearDiagLines();
     g_structs.clear();
     g_structIndex.clear();
     g_enums.clear();
@@ -26536,7 +26577,7 @@ static void cnClearRegistryEntryTables() {
 // knows exactly which methods to refill (and skips the scan entirely
 // when no constructor carries the flag).
 //
-// Not serialized (deliberately): g_diagFile/g_diagLines (per-TU
+// Not serialized (deliberately): g_diagFile/g_diagLinesPtr (per-TU
 // diagnostic state, cleared on every cnProgramToAster call, hit path
 // included), the closure tables and g_cnEmittedFieldAccesses (per-TU,
 // excluded since step 1), methodReturns (the hit branch refills it from
@@ -28396,7 +28437,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
         // lowers several) may have left another file's name behind; lowering
         // sets it per declaration below, so start clean.
         g_diagFile.clear();
-        g_diagLines.clear();
+        cnClearDiagLines();
     }
     // Validate literal contents before type checking or lowering.  This keeps
     // malformed string bytes from being hidden by an unrelated surrounding
@@ -29850,7 +29891,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
     // inherit this run's last declaration file: a later error falls back
     // to the driver's file, exactly as before this fix.
     g_diagFile.clear();
-    g_diagLines.clear();
+    cnClearDiagLines();
     return functions;
 }
 
@@ -33745,7 +33786,7 @@ static std::string canonicalCliCommand(const std::string& command) {
 // registries that the next TU rebuilds from scratch — g_structs /
 // g_structIndex / g_enums / g_enumConsts / g_typeAlias (the Parser and
 // cnProgramToAster clear and re-fill them per TU), g_buildDeps,
-// g_srcFile / g_srcLines, g_diagFile / g_diagLines, and dozens of g_cn*
+// g_srcFile / g_srcLines, g_diagFile / g_diagLinesPtr, and dozens of g_cn*
 // tables (cnProgramToAster clears them all at its entry). Running two
 // TUs in one process would interleave those tables and cross-wire struct
 // ids. Making them all thread_local is a whole-compiler refactor; a
