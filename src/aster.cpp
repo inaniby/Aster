@@ -1587,7 +1587,9 @@ struct Function { std::string name;
     // Position of the declaration (`fn`, or the `extern` in front of it) — the line
     // a debugger should show for the function's prologue. Filled in v0.23.12-dev.
     unsigned line=0,col=0;
-    // v0.23.13-dev (P3.4): this entry arrived through `include`, so it is a
+    // Sema 报错归属（§3 清单 1）：声明所在源文件（lowering 填），空 = 未知，
+    // compileProgram 逐函数置位时走现有 g_srcFile 回退。
+    std::string sourceFile;
     // declaration standing in for a definition that lives in another file. A
     // definition in the including file supersedes it instead of colliding with
     // it — which is what makes "include the header, then define the functions"
@@ -10454,10 +10456,23 @@ std::vector<CompiledFunction> compileProgram(const std::vector<Function>& functi
               returnFuncSigMap,paramFuncSigMap};
     std::vector<CompiledFunction> out;out.reserve(order.size()+1);
     for(const Function* f:order){
+        // Sema 报错归属（§3 清单 8）：逐函数把诊断文件置为该函数的源文件；
+        // 正常返回后恢复旧值，抛错时不恢复（sticky-on-throw：渲染发生在
+        // 完全 unwind 之后，读的就是这里留下的文件）。空 sourceFile 时
+        // 不置位，走现有 g_srcFile 回退。
+        const std::string prevDiagFile = g_diagFile;
+        const std::vector<std::string>* prevDiagLines = g_diagLinesPtr;
+        if (!f->sourceFile.empty()) cnSetDiagnosticFile(f->sourceFile);
+        try {
         sema.check(*f);
         Codegen cg(f->name,arities,globalNames,externGlobals,externFunctions,arrayGlobals,pointerFunctions,pointerReturnFunctions,functionParamPointers,boolGlobals,boolReturnFunctions,functionParamBools,arrayLengths,arrayDims,globalTypeMap,argTypeMap,returnTypeMap,globalFuncSigMap,tlsGlobalNames,sharedObject,needInit&&f->name=="main",kInitSymbol,boundsCheck,debugLine,compactFrames);
         CompiledFunction cf;cf.name=f->name;cf.code=cg.run(*f);cf.relocs=std::move(cg.relocations);cf.lineRows=std::move(cg.lineRows);cf.debugVars=std::move(cg.debugVars);cf.frameBytes=cg.frameBytesUsed;cf.frameWords=cg.frameWordsUsed;
-        cf.preservesRa=!cg.isMain;out.push_back(std::move(cf));}
+        cf.preservesRa=!cg.isMain;out.push_back(std::move(cf));
+        } catch (...) {
+            throw;  // 不恢复：见上
+        }
+        g_diagFile = prevDiagFile;
+        g_diagLinesPtr = prevDiagLines;}
     if(needInit){
         // Synthetic initializer: assignments in source declaration order, followed by a chained
         // call to the next object's initializer (link order) or a plain return for shared objects.
@@ -20197,6 +20212,7 @@ static E cnClosureExpressionToAster(const aster_cn::Expression& source,
 
     Function function;
     function.name = functionName;
+    function.sourceFile = context && !context->sourceFile.empty() ? context->sourceFile : std::string();
     function.line = source.line;
     function.col = source.column;
     function.retType = closure.returnType;
@@ -20654,6 +20670,7 @@ static bool cnTryLowerClosureCallbackAdapter(
 
         Function thunk;
         thunk.name = adaptation.thunkName;
+        thunk.sourceFile = !source.sourceFile.empty() ? source.sourceFile : context.sourceFile;
         thunk.line = argument.line;
         thunk.col = argument.column;
         thunk.retType = closure.returnType;
@@ -22349,6 +22366,8 @@ static E cnExpressionToAsterAs(const aster_cn::Expression& source, Ty target,
 
                     Function function;
                     function.name = functionName;
+                    function.sourceFile = !source.sourceFile.empty() ? source.sourceFile
+                        : (context && !context->sourceFile.empty() ? context->sourceFile : std::string());
                     function.line = source.line;
                     function.col = source.column;
                     function.retType = target;
@@ -28108,6 +28127,7 @@ static void cnBuildRegistryBack(const aster_cn::Program& program,
             const std::string thunkName = cnClassVtableThunkName(classSid, entry.first);
             Function thunk;
             thunk.name = thunkName;
+            thunk.sourceFile = declaration.sourceFile;
             thunk.line = declaration.line;
             thunk.col = declaration.column;
             thunk.retType = method.returnType;
@@ -28215,6 +28235,7 @@ static void cnBuildRegistryBack(const aster_cn::Program& program,
                 const std::string thunkName = cnInterfaceThunkName(classSid, declaration.name, required->first);
                 Function thunk;
                 thunk.name = thunkName;
+                thunk.sourceFile = declaration.sourceFile;
                 thunk.line = declaration.line;
                 thunk.col = declaration.column;
                 thunk.retType = required->second.returnType;
@@ -28659,6 +28680,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             const CnClassMethodInfo& methodInfo = g_cnClassMethods.at(sid).at(method.name);
             Function function;
             function.name = methodInfo.functionName;
+            function.sourceFile = !method.sourceFile.empty() ? method.sourceFile : declaration.sourceFile;
             function.line = method.line;
             function.col = method.column;
             function.retType = methodInfo.returnType;
@@ -29300,6 +29322,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
         function.name = method.isExternal ? cnMangleAbiSymbol(method.externalName)
                                           : cnMangleAbiSymbol(method.name);
         function.sourceName = method.name;
+        function.sourceFile = method.sourceFile;
         function.line = method.line;
         function.col = method.column;
         function.external = method.isExternal;
@@ -29534,6 +29557,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
                 initializer.name = initializerName;
                 initializer.line = ownerSource->line;
                 initializer.col = ownerSource->column;
+                initializer.sourceFile = ownerConstructor ? ownerConstructor->sourceFile : ownerSource->sourceFile;
                 initializer.retType = Ty::Void;
                 std::set<std::string> initializerParameterNames;
                 if (ownerConstructor)
@@ -29738,6 +29762,7 @@ static std::vector<Function> cnProgramToAster(const aster_cn::Program& programIn
             constructor.name = constructorName;
             constructor.line = sourceClass->line;
             constructor.col = sourceClass->column;
+            constructor.sourceFile = sourceClass->sourceFile;
             constructor.retType = Ty::ptrTo(sid);
             constructor.returnPtr = true;
             const CnClassMethodInfo* userConstructor = cnFindClassConstructor(sid);
@@ -35115,6 +35140,11 @@ static int runBilingualProjectBuild(const ProjectSpec& spec,
     const long timeoutSec=opts.timeoutSec;
     const uint64_t maxParseDepthOpt=opts.maxParseDepth;
     const uint64_t maxLoweringDepthOpt=opts.maxLoweringDepth;
+    // Sema 报错归属（§3 清单 10，F8）：入口清一次诊断文件 / 行表，防止
+    // daemon fork 继承与 `aster test` 同进程第二个程序继承上一个程序的残留。
+    // 冷 CLI fresh 进程下这是 no-op。
+    g_diagFile.clear();
+    cnClearDiagLines();
     // C-1: a bilingual APK project now follows the same flow
     // as the mainline project build below (per-source PIC
     // objects -> one shared object -> buildApk) instead of

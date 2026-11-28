@@ -10,11 +10,19 @@
 #
 #   [1/6] 命中复用（v4 探针口径）：干净构建未命中数 = 文件数（问候 21、
 #         合成 81），distinctMissPaths = 文件数，命中数与 §1/§3 逐项相等
-#         （问候 2329、合成 18649），命中段计时 copyUs <= 1 ms/构建——
+#         （问候 3678、合成 20178），命中段计时 copyUs <= 1 ms/构建——
 #         v4 的 copyUs 计的是指针赋值本身（`g_diagLinesPtr = ...`），
 #         实测 0–60 µs 只是计时调用的粒度噪声；§1 基线同口径约
 #         129 ms（问候）/ 501 ms（合成），三数量级之差才是断言。
 #         逐项 == 0 的写法是错的（合成 81 文件实测 copyUs = 8 µs）。
+#         命中数说明（2026-11-28 sema 归属修复 §4 更新：2329→3678、
+#         18649→20178）：compileProgram 的 order 循环每函数调一次
+#         cnSetDiagnosticFile，同文件为 no-op（setEarly），换文件时走
+#         cnLoadDiagnosticLines 命中缓存（指针 store）——多出的命中全是
+#         这类逐函数置位，misses / distinctMissPaths / copyUs 三项守卫量
+#         与基线一致（问候 misses=21 distinct=21 copyUs≈19 µs；合成
+#         misses=81 distinct=81 copyUs≈17 µs），证明无新增读盘、无行表
+#         拷贝回归；基线探针（HEAD 源码重编）仍录得 2329 / 18649。
 #         二次构建（0 compiled）未命中仍 = 文件数——每文件每构建只读一次。
 #         注意：冷进程的缓存不跨构建常驻，二次构建仍把每文件重读一次
 #         是按设计（§2 daemon 边界）；“不重复读”指同一构建内不按 TU
@@ -189,19 +197,19 @@ d="$W/probe-greet"; rm -rf "$d"; cp -r "$GREET" "$d"; rm -rf "$d/build" "$d/gmon
 probe_build "probe greet clean j1" "$d" "probe-greet"
 [ "$(probe_field "$W/probe-greet.diagprobe" misses)" = 21 ] || fail "greet misses != 21: $(cat "$W/probe-greet.diagprobe")"
 [ "$(probe_field "$W/probe-greet.diagprobe" distinctMissPaths)" = 21 ] || fail "greet distinctMissPaths != 21"
-[ "$(probe_field "$W/probe-greet.diagprobe" hits)" = 2329 ] || fail "greet hits != 2329: $(cat "$W/probe-greet.diagprobe")"
+[ "$(probe_field "$W/probe-greet.diagprobe" hits)" = 3678 ] || fail "greet hits != 3678: $(cat "$W/probe-greet.diagprobe")"
 # copyUs times the pointer assignment itself, not a copy: the bound is
 # 1 ms/build (§1 baseline was ~129 ms here). == 0 is wrong: the big
 # fixture measures 8-60 us of timer granularity noise.
 [ "$(probe_field "$W/probe-greet.diagprobe" copyUs)" -le 1000 ] || fail "greet copyUs > 1000 us: $(cat "$W/probe-greet.diagprobe")"
-ok "probe greet clean: misses=21 distinct=21 hits=2329 copyUs=$(probe_field "$W/probe-greet.diagprobe" copyUs) us"
+ok "probe greet clean: misses=21 distinct=21 hits=3678 copyUs=$(probe_field "$W/probe-greet.diagprobe" copyUs) us"
 d="$W/probe-big"; rm -rf "$d"; cp -r "$BIG" "$d"; rm -rf "$d/build"
 probe_build "probe big clean j1" "$d" "probe-big"
 [ "$(probe_field "$W/probe-big.diagprobe" misses)" = 81 ] || fail "big misses != 81: $(cat "$W/probe-big.diagprobe")"
 [ "$(probe_field "$W/probe-big.diagprobe" distinctMissPaths)" = 81 ] || fail "big distinctMissPaths != 81"
-[ "$(probe_field "$W/probe-big.diagprobe" hits)" = 18649 ] || fail "big hits != 18649: $(cat "$W/probe-big.diagprobe")"
+[ "$(probe_field "$W/probe-big.diagprobe" hits)" = 20178 ] || fail "big hits != 20178: $(cat "$W/probe-big.diagprobe")"
 [ "$(probe_field "$W/probe-big.diagprobe" copyUs)" -le 1000 ] || fail "big copyUs > 1000 us: $(cat "$W/probe-big.diagprobe")"
-ok "probe big clean: misses=81 distinct=81 hits=18649 copyUs=$(probe_field "$W/probe-big.diagprobe" copyUs) us"
+ok "probe big clean: misses=81 distinct=81 hits=20178 copyUs=$(probe_field "$W/probe-big.diagprobe" copyUs) us"
 # Second build on the greet copy (build/ intact): 0 compiled, and each
 # file is still read exactly once — misses == 21, not per-TU.
 d="$W/probe-greet"
