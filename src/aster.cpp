@@ -14102,11 +14102,12 @@ const char* kUsage="Aster bootstrap compiler v" ASTER_VERSION_STRING "\n"
 "                 build/.cache/decl-index.json and is never a correctness\n"
 "                 input — any doubt falls back to the file-hash path.\n"
 "  --registry-sharing  reuse one built declaration registry across the\n"
-"                 serial build's TUs instead of rebuilding it per TU\n"
-"                 (experimental, opt-in, off by default). Serial cold\n"
-"                 builds only (--jobs 1): parallel and daemon builds\n"
-"                 ignore it. --no-registry-sharing always wins and is\n"
-"                 the permanent escape hatch back to per-TU registration.\n"
+"                 build's TUs instead of rebuilding it per TU\n"
+"                 (experimental, opt-in, off by default). Serial,\n"
+"                 parallel and daemon builds all share it inside the\n"
+"                 build's worker process. --no-registry-sharing always\n"
+"                 wins and is the permanent escape hatch back to\n"
+"                 per-TU registration.\n"
 "  --timeout SECONDS  how long `aster run`/`aster test` wait for the child before\n"
 "                 killing it (SIGTERM, then SIGKILL after 5s): default 60, 0 disables;\n"
 "                 --timeout wins over $ASTER_RUN_TIMEOUT.\n"
@@ -33966,8 +33967,10 @@ struct BilingualBuildOpts {
     // read-only); --jobs 1 runs inline against the same table and
     // key -- one path for both modes. --no-registry-sharing is the
     // permanent escape hatch (Q7); it is parsed in main() and always
-    // wins over --registry-sharing. The daemon never receives this
-    // flag (Q5 pending): daemon builds ignore it.
+    // wins over --registry-sharing. The daemon forwards the flag
+    // per build request (Q5 step 1): the daemon worker is the
+    // parent that builds the front once, so the ~17 ms/dirty TU
+    // saving lands inside daemon builds too.
     bool registrySharing=false;
     // Phase 3: diagnose-only mode (DESIGN.md §6.3). The TU loop still runs
     // (type errors only surface in lowering), but the function returns
@@ -35027,6 +35030,7 @@ static std::string daemonOptsKey(const BilingualBuildOpts& opts){
      <<";noGc="<<opts.noGcSections<<";noStrip="<<opts.noStrip
      <<";page="<<opts.pageSize<<";cliPage="<<opts.cliPageSet
      <<";decl="<<opts.declInvalidation
+     <<";regShr="<<opts.registrySharing
      <<";maxP="<<opts.maxParseDepth<<";maxL="<<opts.maxLoweringDepth
      <<";out="<<opts.out;
     for(const auto& d : opts.moduleDirs) o<<";mod="<<d;
@@ -35555,6 +35559,11 @@ static bool daemonHandleBuild(int clientFd, long long id, int listenFd, DaemonSt
     if(daemonJsonGetBool(reqJson,"bc",b)) opts.bc2=b;
     if(daemonJsonGetBool(reqJson,"cliPageSet",b)) opts.cliPageSet=b;
     if(daemonJsonGetBool(reqJson,"declInvalidation",b)) opts.declInvalidation=b;
+    // Q5 step 1: the per-request registry-sharing flag, forwarded by
+    // the client (daemonTryBuild) from the command line. The daemon
+    // is long-lived, so the flag is read per request, never from
+    // daemon startup state; absent means off (the default).
+    if(daemonJsonGetBool(reqJson,"registrySharing",b)) opts.registrySharing=b;
     if(daemonJsonGetInt(reqJson,"pageSize",v)) opts.pageSize=(uint64_t)v;
     if(daemonJsonGetInt(reqJson,"maxParseDepth",v)) opts.maxParseDepth=(uint64_t)v;
     if(daemonJsonGetInt(reqJson,"maxLoweringDepth",v)) opts.maxLoweringDepth=(uint64_t)v;
@@ -36205,6 +36214,7 @@ static int daemonTryBuild(const BilingualBuildOpts& opts, const std::string& pro
     p<<",\"cliPageSet\":"<<(opts.cliPageSet?"true":"false");
     p<<",\"pageSize\":"+std::to_string(opts.pageSize);
     p<<",\"declInvalidation\":"<<(opts.declInvalidation?"true":"false");
+    p<<",\"registrySharing\":"<<(opts.registrySharing?"true":"false");
     p<<",\"maxParseDepth\":"+std::to_string(opts.maxParseDepth);
     p<<",\"maxLoweringDepth\":"+std::to_string(opts.maxLoweringDepth);
     p<<",\"out\":"+daemonJsonString(opts.out);
@@ -37981,8 +37991,9 @@ int main(int argc,char**argv){
             bool declInvalidation=true;
             // Registry-sharing step 2: opt-in, default off (Q6);
             // --no-registry-sharing always wins and is the permanent
-            // escape hatch (Q7). Deliberately not forwarded to the
-            // daemon: daemon builds ignore it (Q5 pending).
+            // escape hatch (Q7). Forwarded to the daemon per build
+            // request (Q5 step 1), so daemon builds share the
+            // registry inside the worker exactly like cold builds.
             bool registrySharing=false, noRegistrySharing=false;
             std::string socketDirOpt;
             unsigned jobs=0; // 0 = default (online CPUs); --jobs 1 restores the serial build
@@ -38093,6 +38104,7 @@ int main(int argc,char**argv){
                     daemonBuildOpts.maxParseDepth=maxParseDepthOpt;
                     daemonBuildOpts.maxLoweringDepth=maxLoweringDepthOpt;
                     daemonBuildOpts.declInvalidation=declInvalidation;
+                    daemonBuildOpts.registrySharing=registrySharing&&!noRegistrySharing;
                     char daemonCwdBuf[4096];
                     const std::string daemonProjectDir=daemonCanonicalDir(
                         getcwd(daemonCwdBuf,sizeof daemonCwdBuf)?daemonCwdBuf:".");
